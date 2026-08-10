@@ -124,19 +124,10 @@ impl OpenAiStreamAccumulator {
         if let Some(usage) = chunk.get("usage") {
             let input = usage.get("prompt_tokens").and_then(|v| v.as_u64());
             let output = usage.get("completion_tokens").and_then(|v| v.as_u64());
-            // OpenAI reports reasoning tokens under
-            // `completion_tokens_details.reasoning_tokens`; DeepSeek-style
-            // servers expose a top-level `reasoning_tokens`.
-            let reasoning = usage
-                .get("completion_tokens_details")
-                .and_then(|d| d.get("reasoning_tokens"))
-                .and_then(|v| v.as_u64())
-                .or_else(|| usage.get("reasoning_tokens").and_then(|v| v.as_u64()));
-            // Prompt-cache hits land in `input_tokens_details.cached_tokens`.
-            let cached = usage
-                .get("input_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(|v| v.as_u64());
+            let reasoning = crate::translation::usage::openai_reasoning_tokens(usage);
+            // Cache hits (prompt_tokens_details on Chat Completions,
+            // input_tokens_details on Responses) map onto cache_read.
+            let cached = crate::translation::usage::openai_cached_tokens(usage);
             let usage_report = Usage::new(input, output)
                 .with_reasoning_tokens(reasoning)
                 .with_cache_read(cached);
@@ -182,6 +173,12 @@ pub struct AnthropicStreamAccumulator {
     pub stop_reason: Option<String>,
     pub usage: Option<Usage>,
     pub done: bool,
+    /// Input-side counts captured from `message_start` (which carries
+    /// `input_tokens` and the cache fields); merged into the usage report
+    /// emitted on `message_delta` (which carries `output_tokens`).
+    input: Option<u64>,
+    cache_creation: Option<u64>,
+    cache_read: Option<u64>,
 }
 
 impl AnthropicStreamAccumulator {
@@ -285,6 +282,23 @@ impl AnthropicStreamAccumulator {
                     )));
                 }
             }
+            "message_start" => {
+                // `message_start` carries input-side counts
+                // (input_tokens, cache_creation/read); `message_delta`
+                // carries output_tokens. Capture here, merge below.
+                if let Some(usage) = event
+                    .get("message")
+                    .and_then(|m| m.get("usage"))
+                {
+                    self.input = usage.get("input_tokens").and_then(|v| v.as_u64());
+                    self.cache_creation = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64());
+                    self.cache_read = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64());
+                }
+            }
             "message_delta" => {
                 if let Some(delta) = event.get("delta")
                     && let Some(reason) = delta.get("stop_reason").and_then(|v| v.as_str())
@@ -292,19 +306,21 @@ impl AnthropicStreamAccumulator {
                     self.stop_reason = Some(reason.to_string());
                 }
                 if let Some(usage) = event.get("usage") {
-                    let input = usage.get("input_tokens").and_then(|v| v.as_u64());
+                    let input = self.input.or_else(|| {
+                        usage.get("input_tokens").and_then(|v| v.as_u64())
+                    });
                     let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-                    let cache_creation = usage
-                        .get("cache_creation_input_tokens")
-                        .and_then(|v| v.as_u64());
-                    let cache_read = usage
-                        .get("cache_read_input_tokens")
-                        .and_then(|v| v.as_u64());
-                    self.usage = Some(
-                        Usage::new(input, output)
-                            .with_cache_creation(cache_creation)
-                            .with_cache_read(cache_read),
-                    );
+                    let cache_creation = self.cache_creation.or_else(|| {
+                        usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64())
+                    });
+                    let cache_read = self.cache_read.or_else(|| {
+                        usage.get("cache_read_input_tokens").and_then(|v| v.as_u64())
+                    });
+                    let report = Usage::new(input, output)
+                        .with_cache_creation(cache_creation)
+                        .with_cache_read(cache_read);
+                    self.usage = Some(report.clone());
+                    out.push(AgentStreamEvent::Usage(report));
                 }
             }
             "message_stop" => {

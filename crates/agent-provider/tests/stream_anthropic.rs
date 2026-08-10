@@ -140,3 +140,53 @@ async fn anthropic_thinking_delta_emits_reasoning_delta_before_content() {
     // Reasoning never feeds the accumulated assistant text.
     assert_eq!(acc.text, "Answer");
 }
+
+#[tokio::test]
+async fn anthropic_stream_merges_message_start_cache_usage_with_delta_output() {
+    let events = vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 100,
+                    "cache_read_input_tokens": 200
+                }
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": { "type": "text", "text": "" }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "Answer" }
+        }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "end_turn" },
+            "usage": { "output_tokens": 5 }
+        }),
+        json!({ "type": "message_stop" }),
+    ];
+    let mut acc = AnthropicStreamAccumulator::new();
+    let mut collected = Vec::new();
+    for e in &events {
+        collected.extend(acc.ingest_event(e).unwrap());
+    }
+    let usage = collected
+        .iter()
+        .find_map(|e| match e {
+            AgentStreamEvent::Usage(u) => Some(u.clone()),
+            _ => None,
+        })
+        .expect("usage emitted");
+    assert_eq!(usage.input_tokens(), Some(10));
+    assert_eq!(usage.output_tokens(), Some(5));
+    assert_eq!(usage.cache_creation_input_tokens(), Some(100));
+    assert_eq!(usage.cache_read_input_tokens(), Some(200));
+    assert_eq!(usage.total(), Some(315));
+}

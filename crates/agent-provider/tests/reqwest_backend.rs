@@ -1418,7 +1418,7 @@ async fn openai_complete_reports_cached_tokens_as_cache_read() {
                 "prompt_tokens": 50,
                 "completion_tokens": 7,
                 "total_tokens": 57,
-                "input_tokens_details": { "cached_tokens": 40 }
+                "prompt_tokens_details": { "cached_tokens": 40 }
             }
         })))
         .mount(&server)

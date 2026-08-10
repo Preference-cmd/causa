@@ -144,7 +144,9 @@ pub fn to_anthropic_messages(
             let last = last.as_object_mut().expect("messages are objects");
             let content = last.get_mut("content");
             match content {
-                Some(Value::String(text)) => {
+                // Empty content carries nothing into the cache prefix;
+                // skip the marker entirely.
+                Some(Value::String(text)) if !text.is_empty() => {
                     let text = text.clone();
                     last.insert(
                         "content".into(),
@@ -155,6 +157,7 @@ pub fn to_anthropic_messages(
                         }]),
                     );
                 }
+                Some(Value::String(_)) => {} // empty — no marker
                 Some(Value::Array(blocks)) => {
                     // Mark the last text block when present (tool_use /
                     // tool_result blocks change per turn and are excluded).

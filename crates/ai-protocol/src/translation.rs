@@ -12,3 +12,4 @@ pub mod response;
 pub mod sse_parser;
 pub mod streaming;
 pub mod tools;
+pub mod usage;

@@ -301,8 +301,7 @@ pub fn reasoning_budget(options: &Value) -> Option<u32> {
 pub fn cache_control_enabled(options: &Value) -> bool {
     match options.get(CACHE_CONTROL) {
         Some(Value::Bool(false)) => false,
-        Some(Value::Null) | Some(Value::Bool(true)) | Some(_) => true,
-        None => true,
+        Some(Value::Bool(true)) | Some(_) | None => true,
     }
 }
 

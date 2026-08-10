@@ -83,20 +83,11 @@ fn parse_openai_usage(value: Option<&Value>) -> Result<Option<Usage>, ProviderAd
     let Some(usage) = value else { return Ok(None) };
     let input = usage.get("prompt_tokens").and_then(|v| v.as_u64());
     let output = usage.get("completion_tokens").and_then(|v| v.as_u64());
-    // OpenAI reports reasoning tokens under
-    // `completion_tokens_details.reasoning_tokens`; DeepSeek-style
-    // servers expose a top-level `reasoning_tokens`.
-    let reasoning = usage
-        .get("completion_tokens_details")
-        .and_then(|d| d.get("reasoning_tokens"))
-        .and_then(|v| v.as_u64())
-        .or_else(|| usage.get("reasoning_tokens").and_then(|v| v.as_u64()));
-    // Prompt-cache hits land in `input_tokens_details.cached_tokens`;
-    // mapped onto the cache_read slot of the shared budget convention.
-    let cached = usage
-        .get("input_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64());
+    // Cache hits (prompt_tokens_details.cached_tokens on Chat Completions,
+    // input_tokens_details on Responses) map onto the cache_read slot of
+    // the shared budget convention.
+    let cached = crate::translation::usage::openai_cached_tokens(usage);
+    let reasoning = crate::translation::usage::openai_reasoning_tokens(usage);
     Ok(Some(
         Usage::new(input, output)
             .with_reasoning_tokens(reasoning)
@@ -235,10 +226,7 @@ pub fn from_responses_response(value: &Value) -> Result<AgentResponse, ProviderA
             .get("output_tokens_details")
             .and_then(|d| d.get("reasoning_tokens"))
             .and_then(|v| v.as_u64());
-        let cached = usage
-            .get("input_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64());
+        let cached = crate::translation::usage::openai_cached_tokens(usage);
         resp = resp.with_usage(
             Usage::new(input, output)
                 .with_reasoning_tokens(reasoning)
