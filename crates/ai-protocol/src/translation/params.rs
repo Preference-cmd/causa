@@ -30,6 +30,9 @@ pub const OUTPUT_SCHEMA: &str = "output_schema";
 /// Optional name for the structured-output schema. Defaults to
 /// `"structured_output"` (required by OpenAI's json_schema format).
 pub const OUTPUT_SCHEMA_NAME: &str = "output_schema_name";
+/// Prompt-caching switch. Defaults to **on**; set `false` to disable
+/// Anthropic `cache_control` breakpoints.
+pub const CACHE_CONTROL: &str = "cache_control";
 
 /// Wire name for Anthropic's stop list (the typed `stop` field maps onto it).
 pub const ANTHROPIC_STOP_SEQUENCES: &str = "stop_sequences";
@@ -47,6 +50,7 @@ const KNOWN_KEYS: &[&str] = &[
     REASONING_BUDGET_TOKENS,
     OUTPUT_SCHEMA,
     OUTPUT_SCHEMA_NAME,
+    CACHE_CONTROL,
 ];
 
 /// Sampling parameters that reasoning models reject. V1 is a simple table:
@@ -289,6 +293,17 @@ pub fn reasoning_budget(options: &Value) -> Option<u32> {
             .map(|n| n as u32)
             .unwrap_or(4096),
     )
+}
+
+/// Whether prompt caching is enabled. Defaults to **on** (grill Q10:
+/// `cache: on`); an explicit `false` under the `cache_control` key opts
+/// out. Any other value (or a non-map `options`) keeps the default.
+pub fn cache_control_enabled(options: &Value) -> bool {
+    match options.get(CACHE_CONTROL) {
+        Some(Value::Bool(false)) => false,
+        Some(Value::Null) | Some(Value::Bool(true)) | Some(_) => true,
+        None => true,
+    }
 }
 
 /// Whether a sampling key is inapplicable when reasoning is enabled.

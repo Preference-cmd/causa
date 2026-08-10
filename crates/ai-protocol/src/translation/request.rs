@@ -67,7 +67,16 @@ pub fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
 /// for putting it on the request envelope. Assistant tool calls become
 /// `tool_use` content blocks; tool messages become `tool_result` content
 /// blocks.
-pub fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
+///
+/// With `cache_control: true`, prompt-caching breakpoints are placed at the
+/// three static-prefix anchors (PV-05): the end of the system prompt, the
+/// end of the tool definitions, and the end of the conversation history.
+/// System content is returned as a block array so its last block can carry
+/// the `cache_control` marker.
+pub fn to_anthropic_messages(
+    messages: &[Message],
+    cache_control: bool,
+) -> (Option<Value>, Vec<Value>) {
     let mut system: Option<String> = None;
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());
     for m in messages {
@@ -126,6 +135,52 @@ pub fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value
             }
         }
     }
+    if cache_control {
+        // Conversation-history breakpoint: the last message is the longest
+        // stable prefix for cache reads across turns. The marker lives on a
+        // content *block* (never on the message object), so string content
+        // is promoted to a text-block array.
+        if let Some(last) = out.last_mut() {
+            let last = last.as_object_mut().expect("messages are objects");
+            let content = last.get_mut("content");
+            match content {
+                Some(Value::String(text)) => {
+                    let text = text.clone();
+                    last.insert(
+                        "content".into(),
+                        json!([{
+                            "type": "text",
+                            "text": text,
+                            "cache_control": { "type": "ephemeral" },
+                        }]),
+                    );
+                }
+                Some(Value::Array(blocks)) => {
+                    // Mark the last text block when present (tool_use /
+                    // tool_result blocks change per turn and are excluded).
+                    if let Some(text_block) = blocks
+                        .iter_mut()
+                        .rev()
+                        .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("text"))
+                    {
+                        text_block
+                            .as_object_mut()
+                            .expect("blocks are objects")
+                            .insert("cache_control".into(), json!({ "type": "ephemeral" }));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let system = system.map(|text| {
+        if cache_control {
+            // System breakpoint: last system block carries the marker.
+            json!([{ "type": "text", "text": text, "cache_control": { "type": "ephemeral" } }])
+        } else {
+            json!(text)
+        }
+    });
     (system, out)
 }
 
@@ -242,17 +297,60 @@ mod tests {
     #[test]
     fn anthropic_messages_splits_system_out() {
         let msgs = vec![Message::system("sys"), Message::user("hi")];
-        let (system, v) = to_anthropic_messages(&msgs);
-        assert_eq!(system.as_deref(), Some("sys"));
+        let (system, v) = to_anthropic_messages(&msgs, false);
+        assert_eq!(system, Some(json!("sys")));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0]["role"], "user");
+    }
+
+    #[test]
+    fn anthropic_messages_with_cache_control_uses_system_blocks() {
+        let msgs = vec![Message::system("sys"), Message::user("hi")];
+        let (system, v) = to_anthropic_messages(&msgs, true);
+        assert_eq!(
+            system,
+            Some(json!([{
+                "type": "text",
+                "text": "sys",
+                "cache_control": { "type": "ephemeral" }
+            }]))
+        );
+        // Last user message is promoted to a text block carrying the
+        // conversation-history breakpoint.
+        assert_eq!(
+            v[0]["content"],
+            json!([{
+                "type": "text",
+                "text": "hi",
+                "cache_control": { "type": "ephemeral" }
+            }])
+        );
+    }
+
+    #[test]
+    fn anthropic_messages_cache_control_marks_last_text_block_in_arrays() {
+        let call = ToolCall::new(ToolCallId::new("c1"), "echo", json!({"x": 1}));
+        let msgs = vec![
+            Message::assistant_with_tool_calls("thinking", vec![call]),
+            Message::tool_result(ToolCallId::new("c1"), "ok"),
+        ];
+        let (_, v) = to_anthropic_messages(&msgs, true);
+        let last = &v[v.len() - 1];
+        assert_eq!(last["role"], "user");
+        let blocks = last["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        // Tool-result blocks never carry the marker; nothing to mark here
+        // means no cache_control anywhere in this message.
+        for block in blocks {
+            assert!(block.get("cache_control").is_none());
+        }
     }
 
     #[test]
     fn anthropic_messages_assistant_tool_call_uses_tool_use_block() {
         let call = ToolCall::new(ToolCallId::new("c1"), "echo", json!({"x": 1}));
         let msgs = vec![Message::assistant_with_tool_calls("", vec![call])];
-        let (_, v) = to_anthropic_messages(&msgs);
+        let (_, v) = to_anthropic_messages(&msgs, false);
         assert_eq!(v[0]["role"], "assistant");
         assert_eq!(v[0]["content"][0]["type"], "tool_use");
         assert_eq!(v[0]["content"][0]["id"], "c1");
@@ -263,7 +361,7 @@ mod tests {
     #[test]
     fn anthropic_messages_tool_role_becomes_tool_result_block() {
         let msgs = vec![Message::tool_result(ToolCallId::new("c1"), "ok")];
-        let (_, v) = to_anthropic_messages(&msgs);
+        let (_, v) = to_anthropic_messages(&msgs, false);
         assert_eq!(v[0]["role"], "user");
         assert_eq!(v[0]["content"][0]["type"], "tool_result");
         assert_eq!(v[0]["content"][0]["tool_use_id"], "c1");

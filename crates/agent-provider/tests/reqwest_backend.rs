@@ -1251,3 +1251,189 @@ async fn structured_output_stream_paths_share_the_request_injection() {
     );
     backend.stream(req).await.expect("stream starts");
 }
+
+#[tokio::test]
+async fn anthropic_complete_places_cache_control_at_all_three_breakpoints() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({
+            "system": [{
+                "type": "text",
+                "text": "You are a helpful assistant.",
+                "cache_control": { "type": "ephemeral" }
+            }],
+            "tools": [
+                {
+                    "name": "echo",
+                    "description": "echoes",
+                    "input_schema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "second",
+                    "description": "second tool",
+                    "input_schema": { "type": "object", "properties": {} },
+                    "cache_control": { "type": "ephemeral" }
+                }
+            ],
+        })))
+        .and(body_exact_json(json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "hi",
+                        "cache_control": { "type": "ephemeral" }
+                    }]
+                }
+            ],
+            "tools": [
+                {
+                    "name": "echo",
+                    "description": "echoes",
+                    "input_schema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "second",
+                    "description": "second tool",
+                    "input_schema": { "type": "object", "properties": {} },
+                    "cache_control": { "type": "ephemeral" }
+                }
+            ],
+            "max_tokens": 4096,
+            "system": [{
+                "type": "text",
+                "text": "You are a helpful assistant.",
+                "cache_control": { "type": "ephemeral" }
+            }]
+        })))
+        .respond_with(anthropic_completion_response())
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend = ReqwestBackend::anthropic_messages_with_http_client(
+        ProviderName::new("anthropic-test"),
+        anthropic_cfg_for(&server),
+        http,
+    );
+    let req = AgentRequest::new(
+        ModelName::new("claude-sonnet-4-5"),
+        vec![Message::system("You are a helpful assistant."), Message::user("hi")],
+    )
+    .with_tools(vec![
+        AgentToolDefinition::new("echo", "echoes", json!({"type": "object", "properties": {}})),
+        AgentToolDefinition::new("second", "second tool", json!({"type": "object", "properties": {}})),
+    ]);
+    backend.complete(req).await.expect("complete ok");
+}
+
+#[tokio::test]
+async fn anthropic_cache_control_can_be_disabled_via_options() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_exact_json(json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "name": "echo",
+                "description": "echo a string",
+                "input_schema": {"type": "object", "properties": {"x": {"type": "number"}}}
+            }],
+            "max_tokens": 4096
+        })))
+        .respond_with(anthropic_completion_response())
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend = ReqwestBackend::anthropic_messages_with_http_client(
+        ProviderName::new("anthropic-test"),
+        anthropic_cfg_for(&server),
+        http,
+    );
+    let req = build_request_with_options("claude-sonnet-4-5", json!({"cache_control": false}));
+    backend.complete(req).await.expect("complete ok");
+}
+
+#[tokio::test]
+async fn anthropic_complete_reports_cache_usage_in_total() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_3",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "model": "claude-sonnet-4-5",
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 200
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend = ReqwestBackend::anthropic_messages_with_http_client(
+        ProviderName::new("anthropic-test"),
+        anthropic_cfg_for(&server),
+        http,
+    );
+    let req = build_request("claude-sonnet-4-5");
+    let resp = backend.complete(req).await.expect("complete ok");
+    let usage = resp.usage().expect("usage reported");
+    assert_eq!(usage.cache_creation_input_tokens(), Some(100));
+    assert_eq!(usage.cache_read_input_tokens(), Some(200));
+    assert_eq!(usage.total(), Some(315));
+}
+
+#[tokio::test]
+async fn openai_complete_reports_cached_tokens_as_cache_read() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "cmpl-3",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 7,
+                "total_tokens": 57,
+                "input_tokens_details": { "cached_tokens": 40 }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend = ReqwestBackend::openai_chat_completions_with_http_client(
+        ProviderName::new("openai-test"),
+        openai_cfg_for(&server),
+        http,
+    );
+    let req = build_request("gpt-4o-mini");
+    let resp = backend.complete(req).await.expect("complete ok");
+    let usage = resp.usage().expect("usage reported");
+    assert_eq!(usage.cache_read_input_tokens(), Some(40));
+    // OpenAI has no cache_creation slot; total = input + cache_read + output.
+    assert_eq!(usage.total(), Some(97));
+}

@@ -91,8 +91,16 @@ fn parse_openai_usage(value: Option<&Value>) -> Result<Option<Usage>, ProviderAd
         .and_then(|d| d.get("reasoning_tokens"))
         .and_then(|v| v.as_u64())
         .or_else(|| usage.get("reasoning_tokens").and_then(|v| v.as_u64()));
+    // Prompt-cache hits land in `input_tokens_details.cached_tokens`;
+    // mapped onto the cache_read slot of the shared budget convention.
+    let cached = usage
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64());
     Ok(Some(
-        Usage::new(input, output).with_reasoning_tokens(reasoning),
+        Usage::new(input, output)
+            .with_reasoning_tokens(reasoning)
+            .with_cache_read(cached),
     ))
 }
 
@@ -147,7 +155,15 @@ pub fn from_anthropic_response(value: &Value) -> Result<AgentResponse, ProviderA
     if let Some(usage) = value.get("usage") {
         let input = usage.get("input_tokens").and_then(|v| v.as_u64());
         let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-        resp = resp.with_usage(Usage::new(input, output));
+        let cache_creation = usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64());
+        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+        resp = resp.with_usage(
+            Usage::new(input, output)
+                .with_cache_creation(cache_creation)
+                .with_cache_read(cache_read),
+        );
     }
     Ok(resp)
 }
@@ -219,8 +235,14 @@ pub fn from_responses_response(value: &Value) -> Result<AgentResponse, ProviderA
             .get("output_tokens_details")
             .and_then(|d| d.get("reasoning_tokens"))
             .and_then(|v| v.as_u64());
+        let cached = usage
+            .get("input_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64());
         resp = resp.with_usage(
-            Usage::new(input, output).with_reasoning_tokens(reasoning),
+            Usage::new(input, output)
+                .with_reasoning_tokens(reasoning)
+                .with_cache_read(cached),
         );
     }
     Ok(resp)

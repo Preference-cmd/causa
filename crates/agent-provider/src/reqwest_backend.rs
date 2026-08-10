@@ -214,8 +214,10 @@ impl ReqwestBackend {
         let base = cfg.base_url().unwrap_or("https://api.anthropic.com");
         let url = format!("{}/v1/messages", base.trim_end_matches('/'));
 
-        let (system, messages) = translation::request::to_anthropic_messages(request.messages());
-        let tools = translation::tools::to_anthropic_tools(request.tools());
+        let cache_control = translation::params::cache_control_enabled(request.options());
+        let (system, messages) =
+            translation::request::to_anthropic_messages(request.messages(), cache_control);
+        let tools = translation::tools::to_anthropic_tools(request.tools(), cache_control);
         let params = sampling_params(request);
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(request.model().as_str()));
@@ -404,8 +406,10 @@ impl ReqwestBackend {
         let base = cfg.base_url().unwrap_or("https://api.anthropic.com");
         let url = format!("{}/v1/messages", base.trim_end_matches('/'));
 
-        let (system, messages) = translation::request::to_anthropic_messages(request.messages());
-        let tools = translation::tools::to_anthropic_tools(request.tools());
+        let cache_control = translation::params::cache_control_enabled(request.options());
+        let (system, messages) =
+            translation::request::to_anthropic_messages(request.messages(), cache_control);
+        let tools = translation::tools::to_anthropic_tools(request.tools(), cache_control);
         let params = sampling_params(request);
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(request.model().as_str()));
@@ -738,9 +742,14 @@ impl ReqwestSseStream {
                 .and_then(|d| d.get("reasoning_tokens"))
                 .and_then(|v| v.as_u64())
                 .or_else(|| usage.get("reasoning_tokens").and_then(|v| v.as_u64()));
+            let cached = usage
+                .get("input_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64());
             self.pending.push_back(AgentStreamEvent::Usage(
                 reimagine_agent_harness::Usage::new(input, output)
-                    .with_reasoning_tokens(reasoning),
+                    .with_reasoning_tokens(reasoning)
+                    .with_cache_read(cached),
             ));
         }
     }
@@ -858,10 +867,18 @@ impl ReqwestSseStream {
                 if let Some(usage) = data.get("usage") {
                     let input = usage.get("input_tokens").and_then(|v| v.as_u64());
                     let output = usage.get("output_tokens").and_then(|v| v.as_u64());
+                    let cache_creation = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64());
+                    let cache_read = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64());
                     self.pending
-                        .push_back(AgentStreamEvent::Usage(reimagine_agent_harness::Usage::new(
-                            input, output,
-                        )));
+                        .push_back(AgentStreamEvent::Usage(
+                            reimagine_agent_harness::Usage::new(input, output)
+                                .with_cache_creation(cache_creation)
+                                .with_cache_read(cache_read),
+                        ));
                 }
             }
             "message_stop" => {
@@ -999,9 +1016,14 @@ impl ReqwestSseStream {
                         .get("output_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
                         .and_then(|v| v.as_u64());
+                    let cached = usage
+                        .get("input_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                        .and_then(|v| v.as_u64());
                     self.pending.push_back(AgentStreamEvent::Usage(
                         reimagine_agent_harness::Usage::new(input, output)
-                            .with_reasoning_tokens(reasoning),
+                            .with_reasoning_tokens(reasoning)
+                            .with_cache_read(cached),
                     ));
                 }
                 self.done = true;

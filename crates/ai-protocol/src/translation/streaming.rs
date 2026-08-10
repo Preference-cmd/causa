@@ -132,7 +132,14 @@ impl OpenAiStreamAccumulator {
                 .and_then(|d| d.get("reasoning_tokens"))
                 .and_then(|v| v.as_u64())
                 .or_else(|| usage.get("reasoning_tokens").and_then(|v| v.as_u64()));
-            let usage_report = Usage::new(input, output).with_reasoning_tokens(reasoning);
+            // Prompt-cache hits land in `input_tokens_details.cached_tokens`.
+            let cached = usage
+                .get("input_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64());
+            let usage_report = Usage::new(input, output)
+                .with_reasoning_tokens(reasoning)
+                .with_cache_read(cached);
             self.usage = Some(usage_report.clone());
             out.push(AgentStreamEvent::Usage(usage_report));
         }
@@ -287,7 +294,17 @@ impl AnthropicStreamAccumulator {
                 if let Some(usage) = event.get("usage") {
                     let input = usage.get("input_tokens").and_then(|v| v.as_u64());
                     let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-                    self.usage = Some(Usage::new(input, output));
+                    let cache_creation = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64());
+                    let cache_read = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64());
+                    self.usage = Some(
+                        Usage::new(input, output)
+                            .with_cache_creation(cache_creation)
+                            .with_cache_read(cache_read),
+                    );
                 }
             }
             "message_stop" => {

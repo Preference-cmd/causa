@@ -50,7 +50,7 @@ fn anthropic_request_translation_tool_definitions() {
         "echo something",
         json!({"type": "object"}),
     )];
-    let v = translation::tools::to_anthropic_tools(&defs);
+    let v = translation::tools::to_anthropic_tools(&defs, false);
     assert_eq!(v[0]["name"], "echo");
     assert_eq!(v[0]["description"], "echo something");
     assert_eq!(v[0]["input_schema"]["type"], "object");
