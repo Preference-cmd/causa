@@ -9,6 +9,7 @@
 //! Streaming is delegated to the backend and translated through
 //! `translation::streaming::AnthropicStreamAccumulator`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -59,6 +60,21 @@ impl AnthropicMessagesProvider {
             config: config.clone(),
             backend: crate::reqwest_backend::arc_real_anthropic_messages_backend(name, config),
         }
+    }
+
+    /// Rebuild the production `ReqwestBackend` rooted at
+    /// `workspace_dir`, so `Url`-source file blocks resolve against the
+    /// workspace. Only meaningful on `new()`-constructed providers; a
+    /// custom backend injected via [`with_backend`](Self::with_backend)
+    /// is replaced.
+    pub fn with_workspace_dir(mut self, workspace_dir: impl Into<PathBuf>) -> Self {
+        self.backend =
+            crate::reqwest_backend::arc_real_anthropic_messages_backend_with_workspace_dir(
+                self.name.clone(),
+                self.config.clone(),
+                workspace_dir.into(),
+            );
+        self
     }
 
     pub fn config(&self) -> &AnthropicMessagesConfig {

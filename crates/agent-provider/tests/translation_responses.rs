@@ -21,7 +21,8 @@ fn responses_input_translation_messages_tool_call_and_tool_result() {
         ],
     );
     let instructions = translation::request::to_responses_instructions(req.messages());
-    let input = translation::request::to_responses_input(req.messages(), instructions.as_deref());
+    let input = translation::request::to_responses_input(req.messages(), instructions.as_deref())
+        .expect("ok");
     assert_eq!(instructions.as_deref(), Some("sys"));
     assert_eq!(input.len(), 3);
     assert_eq!(input[0]["role"], "user");

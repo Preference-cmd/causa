@@ -11,13 +11,16 @@
 //! the production provider with `build_provider(config)` and the
 //! adapters will route to a working real backend.
 
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine as _;
 use reimagine_agent_harness::{
-    AgentRequest, AgentResponse, AgentStream, AgentStreamEvent, ModelInfo, ProviderName,
+    AgentRequest, AgentResponse, AgentStream, AgentStreamEvent, ContentBlock, FileSource, Message,
+    ModelInfo, ProviderName,
 };
 use reimagine_ai_protocol::translation;
 use reimagine_ai_protocol::{
@@ -34,11 +37,17 @@ const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 
 /// Production backend. `complete` and `list_models` route through
 /// direct reqwest HTTP calls.
+///
+/// `workspace_dir` roots `FileSource::Url` resolution: file blocks
+/// referencing workspace-relative paths are read from this directory and
+/// inlined as base64 before wire translation. When it is `None`, url
+/// sources are rejected at request time.
 #[derive(Clone)]
 pub struct ReqwestBackend {
     name: ProviderName,
     config: BackendConfig,
     http: reqwest::Client,
+    workspace_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ReqwestBackend {
@@ -51,6 +60,7 @@ impl std::fmt::Debug for ReqwestBackend {
         f.debug_struct("ReqwestBackend")
             .field("name", &self.name)
             .field("config", &protocol_repr)
+            .field("workspace_dir", &self.workspace_dir)
             .finish_non_exhaustive()
     }
 }
@@ -92,6 +102,7 @@ impl ReqwestBackend {
             name,
             config: BackendConfig::OpenAiChatCompletions(cfg),
             http,
+            workspace_dir: None,
         }
     }
 
@@ -111,6 +122,7 @@ impl ReqwestBackend {
             name,
             config: BackendConfig::AnthropicMessages(cfg),
             http,
+            workspace_dir: None,
         }
     }
 
@@ -131,7 +143,22 @@ impl ReqwestBackend {
             name,
             config: BackendConfig::OpenAiResponses(cfg),
             http,
+            workspace_dir: None,
         }
+    }
+
+    /// Root `FileSource::Url` resolution at `workspace_dir`: file blocks
+    /// referencing workspace-relative paths are read from this directory
+    /// and inlined as base64 before wire translation. When unset, url
+    /// sources are rejected at request time.
+    pub fn with_workspace_dir(mut self, workspace_dir: impl Into<PathBuf>) -> Self {
+        self.workspace_dir = Some(workspace_dir.into());
+        self
+    }
+
+    /// The configured workspace directory, if any.
+    pub fn workspace_dir(&self) -> Option<&Path> {
+        self.workspace_dir.as_deref()
     }
 
     fn openai_config(&self) -> Result<&OpenAiChatCompletionsConfig, ProviderAdapterError> {
@@ -170,6 +197,65 @@ impl ReqwestBackend {
         }
     }
 
+    /// Resolve `FileSource::Url` file blocks against the configured
+    /// workspace directory, replacing them with inline base64 payloads
+    /// (PV-03b). Messages without url-backed file blocks are returned
+    /// unchanged without cloning.
+    ///
+    /// The translation layer stays pure: it only ever sees `Data`
+    /// sources. Workspace-relative paths are read via
+    /// `translation::files::read_workspace_file` (10MB limit, path
+    /// traversal protection); `http(s)://` references are rejected —
+    /// remote downloads are not supported in V2.
+    fn resolve_file_sources<'a>(
+        &self,
+        request: &'a AgentRequest,
+    ) -> Result<Cow<'a, [Message]>, ProviderAdapterError> {
+        let has_url_blocks = request.messages().iter().any(|m| {
+            m.blocks()
+                .iter()
+                .any(|b| matches!(b, ContentBlock::File(f) if f.source().url().is_some()))
+        });
+        if !has_url_blocks {
+            return Ok(Cow::Borrowed(request.messages()));
+        }
+        let workspace_dir = match &self.workspace_dir {
+            Some(dir) => dir.clone(),
+            None => {
+                return Err(ProviderAdapterError::configuration(
+                    "file block url sources require a workspace directory; \
+                     the provider backend was constructed without one",
+                ));
+            }
+        };
+        let mut rebuilt = request.messages().to_vec();
+        for message in rebuilt.iter_mut() {
+            if !message
+                .blocks()
+                .iter()
+                .any(|b| matches!(b, ContentBlock::File(f) if f.source().url().is_some()))
+            {
+                continue;
+            }
+            let mut blocks = Vec::with_capacity(message.blocks().len());
+            for block in message.blocks() {
+                match block {
+                    ContentBlock::File(file) if file.source().url().is_some() => {
+                        let path = file.source().url().unwrap_or_default();
+                        let bytes = translation::files::read_workspace_file(&workspace_dir, path)?;
+                        let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                        blocks.push(ContentBlock::File(
+                            file.clone().with_source(FileSource::Data { base64 }),
+                        ));
+                    }
+                    other => blocks.push(other.clone()),
+                }
+            }
+            *message = message.clone().with_blocks(blocks);
+        }
+        Ok(Cow::Owned(rebuilt))
+    }
+
     /// OpenAI-compatible completion. Builds the request body from
     /// the V1 translation functions, POSTs it via reqwest, and parses
     /// the response via `translation::response`.
@@ -180,7 +266,8 @@ impl ReqwestBackend {
         let cfg = self.openai_config()?;
         let url = format!("{}/chat/completions", cfg.base_url().trim_end_matches('/'));
 
-        let messages = translation::request::to_openai_messages(request.messages());
+        let resolved = self.resolve_file_sources(request)?;
+        let messages = translation::request::to_openai_messages(&resolved)?;
         let tools = translation::tools::to_openai_tools(request.tools());
         let params = sampling_params(request);
         let mut body = serde_json::Map::new();
@@ -215,8 +302,9 @@ impl ReqwestBackend {
         let url = format!("{}/v1/messages", base.trim_end_matches('/'));
 
         let cache_control = translation::params::cache_control_enabled(request.options());
+        let resolved = self.resolve_file_sources(request)?;
         let (system, messages) =
-            translation::request::to_anthropic_messages(request.messages(), cache_control);
+            translation::request::to_anthropic_messages(&resolved, cache_control)?;
         let tools = translation::tools::to_anthropic_tools(request.tools(), cache_control);
         let params = sampling_params(request);
         let mut body = serde_json::Map::new();
@@ -266,9 +354,9 @@ impl ReqwestBackend {
         let cfg = self.responses_config()?;
         let url = format!("{}/responses", cfg.base_url().trim_end_matches('/'));
 
-        let instructions = translation::request::to_responses_instructions(request.messages());
-        let input =
-            translation::request::to_responses_input(request.messages(), instructions.as_deref());
+        let resolved = self.resolve_file_sources(request)?;
+        let instructions = translation::request::to_responses_instructions(&resolved);
+        let input = translation::request::to_responses_input(&resolved, instructions.as_deref())?;
         let tools = translation::tools::to_responses_tools(request.tools());
         let prompt_cache_key = request
             .options()
@@ -373,7 +461,8 @@ impl ReqwestBackend {
         let cfg = self.openai_config()?;
         let url = format!("{}/chat/completions", cfg.base_url().trim_end_matches('/'));
 
-        let messages = translation::request::to_openai_messages(request.messages());
+        let resolved = self.resolve_file_sources(request)?;
+        let messages = translation::request::to_openai_messages(&resolved)?;
         let tools = translation::tools::to_openai_tools(request.tools());
         let params = sampling_params(request);
         let mut body = serde_json::Map::new();
@@ -407,8 +496,9 @@ impl ReqwestBackend {
         let url = format!("{}/v1/messages", base.trim_end_matches('/'));
 
         let cache_control = translation::params::cache_control_enabled(request.options());
+        let resolved = self.resolve_file_sources(request)?;
         let (system, messages) =
-            translation::request::to_anthropic_messages(request.messages(), cache_control);
+            translation::request::to_anthropic_messages(&resolved, cache_control)?;
         let tools = translation::tools::to_anthropic_tools(request.tools(), cache_control);
         let params = sampling_params(request);
         let mut body = serde_json::Map::new();
@@ -458,9 +548,9 @@ impl ReqwestBackend {
         let cfg = self.responses_config()?;
         let url = format!("{}/responses", cfg.base_url().trim_end_matches('/'));
 
-        let instructions = translation::request::to_responses_instructions(request.messages());
-        let input =
-            translation::request::to_responses_input(request.messages(), instructions.as_deref());
+        let resolved = self.resolve_file_sources(request)?;
+        let instructions = translation::request::to_responses_instructions(&resolved);
+        let input = translation::request::to_responses_input(&resolved, instructions.as_deref())?;
         let tools = translation::tools::to_responses_tools(request.tools());
         let prompt_cache_key = request
             .options()
@@ -1104,6 +1194,16 @@ pub fn arc_real_openai_chat_completions_backend(
     Arc::new(ReqwestBackend::openai_chat_completions(name, cfg))
 }
 
+pub fn arc_real_openai_chat_completions_backend_with_workspace_dir(
+    name: ProviderName,
+    cfg: OpenAiChatCompletionsConfig,
+    workspace_dir: PathBuf,
+) -> Arc<dyn CompletionBackend> {
+    Arc::new(
+        ReqwestBackend::openai_chat_completions(name, cfg).with_workspace_dir(workspace_dir),
+    )
+}
+
 pub fn arc_real_openai_chat_completions_backend_with_http_client(
     name: ProviderName,
     cfg: OpenAiChatCompletionsConfig,
@@ -1121,6 +1221,14 @@ pub fn arc_real_anthropic_messages_backend(
     Arc::new(ReqwestBackend::anthropic_messages(name, cfg))
 }
 
+pub fn arc_real_anthropic_messages_backend_with_workspace_dir(
+    name: ProviderName,
+    cfg: AnthropicMessagesConfig,
+    workspace_dir: PathBuf,
+) -> Arc<dyn CompletionBackend> {
+    Arc::new(ReqwestBackend::anthropic_messages(name, cfg).with_workspace_dir(workspace_dir))
+}
+
 pub fn arc_real_anthropic_messages_backend_with_http_client(
     name: ProviderName,
     cfg: AnthropicMessagesConfig,
@@ -1136,6 +1244,14 @@ pub fn arc_real_openai_responses_backend(
     cfg: OpenAiResponsesConfig,
 ) -> Arc<dyn CompletionBackend> {
     Arc::new(ReqwestBackend::openai_responses(name, cfg))
+}
+
+pub fn arc_real_openai_responses_backend_with_workspace_dir(
+    name: ProviderName,
+    cfg: OpenAiResponsesConfig,
+    workspace_dir: PathBuf,
+) -> Arc<dyn CompletionBackend> {
+    Arc::new(ReqwestBackend::openai_responses(name, cfg).with_workspace_dir(workspace_dir))
 }
 
 pub fn arc_real_openai_responses_backend_with_http_client(

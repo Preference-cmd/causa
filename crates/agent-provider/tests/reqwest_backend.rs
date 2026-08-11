@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use reimagine_agent_harness::{
-    AgentRequest, AgentToolDefinition, Message, ModelCapability, ModelName, ProviderName,
+    AgentRequest, AgentToolDefinition, ContentBlock, FileContentBlock, Message, ModelCapability,
+    ModelName, ProviderName,
 };
 use reimagine_agent_provider::{
     AnthropicMessagesConfig, CompletionBackend, OpenAiChatCompletionsConfig, OpenAiResponsesConfig,
@@ -1436,4 +1437,218 @@ async fn openai_complete_reports_cached_tokens_as_cache_read() {
     assert_eq!(usage.cache_read_input_tokens(), Some(40));
     // OpenAI has no cache_creation slot; total = input + cache_read + output.
     assert_eq!(usage.total(), Some(97));
+}
+
+// ----- PV-03b: workspace url file-block resolution -----
+
+fn image_url_request(model: &str, block: FileContentBlock) -> AgentRequest {
+    AgentRequest::new(
+        ModelName::new(model),
+        vec![Message::user_with_blocks(vec![
+            ContentBlock::Text("describe".into()),
+            ContentBlock::File(block),
+        ])],
+    )
+}
+
+#[tokio::test]
+async fn openai_complete_resolves_workspace_url_file_block_to_data_url() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "model": "gpt-4o-mini",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
+                ]
+            }],
+        })))
+        .respond_with(openai_completion_response())
+        .mount(&server)
+        .await;
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(workspace.path().join("refs")).expect("create refs");
+    std::fs::write(workspace.path().join("refs/pic.png"), b"hello").expect("write file");
+
+    let backend = ReqwestBackend::openai_chat_completions_with_http_client(
+        ProviderName::new("openai-test"),
+        openai_cfg_for(&server),
+        reqwest::Client::new(),
+    )
+    .with_workspace_dir(workspace.path());
+
+    let resp = backend
+        .complete(image_url_request(
+            "gpt-4o-mini",
+            FileContentBlock::url("image/png", "refs/pic.png"),
+        ))
+        .await
+        .expect("complete ok");
+    assert_eq!(resp.message().content(), "ok");
+}
+
+#[tokio::test]
+async fn anthropic_complete_resolves_workspace_url_file_block_to_image_block() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({
+            "model": "claude-3-5-sonnet-latest",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "aGVsbG8="
+                        }
+                    }
+                ]
+            }],
+        })))
+        .respond_with(anthropic_completion_response())
+        .mount(&server)
+        .await;
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    std::fs::write(workspace.path().join("pic.png"), b"hello").expect("write file");
+
+    let backend = ReqwestBackend::anthropic_messages_with_http_client(
+        ProviderName::new("anthropic-test"),
+        anthropic_cfg_for(&server),
+        reqwest::Client::new(),
+    )
+    .with_workspace_dir(workspace.path());
+
+    let resp = backend
+        .complete(image_url_request(
+            "claude-3-5-sonnet-latest",
+            FileContentBlock::url("image/png", "pic.png"),
+        ))
+        .await
+        .expect("complete ok");
+    assert_eq!(resp.message().content(), "ok");
+}
+
+#[tokio::test]
+async fn openai_complete_missing_workspace_file_is_configuration_error() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let backend = ReqwestBackend::openai_chat_completions_with_http_client(
+        ProviderName::new("openai-test"),
+        openai_cfg_for(&MockServer::start().await),
+        reqwest::Client::new(),
+    )
+    .with_workspace_dir(workspace.path());
+
+    let err = backend
+        .complete(image_url_request(
+            "gpt-4o-mini",
+            FileContentBlock::url("image/png", "no-such.png"),
+        ))
+        .await
+        .expect_err("must fail before any HTTP call");
+    assert!(matches!(
+        err,
+        ProviderAdapterError::Configuration(_)
+    ));
+    assert!(err.to_string().contains("failed to read workspace file"), "{err}");
+}
+
+#[tokio::test]
+async fn openai_complete_url_file_block_without_workspace_dir_is_configuration_error() {
+    let backend = ReqwestBackend::openai_chat_completions_with_http_client(
+        ProviderName::new("openai-test"),
+        openai_cfg_for(&MockServer::start().await),
+        reqwest::Client::new(),
+    );
+
+    let err = backend
+        .complete(image_url_request(
+            "gpt-4o-mini",
+            FileContentBlock::url("image/png", "refs/pic.png"),
+        ))
+        .await
+        .expect_err("must fail before any HTTP call");
+    assert!(matches!(
+        err,
+        ProviderAdapterError::Configuration(_)
+    ));
+    assert!(
+        err.to_string().contains("without one"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn openai_complete_rejects_remote_url_file_block() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let backend = ReqwestBackend::openai_chat_completions_with_http_client(
+        ProviderName::new("openai-test"),
+        openai_cfg_for(&MockServer::start().await),
+        reqwest::Client::new(),
+    )
+    .with_workspace_dir(workspace.path());
+
+    let err = backend
+        .complete(image_url_request(
+            "gpt-4o-mini",
+            FileContentBlock::url("image/png", "https://example.com/pic.png"),
+        ))
+        .await
+        .expect_err("remote downloads must be rejected");
+    assert!(matches!(
+        err,
+        ProviderAdapterError::Configuration(_)
+    ));
+    assert!(
+        err.to_string().contains("remote URLs are not supported in V2"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn openai_complete_rejects_non_image_file_block() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    std::fs::write(workspace.path().join("clip.mp3"), b"audio").expect("write file");
+
+    let backend = ReqwestBackend::openai_chat_completions_with_http_client(
+        ProviderName::new("openai-test"),
+        openai_cfg_for(&MockServer::start().await),
+        reqwest::Client::new(),
+    )
+    .with_workspace_dir(workspace.path());
+
+    // Inline non-image data block: rejected by the translation layer.
+    let err = backend
+        .complete(image_url_request(
+            "gpt-4o-mini",
+            FileContentBlock::data("audio/mpeg", "QUFBQQ=="),
+        ))
+        .await
+        .expect_err("non-image file blocks must be rejected");
+    assert!(matches!(
+        err,
+        ProviderAdapterError::Configuration(_)
+    ));
+    assert!(err.to_string().contains("audio/mpeg"), "{err}");
+
+    // Workspace-resolved non-image file block: rejected the same way
+    // after resolution.
+    let err = backend
+        .complete(image_url_request(
+            "gpt-4o-mini",
+            FileContentBlock::url("audio/mpeg", "clip.mp3"),
+        ))
+        .await
+        .expect_err("non-image file blocks must be rejected");
+    assert!(err.to_string().contains("audio/mpeg"), "{err}");
 }

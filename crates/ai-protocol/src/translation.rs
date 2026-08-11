@@ -5,6 +5,7 @@
 //! direct HTTP without leaking provider-native types into
 //! `reimagine_agent_harness`.
 
+pub mod files;
 pub mod listing;
 pub mod params;
 pub mod request;

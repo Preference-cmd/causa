@@ -26,9 +26,13 @@ pub use openai_compatible::OpenAiChatCompletionsProvider;
 pub use openai_responses::OpenAiResponsesProvider;
 pub use reqwest_backend::{
     ReqwestBackend, arc_real_anthropic_messages_backend,
-    arc_real_anthropic_messages_backend_with_http_client, arc_real_openai_chat_completions_backend,
-    arc_real_openai_chat_completions_backend_with_http_client, arc_real_openai_responses_backend,
-    arc_real_openai_responses_backend_with_http_client,
+    arc_real_anthropic_messages_backend_with_http_client,
+    arc_real_anthropic_messages_backend_with_workspace_dir,
+    arc_real_openai_chat_completions_backend,
+    arc_real_openai_chat_completions_backend_with_http_client,
+    arc_real_openai_chat_completions_backend_with_workspace_dir,
+    arc_real_openai_responses_backend, arc_real_openai_responses_backend_with_http_client,
+    arc_real_openai_responses_backend_with_workspace_dir,
 };
 
 /// Re-export the protocol-layer types so consumers can depend on the

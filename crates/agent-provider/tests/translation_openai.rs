@@ -12,7 +12,7 @@ fn openai_request_translation_user_message_and_tool_definition() {
                 json!({"type": "object", "properties": {"x": {"type": "number"}}}),
             ),
         ]);
-    let messages = translation::request::to_openai_messages(req.messages());
+    let messages = translation::request::to_openai_messages(req.messages()).expect("ok");
     let tools = translation::tools::to_openai_tools(req.tools());
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");

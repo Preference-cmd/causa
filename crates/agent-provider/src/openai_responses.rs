@@ -9,6 +9,7 @@
 //! The Responses API resends the full input array on every request, so
 //! no `previous_response_id` chaining is used. Streaming lands in PV-01b.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -60,6 +61,21 @@ impl OpenAiResponsesProvider {
             config: config.clone(),
             backend: crate::reqwest_backend::arc_real_openai_responses_backend(name, config),
         }
+    }
+
+    /// Rebuild the production `ReqwestBackend` rooted at
+    /// `workspace_dir`, so `Url`-source file blocks resolve against the
+    /// workspace. Only meaningful on `new()`-constructed providers; a
+    /// custom backend injected via [`with_backend`](Self::with_backend)
+    /// is replaced.
+    pub fn with_workspace_dir(mut self, workspace_dir: impl Into<PathBuf>) -> Self {
+        self.backend =
+            crate::reqwest_backend::arc_real_openai_responses_backend_with_workspace_dir(
+                self.name.clone(),
+                self.config.clone(),
+                workspace_dir.into(),
+            );
+        self
     }
 
     pub fn config(&self) -> &OpenAiResponsesConfig {
