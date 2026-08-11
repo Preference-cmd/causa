@@ -1,12 +1,31 @@
 use serde_json::{Value, json};
 
-use reimagine_agent_harness::Message;
+use reimagine_agent_harness::{ContentBlock, Message};
+
+/// Warn once per request when a message carries File blocks that the
+/// current wire translation cannot represent. PV-03a lands the domain
+/// model first; wire translation follows in PV-03b. Until then, dropping
+/// File blocks silently would hide image data from the model.
+fn warn_on_unsupported_file_blocks(messages: &[Message]) {
+    let file_count: usize = messages
+        .iter()
+        .flat_map(|m| m.blocks())
+        .filter(|b| matches!(b, ContentBlock::File(_)))
+        .count();
+    if file_count > 0 {
+        tracing::warn!(
+            count = file_count,
+            "messages contain File blocks; wire translation lands in PV-03b, blocks are dropped"
+        );
+    }
+}
 
 /// Build the `messages` array for an OpenAI-compatible chat completion request
 /// from a slice of [`Message`]. Tool messages are mapped to role `"tool"` with
 /// `tool_call_id` attached. Assistant messages that contain tool calls are
 /// mapped to role `"assistant"` with a `tool_calls` array.
 pub fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
+    warn_on_unsupported_file_blocks(messages);
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
         let role = m.role();
@@ -77,6 +96,7 @@ pub fn to_anthropic_messages(
     messages: &[Message],
     cache_control: bool,
 ) -> (Option<Value>, Vec<Value>) {
+    warn_on_unsupported_file_blocks(messages);
     let mut system: Option<String> = None;
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());
     for m in messages {
@@ -210,6 +230,7 @@ pub fn to_responses_instructions(messages: &[Message]) -> Option<String> {
 /// items; assistant tool calls become `function_call` items; tool
 /// results become `function_call_output` items.
 pub fn to_responses_input(messages: &[Message], system: Option<&str>) -> Vec<Value> {
+    warn_on_unsupported_file_blocks(messages);
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
         match m.role() {
