@@ -1113,6 +1113,17 @@ impl ReqwestSseStream {
                         ),
                     ));
             }
+            "response.compaction" => {
+                // Server-side compaction (PV-01b reserved channel,
+                // consumed in CM-V2e): the provider replaced earlier
+                // items with an opaque compaction item. Informational
+                // for the runtime.
+                if let Some(item_id) = data.get("item_id").and_then(|v| v.as_str()) {
+                    self.pending.push_back(AgentStreamEvent::Compacted {
+                        item_id: item_id.to_string(),
+                    });
+                }
+            }
             "response.completed" => {
                 if let Some(usage) = data.get("response").and_then(|r| r.get("usage")) {
                     let input = usage.get("input_tokens").and_then(|v| v.as_u64());

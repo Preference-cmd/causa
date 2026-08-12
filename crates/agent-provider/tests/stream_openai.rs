@@ -97,6 +97,7 @@ async fn openai_adapter_stream_emits_deltas_complete_tool_call_and_done() {
             AgentStreamEvent::Usage(_) => kinds.push("usage"),
             AgentStreamEvent::ReasoningDelta(_) => kinds.push("reasoning"),
             AgentStreamEvent::Done { .. } => kinds.push("done"),
+            AgentStreamEvent::Compacted { .. } => kinds.push("compacted"),
         }
     }
     assert!(kinds.contains(&"content"));

@@ -600,6 +600,60 @@ async fn responses_stream_emits_text_deltas_and_done_with_usage() {
 }
 
 #[tokio::test]
+async fn responses_stream_forwards_server_compaction_event() {
+    // PV-01b reserved channel, consumed in CM-V2e: the provider
+    // forwards `response.compaction` as an informational
+    // `Compacted` event.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "event: response.compaction",
+        "data: {\"type\":\"response.compaction\",\"item_id\":\"fc_compacted_1\",\"compacted_text\":\"opaque\"}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\",\"item_id\":\"msg_1\",\"output_index\":0}",
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", format!("Bearer {RESPONSES_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+        ProviderName::new("responses-test"),
+        responses_cfg_for(&server),
+        http,
+    );
+
+    let mut stream = backend
+        .stream(responses_request())
+        .await
+        .expect("stream should be supported");
+
+    let mut saw_compacted: Option<String> = None;
+    let mut text = String::new();
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::Compacted { item_id } => {
+                saw_compacted = Some(item_id);
+            }
+            reimagine_agent_harness::AgentStreamEvent::ContentDelta(delta) => text.push_str(&delta),
+            _ => {}
+        }
+    }
+    assert_eq!(saw_compacted.as_deref(), Some("fc_compacted_1"));
+    assert_eq!(text, "done");
+}
+
+#[tokio::test]
 async fn responses_stream_decodes_base64_arguments_deltas_and_emits_tool_call() {
     let server = MockServer::start().await;
 
