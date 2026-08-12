@@ -16,24 +16,21 @@
 
 #![deny(unsafe_code)]
 
-mod anthropic;
-mod openai_compatible;
-mod openai_responses;
+mod backend_provider;
 pub mod reqwest_backend;
 
-pub use anthropic::AnthropicMessagesProvider;
-pub use openai_compatible::OpenAiChatCompletionsProvider;
-pub use openai_responses::OpenAiResponsesProvider;
-pub use reqwest_backend::{
-    ReqwestBackend, arc_real_anthropic_messages_backend,
-    arc_real_anthropic_messages_backend_with_http_client,
-    arc_real_anthropic_messages_backend_with_workspace_dir,
-    arc_real_openai_chat_completions_backend,
-    arc_real_openai_chat_completions_backend_with_http_client,
-    arc_real_openai_chat_completions_backend_with_workspace_dir,
-    arc_real_openai_responses_backend, arc_real_openai_responses_backend_with_http_client,
-    arc_real_openai_responses_backend_with_workspace_dir,
-};
+pub use backend_provider::{BackendProvider, ProviderConfig};
+pub use reqwest_backend::ReqwestBackend;
+
+/// V1 adapter for OpenAI-compatible chat completion APIs
+/// (delegation over [`BackendProvider`], AC-10).
+pub type OpenAiChatCompletionsProvider = BackendProvider<OpenAiChatCompletionsConfig>;
+/// V1 adapter for the Anthropic Messages API
+/// (delegation over [`BackendProvider`], AC-10).
+pub type AnthropicMessagesProvider = BackendProvider<AnthropicMessagesConfig>;
+/// V1 adapter for the OpenAI Responses API
+/// (delegation over [`BackendProvider`], AC-10).
+pub type OpenAiResponsesProvider = BackendProvider<OpenAiResponsesConfig>;
 
 /// Re-export the protocol-layer types so consumers can depend on the
 /// adapter crate alone for the full provider stack surface.

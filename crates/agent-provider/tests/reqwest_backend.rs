@@ -14,8 +14,6 @@ use reimagine_agent_harness::{
 use reimagine_agent_provider::{
     AnthropicMessagesConfig, CompletionBackend, OpenAiChatCompletionsConfig, OpenAiResponsesConfig,
     ProviderAdapterError, ReqwestBackend,
-    arc_real_openai_chat_completions_backend_with_http_client,
-    arc_real_openai_responses_backend_with_http_client,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::BodyExactMatcher;
@@ -135,11 +133,11 @@ async fn openai_complete_returns_translated_response() {
     let http = reqwest::Client::new();
 
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
 
     let resp = backend
         .complete(build_request("gpt-4o-mini"))
@@ -169,11 +167,11 @@ async fn openai_complete_maps_non_2xx_to_api_error() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
     let err = backend
         .complete(build_request("gpt-4o-mini"))
         .await
@@ -206,11 +204,11 @@ async fn openai_list_models_returns_translated_listing() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
     let models = backend.list_models().await.expect("list ok");
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].name().as_str(), "gpt-4o-mini");
@@ -397,11 +395,11 @@ async fn responses_complete_assembles_full_input_array_and_prompt_cache_key() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
 
     let request = responses_request().with_options(json!({ "prompt_cache_key": "session-42" }));
     let resp = backend
@@ -456,11 +454,11 @@ async fn responses_complete_omits_prompt_cache_key_when_absent() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
 
     let resp = backend
         .complete(responses_request())
@@ -489,11 +487,11 @@ async fn responses_complete_parses_function_call_items() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
 
     let resp = backend
         .complete(responses_request())
@@ -524,11 +522,11 @@ async fn responses_list_models_reuses_models_path() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
     let models = backend.list_models().await.expect("list ok");
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].name().as_str(), "gpt-5-mini");
@@ -568,11 +566,11 @@ async fn responses_stream_emits_text_deltas_and_done_with_usage() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
 
     let mut stream = backend
         .stream(responses_request())
@@ -627,11 +625,11 @@ async fn responses_stream_forwards_server_compaction_event() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
 
     let mut stream = backend
         .stream(responses_request())
@@ -683,11 +681,11 @@ async fn responses_stream_decodes_base64_arguments_deltas_and_emits_tool_call() 
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
 
     let mut stream = backend
         .stream(responses_request())
@@ -738,11 +736,11 @@ async fn openai_complete_forwards_sampling_params_and_unknown_keys() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
     let req = build_request_with_options(
         "gpt-4o-mini",
         json!({
@@ -771,11 +769,11 @@ async fn openai_complete_with_reasoning_strips_temperature_and_top_p() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
     let req = build_request_with_options(
         "gpt-4o-mini",
         json!({
@@ -816,11 +814,11 @@ async fn openai_stream_forwards_sampling_params() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
     let req = build_request_with_options(
         "gpt-4o-mini",
         json!({"max_tokens": 256, "temperature": 0.2, "seed": 7}),
@@ -965,11 +963,11 @@ async fn responses_complete_forwards_sampling_params_with_max_output_tokens() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
     let req = build_request_with_options(
         "gpt-5-mini",
         json!({"max_tokens": 512, "temperature": 0.7, "top_p": 0.9, "seed": 42, "user": "u1"}),
@@ -1055,11 +1053,11 @@ async fn responses_complete_with_reasoning_requests_summary_text() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
     let req = build_request_with_options(
         "gpt-5-mini",
         json!({"reasoning": true, "reasoning_effort": "high"}),
@@ -1090,11 +1088,11 @@ async fn responses_complete_without_reasoning_omits_include() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
     let req = build_request("gpt-5-mini");
     backend.complete(req).await.expect("complete ok");
 
@@ -1129,11 +1127,11 @@ async fn responses_stream_emits_reasoning_summary_delta_and_usage() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
     let req = build_request_with_options("gpt-5-mini", json!({"reasoning": true}));
     let mut stream = backend.stream(req).await.expect("stream starts");
 
@@ -1256,11 +1254,11 @@ async fn responses_complete_with_structured_output_sends_text_format() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = arc_real_openai_responses_backend_with_http_client(
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
         ProviderName::new("responses-test"),
         responses_cfg_for(&server),
         http,
-    );
+    ));
     let req = build_request_with_options(
         "gpt-5-mini",
         json!({
@@ -1732,11 +1730,11 @@ async fn openai_stream_emits_terminal_done_with_finish_reason() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
 
     let mut stream = backend
         .stream(build_request("gpt-4o-mini"))
@@ -1780,11 +1778,11 @@ async fn openai_stream_eof_without_done_still_emits_done() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
 
     let mut stream = backend
         .stream(build_request("gpt-4o-mini"))
@@ -1875,11 +1873,11 @@ async fn openai_empty_stream_yields_no_terminal_done() {
 
     let http = reqwest::Client::new();
     let backend: Arc<dyn CompletionBackend> =
-        arc_real_openai_chat_completions_backend_with_http_client(
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
             ProviderName::new("openai-test"),
             openai_cfg_for(&server),
             http,
-        );
+        ));
 
     let mut stream = backend
         .stream(build_request("gpt-4o-mini"))

@@ -149,7 +149,9 @@ pub fn from_anthropic_response(value: &Value) -> Result<AgentResponse, ProviderA
         let cache_creation = usage
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64());
-        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64());
         resp = resp.with_usage(
             Usage::new(input, output)
                 .with_cache_creation(cache_creation)

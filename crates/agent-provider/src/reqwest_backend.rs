@@ -23,11 +23,11 @@ use reimagine_agent_harness::{
     ModelInfo, ProviderName,
 };
 use reimagine_ai_protocol::translation;
+use reimagine_ai_protocol::translation::sse_parser::{SseEvent, SseParser};
 use reimagine_ai_protocol::{
     AnthropicMessagesConfig, CompletionBackend, OpenAiChatCompletionsConfig, OpenAiResponsesConfig,
     Protocol, ProviderAdapterError,
 };
-use reimagine_ai_protocol::translation::sse_parser::{SseEvent, SseParser};
 use serde_json::{Value, json};
 
 /// Maximum number of retries for transient HTTP errors.
@@ -724,68 +724,30 @@ enum StreamKind {
 /// An `AgentStream` backed by a reqwest SSE response.
 ///
 /// Reads chunks from the HTTP response, feeds them through the SSE
-/// parser, and yields `AgentStreamEvent` values produced by the
-/// provider-specific accumulator.
+/// parser, and routes parsed events through the protocol-layer
+/// accumulators in `reimagine_ai_protocol::translation::streaming` —
+/// the single implementation of streaming delta translation in the
+/// workspace. This struct owns only transport concerns: HTTP reads,
+/// incremental UTF-8 decoding (`feed_sse_bytes`, AC-03), and terminal
+/// `Done` bookkeeping (`[DONE]` / EOF, AC-01/AC-06).
 struct ReqwestSseStream {
     response: reqwest::Response,
     parser: SseParser,
     kind: StreamKind,
     /// Events produced by the current chunk but not yet yielded.
     pending: std::collections::VecDeque<AgentStreamEvent>,
-    /// Accumulated text for the OpenAI path.
-    openai_text: String,
-    /// Accumulated tool calls for the OpenAI path.
-    openai_tool_calls: Vec<OpenAiPartialToolCall>,
-    /// Accumulated text for the Anthropic path.
-    anthropic_text: String,
-    /// Accumulated tool calls for the Anthropic path.
-    anthropic_tool_calls: Vec<AnthropicPartialToolCall>,
-    /// Accumulated tool calls for the OpenAI Responses path, keyed by
-    /// `output_index`. Arguments deltas arrive base64-encoded and are
-    /// decoded before accumulation.
-    responses_tool_calls: Vec<ResponsesPartialToolCall>,
-    /// Input-side Anthropic usage captured from `message_start`
-    /// (input_tokens + cache fields); merged into the report emitted on
-    /// `message_delta` (output_tokens).
-    anthropic_input: Option<u64>,
-    anthropic_cache_creation: Option<u64>,
-    anthropic_cache_read: Option<u64>,
-    /// Anthropic `message_delta` stop_reason, emitted with the terminal
-    /// `Done` on `message_stop` (AC-01). Truncation ("max_tokens") must
-    /// reach the loop so incomplete responses are not reported as final.
-    anthropic_stop_reason: Option<String>,
-    /// OpenAI `finish_reason` from the final chunk, emitted with the
-    /// terminal `Done` on `[DONE]` (AC-01).
-    openai_finish_reason: Option<String>,
+    /// OpenAI Chat Completions delta accumulator.
+    openai: translation::streaming::OpenAiStreamAccumulator,
+    /// Anthropic Messages delta accumulator.
+    anthropic: translation::streaming::AnthropicStreamAccumulator,
+    /// OpenAI Responses delta accumulator.
+    responses: translation::streaming::ResponsesStreamAccumulator,
     /// Bytes buffered across chunk boundaries while decoding UTF-8
     /// (AC-03): a multi-byte character split across TCP chunks stays
     /// here until the next chunk completes it.
     byte_buf: Vec<u8>,
     /// Whether the stream is done.
     done: bool,
-}
-
-#[derive(Debug, Default, Clone)]
-struct OpenAiPartialToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: String,
-}
-
-#[derive(Debug, Default, Clone)]
-struct AnthropicPartialToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: String,
-}
-
-/// Partial tool call for the OpenAI Responses path. The Responses API
-/// streams only base64-encoded argument fragments in
-/// `response.function_call_arguments.delta`; id and name arrive with the
-/// complete item in `response.output_item.done`.
-#[derive(Debug, Default, Clone)]
-struct ResponsesPartialToolCall {
-    arguments: String,
 }
 
 impl ReqwestSseStream {
@@ -795,31 +757,26 @@ impl ReqwestSseStream {
             parser: SseParser::new(),
             kind,
             pending: std::collections::VecDeque::new(),
-            openai_text: String::new(),
-            openai_tool_calls: Vec::new(),
-            anthropic_text: String::new(),
-            anthropic_tool_calls: Vec::new(),
-            responses_tool_calls: Vec::new(),
-            anthropic_input: None,
-            anthropic_cache_creation: None,
-            anthropic_cache_read: None,
-            anthropic_stop_reason: None,
-            openai_finish_reason: None,
+            openai: translation::streaming::OpenAiStreamAccumulator::new(),
+            anthropic: translation::streaming::AnthropicStreamAccumulator::new(),
+            responses: translation::streaming::ResponsesStreamAccumulator::new(),
             byte_buf: Vec::new(),
             done: false,
         }
     }
 
-    /// Process one SSE event, pushing any resulting `AgentStreamEvent`
-    /// values into `self.pending`.
+    /// Process one SSE event, routing it through the protocol-layer
+    /// accumulator for this stream's kind and pushing any resulting
+    /// `AgentStreamEvent` values into `self.pending`.
     fn process_event(&mut self, event: translation::sse_parser::SseEvent) {
         // OpenAI sends "data: [DONE]" as the terminal event.
         if event.data == "[DONE]" {
             self.done = true;
             // Terminal `Done` with the last finish_reason seen (AC-01):
             // truncation ("length") must reach the loop.
-            self.pending
-                .push_back(AgentStreamEvent::Done { stop_reason: self.openai_finish_reason.take() });
+            self.pending.push_back(AgentStreamEvent::Done {
+                stop_reason: self.openai.take_finish_reason(),
+            });
             return;
         }
 
@@ -828,418 +785,18 @@ impl ReqwestSseStream {
             Err(_) => return,
         };
 
-        match self.kind {
-            StreamKind::OpenAi => self.process_openai_chunk(&value),
-            StreamKind::Anthropic => self.process_anthropic_event(&event.event, &value),
-            StreamKind::Responses => self.process_responses_event(&event.event, &value),
-        }
-    }
-
-    fn process_openai_chunk(&mut self, chunk: &Value) {
-        // Extract content delta.
-        if let Some(delta_content) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("delta"))
-            .and_then(|d| d.get("content"))
-            .and_then(|v| v.as_str())
-            && !delta_content.is_empty()
-        {
-            self.openai_text.push_str(delta_content);
-            self.pending
-                .push_back(AgentStreamEvent::ContentDelta(delta_content.to_string()));
-        }
-
-        // Extract reasoning deltas (o-series / DeepSeek-style
-        // `reasoning_content`). Display-only: never accumulated into the
-        // assistant message.
-        if let Some(reasoning) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("delta"))
-            .and_then(|d| d.get("reasoning_content"))
-            .and_then(|v| v.as_str())
-            && !reasoning.is_empty()
-        {
-            self.pending
-                .push_back(AgentStreamEvent::ReasoningDelta(reasoning.to_string()));
-        }
-
-        // Extract tool call deltas.
-        if let Some(tool_calls) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("delta"))
-            .and_then(|d| d.get("tool_calls"))
-            .and_then(|v| v.as_array())
-        {
-            for (i, call) in tool_calls.iter().enumerate() {
-                let index = call
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .map(|i| i as usize)
-                    .unwrap_or(i);
-                while self.openai_tool_calls.len() <= index {
-                    self.openai_tool_calls
-                        .push(OpenAiPartialToolCall::default());
-                }
-                let entry = &mut self.openai_tool_calls[index];
-                if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
-                    entry.id = Some(id.to_string());
-                }
-                if let Some(name) = call
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|v| v.as_str())
-                {
-                    entry.name = Some(name.to_string());
-                }
-                if let Some(args) = call
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|v| v.as_str())
-                {
-                    entry.arguments.push_str(args);
-                }
-            }
-        }
-
-        // Extract finish reason — flush complete tool calls and remember
-        // the reason for the terminal `Done` (AC-01).
-        if let Some(finish_reason) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("finish_reason"))
-            .and_then(|v| v.as_str())
-        {
-            self.openai_finish_reason = Some(finish_reason.to_string());
-            if finish_reason == "tool_calls" {
-                self.flush_openai_tool_calls();
-            }
-        }
-
-        // Extract usage.
-        if let Some(usage) = chunk.get("usage") {
-            let input = usage.get("prompt_tokens").and_then(|v| v.as_u64());
-            let output = usage.get("completion_tokens").and_then(|v| v.as_u64());
-            let reasoning = translation::usage::openai_reasoning_tokens(usage);
-            let cached = translation::usage::openai_cached_tokens(usage);
-            self.pending.push_back(AgentStreamEvent::Usage(
-                reimagine_agent_harness::Usage::new(input, output)
-                    .with_reasoning_tokens(reasoning)
-                    .with_cache_read(cached),
-            ));
-        }
-    }
-
-    fn flush_openai_tool_calls(&mut self) {
-        for partial in self.openai_tool_calls.drain(..) {
-            if let (Some(id), Some(name)) = (partial.id, partial.name) {
-                let arguments = if partial.arguments.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_str(&partial.arguments).unwrap_or(Value::Null)
-                };
-                self.pending
-                    .push_back(AgentStreamEvent::ToolCall(reimagine_agent_harness::ToolCall::new(
-                        reimagine_agent_harness::ToolCallId::new(id),
-                        name,
-                        arguments,
-                    )));
-            }
-        }
-    }
-
-    fn process_anthropic_event(&mut self, event_type: &Option<String>, data: &Value) {
-        let event_type = match event_type.as_deref() {
-            Some(t) => t,
-            None => return,
+        let events = match self.kind {
+            StreamKind::OpenAi => self.openai.ingest_chunk(&value),
+            StreamKind::Anthropic => self.anthropic.ingest_event(event.event.as_deref(), &value),
+            StreamKind::Responses => self.responses.ingest_event(event.event.as_deref(), &value),
         };
-
-        match event_type {
-            "content_block_start" => {
-                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                    let index = index as usize;
-                    while self.anthropic_tool_calls.len() <= index {
-                        self.anthropic_tool_calls
-                            .push(AnthropicPartialToolCall::default());
-                    }
-                    if let Some(block) = data.get("content_block")
-                        && block.get("type").and_then(|v| v.as_str()) == Some("tool_use")
-                    {
-                        if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
-                            self.anthropic_tool_calls[index].id = Some(id.to_string());
-                        }
-                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                            self.anthropic_tool_calls[index].name = Some(name.to_string());
-                        }
-                    }
-                }
-            }
-            "content_block_delta" => {
-                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                    let index = index as usize;
-                    if let Some(delta) = data.get("delta") {
-                        match delta.get("type").and_then(|v| v.as_str()) {
-                            Some("text_delta") => {
-                                if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                    self.anthropic_text.push_str(text);
-                                    self.pending.push_back(AgentStreamEvent::ContentDelta(
-                                        text.to_string(),
-                                    ));
-                                }
-                            }
-                            Some("thinking_delta") => {
-                                if let Some(text) = delta.get("thinking").and_then(|v| v.as_str())
-                                {
-                                    self.pending.push_back(AgentStreamEvent::ReasoningDelta(
-                                        text.to_string(),
-                                    ));
-                                }
-                            }
-                            Some("input_json_delta") => {
-                                if let Some(partial) =
-                                    delta.get("partial_json").and_then(|v| v.as_str())
-                                {
-                                    while self.anthropic_tool_calls.len() <= index {
-                                        self.anthropic_tool_calls
-                                            .push(AnthropicPartialToolCall::default());
-                                    }
-                                    self.anthropic_tool_calls[index].arguments.push_str(partial);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            "content_block_stop" => {
-                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                    let index = index as usize;
-                    if let Some(partial) = self.anthropic_tool_calls.get_mut(index)
-                        && let (Some(id), Some(name)) = (partial.id.clone(), partial.name.clone())
-                    {
-                        let arguments = if partial.arguments.is_empty() {
-                            Value::Null
-                        } else {
-                            serde_json::from_str(&partial.arguments).unwrap_or(Value::Null)
-                        };
-                        *partial = AnthropicPartialToolCall::default();
-                        self.pending.push_back(AgentStreamEvent::ToolCall(
-                            reimagine_agent_harness::ToolCall::new(
-                                reimagine_agent_harness::ToolCallId::new(id),
-                                name,
-                                arguments,
-                            ),
-                        ));
-                    }
-                }
-            }
-            "message_start" => {
-                if let Some(usage) = data.get("message").and_then(|m| m.get("usage")) {
-                    self.anthropic_input = usage.get("input_tokens").and_then(|v| v.as_u64());
-                    self.anthropic_cache_creation = usage
-                        .get("cache_creation_input_tokens")
-                        .and_then(|v| v.as_u64());
-                    self.anthropic_cache_read = usage
-                        .get("cache_read_input_tokens")
-                        .and_then(|v| v.as_u64());
-                }
-            }
-            "message_delta" => {
-                if let Some(delta) = data.get("delta")
-                    && let Some(reason) = delta.get("stop_reason").and_then(|v| v.as_str())
-                {
-                    // Stash the provider stop_reason; it is emitted with
-                    // the terminal `Done` on `message_stop` (AC-01).
-                    self.anthropic_stop_reason = Some(reason.to_string());
-                }
-                if let Some(usage) = data.get("usage") {
-                    let input = self.anthropic_input.or_else(|| {
-                        usage.get("input_tokens").and_then(|v| v.as_u64())
-                    });
-                    let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-                    let cache_creation = self.anthropic_cache_creation.or_else(|| {
-                        usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64())
-                    });
-                    let cache_read = self.anthropic_cache_read.or_else(|| {
-                        usage.get("cache_read_input_tokens").and_then(|v| v.as_u64())
-                    });
-                    self.pending
-                        .push_back(AgentStreamEvent::Usage(
-                            reimagine_agent_harness::Usage::new(input, output)
-                                .with_cache_creation(cache_creation)
-                                .with_cache_read(cache_read),
-                        ));
-                }
-            }
-            "message_stop" => {
+        for e in events {
+            // Terminal events (Anthropic `message_stop`, Responses
+            // `response.completed`/`response.failed`) stop the stream.
+            if e.is_done() {
                 self.done = true;
-                self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: self.anthropic_stop_reason.take() });
             }
-            _ => {}
-        }
-    }
-
-    /// Process one OpenAI Responses stream event.
-    ///
-    /// V1 handles the event families the Agent loop consumes:
-    /// `response.output_text.delta` (content), the `response.function_call*`
-    /// family (tool calls), `response.completed` (usage + done), and
-    /// `response.failed` (terminal done without usage). `response.created`,
-    /// `response.in_progress`, reasoning deltas, and item bookkeeping
-    /// events are ignored.
-    fn process_responses_event(&mut self, event_type: &Option<String>, data: &Value) {
-        let event_type = match event_type.as_deref() {
-            Some(t) => t,
-            None => return,
-        };
-
-        match event_type {
-            "response.output_text.delta" => {
-                if let Some(text) = data.get("delta").and_then(|v| v.as_str())
-                    && !text.is_empty()
-                {
-                    self.pending
-                        .push_back(AgentStreamEvent::ContentDelta(text.to_string()));
-                }
-            }
-            "response.reasoning_summary_text.delta" => {
-                if let Some(text) = data.get("delta").and_then(|v| v.as_str())
-                    && !text.is_empty()
-                {
-                    self.pending
-                        .push_back(AgentStreamEvent::ReasoningDelta(text.to_string()));
-                }
-            }
-            "response.function_call_arguments.delta" => {
-                let Some(delta) = data.get("delta").and_then(|v| v.as_str()) else {
-                    return;
-                };
-                let index = data
-                    .get("output_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|i| i as usize)
-                    .unwrap_or(0);
-                while self.responses_tool_calls.len() <= index {
-                    self.responses_tool_calls
-                        .push(ResponsesPartialToolCall::default());
-                }
-                // Arguments deltas are base64-encoded JSON fragments;
-                // decode before accumulating. Tolerate plain fragments.
-                let decoded = base64::engine::general_purpose::STANDARD
-                    .decode(delta)
-                    .ok()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .unwrap_or_else(|| delta.to_string());
-                self.responses_tool_calls[index].arguments.push_str(&decoded);
-            }
-            "response.function_call_arguments.done" => {
-                // The provider may deliver the full arguments here; when
-                // the accumulated deltas are empty, use this payload.
-                let index = data
-                    .get("output_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|i| i as usize)
-                    .unwrap_or(0);
-                if let Some(arguments) = data.get("arguments").and_then(|v| v.as_str())
-                    && !arguments.is_empty()
-                {
-                    while self.responses_tool_calls.len() <= index {
-                        self.responses_tool_calls
-                            .push(ResponsesPartialToolCall::default());
-                    }
-                    if self.responses_tool_calls[index].arguments.is_empty() {
-                        self.responses_tool_calls[index].arguments = arguments.to_string();
-                    }
-                }
-            }
-            "response.output_item.done" => {
-                let Some(item) = data.get("item") else {
-                    return;
-                };
-                if item.get("type").and_then(|v| v.as_str()) != Some("function_call") {
-                    return;
-                }
-                let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
-                    return;
-                };
-                // The streamed item carries the full arguments; prefer the
-                // complete payload over accumulated deltas.
-                let arguments = item
-                    .get("arguments")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        let index = data
-                            .get("output_index")
-                            .and_then(|v| v.as_u64())
-                            .map(|i| i as usize)
-                            .unwrap_or(0);
-                        self.responses_tool_calls
-                            .get(index)
-                            .map(|partial| partial.arguments.clone())
-                    })
-                    .unwrap_or_else(|| "{}".to_string());
-                // The Responses API uses `call_id` as the stable id that
-                // tool-result messages reference; fall back to `id`.
-                let id = item
-                    .get("call_id")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("id").and_then(|v| v.as_str()))
-                    .unwrap_or("");
-                let arguments_value =
-                    serde_json::from_str(&arguments).unwrap_or(Value::Null);
-                self.pending
-                    .push_back(AgentStreamEvent::ToolCall(
-                        reimagine_agent_harness::ToolCall::new(
-                            reimagine_agent_harness::ToolCallId::new(id),
-                            name.to_string(),
-                            arguments_value,
-                        ),
-                    ));
-            }
-            "response.compaction" => {
-                // Server-side compaction (PV-01b reserved channel,
-                // consumed in CM-V2e): the provider replaced earlier
-                // items with an opaque compaction item. Informational
-                // for the runtime.
-                if let Some(item_id) = data.get("item_id").and_then(|v| v.as_str()) {
-                    self.pending.push_back(AgentStreamEvent::Compacted {
-                        item_id: item_id.to_string(),
-                    });
-                }
-            }
-            "response.completed" => {
-                if let Some(usage) = data.get("response").and_then(|r| r.get("usage")) {
-                    let input = usage.get("input_tokens").and_then(|v| v.as_u64());
-                    let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-                    let reasoning = usage
-                        .get("output_tokens_details")
-                        .and_then(|d| d.get("reasoning_tokens"))
-                        .and_then(|v| v.as_u64());
-                    let cached = translation::usage::openai_cached_tokens(usage);
-                    self.pending.push_back(AgentStreamEvent::Usage(
-                        reimagine_agent_harness::Usage::new(input, output)
-                            .with_reasoning_tokens(reasoning)
-                            .with_cache_read(cached),
-                    ));
-                }
-                self.done = true;
-                self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: None });
-            }
-            "response.failed" => {
-                self.done = true;
-                self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: None });
-            }
-            _ => {}
+            self.pending.push_back(e);
         }
     }
 }
@@ -1286,15 +843,13 @@ impl AgentStream for ReqwestSseStream {
                     // termination; a zero-event stream stays Done-less
                     // and the loop reports it as EMPTY_STREAM (AC-06).
                     let stop_reason = match self.kind {
-                        StreamKind::OpenAi => self.openai_finish_reason.take(),
-                        StreamKind::Anthropic => self.anthropic_stop_reason.take(),
+                        StreamKind::OpenAi => self.openai.take_finish_reason(),
+                        StreamKind::Anthropic => self.anthropic.take_stop_reason(),
                         StreamKind::Responses => None,
                     };
-                    let had_content = !self.openai_text.is_empty()
-                        || !self.anthropic_text.is_empty()
-                        || !self.openai_tool_calls.is_empty()
-                        || !self.anthropic_tool_calls.is_empty()
-                        || !self.responses_tool_calls.is_empty();
+                    let had_content = self.openai.has_content()
+                        || self.anthropic.has_content()
+                        || self.responses.has_content();
                     if stop_reason.is_some() || had_content {
                         self.pending
                             .push_back(AgentStreamEvent::Done { stop_reason });
@@ -1361,81 +916,67 @@ fn feed_sse_bytes(parser: &mut SseParser, byte_buf: &mut Vec<u8>, chunk: &[u8]) 
     }
 }
 
-pub fn arc_real_openai_chat_completions_backend(
-    name: ProviderName,
-    cfg: OpenAiChatCompletionsConfig,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_chat_completions(name, cfg))
+impl crate::backend_provider::ProviderConfig for OpenAiChatCompletionsConfig {
+    fn arc_real_backend(name: ProviderName, config: Self) -> Arc<dyn CompletionBackend> {
+        Arc::new(ReqwestBackend::openai_chat_completions(name, config))
+    }
+    fn arc_real_backend_with_workspace_dir(
+        name: ProviderName,
+        config: Self,
+        workspace_dir: PathBuf,
+    ) -> Arc<dyn CompletionBackend> {
+        Arc::new(
+            ReqwestBackend::openai_chat_completions(name, config).with_workspace_dir(workspace_dir),
+        )
+    }
+    fn base_url(&self) -> Option<&str> {
+        Some(self.base_url())
+    }
+    fn default_model(&self) -> &str {
+        self.default_model()
+    }
 }
 
-pub fn arc_real_openai_chat_completions_backend_with_workspace_dir(
-    name: ProviderName,
-    cfg: OpenAiChatCompletionsConfig,
-    workspace_dir: PathBuf,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(
-        ReqwestBackend::openai_chat_completions(name, cfg).with_workspace_dir(workspace_dir),
-    )
+impl crate::backend_provider::ProviderConfig for AnthropicMessagesConfig {
+    fn arc_real_backend(name: ProviderName, config: Self) -> Arc<dyn CompletionBackend> {
+        Arc::new(ReqwestBackend::anthropic_messages(name, config))
+    }
+    fn arc_real_backend_with_workspace_dir(
+        name: ProviderName,
+        config: Self,
+        workspace_dir: PathBuf,
+    ) -> Arc<dyn CompletionBackend> {
+        Arc::new(
+            ReqwestBackend::anthropic_messages(name, config).with_workspace_dir(workspace_dir),
+        )
+    }
+    fn base_url(&self) -> Option<&str> {
+        self.base_url()
+    }
+    fn default_model(&self) -> &str {
+        self.default_model()
+    }
 }
 
-pub fn arc_real_openai_chat_completions_backend_with_http_client(
-    name: ProviderName,
-    cfg: OpenAiChatCompletionsConfig,
-    http: reqwest::Client,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
-        name, cfg, http,
-    ))
-}
-
-pub fn arc_real_anthropic_messages_backend(
-    name: ProviderName,
-    cfg: AnthropicMessagesConfig,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::anthropic_messages(name, cfg))
-}
-
-pub fn arc_real_anthropic_messages_backend_with_workspace_dir(
-    name: ProviderName,
-    cfg: AnthropicMessagesConfig,
-    workspace_dir: PathBuf,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::anthropic_messages(name, cfg).with_workspace_dir(workspace_dir))
-}
-
-pub fn arc_real_anthropic_messages_backend_with_http_client(
-    name: ProviderName,
-    cfg: AnthropicMessagesConfig,
-    http: reqwest::Client,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
-        name, cfg, http,
-    ))
-}
-
-pub fn arc_real_openai_responses_backend(
-    name: ProviderName,
-    cfg: OpenAiResponsesConfig,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_responses(name, cfg))
-}
-
-pub fn arc_real_openai_responses_backend_with_workspace_dir(
-    name: ProviderName,
-    cfg: OpenAiResponsesConfig,
-    workspace_dir: PathBuf,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_responses(name, cfg).with_workspace_dir(workspace_dir))
-}
-
-pub fn arc_real_openai_responses_backend_with_http_client(
-    name: ProviderName,
-    cfg: OpenAiResponsesConfig,
-    http: reqwest::Client,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        name, cfg, http,
-    ))
+impl crate::backend_provider::ProviderConfig for OpenAiResponsesConfig {
+    fn arc_real_backend(name: ProviderName, config: Self) -> Arc<dyn CompletionBackend> {
+        Arc::new(ReqwestBackend::openai_responses(name, config))
+    }
+    fn arc_real_backend_with_workspace_dir(
+        name: ProviderName,
+        config: Self,
+        workspace_dir: PathBuf,
+    ) -> Arc<dyn CompletionBackend> {
+        Arc::new(
+            ReqwestBackend::openai_responses(name, config).with_workspace_dir(workspace_dir),
+        )
+    }
+    fn base_url(&self) -> Option<&str> {
+        Some(self.base_url())
+    }
+    fn default_model(&self) -> &str {
+        self.default_model()
+    }
 }
 
 #[async_trait]
@@ -1554,7 +1095,11 @@ mod tests {
         partial.extend_from_slice(&"你".as_bytes()[..2]);
         let events = feed_sse_bytes(&mut parser, &mut byte_buf, &partial);
         assert!(events.is_empty(), "incomplete sequence yields nothing");
-        assert_eq!(byte_buf, &"你".as_bytes()[..2], "partial bytes stay buffered");
+        assert_eq!(
+            byte_buf,
+            &"你".as_bytes()[..2],
+            "partial bytes stay buffered"
+        );
         // Completing the sequence (the missing 3rd byte + the rest)
         // yields the event.
         let mut rest = "你".as_bytes()[2..].to_vec();
@@ -1577,7 +1122,10 @@ mod tests {
         corrupted.push(b'E'); // not a continuation byte — E4 BD E5 is invalid
         let events = feed_sse_bytes(&mut parser, &mut byte_buf, &corrupted);
         assert!(events.is_empty());
-        assert!(byte_buf.is_empty(), "corrupted bytes dropped, none buffered");
+        assert!(
+            byte_buf.is_empty(),
+            "corrupted bytes dropped, none buffered"
+        );
         // The stream continues to decode after the corrupted byte.
         let events = feed_sse_bytes(&mut parser, &mut byte_buf, b"nd\n\n");
         assert_eq!(events.len(), 1);

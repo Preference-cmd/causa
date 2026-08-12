@@ -57,7 +57,10 @@ impl ProviderAdapterError {
 
     /// Attach an upstream `Retry-After` hint (AC-05).
     pub fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
-        if let Self::Api { retry_after: slot, .. } = &mut self {
+        if let Self::Api {
+            retry_after: slot, ..
+        } = &mut self
+        {
             *slot = retry_after;
         }
         self

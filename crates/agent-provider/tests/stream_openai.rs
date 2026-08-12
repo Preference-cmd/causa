@@ -1,11 +1,11 @@
 use reimagine_agent_harness::{
     AgentProvider, AgentRequest, AgentResponse, AgentStreamEvent, Message, ModelName, ProviderName,
 };
-use reimagine_ai_protocol::translation::streaming::OpenAiStreamAccumulator;
 use reimagine_agent_provider::{
     CompletionBackend, FakeCompletionBackend, OpenAiChatCompletionsConfig,
     OpenAiChatCompletionsProvider, ScriptedBackendStep,
 };
+use reimagine_ai_protocol::translation::streaming::OpenAiStreamAccumulator;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -30,9 +30,9 @@ async fn openai_adapter_complete_returns_response_and_maps_error() {
 #[tokio::test]
 async fn openai_adapter_complete_maps_backend_error_to_provider_error() {
     let backend: Arc<dyn CompletionBackend> = Arc::new(FakeCompletionBackend::new(vec![
-        ScriptedBackendStep::Complete(Err(
-            reimagine_ai_protocol::ProviderAdapterError::transport("connection refused"),
-        )),
+        ScriptedBackendStep::Complete(Err(reimagine_ai_protocol::ProviderAdapterError::transport(
+            "connection refused",
+        ))),
     ]));
     let provider = OpenAiChatCompletionsProvider::with_backend(
         ProviderName::new("openai"),
@@ -50,8 +50,47 @@ async fn openai_adapter_complete_maps_backend_error_to_provider_error() {
 }
 
 #[tokio::test]
-async fn openai_adapter_stream_emits_deltas_complete_tool_call_and_done() {
-    // Simulate the OpenAI chunk shape across three chunks.
+async fn openai_accumulator_emits_content_and_reasoning_deltas() {
+    // Simulate the OpenAI chunk shape: content deltas become
+    // `ContentDelta`, reasoning deltas become `ReasoningDelta` and never
+    // leak into the content stream (display-only).
+    let mut acc = OpenAiStreamAccumulator::new();
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    for chunk in [
+        json!({
+            "choices": [{
+                "delta": { "role": "assistant", "reasoning_content": "Let me think..." }
+            }]
+        }),
+        json!({
+            "choices": [{
+                "delta": { "content": "He" }
+            }]
+        }),
+        json!({
+            "choices": [{
+                "delta": { "content": "llo" }
+            }]
+        }),
+    ] {
+        for e in acc.ingest_chunk(&chunk) {
+            match e {
+                AgentStreamEvent::ContentDelta(d) => content.push_str(&d),
+                AgentStreamEvent::ReasoningDelta(d) => reasoning.push_str(&d),
+                other => panic!("unexpected event {other:?}"),
+            }
+        }
+    }
+    assert_eq!(content, "Hello");
+    assert_eq!(reasoning, "Let me think...");
+    assert!(acc.has_content());
+}
+
+#[tokio::test]
+async fn openai_accumulator_assembles_tool_call_flush_and_done_carries_finish_reason() {
+    // Simulate the OpenAI chunk shape across three chunks, ending with
+    // `finish_reason: "tool_calls"`, which flushes the assembled call.
     let chunks = vec![
         json!({
             "choices": [{
@@ -80,14 +119,11 @@ async fn openai_adapter_stream_emits_deltas_complete_tool_call_and_done() {
     let mut acc = OpenAiStreamAccumulator::new();
     let mut events = Vec::new();
     for chunk in &chunks {
-        events.extend(acc.ingest_chunk(chunk).unwrap());
+        events.extend(acc.ingest_chunk(chunk));
     }
-    let complete_calls = acc.flush_complete_tool_calls();
-    events.extend(complete_calls);
-    events.push(acc.finalize());
 
-    // Expect: ContentDelta("He"), ToolCallDelta id, ToolCallDelta name,
-    // ToolCallDelta args (×2), Usage, ToolCall, Done.
+    // Expect: ContentDelta("He"), Usage, then the flush producing the
+    // complete ToolCall. Partial tool-call deltas emit nothing.
     let mut kinds: Vec<&'static str> = Vec::new();
     for e in &events {
         match e {
@@ -102,10 +138,12 @@ async fn openai_adapter_stream_emits_deltas_complete_tool_call_and_done() {
         }
     }
     assert!(kinds.contains(&"content"));
-    assert!(kinds.contains(&"delta"));
-    assert!(kinds.contains(&"complete"));
     assert!(kinds.contains(&"usage"));
-    assert_eq!(kinds.last(), Some(&"done"));
+    assert!(kinds.contains(&"complete"));
+    assert!(
+        !kinds.contains(&"delta"),
+        "live decoder emits no ToolCallDelta"
+    );
 
     // Find the complete tool call and check it.
     let complete = events
@@ -118,49 +156,34 @@ async fn openai_adapter_stream_emits_deltas_complete_tool_call_and_done() {
     assert_eq!(complete.id().as_str(), "c1");
     assert_eq!(complete.name(), "echo");
     assert_eq!(complete.arguments(), &json!({"x": 1}));
+
+    // Terminal Done is emitted by the transport ([DONE] / EOF) with the
+    // last finish_reason (AC-01); the accumulator hands the reason over.
+    let done = AgentStreamEvent::Done {
+        stop_reason: acc.take_finish_reason(),
+    };
+    assert_eq!(
+        done,
+        AgentStreamEvent::Done {
+            stop_reason: Some("tool_calls".into())
+        }
+    );
 }
 
 #[tokio::test]
-async fn openai_reasoning_content_emits_reasoning_delta_and_usage_reasoning_tokens() {
-    let chunks = vec![
-        json!({
-            "choices": [{
-                "delta": { "role": "assistant", "reasoning_content": "Let me think..." }
-            }]
-        }),
-        json!({
-            "choices": [{
-                "delta": { "content": "Answer" }
-            }]
-        }),
-        json!({
-            "choices": [{
-                "delta": {},
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 7,
-                "completion_tokens_details": { "reasoning_tokens": 3 }
-            }
-        }),
-    ];
+async fn openai_accumulator_reports_usage_with_reasoning_tokens() {
     let mut acc = OpenAiStreamAccumulator::new();
-    let mut events = Vec::new();
-    for chunk in &chunks {
-        events.extend(acc.ingest_chunk(chunk).unwrap());
-    }
-    events.push(acc.finalize());
-
-    let reasoning: String = events
-        .iter()
-        .filter_map(|e| match e {
-            AgentStreamEvent::ReasoningDelta(t) => Some(t.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(reasoning, "Let me think...");
-
+    let events = acc.ingest_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 7,
+            "completion_tokens_details": { "reasoning_tokens": 3 }
+        }
+    }));
     let usage = events
         .iter()
         .find_map(|e| match e {
@@ -171,19 +194,19 @@ async fn openai_reasoning_content_emits_reasoning_delta_and_usage_reasoning_toke
     assert_eq!(usage.input_tokens(), Some(5));
     assert_eq!(usage.output_tokens(), Some(7));
     assert_eq!(usage.reasoning_tokens(), Some(3));
+    assert_eq!(acc.take_finish_reason().as_deref(), Some("stop"));
 }
 
 #[tokio::test]
-async fn openai_reasoning_tokens_fallback_to_top_level_field() {
-    let chunk = json!({
+async fn openai_usage_reasoning_tokens_fallback_to_top_level_field() {
+    let mut acc = OpenAiStreamAccumulator::new();
+    let events = acc.ingest_chunk(&json!({
         "choices": [{
             "delta": {},
             "finish_reason": "stop"
         }],
         "usage": { "prompt_tokens": 1, "completion_tokens": 2, "reasoning_tokens": 2 }
-    });
-    let mut acc = OpenAiStreamAccumulator::new();
-    let events = acc.ingest_chunk(&chunk).unwrap();
+    }));
     let usage = events
         .iter()
         .find_map(|e| match e {
