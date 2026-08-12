@@ -850,6 +850,20 @@ impl AgentStream for ReqwestSseStream {
                     let had_content = self.openai.has_content()
                         || self.anthropic.has_content()
                         || self.responses.has_content();
+                    // An EOF that drops partially assembled tool calls
+                    // (no `finish_reason: "tool_calls"`, no terminal
+                    // event) is surfaced as a host-visible Warning
+                    // before the synthesized `Done` (D-5): the loop
+                    // must not stop on it, but hosts should know the
+                    // stream ended with incomplete tool calls.
+                    if self.openai.has_partial_tool_calls()
+                        || self.anthropic.has_partial_tool_calls()
+                        || self.responses.has_partial_tool_calls()
+                    {
+                        self.pending.push_back(AgentStreamEvent::Warning(
+                            "stream ended with incomplete tool call(s)".to_string(),
+                        ));
+                    }
                     if stop_reason.is_some() || had_content {
                         self.pending
                             .push_back(AgentStreamEvent::Done { stop_reason });

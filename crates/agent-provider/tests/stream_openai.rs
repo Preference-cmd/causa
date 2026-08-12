@@ -135,6 +135,7 @@ async fn openai_accumulator_assembles_tool_call_flush_and_done_carries_finish_re
             AgentStreamEvent::Done { .. } => kinds.push("done"),
             AgentStreamEvent::Compacted { .. } => kinds.push("compacted"),
             AgentStreamEvent::Error(_) => kinds.push("error"),
+            AgentStreamEvent::Warning(_) => kinds.push("warning"),
         }
     }
     assert!(kinds.contains(&"content"));

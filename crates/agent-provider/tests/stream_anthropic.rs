@@ -108,6 +108,7 @@ async fn anthropic_accumulator_emits_text_deltas_complete_tool_call_and_done() {
             AgentStreamEvent::Done { .. } => kinds.push("done"),
             AgentStreamEvent::Compacted { .. } => kinds.push("compacted"),
             AgentStreamEvent::Error(_) => kinds.push("error"),
+            AgentStreamEvent::Warning(_) => kinds.push("warning"),
         }
     }
     assert!(kinds.contains(&"content"));

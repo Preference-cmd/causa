@@ -20,11 +20,19 @@ pub fn from_openai_response(value: &Value) -> Result<AgentResponse, ProviderAdap
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let content = message
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // `content` is a string, or absent/`null` when the message only
+    // carries tool calls. Anything else (e.g. the block-array shape some
+    // OpenAI-compatible servers emit) is a shape mismatch and surfaces as
+    // a serialization error instead of silently dropping the text.
+    let content = match message.get("content") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(_) => {
+            return Err(ProviderAdapterError::serialization(
+                "choices[0].message.content: expected string",
+            ));
+        }
+    };
     let tool_calls = parse_openai_tool_calls(message.get("tool_calls"))?;
 
     let message = if tool_calls.is_empty() {
@@ -44,10 +52,19 @@ pub fn from_openai_response(value: &Value) -> Result<AgentResponse, ProviderAdap
 }
 
 fn parse_openai_tool_calls(value: Option<&Value>) -> Result<Vec<ToolCall>, ProviderAdapterError> {
-    let mut out = Vec::new();
-    let Some(arr) = value.and_then(|v| v.as_array()) else {
-        return Ok(out);
+    // Absent `tool_calls` means no tool calls; a present value that is not
+    // an array is a shape mismatch and surfaces as a serialization error
+    // instead of being silently treated as empty.
+    let arr = match value {
+        None => return Ok(Vec::new()),
+        Some(Value::Array(arr)) => arr,
+        Some(_) => {
+            return Err(ProviderAdapterError::serialization(
+                "choices[0].message.tool_calls: expected array",
+            ));
+        }
     };
+    let mut out = Vec::new();
     for (i, call) in arr.iter().enumerate() {
         let id = call
             .get("id")
@@ -128,7 +145,13 @@ pub fn from_anthropic_response(value: &Value) -> Result<AgentResponse, ProviderA
                         ProviderAdapterError::serialization(format!("content[{i}].name missing"))
                     })?
                     .to_string();
-                let arguments = block.get("input").cloned().unwrap_or(Value::Null);
+                // Missing `input` unifies with the other protocols'
+                // missing-arguments default: an empty object. A tool with
+                // no arguments parses successfully into an empty input.
+                let arguments = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(Value::Object(serde_json::Map::new()));
                 tool_calls.push(ToolCall::new(ToolCallId::new(id), name, arguments));
             }
             _ => {}
@@ -417,12 +440,13 @@ mod tests {
         ));
     }
 
-    // Current behavior: non-string `content` (e.g. the block-array shape
-    // some OpenAI-compatible servers emit) is silently coerced to "" — the
-    // model's text is dropped rather than surfaced as a serialization
-    // error. Documented as-is; AC-12 flags this for a follow-up decision.
+    // Non-string `content` (e.g. the block-array shape some
+    // OpenAI-compatible servers emit) is a shape mismatch: it surfaces as
+    // a serialization error instead of silently dropping the model's text
+    // (D-1). Absent/`null` content stays valid — it is how messages that
+    // only carry tool calls are shaped.
     #[test]
-    fn openai_non_string_content_coerces_to_empty_text() {
+    fn openai_non_string_content_surfaces_serialization_error() {
         let value = json!({
             "choices": [{
                 "message": {
@@ -431,15 +455,18 @@ mod tests {
                 },
             }],
         });
-        let resp = from_openai_response(&value).expect("ok");
-        assert_eq!(resp.message(), &Message::assistant(""));
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "choices[0].message.content: expected string".to_string()
+            ))
+        );
     }
 
-    // Current behavior: a `tool_calls` value that is not an array parses as
-    // no tool calls rather than an error, and a tool call without
-    // `arguments` defaults to `{}`.
+    // A `tool_calls` value that is not an array surfaces a serialization
+    // error (D-3); it is no longer silently treated as no tool calls.
     #[test]
-    fn openai_tolerates_non_array_tool_calls_and_missing_arguments() {
+    fn openai_non_array_tool_calls_surfaces_serialization_error() {
         let value = json!({
             "choices": [{
                 "message": {
@@ -449,9 +476,18 @@ mod tests {
                 }
             }],
         });
-        let resp = from_openai_response(&value).expect("ok");
-        assert_eq!(resp.message(), &Message::assistant(""));
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "choices[0].message.tool_calls: expected array".to_string()
+            ))
+        );
+    }
 
+    // A tool call without `arguments` defaults to `{}` (D-2): a tool with
+    // no arguments parses successfully into an empty input.
+    #[test]
+    fn openai_missing_arguments_defaults_to_empty_object() {
         let value = json!({
             "choices": [{
                 "message": {
@@ -581,11 +617,11 @@ mod tests {
         );
     }
 
-    // Current behavior: a `tool_use` block without `input` yields `Null`
-    // arguments instead of an error — the harness keeps the call and the
-    // tool receives `null`. Documented as-is.
+    // A `tool_use` block without `input` defaults to `{}` (D-2), unified
+    // with the OpenAI/Responses missing-arguments default — a tool with no
+    // arguments parses successfully into an empty input.
     #[test]
-    fn anthropic_tool_use_missing_input_becomes_null_arguments() {
+    fn anthropic_tool_use_missing_input_defaults_to_empty_object() {
         let value = json!({
             "content": [{ "type": "tool_use", "id": "toolu_1", "name": "f" }],
         });
@@ -594,7 +630,7 @@ mod tests {
             resp.message(),
             &Message::assistant_with_tool_calls(
                 "",
-                vec![ToolCall::new(ToolCallId::new("toolu_1"), "f", Value::Null)],
+                vec![ToolCall::new(ToolCallId::new("toolu_1"), "f", json!({}))],
             )
         );
     }

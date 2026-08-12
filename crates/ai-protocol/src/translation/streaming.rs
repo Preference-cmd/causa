@@ -198,6 +198,13 @@ impl OpenAiStreamAccumulator {
         !self.text.is_empty() || !self.tool_calls.is_empty()
     }
 
+    /// Whether any partial tool-call entries remain unflushed. Used by
+    /// transports to warn that an EOF dropped incomplete tool calls
+    /// (D-5).
+    pub fn has_partial_tool_calls(&self) -> bool {
+        !self.tool_calls.is_empty()
+    }
+
     /// The last `finish_reason` seen, consumed for the terminal `Done`.
     pub fn take_finish_reason(&mut self) -> Option<String> {
         self.finish_reason.take()
@@ -387,6 +394,13 @@ impl AnthropicStreamAccumulator {
         !self.text.is_empty() || !self.tool_calls.is_empty()
     }
 
+    /// Whether any partial tool-call entries remain unflushed. Used by
+    /// transports to warn that an EOF dropped incomplete tool calls
+    /// (D-5).
+    pub fn has_partial_tool_calls(&self) -> bool {
+        !self.tool_calls.is_empty()
+    }
+
     /// The `stop_reason` captured from `message_delta`, consumed for
     /// the terminal `Done` (AC-01).
     pub fn take_stop_reason(&mut self) -> Option<String> {
@@ -573,6 +587,13 @@ impl ResponsesStreamAccumulator {
     pub fn has_content(&self) -> bool {
         !self.tool_calls.is_empty()
     }
+
+    /// Whether any partial tool-call entries remain unflushed. Used by
+    /// transports to warn that an EOF dropped incomplete tool calls
+    /// (D-5).
+    pub fn has_partial_tool_calls(&self) -> bool {
+        !self.tool_calls.is_empty()
+    }
 }
 
 /// Decode a base64 string (standard alphabet with `=` padding) into raw
@@ -694,6 +715,10 @@ mod tests {
             }]
         }));
         assert!(events.is_empty(), "partial tool calls emit no events");
+        assert!(
+            acc.has_partial_tool_calls(),
+            "partial entries are tracked until the flush"
+        );
         events = acc.ingest_chunk(&json!({
             "choices": [{
                 "delta": { "tool_calls": [{ "index": 0, "function": { "arguments": "1}" } }] },
@@ -709,6 +734,50 @@ mod tests {
         assert_eq!(call.name(), "echo");
         assert_eq!(call.arguments(), &json!({"x": 1}));
         assert_eq!(acc.take_finish_reason().as_deref(), Some("tool_calls"));
+        assert!(acc.has_content());
+        assert!(
+            !acc.has_partial_tool_calls(),
+            "the flush drained all partial entries"
+        );
+    }
+
+    #[test]
+    fn anthropic_accumulator_tracks_partial_tool_calls() {
+        let mut acc = AnthropicStreamAccumulator::new();
+        assert!(!acc.has_partial_tool_calls());
+        // A tool_use block starts but only argument fragments arrive
+        // (no id/name): the entry stays partial.
+        acc.ingest_event(
+            Some("content_block_start"),
+            &json!({"index": 0, "content_block": {"type": "tool_use"}}),
+        );
+        acc.ingest_event(
+            Some("content_block_delta"),
+            &json!({"index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"x\":"}}),
+        );
+        assert!(acc.has_partial_tool_calls());
+        // content_block_stop without id/name emits nothing and the
+        // partial entry remains tracked (D-5).
+        let events = acc.ingest_event(Some("content_block_stop"), &json!({"index": 0}));
+        assert!(events.is_empty(), "incomplete call is not flushed");
+        assert!(acc.has_partial_tool_calls());
+    }
+
+    #[test]
+    fn responses_accumulator_tracks_partial_tool_calls() {
+        let mut acc = ResponsesStreamAccumulator::new();
+        assert!(!acc.has_partial_tool_calls());
+        acc.ingest_event(
+            Some("response.function_call_arguments.delta"),
+            &json!({"output_index": 0, "delta": "eyJ4IjogMX0="}),
+        );
+        assert!(acc.has_partial_tool_calls());
+        // A completed item drains nothing (Responses emits the complete
+        // ToolCall without clearing the fragment vec).
+        acc.ingest_event(
+            Some("response.output_item.done"),
+            &json!({"output_index": 0, "item": {"type": "function_call", "name": "echo", "arguments": "{}", "call_id": "c1"}}),
+        );
         assert!(acc.has_content());
     }
 }

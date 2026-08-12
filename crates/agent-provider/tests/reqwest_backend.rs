@@ -2275,11 +2275,11 @@ async fn openai_stream_skips_malformed_sse_event_without_breaking() {
 
 #[tokio::test]
 async fn openai_stream_eof_with_pending_tool_call_fragments_drops_partial_call() {
-    // Pins the current transport behavior: a stream that ends at EOF
-    // with a partially assembled tool call (no `finish_reason:
-    // "tool_calls"`, no [DONE]) terminates with a `Done` carrying no
-    // stop reason and never emits the partial `ToolCall`. The
-    // loop-side concern of dropped partial calls is AC-09 territory.
+    // A stream that ends at EOF with a partially assembled tool call
+    // (no `finish_reason: "tool_calls"`, no [DONE]) terminates with a
+    // `Done` carrying no stop reason and never emits the partial
+    // `ToolCall` (D-5). The drop is no longer silent: the transport
+    // emits a host-visible `Warning` before the terminal `Done`.
     let server = MockServer::start().await;
 
     let sse_body = [
@@ -2312,10 +2312,20 @@ async fn openai_stream_eof_with_pending_tool_call_fragments_drops_partial_call()
     let mut tool_calls = Vec::new();
     let mut done_count = 0;
     let mut done_reason: Option<String> = None;
+    let mut warnings = Vec::new();
+    let mut seen_done = false;
     while let Some(event) = stream.next_event().await {
         match event {
             reimagine_agent_harness::AgentStreamEvent::ToolCall(call) => tool_calls.push(call),
+            reimagine_agent_harness::AgentStreamEvent::Warning(message) => {
+                assert!(
+                    !seen_done,
+                    "the Warning must precede the terminal Done (Warning -> Done ordering)"
+                );
+                warnings.push(message);
+            }
             reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                seen_done = true;
                 done_count += 1;
                 done_reason = stop_reason;
             }
@@ -2328,4 +2338,9 @@ async fn openai_stream_eof_with_pending_tool_call_fragments_drops_partial_call()
     );
     assert_eq!(done_count, 1, "stream still terminates with a single Done");
     assert_eq!(done_reason, None, "no finish_reason was seen before EOF");
+    assert_eq!(
+        warnings,
+        vec!["stream ended with incomplete tool call(s)"],
+        "the dropped partial tool call is surfaced as a Warning (D-5)"
+    );
 }
