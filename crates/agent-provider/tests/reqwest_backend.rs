@@ -1890,3 +1890,442 @@ async fn openai_empty_stream_yields_no_terminal_done() {
     }
     assert!(!any_event, "empty stream yields no events at all");
 }
+
+// ------------------------------------------------------------------
+// AC-13: retry semantics (complete / list_models only; stream never
+// retries). Request-count assertions are the lever: jitter makes exact
+// sleep durations nondeterministic, so we assert how many times the
+// wiremock was hit (1 initial attempt + up to MAX_RETRIES retries).
+// ------------------------------------------------------------------
+
+#[tokio::test]
+async fn complete_retries_after_429_then_succeeds() {
+    let server = MockServer::start().await;
+
+    // Priority 1 (highest) + `up_to_n_times(1)`: answers the first
+    // request with 429, then stops matching so the success mock below
+    // handles the retry.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", format!("Bearer {OPENAI_KEY}")))
+        .respond_with(openai_completion_response())
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let resp = backend
+        .complete(build_request("gpt-4o-mini"))
+        .await
+        .expect("429 is retryable; the retry succeeds");
+    assert_eq!(resp.message().content(), "ok");
+
+    let requests = server.received_requests().await.expect("requests captured");
+    assert_eq!(requests.len(), 2, "1 initial attempt + 1 retry");
+}
+
+#[tokio::test]
+async fn complete_retries_after_500_then_succeeds() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", format!("Bearer {OPENAI_KEY}")))
+        .respond_with(openai_completion_response())
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let resp = backend
+        .complete(build_request("gpt-4o-mini"))
+        .await
+        .expect("5xx is retryable; the retry succeeds");
+    assert_eq!(resp.message().content(), "ok");
+
+    let requests = server.received_requests().await.expect("requests captured");
+    assert_eq!(requests.len(), 2, "1 initial attempt + 1 retry");
+}
+
+#[tokio::test]
+async fn complete_retries_exhaust_after_three_retries() {
+    let server = MockServer::start().await;
+
+    // No `up_to_n_times`: the mock 429s every request, so all retries
+    // are consumed and the last error surfaces.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("still rate limited"))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let err = backend
+        .complete(build_request("gpt-4o-mini"))
+        .await
+        .expect_err("all retries exhausted; the last error surfaces");
+    match err {
+        ProviderAdapterError::Api { code, .. } => assert_eq!(code, "429"),
+        other => panic!("expected Api error, got {other:?}"),
+    }
+
+    let requests = server.received_requests().await.expect("requests captured");
+    assert_eq!(
+        requests.len(),
+        4,
+        "1 initial attempt + 3 retries (MAX_RETRIES = 3)"
+    );
+}
+
+#[tokio::test]
+async fn complete_honors_retry_after_header() {
+    let server = MockServer::start().await;
+
+    // `Retry-After: 0` parses to a zero delay; the loop still sleeps
+    // its local backoff (`max(0, backoff)`) and must not kill the
+    // retry. The request count proves the header was parsed and the
+    // retry fired.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string("slow down"),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", format!("Bearer {OPENAI_KEY}")))
+        .respond_with(openai_completion_response())
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let resp = backend
+        .complete(build_request("gpt-4o-mini"))
+        .await
+        .expect("Retry-After: 0 must not prevent the retry");
+    assert_eq!(resp.message().content(), "ok");
+
+    let requests = server.received_requests().await.expect("requests captured");
+    assert_eq!(requests.len(), 2, "1 initial attempt + 1 retry");
+}
+
+#[tokio::test]
+async fn stream_does_not_retry_on_429() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let err = match backend.stream(build_request("gpt-4o-mini")).await {
+        Ok(_stream) => panic!("expected the 429 to surface as an error"),
+        Err(err) => err,
+    };
+    match err {
+        ProviderAdapterError::Api { code, .. } => assert_eq!(code, "429"),
+        other => panic!("expected Api error, got {other:?}"),
+    }
+
+    let requests = server.received_requests().await.expect("requests captured");
+    assert_eq!(requests.len(), 1, "stream must never retry");
+}
+
+// ------------------------------------------------------------------
+// AC-14: OpenAI / Anthropic SSE decode end-to-end through wiremock
+// (the unit-level accumulators are covered in tests/stream_openai.rs
+// and tests/stream_anthropic.rs; these exercise the full
+// `ReqwestSseStream` pipeline).
+// ------------------------------------------------------------------
+
+#[tokio::test]
+async fn openai_stream_assembles_tool_call_from_fragmented_deltas() {
+    // id + name in the first fragment, arguments split across two
+    // chunks; `finish_reason: "tool_calls"` flushes the assembled call
+    // and `[DONE]` terminates with that stop reason.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":\"}}]},\"index\":0}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" 42}\"}}]},\"index\":0}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\",\"index\":0}]}",
+        "",
+        "data: [DONE]",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let mut stream = backend
+        .stream(build_request("gpt-4o-mini"))
+        .await
+        .expect("stream starts");
+
+    let mut tool_calls = Vec::new();
+    let mut done_reason: Option<String> = None;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ToolCall(call) => tool_calls.push(call),
+            reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                done_reason = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(tool_calls.len(), 1, "one complete tool call expected");
+    assert_eq!(tool_calls[0].id().as_str(), "call_9");
+    assert_eq!(tool_calls[0].name(), "echo");
+    assert_eq!(tool_calls[0].arguments(), &json!({"x": 42}));
+    assert_eq!(done_reason.as_deref(), Some("tool_calls"));
+}
+
+#[tokio::test]
+async fn anthropic_stream_merges_usage_from_message_start_and_message_delta() {
+    // message_start carries input-side counts (input_tokens, cache
+    // fields); message_delta carries output_tokens. The accumulator
+    // must merge them into a single Usage event.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "event: message_start",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":50}}}",
+        "",
+        "event: content_block_delta",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}",
+        "",
+        "event: message_delta",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}",
+        "",
+        "event: message_stop",
+        "data: {\"type\":\"message_stop\"}",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
+        ProviderName::new("anthropic-test"),
+        anthropic_cfg_for(&server),
+        http,
+    ));
+
+    let mut stream = backend
+        .stream(build_request("claude-3-5-sonnet-latest"))
+        .await
+        .expect("stream starts");
+
+    let mut text = String::new();
+    let mut usages = Vec::new();
+    let mut done = false;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ContentDelta(delta) => text.push_str(&delta),
+            reimagine_agent_harness::AgentStreamEvent::Usage(usage) => usages.push(usage),
+            reimagine_agent_harness::AgentStreamEvent::Done { .. } => done = true,
+            _ => {}
+        }
+    }
+    assert_eq!(text, "hi");
+    assert_eq!(
+        usages.len(),
+        1,
+        "message_start + message_delta counts merge into a single Usage"
+    );
+    let usage = &usages[0];
+    assert_eq!(usage.input_tokens(), Some(12));
+    assert_eq!(usage.output_tokens(), Some(7));
+    assert_eq!(usage.cache_creation_input_tokens(), Some(100));
+    assert_eq!(usage.cache_read_input_tokens(), Some(50));
+    assert_eq!(usage.total(), Some(169), "input + cache_creation + cache_read + output");
+    assert!(done, "message_stop terminates the stream");
+}
+
+#[tokio::test]
+async fn openai_stream_skips_malformed_sse_event_without_breaking() {
+    // A data line that is not valid JSON is skipped (decode is
+    // permissive); surrounding content and the terminal Done still
+    // arrive.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"be\"},\"index\":0}]}",
+        "",
+        "data: {this is not valid json",
+        "",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"fore\"},\"index\":0}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}",
+        "",
+        "data: [DONE]",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let mut stream = backend
+        .stream(build_request("gpt-4o-mini"))
+        .await
+        .expect("stream starts");
+
+    let mut text = String::new();
+    let mut done_reason: Option<String> = None;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ContentDelta(delta) => text.push_str(&delta),
+            reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                done_reason = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(text, "before", "content on both sides of the bad event arrives");
+    assert_eq!(done_reason.as_deref(), Some("stop"));
+}
+
+#[tokio::test]
+async fn openai_stream_eof_with_pending_tool_call_fragments_drops_partial_call() {
+    // Pins the current transport behavior: a stream that ends at EOF
+    // with a partially assembled tool call (no `finish_reason:
+    // "tool_calls"`, no [DONE]) terminates with a `Done` carrying no
+    // stop reason and never emits the partial `ToolCall`. The
+    // loop-side concern of dropped partial calls is AC-09 territory.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":\"}}]},\"index\":0}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" 42}\"}}]},\"index\":0}]}",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        ));
+
+    let mut stream = backend
+        .stream(build_request("gpt-4o-mini"))
+        .await
+        .expect("stream starts");
+
+    let mut tool_calls = Vec::new();
+    let mut done_count = 0;
+    let mut done_reason: Option<String> = None;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ToolCall(call) => tool_calls.push(call),
+            reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                done_count += 1;
+                done_reason = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        tool_calls.is_empty(),
+        "partial tool call is not flushed at EOF without a finish_reason"
+    );
+    assert_eq!(done_count, 1, "stream still terminates with a single Done");
+    assert_eq!(done_reason, None, "no finish_reason was seen before EOF");
+}
