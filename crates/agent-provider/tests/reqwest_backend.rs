@@ -179,7 +179,7 @@ async fn openai_complete_maps_non_2xx_to_api_error() {
         .await
         .expect_err("expected non-2xx response to surface as an error");
     match err {
-        ProviderAdapterError::Api { code, message } => {
+        ProviderAdapterError::Api { code, message, .. } => {
             assert_eq!(code, "401");
             assert!(message.contains("invalid api key"));
         }
@@ -285,7 +285,7 @@ async fn anthropic_complete_maps_non_2xx_to_api_error() {
         .await
         .expect_err("expected non-2xx");
     match err {
-        ProviderAdapterError::Api { code, message } => {
+        ProviderAdapterError::Api { code, message, .. } => {
             assert_eq!(code, "401");
             assert!(message.contains("authentication_error"));
         }
@@ -1705,4 +1705,190 @@ async fn openai_complete_rejects_non_image_file_block() {
         .await
         .expect_err("non-image file blocks must be rejected");
     assert!(err.to_string().contains("audio/mpeg"), "{err}");
+}
+
+#[tokio::test]
+async fn openai_stream_emits_terminal_done_with_finish_reason() {
+    // AC-01: the OpenAI chat-completions stream must surface its
+    // finish_reason on the terminal Done so the loop can distinguish
+    // truncation ("length") from a clean "stop".
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"index\":0}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\",\"index\":0}]}",
+        "",
+        "data: [DONE]",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        arc_real_openai_chat_completions_backend_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        );
+
+    let mut stream = backend
+        .stream(build_request("gpt-4o-mini"))
+        .await
+        .expect("stream starts");
+
+    let mut text = String::new();
+    let mut done_reason: Option<String> = None;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ContentDelta(delta) => text.push_str(&delta),
+            reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                done_reason = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(text, "partial");
+    assert_eq!(done_reason.as_deref(), Some("length"));
+}
+
+#[tokio::test]
+async fn openai_stream_eof_without_done_still_emits_done() {
+    // AC-01/AC-06: a stream that ends at EOF without the [DONE] marker
+    // still terminates with a Done carrying the last finish_reason.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"index\":0}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        arc_real_openai_chat_completions_backend_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        );
+
+    let mut stream = backend
+        .stream(build_request("gpt-4o-mini"))
+        .await
+        .expect("stream starts");
+
+    let mut text = String::new();
+    let mut done_reason: Option<String> = None;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ContentDelta(delta) => text.push_str(&delta),
+            reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                done_reason = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(text, "done");
+    assert_eq!(done_reason.as_deref(), Some("stop"));
+}
+
+#[tokio::test]
+async fn anthropic_stream_emits_done_with_stop_reason() {
+    // AC-01: Anthropic's stop_reason from message_delta must reach the
+    // terminal Done instead of being discarded.
+    let server = MockServer::start().await;
+
+    let sse_body = [
+        "event: message_start",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":7}}}",
+        "",
+        "event: content_block_delta",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}",
+        "",
+        "event: message_delta",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":5}}",
+        "",
+        "event: message_stop",
+        "data: {\"type\":\"message_stop\"}",
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
+        ProviderName::new("anthropic-test"),
+        anthropic_cfg_for(&server),
+        http,
+    ));
+
+    let mut stream = backend
+        .stream(build_request("claude-3-5-sonnet-latest"))
+        .await
+        .expect("stream starts");
+
+    let mut text = String::new();
+    let mut done_reason: Option<String> = None;
+    while let Some(event) = stream.next_event().await {
+        match event {
+            reimagine_agent_harness::AgentStreamEvent::ContentDelta(delta) => text.push_str(&delta),
+            reimagine_agent_harness::AgentStreamEvent::Done { stop_reason } => {
+                done_reason = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(text, "partial");
+    assert_eq!(done_reason.as_deref(), Some("max_tokens"));
+}
+
+#[tokio::test]
+async fn openai_empty_stream_yields_no_terminal_done() {
+    // AC-06: a zero-event stream must not fabricate a Done; the loop
+    // reports it as EMPTY_STREAM.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(""))
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let backend: Arc<dyn CompletionBackend> =
+        arc_real_openai_chat_completions_backend_with_http_client(
+            ProviderName::new("openai-test"),
+            openai_cfg_for(&server),
+            http,
+        );
+
+    let mut stream = backend
+        .stream(build_request("gpt-4o-mini"))
+        .await
+        .expect("stream starts");
+
+    let mut any_event = false;
+    while let Some(_event) = stream.next_event().await {
+        any_event = true;
+    }
+    assert!(!any_event, "empty stream yields no events at all");
 }

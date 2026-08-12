@@ -27,13 +27,23 @@ use reimagine_ai_protocol::{
     AnthropicMessagesConfig, CompletionBackend, OpenAiChatCompletionsConfig, OpenAiResponsesConfig,
     Protocol, ProviderAdapterError,
 };
-use reimagine_ai_protocol::translation::sse_parser::SseParser;
+use reimagine_ai_protocol::translation::sse_parser::{SseEvent, SseParser};
 use serde_json::{Value, json};
 
 /// Maximum number of retries for transient HTTP errors.
 const MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff (doubled each retry).
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+/// Random jitter added to each retry delay (0..=RETRY_JITTER_MS) so a
+/// burst of 429s across hosts does not re-synchronize (AC-05).
+const RETRY_JITTER_MS: u64 = 250;
+/// Connect timeout for all provider HTTP calls (AC-05).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Total request timeout for non-streaming calls (AC-05).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Idle (read) timeout between streamed SSE events (AC-05). Generous:
+/// reasoning models may produce no delta for minutes.
+const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Production backend. `complete` and `list_models` route through
 /// direct reqwest HTTP calls.
@@ -47,6 +57,10 @@ pub struct ReqwestBackend {
     name: ProviderName,
     config: BackendConfig,
     http: reqwest::Client,
+    /// Client used for streaming requests. Distinct from `http`:
+    /// streaming needs a generous idle (read) timeout instead of a
+    /// total request timeout (AC-05).
+    stream_http: reqwest::Client,
     workspace_dir: Option<PathBuf>,
 }
 
@@ -85,10 +99,35 @@ impl BackendConfig {
 }
 
 impl ReqwestBackend {
+    /// Build the two default clients: `http` for complete/list_models
+    /// (connect + total timeout) and `stream_http` for streaming
+    /// (connect + generous idle timeout, no total cap so long-lived
+    /// streams and minutes-long reasoning gaps are not killed) (AC-05).
+    fn default_clients() -> (reqwest::Client, reqwest::Client) {
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("reqwest client build");
+        let stream_http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(STREAM_READ_TIMEOUT)
+            .build()
+            .expect("reqwest client build");
+        (http, stream_http)
+    }
+
     /// Construct an OpenAI-compatible backend with a default
     /// `reqwest::Client`.
     pub fn openai_chat_completions(name: ProviderName, cfg: OpenAiChatCompletionsConfig) -> Self {
-        Self::openai_chat_completions_with_http_client(name, cfg, reqwest::Client::new())
+        let (http, stream_http) = Self::default_clients();
+        Self {
+            name,
+            config: BackendConfig::OpenAiChatCompletions(cfg),
+            http,
+            stream_http,
+            workspace_dir: None,
+        }
     }
 
     /// Construct an OpenAI-compatible backend with an explicit
@@ -101,6 +140,7 @@ impl ReqwestBackend {
         Self {
             name,
             config: BackendConfig::OpenAiChatCompletions(cfg),
+            stream_http: http.clone(),
             http,
             workspace_dir: None,
         }
@@ -108,7 +148,14 @@ impl ReqwestBackend {
 
     /// Construct an Anthropic backend with a default `reqwest::Client`.
     pub fn anthropic_messages(name: ProviderName, cfg: AnthropicMessagesConfig) -> Self {
-        Self::anthropic_messages_with_http_client(name, cfg, reqwest::Client::new())
+        let (http, stream_http) = Self::default_clients();
+        Self {
+            name,
+            config: BackendConfig::AnthropicMessages(cfg),
+            http,
+            stream_http,
+            workspace_dir: None,
+        }
     }
 
     /// Construct an Anthropic backend with an explicit `reqwest::Client`
@@ -121,6 +168,7 @@ impl ReqwestBackend {
         Self {
             name,
             config: BackendConfig::AnthropicMessages(cfg),
+            stream_http: http.clone(),
             http,
             workspace_dir: None,
         }
@@ -129,7 +177,14 @@ impl ReqwestBackend {
     /// Construct an OpenAI Responses backend with a default
     /// `reqwest::Client`.
     pub fn openai_responses(name: ProviderName, cfg: OpenAiResponsesConfig) -> Self {
-        Self::openai_responses_with_http_client(name, cfg, reqwest::Client::new())
+        let (http, stream_http) = Self::default_clients();
+        Self {
+            name,
+            config: BackendConfig::OpenAiResponses(cfg),
+            http,
+            stream_http,
+            workspace_dir: None,
+        }
     }
 
     /// Construct an OpenAI Responses backend with an explicit
@@ -142,6 +197,7 @@ impl ReqwestBackend {
         Self {
             name,
             config: BackendConfig::OpenAiResponses(cfg),
+            stream_http: http.clone(),
             http,
             workspace_dir: None,
         }
@@ -473,7 +529,7 @@ impl ReqwestBackend {
         params.apply_openai(&mut body);
 
         let resp = self
-            .http
+            .stream_http
             .post(&url)
             .bearer_auth(cfg.api_key())
             .json(&Value::Object(body))
@@ -524,7 +580,7 @@ impl ReqwestBackend {
         }
 
         let resp = self
-            .http
+            .stream_http
             .post(&url)
             .header("x-api-key", cfg.api_key())
             .header("anthropic-version", "2023-06-01")
@@ -579,7 +635,7 @@ impl ReqwestBackend {
         params.apply_responses(body.as_object_mut().expect("body is an object"));
 
         let resp = self
-            .http
+            .stream_http
             .post(&url)
             .bearer_auth(cfg.api_key())
             .json(&body)
@@ -606,10 +662,22 @@ fn sampling_params(request: &AgentRequest) -> translation::params::SamplingParam
     params
 }
 
+/// Parse a `Retry-After` response header into a delay. Supports the
+/// seconds form (RFC 9110); HTTP-date values are not parsed and fall
+/// back to a conservative 10s (AC-05).
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    Some(Duration::from_secs(10))
+}
+
 /// Parse a reqwest response into a `serde_json::Value`, mapping non-2xx
 /// status codes to `ProviderAdapterError::Api`.
 async fn response_json_or_error(resp: reqwest::Response) -> Result<Value, ProviderAdapterError> {
     let status = resp.status();
+    let retry_after = parse_retry_after(resp.headers());
     let text = resp
         .text()
         .await
@@ -619,7 +687,8 @@ async fn response_json_or_error(resp: reqwest::Response) -> Result<Value, Provid
         serde_json::from_str(&text)
             .map_err(|e| ProviderAdapterError::serialization(format!("response json: {e}")))
     } else {
-        Err(ProviderAdapterError::api(status.as_u16().to_string(), text))
+        Err(ProviderAdapterError::api(status.as_u16().to_string(), text)
+            .with_retry_after(retry_after))
     }
 }
 
@@ -681,6 +750,17 @@ struct ReqwestSseStream {
     anthropic_input: Option<u64>,
     anthropic_cache_creation: Option<u64>,
     anthropic_cache_read: Option<u64>,
+    /// Anthropic `message_delta` stop_reason, emitted with the terminal
+    /// `Done` on `message_stop` (AC-01). Truncation ("max_tokens") must
+    /// reach the loop so incomplete responses are not reported as final.
+    anthropic_stop_reason: Option<String>,
+    /// OpenAI `finish_reason` from the final chunk, emitted with the
+    /// terminal `Done` on `[DONE]` (AC-01).
+    openai_finish_reason: Option<String>,
+    /// Bytes buffered across chunk boundaries while decoding UTF-8
+    /// (AC-03): a multi-byte character split across TCP chunks stays
+    /// here until the next chunk completes it.
+    byte_buf: Vec<u8>,
     /// Whether the stream is done.
     done: bool,
 }
@@ -723,6 +803,9 @@ impl ReqwestSseStream {
             anthropic_input: None,
             anthropic_cache_creation: None,
             anthropic_cache_read: None,
+            anthropic_stop_reason: None,
+            openai_finish_reason: None,
+            byte_buf: Vec::new(),
             done: false,
         }
     }
@@ -733,6 +816,10 @@ impl ReqwestSseStream {
         // OpenAI sends "data: [DONE]" as the terminal event.
         if event.data == "[DONE]" {
             self.done = true;
+            // Terminal `Done` with the last finish_reason seen (AC-01):
+            // truncation ("length") must reach the loop.
+            self.pending
+                .push_back(AgentStreamEvent::Done { stop_reason: self.openai_finish_reason.take() });
             return;
         }
 
@@ -820,16 +907,19 @@ impl ReqwestSseStream {
             }
         }
 
-        // Extract finish reason — flush complete tool calls.
+        // Extract finish reason — flush complete tool calls and remember
+        // the reason for the terminal `Done` (AC-01).
         if let Some(finish_reason) = chunk
             .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|a| a.first())
             .and_then(|c| c.get("finish_reason"))
             .and_then(|v| v.as_str())
-            && finish_reason == "tool_calls"
         {
-            self.flush_openai_tool_calls();
+            self.openai_finish_reason = Some(finish_reason.to_string());
+            if finish_reason == "tool_calls" {
+                self.flush_openai_tool_calls();
+            }
         }
 
         // Extract usage.
@@ -964,8 +1054,9 @@ impl ReqwestSseStream {
                 if let Some(delta) = data.get("delta")
                     && let Some(reason) = delta.get("stop_reason").and_then(|v| v.as_str())
                 {
-                    // Store stop_reason; will be emitted on message_stop.
-                    let _ = reason;
+                    // Stash the provider stop_reason; it is emitted with
+                    // the terminal `Done` on `message_stop` (AC-01).
+                    self.anthropic_stop_reason = Some(reason.to_string());
                 }
                 if let Some(usage) = data.get("usage") {
                     let input = self.anthropic_input.or_else(|| {
@@ -989,7 +1080,7 @@ impl ReqwestSseStream {
             "message_stop" => {
                 self.done = true;
                 self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: None });
+                    .push_back(AgentStreamEvent::Done { stop_reason: self.anthropic_stop_reason.take() });
             }
             _ => {}
         }
@@ -1170,29 +1261,101 @@ impl AgentStream for ReqwestSseStream {
             let chunk = match self.response.chunk().await {
                 Ok(Some(c)) => c,
                 Ok(None) => {
-                    // Stream ended. Flush any remaining SSE data.
-                    if let Some(final_event) = self.parser.flush() {
-                        self.process_event(final_event);
-                        if let Some(event) = self.pending.pop_front() {
-                            return Some(event);
+                    // Stream ended without an explicit terminal event.
+                    // Feed any incomplete UTF-8 tail lossily, then flush
+                    // the SSE parser.
+                    if !self.byte_buf.is_empty() {
+                        let tail = std::mem::take(&mut self.byte_buf);
+                        let text = String::from_utf8_lossy(&tail);
+                        for event in self.parser.feed(&text) {
+                            self.process_event(event);
                         }
                     }
+                    if let Some(final_event) = self.parser.flush() {
+                        self.process_event(final_event);
+                    }
                     self.done = true;
+                    if let Some(event) = self.pending.pop_front() {
+                        return Some(event);
+                    }
+                    // Protocols are expected to terminate with an
+                    // explicit `Done` ([DONE], message_stop,
+                    // response.completed). When they don't but content
+                    // was produced, emit a final `Done` with the last
+                    // known stop reason so the loop sees proper
+                    // termination; a zero-event stream stays Done-less
+                    // and the loop reports it as EMPTY_STREAM (AC-06).
+                    let stop_reason = match self.kind {
+                        StreamKind::OpenAi => self.openai_finish_reason.take(),
+                        StreamKind::Anthropic => self.anthropic_stop_reason.take(),
+                        StreamKind::Responses => None,
+                    };
+                    let had_content = !self.openai_text.is_empty()
+                        || !self.anthropic_text.is_empty()
+                        || !self.openai_tool_calls.is_empty()
+                        || !self.anthropic_tool_calls.is_empty()
+                        || !self.responses_tool_calls.is_empty();
+                    if stop_reason.is_some() || had_content {
+                        self.pending
+                            .push_back(AgentStreamEvent::Done { stop_reason });
+                        return self.pending.pop_front();
+                    }
                     return None;
                 }
                 Err(e) => {
-                    eprintln!("agent stream read error: {e}");
+                    // Surface the failure as a terminal Error event so
+                    // the loop can distinguish a dropped connection from
+                    // a clean end (AC-05).
                     self.done = true;
-                    return None;
+                    return Some(AgentStreamEvent::Error(format!(
+                        "agent stream read error: {e}"
+                    )));
                 }
             };
 
-            // Convert bytes to string and feed to SSE parser.
-            let text = String::from_utf8_lossy(&chunk);
-            let events = self.parser.feed(&text);
-
+            // Decode incrementally so multi-byte characters split
+            // across chunk boundaries are not corrupted (AC-03).
+            let events = feed_sse_bytes(&mut self.parser, &mut self.byte_buf, &chunk);
             for event in events {
                 self.process_event(event);
+            }
+        }
+    }
+}
+
+/// Feed raw bytes into `parser`, decoding UTF-8 incrementally so a
+/// multi-byte character split across TCP chunks is not corrupted
+/// (AC-03). An incomplete trailing sequence is kept in `byte_buf`
+/// until the next chunk completes it; a corrupted leading byte (one
+/// that can never become valid UTF-8) is dropped instead of buffering
+/// forever. `parser.feed` is called with the longest valid prefix each
+/// pass.
+fn feed_sse_bytes(parser: &mut SseParser, byte_buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<SseEvent> {
+    byte_buf.extend_from_slice(chunk);
+    let mut events = Vec::new();
+    loop {
+        match std::str::from_utf8(byte_buf) {
+            Ok(text) => {
+                events.extend(parser.feed(text));
+                byte_buf.clear();
+                return events;
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid > 0 {
+                    let text = std::str::from_utf8(&byte_buf[..valid]).expect("valid_up_to prefix");
+                    events.extend(parser.feed(text));
+                    byte_buf.drain(..valid);
+                    continue;
+                }
+                if err.error_len().is_some() {
+                    // A truly invalid byte, not an incomplete trailing
+                    // sequence: drop it and keep decoding.
+                    byte_buf.drain(..1);
+                    continue;
+                }
+                // Incomplete trailing sequence: wait for the next chunk.
+                return events;
             }
         }
     }
@@ -1278,14 +1441,9 @@ pub fn arc_real_openai_responses_backend_with_http_client(
 #[async_trait]
 impl CompletionBackend for ReqwestBackend {
     async fn complete(&self, request: AgentRequest) -> Result<AgentResponse, ProviderAdapterError> {
-        let mut last_err: Option<ProviderAdapterError> = None;
-
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let delay = RETRY_BASE_DELAY * 2u32.pow(attempt - 1);
-                tokio::time::sleep(delay).await;
-            }
-
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             let result = match &self.config {
                 BackendConfig::OpenAiChatCompletions(_) => self.run_openai_complete(&request).await,
                 BackendConfig::AnthropicMessages(_) => self.run_anthropic_complete(&request).await,
@@ -1297,17 +1455,20 @@ impl CompletionBackend for ReqwestBackend {
             match result {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
-                    if err.is_retryable() && attempt < MAX_RETRIES {
-                        last_err = Some(err);
+                    if err.is_retryable() && attempt <= MAX_RETRIES {
+                        // Prefer the upstream's Retry-After hint, but
+                        // never below the local backoff (AC-05).
+                        let delay = err
+                            .retry_after()
+                            .map(|d| d.max(retry_delay(attempt)))
+                            .unwrap_or_else(|| retry_delay(attempt));
+                        tokio::time::sleep(delay).await;
                         continue;
                     }
                     return Err(err);
                 }
             }
         }
-
-        Err(last_err
-            .unwrap_or_else(|| ProviderAdapterError::transport("retry exhausted".to_string())))
     }
 
     async fn stream(
@@ -1324,14 +1485,9 @@ impl CompletionBackend for ReqwestBackend {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderAdapterError> {
-        let mut last_err: Option<ProviderAdapterError> = None;
-
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let delay = RETRY_BASE_DELAY * 2u32.pow(attempt - 1);
-                tokio::time::sleep(delay).await;
-            }
-
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             let result = match &self.config {
                 BackendConfig::OpenAiChatCompletions(_) => self.run_openai_list_models().await,
                 BackendConfig::AnthropicMessages(_) => self.run_anthropic_list_models().await,
@@ -1341,16 +1497,104 @@ impl CompletionBackend for ReqwestBackend {
             match result {
                 Ok(models) => return Ok(models),
                 Err(err) => {
-                    if err.is_retryable() && attempt < MAX_RETRIES {
-                        last_err = Some(err);
+                    if err.is_retryable() && attempt <= MAX_RETRIES {
+                        let delay = err
+                            .retry_after()
+                            .map(|d| d.max(retry_delay(attempt)))
+                            .unwrap_or_else(|| retry_delay(attempt));
+                        tokio::time::sleep(delay).await;
                         continue;
                     }
                     return Err(err);
                 }
             }
         }
+    }
+}
 
-        Err(last_err
-            .unwrap_or_else(|| ProviderAdapterError::transport("retry exhausted".to_string())))
+/// Backoff delay for retry `attempt` (1-based): exponential base
+/// (`RETRY_BASE_DELAY * 2^(attempt-1)`) plus a small randomized jitter
+/// so a burst of 429s across hosts does not re-synchronize (AC-05).
+fn retry_delay(attempt: u32) -> Duration {
+    let base = RETRY_BASE_DELAY.saturating_mul(2u32.pow(attempt - 1));
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 % (RETRY_JITTER_MS + 1))
+        .unwrap_or(0);
+    base + Duration::from_millis(jitter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feed_sse_bytes_handles_multibyte_chars_split_across_chunks() {
+        // "data: 你好\n\ndata: done\n\n" fed one byte at a time (the
+        // worst-case TCP fragmentation). 你好 is 6 UTF-8 bytes; no
+        // chunk boundary may corrupt it (AC-03).
+        let mut parser = SseParser::new();
+        let mut byte_buf = Vec::new();
+        let mut events = Vec::new();
+        for byte in "data: 你好\n\ndata: done\n\n".as_bytes() {
+            events.extend(feed_sse_bytes(&mut parser, &mut byte_buf, &[*byte]));
+        }
+        assert!(byte_buf.is_empty());
+        let texts: Vec<String> = events.iter().map(|e| e.data.clone()).collect();
+        assert_eq!(texts, vec!["你好".to_string(), "done".to_string()]);
+    }
+
+    #[test]
+    fn feed_sse_bytes_buffers_incomplete_trailing_sequence() {
+        let mut parser = SseParser::new();
+        let mut byte_buf = Vec::new();
+        // "data: " + the first 2 of "你"'s 3 UTF-8 bytes — an
+        // incomplete trailing sequence.
+        let mut partial = b"data: ".to_vec();
+        partial.extend_from_slice(&"你".as_bytes()[..2]);
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, &partial);
+        assert!(events.is_empty(), "incomplete sequence yields nothing");
+        assert_eq!(byte_buf, &"你".as_bytes()[..2], "partial bytes stay buffered");
+        // Completing the sequence (the missing 3rd byte + the rest)
+        // yields the event.
+        let mut rest = "你".as_bytes()[2..].to_vec();
+        rest.extend_from_slice("好\n\n".as_bytes());
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, &rest);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "你好");
+        assert!(byte_buf.is_empty());
+    }
+
+    #[test]
+    fn feed_sse_bytes_drops_corrupted_leading_byte_instead_of_deadlocking() {
+        // A corrupted multi-byte sequence (E4 BD followed by a non
+        // continuation byte) can never decode; the buffered head must
+        // be dropped, not buffered forever (AC-03).
+        let mut parser = SseParser::new();
+        let mut byte_buf = Vec::new();
+        let mut corrupted = b"data: ".to_vec();
+        corrupted.extend_from_slice(&"你".as_bytes()[..2]);
+        corrupted.push(b'E'); // not a continuation byte — E4 BD E5 is invalid
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, &corrupted);
+        assert!(events.is_empty());
+        assert!(byte_buf.is_empty(), "corrupted bytes dropped, none buffered");
+        // The stream continues to decode after the corrupted byte.
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, b"nd\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "End");
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_and_http_date() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(parse_retry_after(&headers), None);
+        headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(120)));
+        // HTTP-date form is not parsed; fall back to a conservative 10s.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(10)));
     }
 }

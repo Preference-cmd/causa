@@ -6,7 +6,10 @@
 //! translation between Reimagine-owned shapes
 //! (`reimagine_agent_harness`) and provider-native wire payloads. It is
 //! transport-free — no reqwest, no SDKs — so the same translation logic
-//! serves any concrete adapter.
+//! serves any concrete adapter. Exception: streaming delta translation —
+//! the live OpenAI/Anthropic stream decoders live in `agent-provider`'s
+//! transport layer, not here (known duplication; see
+//! `docs/roadmap/agent-stack-cleanup-roadmap.md`).
 //!
 //! Layering (mirrors the Pi agent toolkit):
 //!
