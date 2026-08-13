@@ -662,13 +662,20 @@ fn sampling_params(request: &AgentRequest) -> translation::params::SamplingParam
     params
 }
 
+/// Cap on honoring an upstream `Retry-After` hint (R2-03): a
+/// misconfigured or hostile proxy can return absurd values (e.g.
+/// `99999999` seconds), and sleeping years inside a retry loop is worse
+/// than retrying early. The local exponential backoff still applies.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
 /// Parse a `Retry-After` response header into a delay. Supports the
 /// seconds form (RFC 9110); HTTP-date values are not parsed and fall
-/// back to a conservative 10s (AC-05).
+/// back to a conservative 10s (AC-05). The delay is capped at
+/// [`MAX_RETRY_AFTER`] (R2-03).
 fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
     if let Ok(secs) = value.parse::<u64>() {
-        return Some(Duration::from_secs(secs));
+        return Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER));
     }
     Some(Duration::from_secs(10))
 }
@@ -782,7 +789,17 @@ impl ReqwestSseStream {
 
         let value: Value = match serde_json::from_str(&event.data) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(e) => {
+                // R2-02: a provider error event truncated mid-JSON (common
+                // under network flakiness) must not vanish silently — the
+                // turn would otherwise end on a misleading `Done`.
+                tracing::warn!(
+                    error = %e,
+                    event_type = ?event.event,
+                    "dropping SSE event that failed JSON parsing"
+                );
+                return;
+            }
         };
 
         let events = match self.kind {
@@ -1151,12 +1168,24 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         assert_eq!(parse_retry_after(&headers), None);
         headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
-        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(120)));
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(60)));
         // HTTP-date form is not parsed; fall back to a conservative 10s.
         headers.insert(
             reqwest::header::RETRY_AFTER,
             "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
         );
         assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn parse_retry_after_caps_absurd_values() {
+        // R2-03: a misconfigured proxy returning a huge Retry-After must
+        // not make the client sleep for years inside a retry loop.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "99999999".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(MAX_RETRY_AFTER));
     }
 }

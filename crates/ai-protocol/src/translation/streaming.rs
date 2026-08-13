@@ -22,19 +22,30 @@
 //! - [`ResponsesStreamAccumulator`]: OpenAI Responses events,
 //!   discriminated by the SSE `event:` field. Argument deltas arrive
 //!   base64-encoded and are decoded before accumulation. Emits the
-//!   terminal `Done` on `response.completed` / `response.failed`.
+//!   terminal `Done` on `response.completed` and a terminal `Error` on
+//!   `response.failed` (the failure payload is surfaced, never a clean
+//!   `Done`, R2-01).
 //!
 //! Decoding is permissive, matching the transport layer's live
 //! behavior: unparseable chunks and unknown event types are silently
 //! ignored (a provider blip must not fail a turn mid-stream). Tool-call
-//! assembly drops partial entries whose `id`/`name` never arrived;
-//! argument fragments that do not parse as JSON degrade to `Value::Null`.
+//! assembly drops partial entries whose `id`/`name` never arrived (with
+//! a host-visible `Warning`, R2-04); argument fragments that do not
+//! parse as JSON degrade to `Value::Null`. Provider-controlled
+//! tool-call indices are capped at [`MAX_TOOL_CALL_SLOTS`] so a single
+//! malformed event cannot trigger a giant allocation (R2-03).
 
 use serde_json::Value;
 
 use reimagine_agent_harness::{AgentStreamEvent, ToolCall, ToolCallId, Usage};
 
 use crate::translation::usage::{openai_cached_tokens, openai_reasoning_tokens};
+
+/// Upper bound on the number of tool-call slots an accumulator will
+/// grow (R2-03). Provider-controlled `index` values are untrusted: a
+/// single malformed/adversarial event must not drive a multi-GB
+/// allocation via `while vec.len() <= index { push }`.
+const MAX_TOOL_CALL_SLOTS: usize = 64;
 
 /// OpenAI Chat Completions stream accumulator.
 ///
@@ -53,6 +64,9 @@ pub struct OpenAiStreamAccumulator {
     /// Last `finish_reason` seen, emitted with the terminal `Done` by
     /// the transport (AC-01).
     finish_reason: Option<String>,
+    /// Whether an out-of-range tool-call index has already been warned
+    /// about (R2-03): warn once per stream, not per malformed event.
+    slot_overflow_warned: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -117,6 +131,12 @@ impl OpenAiStreamAccumulator {
                     .and_then(|v| v.as_u64())
                     .map(|i| i as usize)
                     .unwrap_or(i);
+                // R2-03: provider-controlled index is untrusted; beyond
+                // the slot cap the event is ignored (warn once).
+                if index >= MAX_TOOL_CALL_SLOTS {
+                    self.warn_slot_overflow(&mut out, index);
+                    break;
+                }
                 while self.tool_calls.len() <= index {
                     self.tool_calls.push(OpenAiPartialToolCall::default());
                 }
@@ -173,8 +193,10 @@ impl OpenAiStreamAccumulator {
     }
 
     /// Flush complete tool calls into `out`. Entries missing required
-    /// fields are dropped.
+    /// fields are dropped — surfaced as a `Warning` so dropped calls are
+    /// visible to hosts (R2-04).
     fn flush_tool_calls(&mut self, out: &mut Vec<AgentStreamEvent>) {
+        let mut dropped = 0usize;
         for partial in self.tool_calls.drain(..) {
             if let (Some(id), Some(name)) = (partial.id, partial.name) {
                 let arguments = if partial.arguments.is_empty() {
@@ -187,7 +209,24 @@ impl OpenAiStreamAccumulator {
                     name,
                     arguments,
                 )));
+            } else {
+                dropped += 1;
             }
+        }
+        if dropped > 0 {
+            out.push(AgentStreamEvent::Warning(format!(
+                "dropped {dropped} incomplete tool call(s) missing id/name at flush"
+            )));
+        }
+    }
+
+    /// Warn once that a tool-call index exceeded the slot cap (R2-03).
+    fn warn_slot_overflow(&mut self, out: &mut Vec<AgentStreamEvent>, index: usize) {
+        if !self.slot_overflow_warned {
+            self.slot_overflow_warned = true;
+            out.push(AgentStreamEvent::Warning(format!(
+                "tool-call index {index} exceeds the {MAX_TOOL_CALL_SLOTS}-slot cap; ignoring out-of-range tool-call events"
+            )));
         }
     }
 
@@ -234,6 +273,9 @@ pub struct AnthropicStreamAccumulator {
     input: Option<u64>,
     cache_creation: Option<u64>,
     cache_read: Option<u64>,
+    /// Whether an out-of-range content-block index has already been
+    /// warned about (R2-03).
+    slot_overflow_warned: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -266,6 +308,10 @@ impl AnthropicStreamAccumulator {
             "content_block_start" => {
                 if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
                     let index = index as usize;
+                    if index >= MAX_TOOL_CALL_SLOTS {
+                        self.warn_slot_overflow(&mut out, index);
+                        return out;
+                    }
                     while self.tool_calls.len() <= index {
                         self.tool_calls.push(AnthropicPartialToolCall::default());
                     }
@@ -301,6 +347,10 @@ impl AnthropicStreamAccumulator {
                                 if let Some(partial) =
                                     delta.get("partial_json").and_then(|v| v.as_str())
                                 {
+                                    if index >= MAX_TOOL_CALL_SLOTS {
+                                        self.warn_slot_overflow(&mut out, index);
+                                        return out;
+                                    }
                                     while self.tool_calls.len() <= index {
                                         self.tool_calls.push(AnthropicPartialToolCall::default());
                                     }
@@ -406,6 +456,17 @@ impl AnthropicStreamAccumulator {
     pub fn take_stop_reason(&mut self) -> Option<String> {
         self.stop_reason.take()
     }
+
+    /// Warn once that a content-block index exceeded the slot cap
+    /// (R2-03).
+    fn warn_slot_overflow(&mut self, out: &mut Vec<AgentStreamEvent>, index: usize) {
+        if !self.slot_overflow_warned {
+            self.slot_overflow_warned = true;
+            out.push(AgentStreamEvent::Warning(format!(
+                "content-block index {index} exceeds the {MAX_TOOL_CALL_SLOTS}-slot cap; ignoring out-of-range tool-call events"
+            )));
+        }
+    }
 }
 
 /// OpenAI Responses stream accumulator.
@@ -413,14 +474,22 @@ impl AnthropicStreamAccumulator {
 /// V1 handles the event families the Agent loop consumes:
 /// `response.output_text.delta` (content), the `response.function_call*`
 /// family (tool calls), `response.completed` (usage + done), and
-/// `response.failed` (terminal done without usage). `response.created`,
+/// `response.failed` (terminal error, R2-01 — the failure payload is
+/// surfaced as an `Error` event, never a clean `Done`). `response.created`,
 /// `response.in_progress`, reasoning deltas, and item bookkeeping
 /// events are ignored. Argument deltas arrive base64-encoded and are
 /// decoded before accumulation.
 #[derive(Debug, Default)]
 pub struct ResponsesStreamAccumulator {
-    /// Partially-built tool calls by `output_index`.
+    /// Accumulated assistant text (not emitted, only for content
+    /// detection at EOF, R2-04).
+    text: String,
+    /// Partially-built tool calls by `output_index`. Entries are reset
+    /// once the complete item arrives in `response.output_item.done`.
     tool_calls: Vec<ResponsesPartialToolCall>,
+    /// Whether an out-of-range output index has already been warned
+    /// about (R2-03).
+    slot_overflow_warned: bool,
 }
 
 /// Partial tool call for the OpenAI Responses path. The Responses API
@@ -455,6 +524,7 @@ impl ResponsesStreamAccumulator {
                 if let Some(text) = data.get("delta").and_then(|v| v.as_str())
                     && !text.is_empty()
                 {
+                    self.text.push_str(text);
                     out.push(AgentStreamEvent::ContentDelta(text.to_string()));
                 }
             }
@@ -474,6 +544,10 @@ impl ResponsesStreamAccumulator {
                     .and_then(|v| v.as_u64())
                     .map(|i| i as usize)
                     .unwrap_or(0);
+                if index >= MAX_TOOL_CALL_SLOTS {
+                    self.warn_slot_overflow(&mut out, index);
+                    return out;
+                }
                 while self.tool_calls.len() <= index {
                     self.tool_calls.push(ResponsesPartialToolCall::default());
                 }
@@ -495,6 +569,10 @@ impl ResponsesStreamAccumulator {
                 if let Some(arguments) = data.get("arguments").and_then(|v| v.as_str())
                     && !arguments.is_empty()
                 {
+                    if index >= MAX_TOOL_CALL_SLOTS {
+                        self.warn_slot_overflow(&mut out, index);
+                        return out;
+                    }
                     while self.tool_calls.len() <= index {
                         self.tool_calls.push(ResponsesPartialToolCall::default());
                     }
@@ -513,6 +591,11 @@ impl ResponsesStreamAccumulator {
                 let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
                     return out;
                 };
+                let output_index = data
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .map(|i| i as usize)
+                    .unwrap_or(0);
                 // The streamed item carries the full arguments; prefer the
                 // complete payload over accumulated deltas.
                 let arguments = item
@@ -520,13 +603,8 @@ impl ResponsesStreamAccumulator {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .or_else(|| {
-                        let index = data
-                            .get("output_index")
-                            .and_then(|v| v.as_u64())
-                            .map(|i| i as usize)
-                            .unwrap_or(0);
                         self.tool_calls
-                            .get(index)
+                            .get(output_index)
                             .map(|partial| partial.arguments.clone())
                     })
                     .unwrap_or_else(|| "{}".to_string());
@@ -543,6 +621,12 @@ impl ResponsesStreamAccumulator {
                     name.to_string(),
                     arguments_value,
                 )));
+                // The complete item has been delivered; reset the partial
+                // entry so an EOF cannot report a false "incomplete tool
+                // call" (R2-04).
+                if let Some(partial) = self.tool_calls.get_mut(output_index) {
+                    *partial = ResponsesPartialToolCall::default();
+                }
             }
             "response.compaction" => {
                 // Server-side compaction (PV-01b reserved channel,
@@ -573,7 +657,26 @@ impl ResponsesStreamAccumulator {
                 out.push(AgentStreamEvent::Done { stop_reason: None });
             }
             "response.failed" => {
-                out.push(AgentStreamEvent::Done { stop_reason: None });
+                // Terminal failure: surface the error payload as an
+                // `Error` event instead of a clean `Done` so a failed
+                // stream can never be reported as a successful empty
+                // turn (R2-01).
+                let message = data
+                    .get("response")
+                    .and_then(|r| r.get("error"))
+                    .and_then(|e| e.get("message"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        data.get("response")
+                            .and_then(|r| r.get("status"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_else(|| "response failed".to_string());
+                out.push(AgentStreamEvent::Error(format!(
+                    "provider stream failed: {message}"
+                )));
             }
             _ => {}
         }
@@ -581,18 +684,31 @@ impl ResponsesStreamAccumulator {
         out
     }
 
-    /// Whether any tool-call state was accumulated. Used by transports
-    /// to decide whether an EOF without a terminal marker still
-    /// terminates with a `Done` (AC-06).
+    /// Whether any content or tool-call state was accumulated. Used by
+    /// transports to decide whether an EOF without a terminal marker
+    /// still terminates with a `Done` (AC-06). Text received via
+    /// `output_text.delta` counts; completed tool calls no longer do
+    /// (their partial entries are reset on `output_item.done`, R2-04).
     pub fn has_content(&self) -> bool {
-        !self.tool_calls.is_empty()
+        !self.text.is_empty() || self.tool_calls.iter().any(|t| !t.arguments.is_empty())
     }
 
     /// Whether any partial tool-call entries remain unflushed. Used by
     /// transports to warn that an EOF dropped incomplete tool calls
-    /// (D-5).
+    /// (D-5). Completed calls are reset in `output_item.done` (R2-04),
+    /// so a fully delivered stream never reports a false warning.
     pub fn has_partial_tool_calls(&self) -> bool {
-        !self.tool_calls.is_empty()
+        self.tool_calls.iter().any(|t| !t.arguments.is_empty())
+    }
+
+    /// Warn once that an output index exceeded the slot cap (R2-03).
+    fn warn_slot_overflow(&mut self, out: &mut Vec<AgentStreamEvent>, index: usize) {
+        if !self.slot_overflow_warned {
+            self.slot_overflow_warned = true;
+            out.push(AgentStreamEvent::Warning(format!(
+                "output index {index} exceeds the {MAX_TOOL_CALL_SLOTS}-slot cap; ignoring out-of-range tool-call events"
+            )));
+        }
     }
 }
 
@@ -772,12 +888,95 @@ mod tests {
             &json!({"output_index": 0, "delta": "eyJ4IjogMX0="}),
         );
         assert!(acc.has_partial_tool_calls());
-        // A completed item drains nothing (Responses emits the complete
-        // ToolCall without clearing the fragment vec).
-        acc.ingest_event(
+        // A completed item resets the partial entry (R2-04): the stream
+        // no longer reports a false "incomplete tool call" at EOF, and
+        // content detection drops the delivered call.
+        let events = acc.ingest_event(
             Some("response.output_item.done"),
             &json!({"output_index": 0, "item": {"type": "function_call", "name": "echo", "arguments": "{}", "call_id": "c1"}}),
         );
+        assert!(
+            matches!(events.first(), Some(AgentStreamEvent::ToolCall(_))),
+            "completed item emits the ToolCall"
+        );
+        assert!(
+            !acc.has_partial_tool_calls(),
+            "completed call is reset (R2-04)"
+        );
+        assert!(
+            !acc.has_content(),
+            "a delivered call alone is not pending content"
+        );
+        // Text deltas count as content (R2-04).
+        acc.ingest_event(
+            Some("response.output_text.delta"),
+            &json!({"delta": "hello"}),
+        );
         assert!(acc.has_content());
+        assert!(!acc.has_partial_tool_calls());
+    }
+
+    #[test]
+    fn responses_failed_surfaces_error_instead_of_done() {
+        let mut acc = ResponsesStreamAccumulator::new();
+        let events = acc.ingest_event(
+            Some("response.failed"),
+            &json!({"response": {"status": "failed", "error": {"code": "server_error", "message": "upstream exploded"}}}),
+        );
+        let Some(AgentStreamEvent::Error(message)) = events.first() else {
+            panic!("response.failed must emit a terminal Error, got {events:?}");
+        };
+        assert!(message.contains("upstream exploded"));
+        // Fallback when no error payload is present.
+        let events =
+            acc.ingest_event(Some("response.failed"), &json!({"response": {"status": "failed"}}));
+        assert!(matches!(events.first(), Some(AgentStreamEvent::Error(m)) if m.contains("failed")));
+    }
+
+    #[test]
+    fn out_of_range_indices_are_capped_not_allocated() {
+        // R2-03: a single malformed event with a giant index must not
+        // trigger a multi-GB allocation; it is ignored with a Warning.
+        let mut openai = OpenAiStreamAccumulator::new();
+        let events = openai.ingest_chunk(&json!({
+            "choices": [{"delta": {"tool_calls": [{"index": 2_000_000_000, "id": "t1", "function": {"name": "echo", "arguments": "{}"}}]}}]
+        }));
+        assert!(matches!(events.first(), Some(AgentStreamEvent::Warning(_))));
+        assert!(!openai.has_partial_tool_calls());
+
+        let mut anthropic = AnthropicStreamAccumulator::new();
+        let events = anthropic.ingest_event(
+            Some("content_block_start"),
+            &json!({"index": 2_000_000_000, "content_block": {"type": "tool_use", "id": "t1", "name": "echo"}}),
+        );
+        assert!(matches!(events.first(), Some(AgentStreamEvent::Warning(_))));
+        assert!(!anthropic.has_partial_tool_calls());
+
+        let mut responses = ResponsesStreamAccumulator::new();
+        let events = responses.ingest_event(
+            Some("response.function_call_arguments.delta"),
+            &json!({"output_index": 2_000_000_000, "delta": "e30="}),
+        );
+        assert!(matches!(events.first(), Some(AgentStreamEvent::Warning(_))));
+        assert!(!responses.has_partial_tool_calls());
+    }
+
+    #[test]
+    fn openai_flush_warns_on_dropped_incomplete_calls() {
+        // R2-04: entries missing id/name are dropped at flush and the
+        // drop is visible to hosts.
+        let mut acc = OpenAiStreamAccumulator::new();
+        acc.ingest_chunk(&json!({
+            "choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"x\":1}"}}]}}]
+        }));
+        assert!(acc.has_partial_tool_calls());
+        let events = acc.ingest_chunk(&json!({
+            "choices": [{"delta": {}, "finish_reason": "tool_calls"}]
+        }));
+        assert!(
+            events.iter().any(|e| matches!(e, AgentStreamEvent::Warning(m) if m.contains("dropped"))),
+            "dropped incomplete calls surface a Warning, got {events:?}"
+        );
+        assert!(!acc.has_partial_tool_calls());
     }
 }
