@@ -36,5 +36,6 @@ pub type OpenAiResponsesProvider = BackendProvider<OpenAiResponsesConfig>;
 /// adapter crate alone for the full provider stack surface.
 pub use reimagine_ai_protocol::{
     AnthropicMessagesConfig, CompletionBackend, FakeCompletionBackend, OpenAiChatCompletionsConfig,
-    OpenAiResponsesConfig, Protocol, ProviderAdapterError, ScriptedBackendStep, SseEvent, SseParser,
+    OpenAiResponsesConfig, Protocol, ProviderAdapterError, ScriptedBackendStep, SseEvent,
+    SseParser,
 };

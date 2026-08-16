@@ -332,9 +332,11 @@ mod tests {
         let resp = from_openai_response(&value).expect("ok");
         assert_eq!(
             resp.usage(),
-            Some(&Usage::new(Some(100), Some(50))
-                .with_reasoning_tokens(Some(10))
-                .with_cache_read(Some(40)))
+            Some(
+                &Usage::new(Some(100), Some(50))
+                    .with_reasoning_tokens(Some(10))
+                    .with_cache_read(Some(40))
+            )
         );
     }
 
@@ -565,9 +567,11 @@ mod tests {
         let resp = from_anthropic_response(&value).expect("ok");
         assert_eq!(
             resp.usage(),
-            Some(&Usage::new(Some(100), Some(50))
-                .with_cache_creation(Some(60))
-                .with_cache_read(Some(30)))
+            Some(
+                &Usage::new(Some(100), Some(50))
+                    .with_cache_creation(Some(60))
+                    .with_cache_read(Some(30))
+            )
         );
     }
 
@@ -740,9 +744,11 @@ mod tests {
         let resp = from_responses_response(&value).expect("ok");
         assert_eq!(
             resp.usage(),
-            Some(&Usage::new(Some(100), Some(50))
-                .with_reasoning_tokens(Some(10))
-                .with_cache_read(Some(40)))
+            Some(
+                &Usage::new(Some(100), Some(50))
+                    .with_reasoning_tokens(Some(10))
+                    .with_cache_read(Some(40))
+            )
         );
     }
 
