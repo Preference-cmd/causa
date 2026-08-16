@@ -977,9 +977,7 @@ impl crate::backend_provider::ProviderConfig for AnthropicMessagesConfig {
         config: Self,
         workspace_dir: PathBuf,
     ) -> Arc<dyn CompletionBackend> {
-        Arc::new(
-            ReqwestBackend::anthropic_messages(name, config).with_workspace_dir(workspace_dir),
-        )
+        Arc::new(ReqwestBackend::anthropic_messages(name, config).with_workspace_dir(workspace_dir))
     }
     fn base_url(&self) -> Option<&str> {
         self.base_url()
@@ -998,9 +996,7 @@ impl crate::backend_provider::ProviderConfig for OpenAiResponsesConfig {
         config: Self,
         workspace_dir: PathBuf,
     ) -> Arc<dyn CompletionBackend> {
-        Arc::new(
-            ReqwestBackend::openai_responses(name, config).with_workspace_dir(workspace_dir),
-        )
+        Arc::new(ReqwestBackend::openai_responses(name, config).with_workspace_dir(workspace_dir))
     }
     fn base_url(&self) -> Option<&str> {
         Some(self.base_url())
@@ -1182,10 +1178,7 @@ mod tests {
         // R2-03: a misconfigured proxy returning a huge Retry-After must
         // not make the client sleep for years inside a retry loop.
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::RETRY_AFTER,
-            "99999999".parse().unwrap(),
-        );
+        headers.insert(reqwest::header::RETRY_AFTER, "99999999".parse().unwrap());
         assert_eq!(parse_retry_after(&headers), Some(MAX_RETRY_AFTER));
     }
 }
