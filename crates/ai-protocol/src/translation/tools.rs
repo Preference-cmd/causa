@@ -36,9 +36,7 @@ pub fn to_anthropic_tools(defs: &[AgentToolDefinition], cache_control: bool) -> 
             })
         })
         .collect();
-    if cache_control
-        && let Some(last) = out.last_mut()
-    {
+    if cache_control && let Some(last) = out.last_mut() {
         last.as_object_mut()
             .expect("tools are objects")
             .insert("cache_control".into(), json!({ "type": "ephemeral" }));

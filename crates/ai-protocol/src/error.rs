@@ -5,6 +5,8 @@
 //! `streaming_unsupported`. Each variant carries the upstream message
 //! verbatim so hosts can show it without losing fidelity.
 
+use std::time::Duration;
+
 use reimagine_agent_harness::{ProviderError, ProviderName};
 
 use crate::protocol::Protocol;
@@ -16,8 +18,14 @@ use crate::protocol::Protocol;
 pub enum ProviderAdapterError {
     /// Network / transport-level failure reaching the upstream.
     Transport(String),
-    /// Provider returned a structured error response.
-    Api { code: String, message: String },
+    /// Provider returned a structured error response. `retry_after`
+    /// carries the upstream `Retry-After` hint when the provider sent
+    /// one, so retry loops can honor it (AC-05).
+    Api {
+        code: String,
+        message: String,
+        retry_after: Option<Duration>,
+    },
     /// Request or response JSON did not match the expected shape.
     Serialization(String),
     /// Local configuration was missing or invalid.
@@ -43,6 +51,26 @@ impl ProviderAdapterError {
         Self::Api {
             code: code.into(),
             message: message.into(),
+            retry_after: None,
+        }
+    }
+
+    /// Attach an upstream `Retry-After` hint (AC-05).
+    pub fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        if let Self::Api {
+            retry_after: slot, ..
+        } = &mut self
+        {
+            *slot = retry_after;
+        }
+        self
+    }
+
+    /// The upstream `Retry-After` hint, when present (AC-05).
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Api { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 
@@ -77,7 +105,7 @@ impl ProviderAdapterError {
     pub fn to_provider_error(&self, provider: Option<ProviderName>) -> ProviderError {
         let (code, message) = match self {
             Self::Transport(m) => ("TRANSPORT".to_string(), m.clone()),
-            Self::Api { code, message } => (code.clone(), message.clone()),
+            Self::Api { code, message, .. } => (code.clone(), message.clone()),
             Self::Serialization(m) => ("SERIALIZATION".to_string(), m.clone()),
             Self::Configuration(m) => ("CONFIGURATION".to_string(), m.clone()),
             Self::StreamingUnsupported => (
@@ -101,7 +129,7 @@ impl std::fmt::Display for ProviderAdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transport(m) => write!(f, "[TRANSPORT] {m}"),
-            Self::Api { code, message } => write!(f, "[API:{code}] {message}"),
+            Self::Api { code, message, .. } => write!(f, "[API:{code}] {message}"),
             Self::Serialization(m) => write!(f, "[SERIALIZATION] {m}"),
             Self::Configuration(m) => write!(f, "[CONFIGURATION] {m}"),
             Self::StreamingUnsupported => write!(f, "[STREAMING_UNSUPPORTED]"),

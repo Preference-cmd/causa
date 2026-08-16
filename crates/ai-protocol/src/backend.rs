@@ -19,7 +19,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use reimagine_agent_harness::{AgentRequest, AgentResponse, AgentStream, AgentStreamEvent, ModelInfo};
+use reimagine_agent_harness::{
+    AgentRequest, AgentResponse, AgentStream, AgentStreamEvent, ModelInfo,
+};
 
 use crate::error::ProviderAdapterError;
 

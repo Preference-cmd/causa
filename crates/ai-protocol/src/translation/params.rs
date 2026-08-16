@@ -254,9 +254,7 @@ impl SamplingParams {
 /// thinking in V1.
 pub fn reasoning_enabled(options: &Value) -> bool {
     options.get(REASONING).is_some_and(|v| !v.is_null())
-        || options
-            .get(REASONING_EFFORT)
-            .is_some_and(|v| !v.is_null())
+        || options.get(REASONING_EFFORT).is_some_and(|v| !v.is_null())
 }
 
 /// OpenAI `json_schema` response-format payload shared by chat
@@ -724,7 +722,10 @@ mod tests {
         ]));
         assert_eq!(p.output_schema, Some(schema));
         assert_eq!(p.output_schema_name.as_deref(), Some("person"));
-        assert_eq!(SamplingParams::from_options(&options(&[])).output_schema, None);
+        assert_eq!(
+            SamplingParams::from_options(&options(&[])).output_schema,
+            None
+        );
         let p = SamplingParams::from_options(&options(&[(OUTPUT_SCHEMA, Value::Null)]));
         assert_eq!(p.output_schema, None);
     }
@@ -774,7 +775,9 @@ mod tests {
         let mut body = Map::new();
         params.apply_openai(&mut body);
         assert_eq!(
-            body.get("response_format").and_then(|v| v.get("json_schema")).and_then(|v| v.get("name")),
+            body.get("response_format")
+                .and_then(|v| v.get("json_schema"))
+                .and_then(|v| v.get("name")),
             Some(&json!("structured_output"))
         );
     }

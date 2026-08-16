@@ -23,17 +23,27 @@ use reimagine_agent_harness::{
     ModelInfo, ProviderName,
 };
 use reimagine_ai_protocol::translation;
+use reimagine_ai_protocol::translation::sse_parser::{SseEvent, SseParser};
 use reimagine_ai_protocol::{
     AnthropicMessagesConfig, CompletionBackend, OpenAiChatCompletionsConfig, OpenAiResponsesConfig,
     Protocol, ProviderAdapterError,
 };
-use reimagine_ai_protocol::translation::sse_parser::SseParser;
 use serde_json::{Value, json};
 
 /// Maximum number of retries for transient HTTP errors.
 const MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff (doubled each retry).
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+/// Random jitter added to each retry delay (0..=RETRY_JITTER_MS) so a
+/// burst of 429s across hosts does not re-synchronize (AC-05).
+const RETRY_JITTER_MS: u64 = 250;
+/// Connect timeout for all provider HTTP calls (AC-05).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Total request timeout for non-streaming calls (AC-05).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Idle (read) timeout between streamed SSE events (AC-05). Generous:
+/// reasoning models may produce no delta for minutes.
+const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Production backend. `complete` and `list_models` route through
 /// direct reqwest HTTP calls.
@@ -47,6 +57,10 @@ pub struct ReqwestBackend {
     name: ProviderName,
     config: BackendConfig,
     http: reqwest::Client,
+    /// Client used for streaming requests. Distinct from `http`:
+    /// streaming needs a generous idle (read) timeout instead of a
+    /// total request timeout (AC-05).
+    stream_http: reqwest::Client,
     workspace_dir: Option<PathBuf>,
 }
 
@@ -85,10 +99,35 @@ impl BackendConfig {
 }
 
 impl ReqwestBackend {
+    /// Build the two default clients: `http` for complete/list_models
+    /// (connect + total timeout) and `stream_http` for streaming
+    /// (connect + generous idle timeout, no total cap so long-lived
+    /// streams and minutes-long reasoning gaps are not killed) (AC-05).
+    fn default_clients() -> (reqwest::Client, reqwest::Client) {
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("reqwest client build");
+        let stream_http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(STREAM_READ_TIMEOUT)
+            .build()
+            .expect("reqwest client build");
+        (http, stream_http)
+    }
+
     /// Construct an OpenAI-compatible backend with a default
     /// `reqwest::Client`.
     pub fn openai_chat_completions(name: ProviderName, cfg: OpenAiChatCompletionsConfig) -> Self {
-        Self::openai_chat_completions_with_http_client(name, cfg, reqwest::Client::new())
+        let (http, stream_http) = Self::default_clients();
+        Self {
+            name,
+            config: BackendConfig::OpenAiChatCompletions(cfg),
+            http,
+            stream_http,
+            workspace_dir: None,
+        }
     }
 
     /// Construct an OpenAI-compatible backend with an explicit
@@ -101,6 +140,7 @@ impl ReqwestBackend {
         Self {
             name,
             config: BackendConfig::OpenAiChatCompletions(cfg),
+            stream_http: http.clone(),
             http,
             workspace_dir: None,
         }
@@ -108,7 +148,14 @@ impl ReqwestBackend {
 
     /// Construct an Anthropic backend with a default `reqwest::Client`.
     pub fn anthropic_messages(name: ProviderName, cfg: AnthropicMessagesConfig) -> Self {
-        Self::anthropic_messages_with_http_client(name, cfg, reqwest::Client::new())
+        let (http, stream_http) = Self::default_clients();
+        Self {
+            name,
+            config: BackendConfig::AnthropicMessages(cfg),
+            http,
+            stream_http,
+            workspace_dir: None,
+        }
     }
 
     /// Construct an Anthropic backend with an explicit `reqwest::Client`
@@ -121,6 +168,7 @@ impl ReqwestBackend {
         Self {
             name,
             config: BackendConfig::AnthropicMessages(cfg),
+            stream_http: http.clone(),
             http,
             workspace_dir: None,
         }
@@ -129,7 +177,14 @@ impl ReqwestBackend {
     /// Construct an OpenAI Responses backend with a default
     /// `reqwest::Client`.
     pub fn openai_responses(name: ProviderName, cfg: OpenAiResponsesConfig) -> Self {
-        Self::openai_responses_with_http_client(name, cfg, reqwest::Client::new())
+        let (http, stream_http) = Self::default_clients();
+        Self {
+            name,
+            config: BackendConfig::OpenAiResponses(cfg),
+            http,
+            stream_http,
+            workspace_dir: None,
+        }
     }
 
     /// Construct an OpenAI Responses backend with an explicit
@@ -142,6 +197,7 @@ impl ReqwestBackend {
         Self {
             name,
             config: BackendConfig::OpenAiResponses(cfg),
+            stream_http: http.clone(),
             http,
             workspace_dir: None,
         }
@@ -473,7 +529,7 @@ impl ReqwestBackend {
         params.apply_openai(&mut body);
 
         let resp = self
-            .http
+            .stream_http
             .post(&url)
             .bearer_auth(cfg.api_key())
             .json(&Value::Object(body))
@@ -524,7 +580,7 @@ impl ReqwestBackend {
         }
 
         let resp = self
-            .http
+            .stream_http
             .post(&url)
             .header("x-api-key", cfg.api_key())
             .header("anthropic-version", "2023-06-01")
@@ -579,7 +635,7 @@ impl ReqwestBackend {
         params.apply_responses(body.as_object_mut().expect("body is an object"));
 
         let resp = self
-            .http
+            .stream_http
             .post(&url)
             .bearer_auth(cfg.api_key())
             .json(&body)
@@ -606,10 +662,29 @@ fn sampling_params(request: &AgentRequest) -> translation::params::SamplingParam
     params
 }
 
+/// Cap on honoring an upstream `Retry-After` hint (R2-03): a
+/// misconfigured or hostile proxy can return absurd values (e.g.
+/// `99999999` seconds), and sleeping years inside a retry loop is worse
+/// than retrying early. The local exponential backoff still applies.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Parse a `Retry-After` response header into a delay. Supports the
+/// seconds form (RFC 9110); HTTP-date values are not parsed and fall
+/// back to a conservative 10s (AC-05). The delay is capped at
+/// [`MAX_RETRY_AFTER`] (R2-03).
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER));
+    }
+    Some(Duration::from_secs(10))
+}
+
 /// Parse a reqwest response into a `serde_json::Value`, mapping non-2xx
 /// status codes to `ProviderAdapterError::Api`.
 async fn response_json_or_error(resp: reqwest::Response) -> Result<Value, ProviderAdapterError> {
     let status = resp.status();
+    let retry_after = parse_retry_after(resp.headers());
     let text = resp
         .text()
         .await
@@ -619,7 +694,8 @@ async fn response_json_or_error(resp: reqwest::Response) -> Result<Value, Provid
         serde_json::from_str(&text)
             .map_err(|e| ProviderAdapterError::serialization(format!("response json: {e}")))
     } else {
-        Err(ProviderAdapterError::api(status.as_u16().to_string(), text))
+        Err(ProviderAdapterError::api(status.as_u16().to_string(), text)
+            .with_retry_after(retry_after))
     }
 }
 
@@ -655,57 +731,30 @@ enum StreamKind {
 /// An `AgentStream` backed by a reqwest SSE response.
 ///
 /// Reads chunks from the HTTP response, feeds them through the SSE
-/// parser, and yields `AgentStreamEvent` values produced by the
-/// provider-specific accumulator.
+/// parser, and routes parsed events through the protocol-layer
+/// accumulators in `reimagine_ai_protocol::translation::streaming` —
+/// the single implementation of streaming delta translation in the
+/// workspace. This struct owns only transport concerns: HTTP reads,
+/// incremental UTF-8 decoding (`feed_sse_bytes`, AC-03), and terminal
+/// `Done` bookkeeping (`[DONE]` / EOF, AC-01/AC-06).
 struct ReqwestSseStream {
     response: reqwest::Response,
     parser: SseParser,
     kind: StreamKind,
     /// Events produced by the current chunk but not yet yielded.
     pending: std::collections::VecDeque<AgentStreamEvent>,
-    /// Accumulated text for the OpenAI path.
-    openai_text: String,
-    /// Accumulated tool calls for the OpenAI path.
-    openai_tool_calls: Vec<OpenAiPartialToolCall>,
-    /// Accumulated text for the Anthropic path.
-    anthropic_text: String,
-    /// Accumulated tool calls for the Anthropic path.
-    anthropic_tool_calls: Vec<AnthropicPartialToolCall>,
-    /// Accumulated tool calls for the OpenAI Responses path, keyed by
-    /// `output_index`. Arguments deltas arrive base64-encoded and are
-    /// decoded before accumulation.
-    responses_tool_calls: Vec<ResponsesPartialToolCall>,
-    /// Input-side Anthropic usage captured from `message_start`
-    /// (input_tokens + cache fields); merged into the report emitted on
-    /// `message_delta` (output_tokens).
-    anthropic_input: Option<u64>,
-    anthropic_cache_creation: Option<u64>,
-    anthropic_cache_read: Option<u64>,
+    /// OpenAI Chat Completions delta accumulator.
+    openai: translation::streaming::OpenAiStreamAccumulator,
+    /// Anthropic Messages delta accumulator.
+    anthropic: translation::streaming::AnthropicStreamAccumulator,
+    /// OpenAI Responses delta accumulator.
+    responses: translation::streaming::ResponsesStreamAccumulator,
+    /// Bytes buffered across chunk boundaries while decoding UTF-8
+    /// (AC-03): a multi-byte character split across TCP chunks stays
+    /// here until the next chunk completes it.
+    byte_buf: Vec<u8>,
     /// Whether the stream is done.
     done: bool,
-}
-
-#[derive(Debug, Default, Clone)]
-struct OpenAiPartialToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: String,
-}
-
-#[derive(Debug, Default, Clone)]
-struct AnthropicPartialToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: String,
-}
-
-/// Partial tool call for the OpenAI Responses path. The Responses API
-/// streams only base64-encoded argument fragments in
-/// `response.function_call_arguments.delta`; id and name arrive with the
-/// complete item in `response.output_item.done`.
-#[derive(Debug, Default, Clone)]
-struct ResponsesPartialToolCall {
-    arguments: String,
 }
 
 impl ReqwestSseStream {
@@ -715,440 +764,56 @@ impl ReqwestSseStream {
             parser: SseParser::new(),
             kind,
             pending: std::collections::VecDeque::new(),
-            openai_text: String::new(),
-            openai_tool_calls: Vec::new(),
-            anthropic_text: String::new(),
-            anthropic_tool_calls: Vec::new(),
-            responses_tool_calls: Vec::new(),
-            anthropic_input: None,
-            anthropic_cache_creation: None,
-            anthropic_cache_read: None,
+            openai: translation::streaming::OpenAiStreamAccumulator::new(),
+            anthropic: translation::streaming::AnthropicStreamAccumulator::new(),
+            responses: translation::streaming::ResponsesStreamAccumulator::new(),
+            byte_buf: Vec::new(),
             done: false,
         }
     }
 
-    /// Process one SSE event, pushing any resulting `AgentStreamEvent`
-    /// values into `self.pending`.
+    /// Process one SSE event, routing it through the protocol-layer
+    /// accumulator for this stream's kind and pushing any resulting
+    /// `AgentStreamEvent` values into `self.pending`.
     fn process_event(&mut self, event: translation::sse_parser::SseEvent) {
         // OpenAI sends "data: [DONE]" as the terminal event.
         if event.data == "[DONE]" {
             self.done = true;
+            // Terminal `Done` with the last finish_reason seen (AC-01):
+            // truncation ("length") must reach the loop.
+            self.pending.push_back(AgentStreamEvent::Done {
+                stop_reason: self.openai.take_finish_reason(),
+            });
             return;
         }
 
         let value: Value = match serde_json::from_str(&event.data) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(e) => {
+                // R2-02: a provider error event truncated mid-JSON (common
+                // under network flakiness) must not vanish silently — the
+                // turn would otherwise end on a misleading `Done`.
+                tracing::warn!(
+                    error = %e,
+                    event_type = ?event.event,
+                    "dropping SSE event that failed JSON parsing"
+                );
+                return;
+            }
         };
 
-        match self.kind {
-            StreamKind::OpenAi => self.process_openai_chunk(&value),
-            StreamKind::Anthropic => self.process_anthropic_event(&event.event, &value),
-            StreamKind::Responses => self.process_responses_event(&event.event, &value),
-        }
-    }
-
-    fn process_openai_chunk(&mut self, chunk: &Value) {
-        // Extract content delta.
-        if let Some(delta_content) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("delta"))
-            .and_then(|d| d.get("content"))
-            .and_then(|v| v.as_str())
-            && !delta_content.is_empty()
-        {
-            self.openai_text.push_str(delta_content);
-            self.pending
-                .push_back(AgentStreamEvent::ContentDelta(delta_content.to_string()));
-        }
-
-        // Extract reasoning deltas (o-series / DeepSeek-style
-        // `reasoning_content`). Display-only: never accumulated into the
-        // assistant message.
-        if let Some(reasoning) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("delta"))
-            .and_then(|d| d.get("reasoning_content"))
-            .and_then(|v| v.as_str())
-            && !reasoning.is_empty()
-        {
-            self.pending
-                .push_back(AgentStreamEvent::ReasoningDelta(reasoning.to_string()));
-        }
-
-        // Extract tool call deltas.
-        if let Some(tool_calls) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("delta"))
-            .and_then(|d| d.get("tool_calls"))
-            .and_then(|v| v.as_array())
-        {
-            for (i, call) in tool_calls.iter().enumerate() {
-                let index = call
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .map(|i| i as usize)
-                    .unwrap_or(i);
-                while self.openai_tool_calls.len() <= index {
-                    self.openai_tool_calls
-                        .push(OpenAiPartialToolCall::default());
-                }
-                let entry = &mut self.openai_tool_calls[index];
-                if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
-                    entry.id = Some(id.to_string());
-                }
-                if let Some(name) = call
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|v| v.as_str())
-                {
-                    entry.name = Some(name.to_string());
-                }
-                if let Some(args) = call
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|v| v.as_str())
-                {
-                    entry.arguments.push_str(args);
-                }
-            }
-        }
-
-        // Extract finish reason — flush complete tool calls.
-        if let Some(finish_reason) = chunk
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("finish_reason"))
-            .and_then(|v| v.as_str())
-            && finish_reason == "tool_calls"
-        {
-            self.flush_openai_tool_calls();
-        }
-
-        // Extract usage.
-        if let Some(usage) = chunk.get("usage") {
-            let input = usage.get("prompt_tokens").and_then(|v| v.as_u64());
-            let output = usage.get("completion_tokens").and_then(|v| v.as_u64());
-            let reasoning = translation::usage::openai_reasoning_tokens(usage);
-            let cached = translation::usage::openai_cached_tokens(usage);
-            self.pending.push_back(AgentStreamEvent::Usage(
-                reimagine_agent_harness::Usage::new(input, output)
-                    .with_reasoning_tokens(reasoning)
-                    .with_cache_read(cached),
-            ));
-        }
-    }
-
-    fn flush_openai_tool_calls(&mut self) {
-        for partial in self.openai_tool_calls.drain(..) {
-            if let (Some(id), Some(name)) = (partial.id, partial.name) {
-                let arguments = if partial.arguments.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_str(&partial.arguments).unwrap_or(Value::Null)
-                };
-                self.pending
-                    .push_back(AgentStreamEvent::ToolCall(reimagine_agent_harness::ToolCall::new(
-                        reimagine_agent_harness::ToolCallId::new(id),
-                        name,
-                        arguments,
-                    )));
-            }
-        }
-    }
-
-    fn process_anthropic_event(&mut self, event_type: &Option<String>, data: &Value) {
-        let event_type = match event_type.as_deref() {
-            Some(t) => t,
-            None => return,
+        let events = match self.kind {
+            StreamKind::OpenAi => self.openai.ingest_chunk(&value),
+            StreamKind::Anthropic => self.anthropic.ingest_event(event.event.as_deref(), &value),
+            StreamKind::Responses => self.responses.ingest_event(event.event.as_deref(), &value),
         };
-
-        match event_type {
-            "content_block_start" => {
-                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                    let index = index as usize;
-                    while self.anthropic_tool_calls.len() <= index {
-                        self.anthropic_tool_calls
-                            .push(AnthropicPartialToolCall::default());
-                    }
-                    if let Some(block) = data.get("content_block")
-                        && block.get("type").and_then(|v| v.as_str()) == Some("tool_use")
-                    {
-                        if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
-                            self.anthropic_tool_calls[index].id = Some(id.to_string());
-                        }
-                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                            self.anthropic_tool_calls[index].name = Some(name.to_string());
-                        }
-                    }
-                }
-            }
-            "content_block_delta" => {
-                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                    let index = index as usize;
-                    if let Some(delta) = data.get("delta") {
-                        match delta.get("type").and_then(|v| v.as_str()) {
-                            Some("text_delta") => {
-                                if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                    self.anthropic_text.push_str(text);
-                                    self.pending.push_back(AgentStreamEvent::ContentDelta(
-                                        text.to_string(),
-                                    ));
-                                }
-                            }
-                            Some("thinking_delta") => {
-                                if let Some(text) = delta.get("thinking").and_then(|v| v.as_str())
-                                {
-                                    self.pending.push_back(AgentStreamEvent::ReasoningDelta(
-                                        text.to_string(),
-                                    ));
-                                }
-                            }
-                            Some("input_json_delta") => {
-                                if let Some(partial) =
-                                    delta.get("partial_json").and_then(|v| v.as_str())
-                                {
-                                    while self.anthropic_tool_calls.len() <= index {
-                                        self.anthropic_tool_calls
-                                            .push(AnthropicPartialToolCall::default());
-                                    }
-                                    self.anthropic_tool_calls[index].arguments.push_str(partial);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            "content_block_stop" => {
-                if let Some(index) = data.get("index").and_then(|v| v.as_u64()) {
-                    let index = index as usize;
-                    if let Some(partial) = self.anthropic_tool_calls.get_mut(index)
-                        && let (Some(id), Some(name)) = (partial.id.clone(), partial.name.clone())
-                    {
-                        let arguments = if partial.arguments.is_empty() {
-                            Value::Null
-                        } else {
-                            serde_json::from_str(&partial.arguments).unwrap_or(Value::Null)
-                        };
-                        *partial = AnthropicPartialToolCall::default();
-                        self.pending.push_back(AgentStreamEvent::ToolCall(
-                            reimagine_agent_harness::ToolCall::new(
-                                reimagine_agent_harness::ToolCallId::new(id),
-                                name,
-                                arguments,
-                            ),
-                        ));
-                    }
-                }
-            }
-            "message_start" => {
-                if let Some(usage) = data.get("message").and_then(|m| m.get("usage")) {
-                    self.anthropic_input = usage.get("input_tokens").and_then(|v| v.as_u64());
-                    self.anthropic_cache_creation = usage
-                        .get("cache_creation_input_tokens")
-                        .and_then(|v| v.as_u64());
-                    self.anthropic_cache_read = usage
-                        .get("cache_read_input_tokens")
-                        .and_then(|v| v.as_u64());
-                }
-            }
-            "message_delta" => {
-                if let Some(delta) = data.get("delta")
-                    && let Some(reason) = delta.get("stop_reason").and_then(|v| v.as_str())
-                {
-                    // Store stop_reason; will be emitted on message_stop.
-                    let _ = reason;
-                }
-                if let Some(usage) = data.get("usage") {
-                    let input = self.anthropic_input.or_else(|| {
-                        usage.get("input_tokens").and_then(|v| v.as_u64())
-                    });
-                    let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-                    let cache_creation = self.anthropic_cache_creation.or_else(|| {
-                        usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64())
-                    });
-                    let cache_read = self.anthropic_cache_read.or_else(|| {
-                        usage.get("cache_read_input_tokens").and_then(|v| v.as_u64())
-                    });
-                    self.pending
-                        .push_back(AgentStreamEvent::Usage(
-                            reimagine_agent_harness::Usage::new(input, output)
-                                .with_cache_creation(cache_creation)
-                                .with_cache_read(cache_read),
-                        ));
-                }
-            }
-            "message_stop" => {
+        for e in events {
+            // Terminal events (Anthropic `message_stop`, Responses
+            // `response.completed`/`response.failed`) stop the stream.
+            if e.is_done() {
                 self.done = true;
-                self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: None });
             }
-            _ => {}
-        }
-    }
-
-    /// Process one OpenAI Responses stream event.
-    ///
-    /// V1 handles the event families the Agent loop consumes:
-    /// `response.output_text.delta` (content), the `response.function_call*`
-    /// family (tool calls), `response.completed` (usage + done), and
-    /// `response.failed` (terminal done without usage). `response.created`,
-    /// `response.in_progress`, reasoning deltas, and item bookkeeping
-    /// events are ignored.
-    fn process_responses_event(&mut self, event_type: &Option<String>, data: &Value) {
-        let event_type = match event_type.as_deref() {
-            Some(t) => t,
-            None => return,
-        };
-
-        match event_type {
-            "response.output_text.delta" => {
-                if let Some(text) = data.get("delta").and_then(|v| v.as_str())
-                    && !text.is_empty()
-                {
-                    self.pending
-                        .push_back(AgentStreamEvent::ContentDelta(text.to_string()));
-                }
-            }
-            "response.reasoning_summary_text.delta" => {
-                if let Some(text) = data.get("delta").and_then(|v| v.as_str())
-                    && !text.is_empty()
-                {
-                    self.pending
-                        .push_back(AgentStreamEvent::ReasoningDelta(text.to_string()));
-                }
-            }
-            "response.function_call_arguments.delta" => {
-                let Some(delta) = data.get("delta").and_then(|v| v.as_str()) else {
-                    return;
-                };
-                let index = data
-                    .get("output_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|i| i as usize)
-                    .unwrap_or(0);
-                while self.responses_tool_calls.len() <= index {
-                    self.responses_tool_calls
-                        .push(ResponsesPartialToolCall::default());
-                }
-                // Arguments deltas are base64-encoded JSON fragments;
-                // decode before accumulating. Tolerate plain fragments.
-                let decoded = base64::engine::general_purpose::STANDARD
-                    .decode(delta)
-                    .ok()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .unwrap_or_else(|| delta.to_string());
-                self.responses_tool_calls[index].arguments.push_str(&decoded);
-            }
-            "response.function_call_arguments.done" => {
-                // The provider may deliver the full arguments here; when
-                // the accumulated deltas are empty, use this payload.
-                let index = data
-                    .get("output_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|i| i as usize)
-                    .unwrap_or(0);
-                if let Some(arguments) = data.get("arguments").and_then(|v| v.as_str())
-                    && !arguments.is_empty()
-                {
-                    while self.responses_tool_calls.len() <= index {
-                        self.responses_tool_calls
-                            .push(ResponsesPartialToolCall::default());
-                    }
-                    if self.responses_tool_calls[index].arguments.is_empty() {
-                        self.responses_tool_calls[index].arguments = arguments.to_string();
-                    }
-                }
-            }
-            "response.output_item.done" => {
-                let Some(item) = data.get("item") else {
-                    return;
-                };
-                if item.get("type").and_then(|v| v.as_str()) != Some("function_call") {
-                    return;
-                }
-                let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
-                    return;
-                };
-                // The streamed item carries the full arguments; prefer the
-                // complete payload over accumulated deltas.
-                let arguments = item
-                    .get("arguments")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        let index = data
-                            .get("output_index")
-                            .and_then(|v| v.as_u64())
-                            .map(|i| i as usize)
-                            .unwrap_or(0);
-                        self.responses_tool_calls
-                            .get(index)
-                            .map(|partial| partial.arguments.clone())
-                    })
-                    .unwrap_or_else(|| "{}".to_string());
-                // The Responses API uses `call_id` as the stable id that
-                // tool-result messages reference; fall back to `id`.
-                let id = item
-                    .get("call_id")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("id").and_then(|v| v.as_str()))
-                    .unwrap_or("");
-                let arguments_value =
-                    serde_json::from_str(&arguments).unwrap_or(Value::Null);
-                self.pending
-                    .push_back(AgentStreamEvent::ToolCall(
-                        reimagine_agent_harness::ToolCall::new(
-                            reimagine_agent_harness::ToolCallId::new(id),
-                            name.to_string(),
-                            arguments_value,
-                        ),
-                    ));
-            }
-            "response.compaction" => {
-                // Server-side compaction (PV-01b reserved channel,
-                // consumed in CM-V2e): the provider replaced earlier
-                // items with an opaque compaction item. Informational
-                // for the runtime.
-                if let Some(item_id) = data.get("item_id").and_then(|v| v.as_str()) {
-                    self.pending.push_back(AgentStreamEvent::Compacted {
-                        item_id: item_id.to_string(),
-                    });
-                }
-            }
-            "response.completed" => {
-                if let Some(usage) = data.get("response").and_then(|r| r.get("usage")) {
-                    let input = usage.get("input_tokens").and_then(|v| v.as_u64());
-                    let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-                    let reasoning = usage
-                        .get("output_tokens_details")
-                        .and_then(|d| d.get("reasoning_tokens"))
-                        .and_then(|v| v.as_u64());
-                    let cached = translation::usage::openai_cached_tokens(usage);
-                    self.pending.push_back(AgentStreamEvent::Usage(
-                        reimagine_agent_harness::Usage::new(input, output)
-                            .with_reasoning_tokens(reasoning)
-                            .with_cache_read(cached),
-                    ));
-                }
-                self.done = true;
-                self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: None });
-            }
-            "response.failed" => {
-                self.done = true;
-                self.pending
-                    .push_back(AgentStreamEvent::Done { stop_reason: None });
-            }
-            _ => {}
+            self.pending.push_back(e);
         }
     }
 }
@@ -1170,27 +835,73 @@ impl AgentStream for ReqwestSseStream {
             let chunk = match self.response.chunk().await {
                 Ok(Some(c)) => c,
                 Ok(None) => {
-                    // Stream ended. Flush any remaining SSE data.
-                    if let Some(final_event) = self.parser.flush() {
-                        self.process_event(final_event);
-                        if let Some(event) = self.pending.pop_front() {
-                            return Some(event);
+                    // Stream ended without an explicit terminal event.
+                    // Feed any incomplete UTF-8 tail lossily, then flush
+                    // the SSE parser.
+                    if !self.byte_buf.is_empty() {
+                        let tail = std::mem::take(&mut self.byte_buf);
+                        let text = String::from_utf8_lossy(&tail);
+                        for event in self.parser.feed(&text) {
+                            self.process_event(event);
                         }
                     }
+                    if let Some(final_event) = self.parser.flush() {
+                        self.process_event(final_event);
+                    }
                     self.done = true;
+                    if let Some(event) = self.pending.pop_front() {
+                        return Some(event);
+                    }
+                    // Protocols are expected to terminate with an
+                    // explicit `Done` ([DONE], message_stop,
+                    // response.completed). When they don't but content
+                    // was produced, emit a final `Done` with the last
+                    // known stop reason so the loop sees proper
+                    // termination; a zero-event stream stays Done-less
+                    // and the loop reports it as EMPTY_STREAM (AC-06).
+                    let stop_reason = match self.kind {
+                        StreamKind::OpenAi => self.openai.take_finish_reason(),
+                        StreamKind::Anthropic => self.anthropic.take_stop_reason(),
+                        StreamKind::Responses => None,
+                    };
+                    let had_content = self.openai.has_content()
+                        || self.anthropic.has_content()
+                        || self.responses.has_content();
+                    // An EOF that drops partially assembled tool calls
+                    // (no `finish_reason: "tool_calls"`, no terminal
+                    // event) is surfaced as a host-visible Warning
+                    // before the synthesized `Done` (D-5): the loop
+                    // must not stop on it, but hosts should know the
+                    // stream ended with incomplete tool calls.
+                    if self.openai.has_partial_tool_calls()
+                        || self.anthropic.has_partial_tool_calls()
+                        || self.responses.has_partial_tool_calls()
+                    {
+                        self.pending.push_back(AgentStreamEvent::Warning(
+                            "stream ended with incomplete tool call(s)".to_string(),
+                        ));
+                    }
+                    if stop_reason.is_some() || had_content {
+                        self.pending
+                            .push_back(AgentStreamEvent::Done { stop_reason });
+                        return self.pending.pop_front();
+                    }
                     return None;
                 }
                 Err(e) => {
-                    eprintln!("agent stream read error: {e}");
+                    // Surface the failure as a terminal Error event so
+                    // the loop can distinguish a dropped connection from
+                    // a clean end (AC-05).
                     self.done = true;
-                    return None;
+                    return Some(AgentStreamEvent::Error(format!(
+                        "agent stream read error: {e}"
+                    )));
                 }
             };
 
-            // Convert bytes to string and feed to SSE parser.
-            let text = String::from_utf8_lossy(&chunk);
-            let events = self.parser.feed(&text);
-
+            // Decode incrementally so multi-byte characters split
+            // across chunk boundaries are not corrupted (AC-03).
+            let events = feed_sse_bytes(&mut self.parser, &mut self.byte_buf, &chunk);
             for event in events {
                 self.process_event(event);
             }
@@ -1198,94 +909,113 @@ impl AgentStream for ReqwestSseStream {
     }
 }
 
-pub fn arc_real_openai_chat_completions_backend(
-    name: ProviderName,
-    cfg: OpenAiChatCompletionsConfig,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_chat_completions(name, cfg))
+/// Feed raw bytes into `parser`, decoding UTF-8 incrementally so a
+/// multi-byte character split across TCP chunks is not corrupted
+/// (AC-03). An incomplete trailing sequence is kept in `byte_buf`
+/// until the next chunk completes it; a corrupted leading byte (one
+/// that can never become valid UTF-8) is dropped instead of buffering
+/// forever. `parser.feed` is called with the longest valid prefix each
+/// pass.
+fn feed_sse_bytes(parser: &mut SseParser, byte_buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<SseEvent> {
+    byte_buf.extend_from_slice(chunk);
+    let mut events = Vec::new();
+    loop {
+        match std::str::from_utf8(byte_buf) {
+            Ok(text) => {
+                events.extend(parser.feed(text));
+                byte_buf.clear();
+                return events;
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid > 0 {
+                    let text = std::str::from_utf8(&byte_buf[..valid]).expect("valid_up_to prefix");
+                    events.extend(parser.feed(text));
+                    byte_buf.drain(..valid);
+                    continue;
+                }
+                if err.error_len().is_some() {
+                    // A truly invalid byte, not an incomplete trailing
+                    // sequence: drop it and keep decoding.
+                    byte_buf.drain(..1);
+                    continue;
+                }
+                // Incomplete trailing sequence: wait for the next chunk.
+                return events;
+            }
+        }
+    }
 }
 
-pub fn arc_real_openai_chat_completions_backend_with_workspace_dir(
-    name: ProviderName,
-    cfg: OpenAiChatCompletionsConfig,
-    workspace_dir: PathBuf,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(
-        ReqwestBackend::openai_chat_completions(name, cfg).with_workspace_dir(workspace_dir),
-    )
+impl crate::backend_provider::ProviderConfig for OpenAiChatCompletionsConfig {
+    fn arc_real_backend(name: ProviderName, config: Self) -> Arc<dyn CompletionBackend> {
+        Arc::new(ReqwestBackend::openai_chat_completions(name, config))
+    }
+    fn arc_real_backend_with_workspace_dir(
+        name: ProviderName,
+        config: Self,
+        workspace_dir: PathBuf,
+    ) -> Arc<dyn CompletionBackend> {
+        Arc::new(
+            ReqwestBackend::openai_chat_completions(name, config).with_workspace_dir(workspace_dir),
+        )
+    }
+    fn base_url(&self) -> Option<&str> {
+        Some(self.base_url())
+    }
+    fn default_model(&self) -> &str {
+        self.default_model()
+    }
 }
 
-pub fn arc_real_openai_chat_completions_backend_with_http_client(
-    name: ProviderName,
-    cfg: OpenAiChatCompletionsConfig,
-    http: reqwest::Client,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_chat_completions_with_http_client(
-        name, cfg, http,
-    ))
+impl crate::backend_provider::ProviderConfig for AnthropicMessagesConfig {
+    fn arc_real_backend(name: ProviderName, config: Self) -> Arc<dyn CompletionBackend> {
+        Arc::new(ReqwestBackend::anthropic_messages(name, config))
+    }
+    fn arc_real_backend_with_workspace_dir(
+        name: ProviderName,
+        config: Self,
+        workspace_dir: PathBuf,
+    ) -> Arc<dyn CompletionBackend> {
+        Arc::new(
+            ReqwestBackend::anthropic_messages(name, config).with_workspace_dir(workspace_dir),
+        )
+    }
+    fn base_url(&self) -> Option<&str> {
+        self.base_url()
+    }
+    fn default_model(&self) -> &str {
+        self.default_model()
+    }
 }
 
-pub fn arc_real_anthropic_messages_backend(
-    name: ProviderName,
-    cfg: AnthropicMessagesConfig,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::anthropic_messages(name, cfg))
-}
-
-pub fn arc_real_anthropic_messages_backend_with_workspace_dir(
-    name: ProviderName,
-    cfg: AnthropicMessagesConfig,
-    workspace_dir: PathBuf,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::anthropic_messages(name, cfg).with_workspace_dir(workspace_dir))
-}
-
-pub fn arc_real_anthropic_messages_backend_with_http_client(
-    name: ProviderName,
-    cfg: AnthropicMessagesConfig,
-    http: reqwest::Client,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
-        name, cfg, http,
-    ))
-}
-
-pub fn arc_real_openai_responses_backend(
-    name: ProviderName,
-    cfg: OpenAiResponsesConfig,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_responses(name, cfg))
-}
-
-pub fn arc_real_openai_responses_backend_with_workspace_dir(
-    name: ProviderName,
-    cfg: OpenAiResponsesConfig,
-    workspace_dir: PathBuf,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_responses(name, cfg).with_workspace_dir(workspace_dir))
-}
-
-pub fn arc_real_openai_responses_backend_with_http_client(
-    name: ProviderName,
-    cfg: OpenAiResponsesConfig,
-    http: reqwest::Client,
-) -> Arc<dyn CompletionBackend> {
-    Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        name, cfg, http,
-    ))
+impl crate::backend_provider::ProviderConfig for OpenAiResponsesConfig {
+    fn arc_real_backend(name: ProviderName, config: Self) -> Arc<dyn CompletionBackend> {
+        Arc::new(ReqwestBackend::openai_responses(name, config))
+    }
+    fn arc_real_backend_with_workspace_dir(
+        name: ProviderName,
+        config: Self,
+        workspace_dir: PathBuf,
+    ) -> Arc<dyn CompletionBackend> {
+        Arc::new(
+            ReqwestBackend::openai_responses(name, config).with_workspace_dir(workspace_dir),
+        )
+    }
+    fn base_url(&self) -> Option<&str> {
+        Some(self.base_url())
+    }
+    fn default_model(&self) -> &str {
+        self.default_model()
+    }
 }
 
 #[async_trait]
 impl CompletionBackend for ReqwestBackend {
     async fn complete(&self, request: AgentRequest) -> Result<AgentResponse, ProviderAdapterError> {
-        let mut last_err: Option<ProviderAdapterError> = None;
-
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let delay = RETRY_BASE_DELAY * 2u32.pow(attempt - 1);
-                tokio::time::sleep(delay).await;
-            }
-
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             let result = match &self.config {
                 BackendConfig::OpenAiChatCompletions(_) => self.run_openai_complete(&request).await,
                 BackendConfig::AnthropicMessages(_) => self.run_anthropic_complete(&request).await,
@@ -1297,17 +1027,20 @@ impl CompletionBackend for ReqwestBackend {
             match result {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
-                    if err.is_retryable() && attempt < MAX_RETRIES {
-                        last_err = Some(err);
+                    if err.is_retryable() && attempt <= MAX_RETRIES {
+                        // Prefer the upstream's Retry-After hint, but
+                        // never below the local backoff (AC-05).
+                        let delay = err
+                            .retry_after()
+                            .map(|d| d.max(retry_delay(attempt)))
+                            .unwrap_or_else(|| retry_delay(attempt));
+                        tokio::time::sleep(delay).await;
                         continue;
                     }
                     return Err(err);
                 }
             }
         }
-
-        Err(last_err
-            .unwrap_or_else(|| ProviderAdapterError::transport("retry exhausted".to_string())))
     }
 
     async fn stream(
@@ -1324,14 +1057,9 @@ impl CompletionBackend for ReqwestBackend {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderAdapterError> {
-        let mut last_err: Option<ProviderAdapterError> = None;
-
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let delay = RETRY_BASE_DELAY * 2u32.pow(attempt - 1);
-                tokio::time::sleep(delay).await;
-            }
-
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             let result = match &self.config {
                 BackendConfig::OpenAiChatCompletions(_) => self.run_openai_list_models().await,
                 BackendConfig::AnthropicMessages(_) => self.run_anthropic_list_models().await,
@@ -1341,16 +1069,123 @@ impl CompletionBackend for ReqwestBackend {
             match result {
                 Ok(models) => return Ok(models),
                 Err(err) => {
-                    if err.is_retryable() && attempt < MAX_RETRIES {
-                        last_err = Some(err);
+                    if err.is_retryable() && attempt <= MAX_RETRIES {
+                        let delay = err
+                            .retry_after()
+                            .map(|d| d.max(retry_delay(attempt)))
+                            .unwrap_or_else(|| retry_delay(attempt));
+                        tokio::time::sleep(delay).await;
                         continue;
                     }
                     return Err(err);
                 }
             }
         }
+    }
+}
 
-        Err(last_err
-            .unwrap_or_else(|| ProviderAdapterError::transport("retry exhausted".to_string())))
+/// Backoff delay for retry `attempt` (1-based): exponential base
+/// (`RETRY_BASE_DELAY * 2^(attempt-1)`) plus a small randomized jitter
+/// so a burst of 429s across hosts does not re-synchronize (AC-05).
+fn retry_delay(attempt: u32) -> Duration {
+    let base = RETRY_BASE_DELAY.saturating_mul(2u32.pow(attempt - 1));
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 % (RETRY_JITTER_MS + 1))
+        .unwrap_or(0);
+    base + Duration::from_millis(jitter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feed_sse_bytes_handles_multibyte_chars_split_across_chunks() {
+        // "data: 你好\n\ndata: done\n\n" fed one byte at a time (the
+        // worst-case TCP fragmentation). 你好 is 6 UTF-8 bytes; no
+        // chunk boundary may corrupt it (AC-03).
+        let mut parser = SseParser::new();
+        let mut byte_buf = Vec::new();
+        let mut events = Vec::new();
+        for byte in "data: 你好\n\ndata: done\n\n".as_bytes() {
+            events.extend(feed_sse_bytes(&mut parser, &mut byte_buf, &[*byte]));
+        }
+        assert!(byte_buf.is_empty());
+        let texts: Vec<String> = events.iter().map(|e| e.data.clone()).collect();
+        assert_eq!(texts, vec!["你好".to_string(), "done".to_string()]);
+    }
+
+    #[test]
+    fn feed_sse_bytes_buffers_incomplete_trailing_sequence() {
+        let mut parser = SseParser::new();
+        let mut byte_buf = Vec::new();
+        // "data: " + the first 2 of "你"'s 3 UTF-8 bytes — an
+        // incomplete trailing sequence.
+        let mut partial = b"data: ".to_vec();
+        partial.extend_from_slice(&"你".as_bytes()[..2]);
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, &partial);
+        assert!(events.is_empty(), "incomplete sequence yields nothing");
+        assert_eq!(
+            byte_buf,
+            &"你".as_bytes()[..2],
+            "partial bytes stay buffered"
+        );
+        // Completing the sequence (the missing 3rd byte + the rest)
+        // yields the event.
+        let mut rest = "你".as_bytes()[2..].to_vec();
+        rest.extend_from_slice("好\n\n".as_bytes());
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, &rest);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "你好");
+        assert!(byte_buf.is_empty());
+    }
+
+    #[test]
+    fn feed_sse_bytes_drops_corrupted_leading_byte_instead_of_deadlocking() {
+        // A corrupted multi-byte sequence (E4 BD followed by a non
+        // continuation byte) can never decode; the buffered head must
+        // be dropped, not buffered forever (AC-03).
+        let mut parser = SseParser::new();
+        let mut byte_buf = Vec::new();
+        let mut corrupted = b"data: ".to_vec();
+        corrupted.extend_from_slice(&"你".as_bytes()[..2]);
+        corrupted.push(b'E'); // not a continuation byte — E4 BD E5 is invalid
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, &corrupted);
+        assert!(events.is_empty());
+        assert!(
+            byte_buf.is_empty(),
+            "corrupted bytes dropped, none buffered"
+        );
+        // The stream continues to decode after the corrupted byte.
+        let events = feed_sse_bytes(&mut parser, &mut byte_buf, b"nd\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "End");
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_and_http_date() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(parse_retry_after(&headers), None);
+        headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(60)));
+        // HTTP-date form is not parsed; fall back to a conservative 10s.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn parse_retry_after_caps_absurd_values() {
+        // R2-03: a misconfigured proxy returning a huge Retry-After must
+        // not make the client sleep for years inside a retry loop.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "99999999".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(MAX_RETRY_AFTER));
     }
 }

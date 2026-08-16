@@ -67,7 +67,10 @@ mod tests {
             "reasoning_tokens": 5,
         });
         assert_eq!(openai_reasoning_tokens(&usage), Some(3));
-        assert_eq!(openai_reasoning_tokens(&json!({ "reasoning_tokens": 5 })), Some(5));
+        assert_eq!(
+            openai_reasoning_tokens(&json!({ "reasoning_tokens": 5 })),
+            Some(5)
+        );
         assert_eq!(openai_reasoning_tokens(&json!({})), None);
     }
 }

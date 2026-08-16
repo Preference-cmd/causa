@@ -20,11 +20,19 @@ pub fn from_openai_response(value: &Value) -> Result<AgentResponse, ProviderAdap
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let content = message
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // `content` is a string, or absent/`null` when the message only
+    // carries tool calls. Anything else (e.g. the block-array shape some
+    // OpenAI-compatible servers emit) is a shape mismatch and surfaces as
+    // a serialization error instead of silently dropping the text.
+    let content = match message.get("content") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(_) => {
+            return Err(ProviderAdapterError::serialization(
+                "choices[0].message.content: expected string",
+            ));
+        }
+    };
     let tool_calls = parse_openai_tool_calls(message.get("tool_calls"))?;
 
     let message = if tool_calls.is_empty() {
@@ -44,10 +52,19 @@ pub fn from_openai_response(value: &Value) -> Result<AgentResponse, ProviderAdap
 }
 
 fn parse_openai_tool_calls(value: Option<&Value>) -> Result<Vec<ToolCall>, ProviderAdapterError> {
-    let mut out = Vec::new();
-    let Some(arr) = value.and_then(|v| v.as_array()) else {
-        return Ok(out);
+    // Absent `tool_calls` means no tool calls; a present value that is not
+    // an array is a shape mismatch and surfaces as a serialization error
+    // instead of being silently treated as empty.
+    let arr = match value {
+        None => return Ok(Vec::new()),
+        Some(Value::Array(arr)) => arr,
+        Some(_) => {
+            return Err(ProviderAdapterError::serialization(
+                "choices[0].message.tool_calls: expected array",
+            ));
+        }
     };
+    let mut out = Vec::new();
     for (i, call) in arr.iter().enumerate() {
         let id = call
             .get("id")
@@ -128,7 +145,13 @@ pub fn from_anthropic_response(value: &Value) -> Result<AgentResponse, ProviderA
                         ProviderAdapterError::serialization(format!("content[{i}].name missing"))
                     })?
                     .to_string();
-                let arguments = block.get("input").cloned().unwrap_or(Value::Null);
+                // Missing `input` unifies with the other protocols'
+                // missing-arguments default: an empty object. A tool with
+                // no arguments parses successfully into an empty input.
+                let arguments = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(Value::Object(serde_json::Map::new()));
                 tool_calls.push(ToolCall::new(ToolCallId::new(id), name, arguments));
             }
             _ => {}
@@ -149,7 +172,9 @@ pub fn from_anthropic_response(value: &Value) -> Result<AgentResponse, ProviderA
         let cache_creation = usage
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64());
-        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64());
         resp = resp.with_usage(
             Usage::new(input, output)
                 .with_cache_creation(cache_creation)
@@ -234,4 +259,603 @@ pub fn from_responses_response(value: &Value) -> Result<AgentResponse, ProviderA
         );
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- OpenAI chat completions ----
+
+    #[test]
+    fn openai_happy_path_text_message_with_finish_reason_and_usage() {
+        let value = json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "Hello!" },
+                "finish_reason": "stop",
+            }],
+            "usage": { "prompt_tokens": 12, "completion_tokens": 7 },
+        });
+        let resp = from_openai_response(&value).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant("Hello!"));
+        assert_eq!(resp.stop_reason(), Some("stop"));
+        assert_eq!(resp.usage(), Some(&Usage::new(Some(12), Some(7))));
+    }
+
+    #[test]
+    fn openai_tool_calls_translate_to_harness_tool_calls() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "generate_image",
+                            "arguments": "{\"prompt\": \"sunset\"}",
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        });
+        let resp = from_openai_response(&value).expect("ok");
+        let call = ToolCall::new(
+            ToolCallId::new("call_1"),
+            "generate_image",
+            json!({"prompt": "sunset"}),
+        );
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls("", vec![call])
+        );
+        assert_eq!(resp.stop_reason(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn openai_usage_extracts_input_output_cache_and_reasoning_tokens() {
+        let value = json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "hi" },
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "prompt_tokens_details": { "cached_tokens": 40 },
+                "completion_tokens_details": { "reasoning_tokens": 10 },
+            },
+        });
+        let resp = from_openai_response(&value).expect("ok");
+        assert_eq!(
+            resp.usage(),
+            Some(&Usage::new(Some(100), Some(50))
+                .with_reasoning_tokens(Some(10))
+                .with_cache_read(Some(40)))
+        );
+    }
+
+    #[test]
+    fn openai_missing_usage_and_finish_reason_are_omitted() {
+        let value = json!({
+            "choices": [{ "message": { "role": "assistant", "content": "hi" } }],
+        });
+        let resp = from_openai_response(&value).expect("ok");
+        assert_eq!(resp.usage(), None);
+        assert_eq!(resp.stop_reason(), None);
+    }
+
+    #[test]
+    fn openai_missing_choices_surfaces_serialization_error() {
+        for value in [
+            json!({}),
+            json!({ "choices": [] }),
+            json!({ "choices": { "not": "an array" } }),
+        ] {
+            assert_eq!(
+                from_openai_response(&value),
+                Err(ProviderAdapterError::Serialization(
+                    "missing choices[0]".to_string()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn openai_missing_choice_message_surfaces_serialization_error() {
+        let value = json!({ "choices": [{}] });
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "missing choices[0].message".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn openai_tool_call_missing_id_surfaces_serialization_error() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "function": { "name": "f", "arguments": "{}" },
+                    }],
+                }
+            }],
+        });
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "tool_calls[0].id missing".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn openai_tool_call_missing_function_name_surfaces_serialization_error() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": { "arguments": "{}" },
+                    }],
+                }
+            }],
+        });
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "tool_calls[0].function.name missing".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn openai_malformed_arguments_surfaces_serialization_error() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": { "name": "f", "arguments": "{not json" },
+                    }],
+                }
+            }],
+        });
+        let err = from_openai_response(&value).unwrap_err();
+        assert!(matches!(
+            err,
+            ProviderAdapterError::Serialization(m)
+                if m.starts_with("tool_calls[0].function.arguments:")
+        ));
+    }
+
+    // Non-string `content` (e.g. the block-array shape some
+    // OpenAI-compatible servers emit) is a shape mismatch: it surfaces as
+    // a serialization error instead of silently dropping the model's text
+    // (D-1). Absent/`null` content stays valid — it is how messages that
+    // only carry tool calls are shaped.
+    #[test]
+    fn openai_non_string_content_surfaces_serialization_error() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "dropped" }],
+                },
+            }],
+        });
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "choices[0].message.content: expected string".to_string()
+            ))
+        );
+    }
+
+    // A `tool_calls` value that is not an array surfaces a serialization
+    // error (D-3); it is no longer silently treated as no tool calls.
+    #[test]
+    fn openai_non_array_tool_calls_surfaces_serialization_error() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": { "not": "an array" },
+                }
+            }],
+        });
+        assert_eq!(
+            from_openai_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "choices[0].message.tool_calls: expected array".to_string()
+            ))
+        );
+    }
+
+    // A tool call without `arguments` defaults to `{}` (D-2): a tool with
+    // no arguments parses successfully into an empty input.
+    #[test]
+    fn openai_missing_arguments_defaults_to_empty_object() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": { "name": "f" },
+                    }],
+                }
+            }],
+        });
+        let resp = from_openai_response(&value).expect("ok");
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new(ToolCallId::new("call_1"), "f", json!({}))],
+            )
+        );
+    }
+
+    // ---- Anthropic messages ----
+
+    #[test]
+    fn anthropic_happy_path_text_blocks_joined_with_newline() {
+        let value = json!({
+            "content": [
+                { "type": "text", "text": "first" },
+                { "type": "text", "text": "second" },
+            ],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 5, "output_tokens": 9 },
+        });
+        let resp = from_anthropic_response(&value).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant("first\nsecond"));
+        assert_eq!(resp.stop_reason(), Some("end_turn"));
+        assert_eq!(resp.usage(), Some(&Usage::new(Some(5), Some(9))));
+    }
+
+    #[test]
+    fn anthropic_tool_use_blocks_become_tool_calls() {
+        let value = json!({
+            "content": [
+                { "type": "text", "text": "Calling a tool." },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "render",
+                    "input": { "seed": 42 },
+                },
+            ],
+            "stop_reason": "tool_use",
+        });
+        let resp = from_anthropic_response(&value).expect("ok");
+        let call = ToolCall::new(ToolCallId::new("toolu_1"), "render", json!({ "seed": 42 }));
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls("Calling a tool.", vec![call])
+        );
+        assert_eq!(resp.stop_reason(), Some("tool_use"));
+    }
+
+    #[test]
+    fn anthropic_usage_extracts_input_output_and_cache_tokens() {
+        let value = json!({
+            "content": [{ "type": "text", "text": "hi" }],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 60,
+                "cache_read_input_tokens": 30,
+            },
+        });
+        let resp = from_anthropic_response(&value).expect("ok");
+        assert_eq!(
+            resp.usage(),
+            Some(&Usage::new(Some(100), Some(50))
+                .with_cache_creation(Some(60))
+                .with_cache_read(Some(30)))
+        );
+    }
+
+    #[test]
+    fn anthropic_empty_content_yields_empty_assistant_message() {
+        let resp = from_anthropic_response(&json!({ "content": [] })).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant(""));
+        assert_eq!(resp.stop_reason(), None);
+        assert_eq!(resp.usage(), None);
+    }
+
+    #[test]
+    fn anthropic_missing_content_array_surfaces_serialization_error() {
+        for value in [json!({}), json!({ "content": { "not": "an array" } })] {
+            assert_eq!(
+                from_anthropic_response(&value),
+                Err(ProviderAdapterError::Serialization(
+                    "missing content array".to_string()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_tool_use_missing_id_surfaces_serialization_error() {
+        let value = json!({
+            "content": [{ "type": "tool_use", "name": "f", "input": {} }],
+        });
+        assert_eq!(
+            from_anthropic_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "content[0].id missing".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn anthropic_tool_use_missing_name_surfaces_serialization_error() {
+        let value = json!({
+            "content": [{ "type": "tool_use", "id": "toolu_1", "input": {} }],
+        });
+        assert_eq!(
+            from_anthropic_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "content[0].name missing".to_string()
+            ))
+        );
+    }
+
+    // A `tool_use` block without `input` defaults to `{}` (D-2), unified
+    // with the OpenAI/Responses missing-arguments default — a tool with no
+    // arguments parses successfully into an empty input.
+    #[test]
+    fn anthropic_tool_use_missing_input_defaults_to_empty_object() {
+        let value = json!({
+            "content": [{ "type": "tool_use", "id": "toolu_1", "name": "f" }],
+        });
+        let resp = from_anthropic_response(&value).expect("ok");
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new(ToolCallId::new("toolu_1"), "f", json!({}))],
+            )
+        );
+    }
+
+    // Text blocks without a string `text` and unknown block types (e.g.
+    // `thinking`, `tool_result`) are skipped silently.
+    #[test]
+    fn anthropic_unknown_or_emptied_blocks_are_ignored() {
+        let value = json!({
+            "content": [
+                { "type": "text" },
+                { "type": "thinking", "thinking": "not surfaced" },
+                { "type": "tool_result", "tool_use_id": "x" },
+            ],
+        });
+        let resp = from_anthropic_response(&value).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant(""));
+        assert_eq!(resp.usage(), None);
+    }
+
+    // ---- OpenAI Responses API ----
+
+    #[test]
+    fn responses_happy_path_output_text_message() {
+        let value = json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    { "type": "output_text", "text": "Hi there" },
+                    { "type": "output_text", "text": " again" },
+                ],
+            }],
+            "usage": { "input_tokens": 4, "output_tokens": 6 },
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant("Hi there\n again"));
+        assert_eq!(resp.usage(), Some(&Usage::new(Some(4), Some(6))));
+    }
+
+    #[test]
+    fn responses_function_call_items_become_tool_calls() {
+        let value = json!({
+            "output": [{
+                "type": "function_call",
+                "call_id": "fc_1",
+                "name": "lookup",
+                "arguments": "{\"key\": \"abc\"}",
+            }],
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new(
+                    ToolCallId::new("fc_1"),
+                    "lookup",
+                    json!({"key": "abc"})
+                )],
+            )
+        );
+    }
+
+    #[test]
+    fn responses_mixed_output_items_combine_text_and_tool_calls() {
+        let value = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "Checking..." }],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "fc_2",
+                    "name": "render",
+                    "arguments": "{}",
+                },
+            ],
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls(
+                "Checking...",
+                vec![ToolCall::new(ToolCallId::new("fc_2"), "render", json!({}))],
+            )
+        );
+    }
+
+    #[test]
+    fn responses_usage_extracts_input_output_reasoning_and_cache() {
+        let value = json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "hi" }],
+            }],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "output_tokens_details": { "reasoning_tokens": 10 },
+                "input_tokens_details": { "cached_tokens": 40 },
+            },
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(
+            resp.usage(),
+            Some(&Usage::new(Some(100), Some(50))
+                .with_reasoning_tokens(Some(10))
+                .with_cache_read(Some(40)))
+        );
+    }
+
+    #[test]
+    fn responses_missing_output_array_surfaces_serialization_error() {
+        for value in [json!({}), json!({ "output": { "not": "an array" } })] {
+            assert_eq!(
+                from_responses_response(&value),
+                Err(ProviderAdapterError::Serialization(
+                    "missing output array".to_string()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn responses_function_call_missing_call_id_surfaces_serialization_error() {
+        let value = json!({
+            "output": [{ "type": "function_call", "name": "f", "arguments": "{}" }],
+        });
+        assert_eq!(
+            from_responses_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "output[0].call_id missing".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn responses_function_call_missing_name_surfaces_serialization_error() {
+        let value = json!({
+            "output": [{ "type": "function_call", "call_id": "fc_1", "arguments": "{}" }],
+        });
+        assert_eq!(
+            from_responses_response(&value),
+            Err(ProviderAdapterError::Serialization(
+                "output[0].name missing".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn responses_malformed_arguments_surfaces_serialization_error() {
+        let value = json!({
+            "output": [{
+                "type": "function_call",
+                "call_id": "fc_1",
+                "name": "f",
+                "arguments": "not json",
+            }],
+        });
+        let err = from_responses_response(&value).unwrap_err();
+        assert!(matches!(
+            err,
+            ProviderAdapterError::Serialization(m) if m.starts_with("output[0].arguments:")
+        ));
+    }
+
+    // `message` items contribute only `output_text` blocks; other content
+    // block types (e.g. `refusal`) are skipped, and items with unknown
+    // types (e.g. `reasoning`) are ignored entirely.
+    #[test]
+    fn responses_non_output_text_and_unknown_items_are_ignored() {
+        let value = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        { "type": "refusal", "refusal": "nope" },
+                        { "type": "output_text", "text": "kept" },
+                    ],
+                },
+                { "type": "reasoning", "summary": [] },
+            ],
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant("kept"));
+        assert_eq!(resp.usage(), None);
+    }
+
+    // A `message` item without a `content` array is skipped silently.
+    #[test]
+    fn responses_message_item_without_content_yields_empty_text() {
+        let value = json!({
+            "output": [{ "type": "message", "role": "assistant" }],
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(resp.message(), &Message::assistant(""));
+    }
+
+    // Current behavior: `arguments` defaults to `{}` when missing. Also,
+    // the Responses API carries a `status` field rather than a
+    // `stop_reason`; the translator ignores it, so `stop_reason` is always
+    // `None` for Responses responses.
+    #[test]
+    fn responses_missing_arguments_defaults_to_empty_object_and_status_is_ignored() {
+        let value = json!({
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "fc_1",
+                "name": "f",
+            }],
+        });
+        let resp = from_responses_response(&value).expect("ok");
+        assert_eq!(
+            resp.message(),
+            &Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new(ToolCallId::new("fc_1"), "f", json!({}))],
+            )
+        );
+        assert_eq!(resp.stop_reason(), None);
+    }
 }
