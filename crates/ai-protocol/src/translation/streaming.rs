@@ -928,8 +928,10 @@ mod tests {
         };
         assert!(message.contains("upstream exploded"));
         // Fallback when no error payload is present.
-        let events =
-            acc.ingest_event(Some("response.failed"), &json!({"response": {"status": "failed"}}));
+        let events = acc.ingest_event(
+            Some("response.failed"),
+            &json!({"response": {"status": "failed"}}),
+        );
         assert!(matches!(events.first(), Some(AgentStreamEvent::Error(m)) if m.contains("failed")));
     }
 
@@ -974,7 +976,9 @@ mod tests {
             "choices": [{"delta": {}, "finish_reason": "tool_calls"}]
         }));
         assert!(
-            events.iter().any(|e| matches!(e, AgentStreamEvent::Warning(m) if m.contains("dropped"))),
+            events
+                .iter()
+                .any(|e| matches!(e, AgentStreamEvent::Warning(m) if m.contains("dropped"))),
             "dropped incomplete calls surface a Warning, got {events:?}"
         );
         assert!(!acc.has_partial_tool_calls());
