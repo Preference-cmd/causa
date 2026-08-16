@@ -395,11 +395,12 @@ async fn responses_complete_assembles_full_input_array_and_prompt_cache_key() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
 
     let request = responses_request().with_options(json!({ "prompt_cache_key": "session-42" }));
     let resp = backend
@@ -454,11 +455,12 @@ async fn responses_complete_omits_prompt_cache_key_when_absent() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
 
     let resp = backend
         .complete(responses_request())
@@ -487,11 +489,12 @@ async fn responses_complete_parses_function_call_items() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
 
     let resp = backend
         .complete(responses_request())
@@ -522,11 +525,12 @@ async fn responses_list_models_reuses_models_path() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
     let models = backend.list_models().await.expect("list ok");
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].name().as_str(), "gpt-5-mini");
@@ -566,11 +570,12 @@ async fn responses_stream_emits_text_deltas_and_done_with_usage() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
 
     let mut stream = backend
         .stream(responses_request())
@@ -625,11 +630,12 @@ async fn responses_stream_forwards_server_compaction_event() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
 
     let mut stream = backend
         .stream(responses_request())
@@ -681,11 +687,12 @@ async fn responses_stream_decodes_base64_arguments_deltas_and_emits_tool_call() 
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
 
     let mut stream = backend
         .stream(responses_request())
@@ -708,10 +715,11 @@ async fn responses_stream_decodes_base64_arguments_deltas_and_emits_tool_call() 
     assert_eq!(tool_calls[0].id().as_str(), "call_1");
     assert_eq!(tool_calls[0].name(), "echo");
     assert_eq!(tool_calls[0].arguments(), &json!({"x": 42}));
-    assert!(collected.iter().any(|e| matches!(
-        e,
-        reimagine_agent_harness::AgentStreamEvent::Done { .. }
-    )));
+    assert!(
+        collected
+            .iter()
+            .any(|e| matches!(e, reimagine_agent_harness::AgentStreamEvent::Done { .. }))
+    );
 }
 
 #[tokio::test]
@@ -963,11 +971,12 @@ async fn responses_complete_forwards_sampling_params_with_max_output_tokens() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
     let req = build_request_with_options(
         "gpt-5-mini",
         json!({"max_tokens": 512, "temperature": 0.7, "top_p": 0.9, "seed": 42, "user": "u1"}),
@@ -1053,11 +1062,12 @@ async fn responses_complete_with_reasoning_requests_summary_text() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
     let req = build_request_with_options(
         "gpt-5-mini",
         json!({"reasoning": true, "reasoning_effort": "high"}),
@@ -1088,11 +1098,12 @@ async fn responses_complete_without_reasoning_omits_include() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
     let req = build_request("gpt-5-mini");
     backend.complete(req).await.expect("complete ok");
 
@@ -1127,11 +1138,12 @@ async fn responses_stream_emits_reasoning_summary_delta_and_usage() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
     let req = build_request_with_options("gpt-5-mini", json!({"reasoning": true}));
     let mut stream = backend.stream(req).await.expect("stream starts");
 
@@ -1254,11 +1266,12 @@ async fn responses_complete_with_structured_output_sends_text_format() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::openai_responses_with_http_client(
-        ProviderName::new("responses-test"),
-        responses_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::openai_responses_with_http_client(
+            ProviderName::new("responses-test"),
+            responses_cfg_for(&server),
+            http,
+        ));
     let req = build_request_with_options(
         "gpt-5-mini",
         json!({
@@ -1375,11 +1388,22 @@ async fn anthropic_complete_places_cache_control_at_all_three_breakpoints() {
     );
     let req = AgentRequest::new(
         ModelName::new("claude-sonnet-4-5"),
-        vec![Message::system("You are a helpful assistant."), Message::user("hi")],
+        vec![
+            Message::system("You are a helpful assistant."),
+            Message::user("hi"),
+        ],
     )
     .with_tools(vec![
-        AgentToolDefinition::new("echo", "echoes", json!({"type": "object", "properties": {}})),
-        AgentToolDefinition::new("second", "second tool", json!({"type": "object", "properties": {}})),
+        AgentToolDefinition::new(
+            "echo",
+            "echoes",
+            json!({"type": "object", "properties": {}}),
+        ),
+        AgentToolDefinition::new(
+            "second",
+            "second tool",
+            json!({"type": "object", "properties": {}}),
+        ),
     ]);
     backend.complete(req).await.expect("complete ok");
 }
@@ -1608,11 +1632,11 @@ async fn openai_complete_missing_workspace_file_is_configuration_error() {
         ))
         .await
         .expect_err("must fail before any HTTP call");
-    assert!(matches!(
-        err,
-        ProviderAdapterError::Configuration(_)
-    ));
-    assert!(err.to_string().contains("failed to read workspace file"), "{err}");
+    assert!(matches!(err, ProviderAdapterError::Configuration(_)));
+    assert!(
+        err.to_string().contains("failed to read workspace file"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1630,14 +1654,8 @@ async fn openai_complete_url_file_block_without_workspace_dir_is_configuration_e
         ))
         .await
         .expect_err("must fail before any HTTP call");
-    assert!(matches!(
-        err,
-        ProviderAdapterError::Configuration(_)
-    ));
-    assert!(
-        err.to_string().contains("without one"),
-        "{err}"
-    );
+    assert!(matches!(err, ProviderAdapterError::Configuration(_)));
+    assert!(err.to_string().contains("without one"), "{err}");
 }
 
 #[tokio::test]
@@ -1657,12 +1675,10 @@ async fn openai_complete_rejects_remote_url_file_block() {
         ))
         .await
         .expect_err("remote downloads must be rejected");
-    assert!(matches!(
-        err,
-        ProviderAdapterError::Configuration(_)
-    ));
+    assert!(matches!(err, ProviderAdapterError::Configuration(_)));
     assert!(
-        err.to_string().contains("remote URLs are not supported in V2"),
+        err.to_string()
+            .contains("remote URLs are not supported in V2"),
         "{err}"
     );
 }
@@ -1687,10 +1703,7 @@ async fn openai_complete_rejects_non_image_file_block() {
         ))
         .await
         .expect_err("non-image file blocks must be rejected");
-    assert!(matches!(
-        err,
-        ProviderAdapterError::Configuration(_)
-    ));
+    assert!(matches!(err, ProviderAdapterError::Configuration(_)));
     assert!(err.to_string().contains("audio/mpeg"), "{err}");
 
     // Workspace-resolved non-image file block: rejected the same way
@@ -1833,11 +1846,12 @@ async fn anthropic_stream_emits_done_with_stop_reason() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
-        ProviderName::new("anthropic-test"),
-        anthropic_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
+            ProviderName::new("anthropic-test"),
+            anthropic_cfg_for(&server),
+            http,
+        ));
 
     let mut stream = backend
         .stream(build_request("claude-3-5-sonnet-latest"))
@@ -2181,11 +2195,12 @@ async fn anthropic_stream_merges_usage_from_message_start_and_message_delta() {
         .await;
 
     let http = reqwest::Client::new();
-    let backend: Arc<dyn CompletionBackend> = Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
-        ProviderName::new("anthropic-test"),
-        anthropic_cfg_for(&server),
-        http,
-    ));
+    let backend: Arc<dyn CompletionBackend> =
+        Arc::new(ReqwestBackend::anthropic_messages_with_http_client(
+            ProviderName::new("anthropic-test"),
+            anthropic_cfg_for(&server),
+            http,
+        ));
 
     let mut stream = backend
         .stream(build_request("claude-3-5-sonnet-latest"))
@@ -2214,7 +2229,11 @@ async fn anthropic_stream_merges_usage_from_message_start_and_message_delta() {
     assert_eq!(usage.output_tokens(), Some(7));
     assert_eq!(usage.cache_creation_input_tokens(), Some(100));
     assert_eq!(usage.cache_read_input_tokens(), Some(50));
-    assert_eq!(usage.total(), Some(169), "input + cache_creation + cache_read + output");
+    assert_eq!(
+        usage.total(),
+        Some(169),
+        "input + cache_creation + cache_read + output"
+    );
     assert!(done, "message_stop terminates the stream");
 }
 
@@ -2269,7 +2288,10 @@ async fn openai_stream_skips_malformed_sse_event_without_breaking() {
             _ => {}
         }
     }
-    assert_eq!(text, "before", "content on both sides of the bad event arrives");
+    assert_eq!(
+        text, "before",
+        "content on both sides of the bad event arrives"
+    );
     assert_eq!(done_reason.as_deref(), Some("stop"));
 }
 
