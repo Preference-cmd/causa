@@ -1,10 +1,15 @@
-//! TurnRunner / TurnOutcome / TurnTrace — Slice 1 state machine.
+//! The reference driver — retry scheduling, tool batch dispatch, artifact
+//! spill, control plumbing, and trace construction behind the staged
+//! perimeter. One runner during the transition; the canonical kernel never
+//! references this module.
+use super::config::TurnRunOptions;
+use super::executor::ToolExecutor;
 use crate::block::ToolCallPayload;
 use crate::control::RunControl;
-use crate::gateway::{ModelRequest, TurnRunConfig};
+use crate::gateway::ModelGateway;
+use crate::gateway::ModelRequest;
 use crate::ids::{AttemptNumber, BlockId, InvocationId, RoundId};
 use crate::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelStopReason};
-use crate::tool::ToolExecutor;
 use crate::tool_data::{
     ArtifactRef, ToolCallId, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
     Truncation, UnknownOutcomePolicy,
@@ -123,6 +128,11 @@ impl TurnTrace {
         }
     }
 }
+impl Default for TurnTrace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug)]
 pub enum TurnResult {
@@ -138,20 +148,17 @@ pub struct TurnOutcome {
 }
 
 pub struct TurnRunner {
-    gateway: Arc<dyn crate::gateway::ModelGateway>,
+    gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
 }
 impl TurnRunner {
-    pub fn new(
-        gateway: Arc<dyn crate::gateway::ModelGateway>,
-        executor: Arc<ToolExecutor>,
-    ) -> Self {
+    pub fn new(gateway: Arc<dyn ModelGateway>, executor: Arc<ToolExecutor>) -> Self {
         Self { gateway, executor }
     }
     pub async fn run(
         &self,
         mut context: TurnContext,
-        cfg: TurnRunConfig,
+        options: TurnRunOptions,
         ctrl: RunControl,
     ) -> TurnOutcome {
         let start = Instant::now();
@@ -193,12 +200,12 @@ impl TurnRunner {
                     start,
                 );
             }
-            if round >= cfg.limits.max_model_rounds {
+            if round >= options.policy.limits.max_model_rounds {
                 return finish(
                     context,
                     TurnResult::Interrupted {
                         cause: TurnInterruption::MaxModelRounds {
-                            limit: cfg.limits.max_model_rounds,
+                            limit: options.policy.limits.max_model_rounds,
                         },
                     },
                     trace,
@@ -206,8 +213,9 @@ impl TurnRunner {
                     start,
                 );
             }
-            // materialize frame
-            let frame = match context.frame(RoundId(round)).await {
+            // materialize frame — canonical trigger evaluation consumes the
+            // assembled frame policy (staged ownership, port-typed input)
+            let frame = match context.frame(RoundId(round), &options.frame).await {
                 Ok(f) => f,
                 Err(e) => {
                     return finish(
@@ -235,14 +243,14 @@ impl TurnRunner {
             let mut attempts: Vec<AttemptTrace> = Vec::new();
             let output: Result<ModelOutput, ModelInvokeError> = loop {
                 let attempt_started = Instant::now();
-                let attempt_ctrl = ctrl.for_attempt(cfg.attempt_timeout);
+                let attempt_ctrl = ctrl.for_attempt(options.policy.attempt_timeout);
                 let req = ModelRequest {
                     invocation_id: invocation.clone(),
                     attempt: AttemptNumber(attempt),
                     frame: frame.clone(),
-                    model: cfg.model.clone(),
-                    tool_surface: cfg.tool_surface.clone(),
-                    generation: cfg.generation.clone(),
+                    model: options.invocation.model.clone(),
+                    tool_surface: options.invocation.tool_surface.clone(),
+                    generation: options.invocation.generation.clone(),
                 };
                 match self.gateway.invoke(&req, &attempt_ctrl).await {
                     Ok(out) => {
@@ -255,14 +263,14 @@ impl TurnRunner {
                         break Ok(out);
                     }
                     Err(e) => {
-                        let retryable = e.is_retryable(&cfg.retry);
+                        let retryable = options.policy.retry.allows(&e.kind);
                         attempts.push(AttemptTrace {
                             attempt: AttemptNumber(attempt),
                             kind: Some(e.kind.clone()),
                             is_retryable: retryable,
                             duration_ms: millis_since(attempt_started),
                         });
-                        if retryable && attempt <= cfg.retry.max_retries {
+                        if retryable && attempt <= options.policy.retry.max_retries {
                             attempt += 1;
                             continue;
                         }
@@ -309,6 +317,8 @@ impl TurnRunner {
             });
             // MaxTokens / Refusal never persist blocks (§5.6); they carry their
             // own dedicated interruption causes, so dispatch before apply.
+            // This is driver policy: the canonical apply_model_output would
+            // happily record them as facts.
             if matches!(
                 output.stop_reason,
                 ModelStopReason::MaxTokens | ModelStopReason::Refusal
@@ -401,12 +411,12 @@ impl TurnRunner {
                 }
                 ModelStopReason::ToolUse => {
                     tool_calls_total += call_payloads.len();
-                    if tool_calls_total as u32 > cfg.limits.max_tool_calls {
+                    if tool_calls_total as u32 > options.policy.limits.max_tool_calls {
                         return finish(
                             context,
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::MaxToolCalls {
-                                    limit: cfg.limits.max_tool_calls,
+                                    limit: options.policy.limits.max_tool_calls,
                                 },
                             },
                             trace,
@@ -439,11 +449,11 @@ impl TurnRunner {
                         Arc::new(Mutex::new(Vec::new()));
                     let futs = to_exec.into_iter().map(|payload| {
                         let cc = ctrl
-                            .for_attempt(cfg.attempt_timeout)
-                            .for_call(cfg.call_timeout);
-                        let store = cfg.artifact_store.clone();
-                        let tc = cfg.token_counter.clone();
-                        let limits = cfg.tool_output_limits.clone();
+                            .for_attempt(options.policy.attempt_timeout)
+                            .for_call(options.execution.call_timeout);
+                        let store = options.execution.artifact_store.clone();
+                        let tc = options.execution.token_counter.clone();
+                        let limits = options.execution.tool_output_limits.clone();
                         let exec = self.executor.clone();
                         let log = completion_log.clone();
                         async move {

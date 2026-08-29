@@ -1,16 +1,13 @@
-//! TurnContext / ContextFrame / WindowBudget / Compaction — Slice 1 single-turn kernel.
-use crate::block::{
-    BlockPayload, ContextBlock, InputPayload, TextPayload, ToolCallPayload, ToolResultPayload,
-};
+//! TurnContext / ContextFrame / TurnSnapshot — Slice 1 single-turn fact machine.
+use crate::block::{BlockPayload, ContextBlock, InputPayload, TextPayload, ToolCallPayload};
 use crate::ids::{BlockId, BlockSequence, ContextVersion, FrameId, RoundId, TurnId, TurnSequence};
 use crate::model::ModelOutput;
-use crate::tool_data::ToolCallId;
+use crate::tool_data::{ToolCallId, ToolResultPayload};
 use std::collections::HashSet;
-use std::sync::Arc;
 
 pub use crate::budget::{
-    Compaction, CompactionError, CompactionInput, CompactionOutput, NoopCompaction,
-    NoopTokenCounter, TokenCounter, WindowBudget,
+    Compaction, CompactionError, CompactionInput, CompactionOutput, FramePolicy, TokenCounter,
+    WindowBudget,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,14 +77,13 @@ impl OrderedBlocks {
 /// Current turn's ordered fact state. All mutation goes through the controlled
 /// operations (`append_input` / `apply_model_output` / `append_tool_results` /
 /// `seal`); there is no second `&mut` seam — fields are private by design.
+/// Frame-materialization policy (budget/compaction/counter) is NOT stored
+/// here — facts stay facts; drivers pass a `FramePolicy` into `frame()`.
 pub struct TurnContext {
     turn_id: TurnId,
     blocks: OrderedBlocks,
     version: ContextVersion,
     lifecycle: TurnLifecycle,
-    window_budget: WindowBudget,
-    compaction: Option<Arc<dyn Compaction>>,
-    token_counter: Option<Arc<dyn TokenCounter>>,
     next_seq: u64,
 }
 
@@ -118,27 +114,8 @@ impl TurnContext {
             blocks: OrderedBlocks::empty(),
             version: ContextVersion(0),
             lifecycle: TurnLifecycle::Open,
-            window_budget: WindowBudget::default(),
-            compaction: None,
-            token_counter: None,
             next_seq: 0,
         }
-    }
-    pub fn with_window_budget(mut self, b: WindowBudget) -> Self {
-        assert!(
-            b.compaction_trigger < b.model_window_limit,
-            "compaction_trigger must be less than model_window_limit"
-        );
-        self.window_budget = b;
-        self
-    }
-    pub fn with_compaction(mut self, c: Arc<dyn Compaction>) -> Self {
-        self.compaction = Some(c);
-        self
-    }
-    pub fn with_token_counter(mut self, c: Arc<dyn TokenCounter>) -> Self {
-        self.token_counter = Some(c);
-        self
     }
 
     pub fn is_sealed(&self) -> bool {
@@ -158,22 +135,6 @@ impl TurnContext {
     }
     pub fn snapshot_blocks(&self) -> Vec<ContextBlock> {
         self.blocks.0.clone()
-    }
-
-    pub fn estimate_tokens(&self) -> usize {
-        if let Some(counter) = &self.token_counter {
-            counter.estimate(&self.blocks.0)
-        } else {
-            self.blocks
-                .0
-                .iter()
-                .map(|b| {
-                    serde_json::to_string(&b.payload)
-                        .map(|s| s.len() / 4)
-                        .unwrap_or(0)
-                })
-                .sum()
-        }
     }
 
     pub fn append_input(&mut self, payload: InputPayload) -> Result<BlockId, ContextError> {
@@ -355,14 +316,21 @@ impl TurnContext {
         })
     }
 
-    pub async fn frame(&self, round_id: RoundId) -> Result<ContextFrame, FrameError> {
-        // estimate tokens
-        let estimated = self.estimate_tokens();
-        if self.window_budget.should_compact(estimated) {
-            if let Some(comp) = &self.compaction {
+    /// Materialize the model context for `round_id`. Trigger *evaluation*
+    /// stays canonical: the frame policy is a carrier of port instances —
+    /// this method never references staged modules. Compaction output is
+    /// frame-local and never written back into the fact state.
+    pub async fn frame(
+        &self,
+        round_id: RoundId,
+        policy: &FramePolicy,
+    ) -> Result<ContextFrame, FrameError> {
+        let estimated = policy.estimate(&self.blocks.0);
+        if policy.window_budget.should_compact(estimated) {
+            if let Some(comp) = &policy.compaction {
                 let input = CompactionInput {
                     blocks: self.blocks.0.clone(),
-                    budget: self.window_budget,
+                    budget: policy.window_budget,
                     estimated_tokens: estimated,
                 };
                 let out = comp
@@ -386,7 +354,11 @@ impl TurnContext {
         self.frame_sync(round_id)
     }
 
-    pub(crate) fn seal(&mut self) {
+    /// Terminal lifecycle transition, owned by the driver: seal when the turn
+    /// is over. Sealed turns reject every append operation; the kernel
+    /// guarantees no post-terminal mutation. (Conversation-level history
+    /// eligibility is a Slice 2 driver stamp, not this marker.)
+    pub fn seal(&mut self) {
         self.lifecycle = TurnLifecycle::Sealed;
     }
 
@@ -463,9 +435,6 @@ impl TurnContext {
             blocks: OrderedBlocks(blocks),
             version,
             lifecycle: TurnLifecycle::Open,
-            window_budget: WindowBudget::default(),
-            compaction: None,
-            token_counter: None,
             next_seq,
         })
     }

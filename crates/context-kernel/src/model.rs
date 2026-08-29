@@ -116,13 +116,6 @@ impl ModelInvokeError {
     pub fn kind(&self) -> &ModelInvokeErrorKind {
         &self.kind
     }
-    pub fn is_retryable(&self, policy: &RetryPolicy) -> bool {
-        match self.kind {
-            ModelInvokeErrorKind::Transient => true,
-            ModelInvokeErrorKind::TimedOut => policy.retry_timeouts,
-            _ => false,
-        }
-    }
 }
 impl std::fmt::Display for ModelInvokeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -130,17 +123,3 @@ impl std::fmt::Display for ModelInvokeError {
     }
 }
 impl std::error::Error for ModelInvokeError {}
-
-#[derive(Debug, Clone)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub retry_timeouts: bool,
-}
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries: 0,
-            retry_timeouts: false,
-        }
-    }
-}

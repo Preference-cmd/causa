@@ -1,46 +1,31 @@
-use reimagine_context_kernel::*;
+//! Staged runtime tests — the reference driver, config axes, executor
+//! dispatch, cancellation, and traces. These exercise `internal/` wiring
+//! through the root facade and change with the perimeter, not the contract.
+
+mod common;
+
+use common::{assistant_endturn, assistant_tooluse, ctx};
+use reimagine_context_kernel::{
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AssistantPayload, AttemptControl,
+    AttemptNumber, BlockPayload, CallControl, Compaction, CompactionError, CompactionInput,
+    CompactionOutput, ContextBlock, ExecutionOptions, FramePolicy, InputPayload, ModelGateway,
+    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelStopReason, ModelUsage,
+    ReasoningPayload, RetryPolicy, RunControl, StoreError, TextPayload, Tool, ToolCallContext,
+    ToolCallDraft, ToolDefinition, ToolExecutionOutcome, ToolExecutor, ToolOutput,
+    ToolOutputLimits, ToolResultPayload, ToolResultStatus, Truncation, TurnInterruption,
+    TurnLimits, TurnPolicy, TurnResult, TurnRunOptions, TurnRunner, UnknownOutcomePolicy,
+    WindowBudget,
+};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
-fn turn_id(s: &str) -> TurnId {
-    TurnId::new(s)
-}
-fn ctx(s: &str) -> TurnContext {
-    TurnContext::new(turn_id(s))
-}
-
-fn assistant_endturn(text: &str) -> ModelOutput {
-    ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new(text),
-            tool_calls: vec![],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-    }
-}
-fn assistant_tooluse(text: &str, tool_name: &str, args: serde_json::Value) -> ModelOutput {
-    ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new(text),
-            tool_calls: vec![ToolCallDraft {
-                tool_name: tool_name.into(),
-                arguments: args,
-                provider_call_id: None,
-            }],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-    }
-}
-
 // ---- FakeGateway that records requests ----
+
 struct RecordingGateway {
     outputs: Mutex<Vec<Result<ModelOutput, ModelInvokeErrorKind>>>,
     recorded: Mutex<Vec<ModelRequest>>,
 }
+
 impl RecordingGateway {
     fn new(outputs: Vec<Result<ModelOutput, ModelInvokeErrorKind>>) -> Self {
         Self {
@@ -49,6 +34,7 @@ impl RecordingGateway {
         }
     }
 }
+
 #[async_trait::async_trait]
 impl ModelGateway for RecordingGateway {
     async fn invoke(
@@ -72,6 +58,7 @@ impl ModelGateway for RecordingGateway {
 }
 
 struct EchoTool;
+
 #[async_trait::async_trait]
 impl Tool for EchoTool {
     fn definition(&self) -> ToolDefinition {
@@ -96,6 +83,7 @@ impl Tool for EchoTool {
 }
 
 struct FailTool;
+
 #[async_trait::async_trait]
 impl Tool for FailTool {
     fn definition(&self) -> ToolDefinition {
@@ -115,6 +103,7 @@ impl Tool for FailTool {
 }
 
 struct UnknownStopTool;
+
 #[async_trait::async_trait]
 impl Tool for UnknownStopTool {
     fn definition(&self) -> ToolDefinition {
@@ -145,88 +134,16 @@ fn limits(r: u32, t: u32) -> TurnLimits {
 }
 
 #[tokio::test]
-async fn empty_frame_deterministic() {
-    let c = ctx("t1");
-    let f0 = c.frame_sync(RoundId(0)).unwrap();
-    let f1 = c.frame_sync(RoundId(0)).unwrap();
-    assert_eq!(f0.frame_id, f1.frame_id);
-    assert!(f0.model_context.blocks.is_empty());
-}
-
-#[tokio::test]
-async fn append_input_and_frame_order() {
-    let mut c = ctx("t1");
-    c.apply_inputs(vec![
-        InputPayload::RequestUser(TextPayload::new("hello")),
-        InputPayload::InstructionSystem(TextPayload::new("sys")),
-    ])
-    .unwrap();
-    let f = c.frame_sync(RoundId(0)).unwrap();
-    assert_eq!(f.model_context.blocks.len(), 2);
-    // Order preserved
-    assert!(matches!(
-        f.model_context.blocks[0].payload,
-        BlockPayload::RequestUser(_)
-    ));
-    assert!(matches!(
-        f.model_context.blocks[1].payload,
-        BlockPayload::InstructionSystem(_)
-    ));
-    // After frame, seal should make further append fail
-    let mut c2 =
-        TurnContext::from_validated_blocks(turn_id("t1"), c.snapshot_blocks(), c.version())
-            .unwrap();
-    // not sealed, should allow
-    c2.append_input(InputPayload::RequestUser(TextPayload::new("more")))
-        .unwrap();
-}
-
-#[tokio::test]
-async fn sealed_turn_append_closed() {
-    let mut c = ctx("t1");
-    c.append_input(InputPayload::RequestUser(TextPayload::new("hi")))
-        .unwrap();
-    let gateway = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn("done"))]));
-    let exec = Arc::new(ToolExecutor::from_vec(vec![]));
-    let runner = TurnRunner::new(gateway, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
-        ..Default::default()
-    };
-    let outcome = runner
-        .run(
-            c,
-            cfg,
-            RunControl::new(tokio_util::sync::CancellationToken::new(), None),
-        )
-        .await;
-    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
-    assert!(outcome.context.is_sealed());
-    let mut sealed = outcome.context;
-    assert!(matches!(
-        sealed.append_input(InputPayload::RequestUser(TextPayload::new("x"))),
-        Err(ContextError::SealedTurn)
-    ));
-    assert!(matches!(
-        sealed.apply_model_output(
-            InvocationId {
-                turn_id: turn_id("t1"),
-                round_id: RoundId(1)
-            },
-            assistant_endturn("y")
-        ),
-        Err(ContextError::SealedTurn)
-    ));
-}
-
-#[tokio::test]
 async fn final_assistant_completes_once() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn("final"))]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner
@@ -250,8 +167,11 @@ async fn tool_calls_drive_next_frame_and_causality() {
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner
@@ -285,12 +205,15 @@ async fn retry_same_frame_only_attempt_increments_and_no_block_on_failure() {
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
     let runner = TurnRunner::new(gw.clone(), exec);
-    let cfg = TurnRunConfig {
-        retry: RetryPolicy {
-            max_retries: 1,
-            retry_timeouts: false,
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            retry: RetryPolicy {
+                max_retries: 1,
+                retry_timeouts: false,
+            },
+            limits: limits(5, 10),
+            ..Default::default()
         },
-        limits: limits(5, 10),
         ..Default::default()
     };
     let out = runner
@@ -321,12 +244,15 @@ async fn retry_exhaustion_interrupted_and_counts() {
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
     let runner = TurnRunner::new(gw.clone(), exec);
-    let cfg = TurnRunConfig {
-        retry: RetryPolicy {
-            max_retries: 1,
-            retry_timeouts: false,
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            retry: RetryPolicy {
+                max_retries: 1,
+                retry_timeouts: false,
+            },
+            limits: limits(5, 10),
+            ..Default::default()
         },
-        limits: limits(5, 10),
         ..Default::default()
     };
     let out = runner
@@ -355,8 +281,11 @@ async fn tool_failure_is_observation_not_terminal_and_next_round() {
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(FailTool)]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner
@@ -400,8 +329,11 @@ async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner
@@ -432,8 +364,11 @@ async fn unknown_outcome_stop_interrupts() {
     ))]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(UnknownStopTool)]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner
@@ -461,8 +396,11 @@ async fn same_input_same_fake_output_same_snapshot() {
         ]));
         let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
         let runner = TurnRunner::new(gw, exec);
-        let cfg = TurnRunConfig {
-            limits: limits(5, 10),
+        let cfg = TurnRunOptions {
+            policy: TurnPolicy {
+                limits: limits(5, 10),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let out = runner
@@ -536,10 +474,16 @@ async fn token_limits_and_artifact_truncation() {
     }
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(BigTool)]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
-        tool_output_limits: ToolOutputLimits { max_tokens: 10 },
-        artifact_store: Some(Arc::new(MemStore)),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
+        execution: ExecutionOptions {
+            tool_output_limits: ToolOutputLimits { max_tokens: 10 },
+            artifact_store: Some(Arc::new(MemStore)),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner
@@ -569,8 +513,11 @@ async fn parent_cancellation_interrupted() {
     ))]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
     let runner = TurnRunner::new(gw, exec);
-    let cfg = TurnRunConfig {
-        limits: limits(5, 10),
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let out = runner.run(c, cfg, RunControl::new(token, None)).await;
@@ -584,13 +531,14 @@ async fn parent_cancellation_interrupted() {
 
 // ---------------------------------------------------------------------------
 // Alignment coverage (2026-08-28 review): acceptance gaps + regressions
+
 // ---------------------------------------------------------------------------
 
 fn runner_with(
     gw: Arc<RecordingGateway>,
     tools: Vec<Arc<dyn Tool>>,
-    cfg: TurnRunConfig,
-) -> (TurnRunner, TurnRunConfig) {
+    cfg: TurnRunOptions,
+) -> (TurnRunner, TurnRunOptions) {
     (
         TurnRunner::new(gw, Arc::new(ToolExecutor::from_vec(tools))),
         cfg,
@@ -598,6 +546,7 @@ fn runner_with(
 }
 
 // [P2 acceptance #10] max_retries = 0 → initial attempt only
+
 #[tokio::test]
 async fn max_retries_zero_does_single_attempt() {
     let c = ctx("t1");
@@ -607,12 +556,15 @@ async fn max_retries_zero_does_single_attempt() {
     let (runner, cfg) = runner_with(
         gw.clone(),
         vec![],
-        TurnRunConfig {
-            retry: RetryPolicy {
-                max_retries: 0,
-                retry_timeouts: false,
+        TurnRunOptions {
+            policy: TurnPolicy {
+                retry: RetryPolicy {
+                    max_retries: 0,
+                    retry_timeouts: false,
+                },
+                limits: limits(5, 10),
+                ..Default::default()
             },
-            limits: limits(5, 10),
             ..Default::default()
         },
     );
@@ -636,11 +588,12 @@ async fn max_retries_zero_does_single_attempt() {
 }
 
 // [P2 acceptance #13] turn deadline exceeded → TurnDeadlineExceeded
+
 #[tokio::test]
 async fn turn_deadline_yields_deadline_exceeded() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![]));
-    let (runner, cfg) = runner_with(gw.clone(), vec![], TurnRunConfig::default());
+    let (runner, cfg) = runner_with(gw.clone(), vec![], TurnRunOptions::default());
     let ctrl = RunControl::new(
         tokio_util::sync::CancellationToken::new(),
         Some(std::time::Instant::now() - std::time::Duration::from_secs(1)),
@@ -656,13 +609,14 @@ async fn turn_deadline_yields_deadline_exceeded() {
 }
 
 // [P2 acceptance #13] non-retryable model failure → Interrupted with round trace
+
 #[tokio::test]
 async fn non_retryable_error_records_round_trace() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![Err(
         ModelInvokeErrorKind::Permanent,
     )]));
-    let (runner, cfg) = runner_with(gw, vec![], TurnRunConfig::default());
+    let (runner, cfg) = runner_with(gw, vec![], TurnRunOptions::default());
     let out = runner
         .run(
             c,
@@ -688,6 +642,7 @@ async fn non_retryable_error_records_round_trace() {
 }
 
 // [P0 regression] cross-batch identical call must not collide (proposal §5.3 recovery path)
+
 #[tokio::test]
 async fn cross_batch_identical_call_does_not_collide() {
     let c = ctx("t1");
@@ -697,7 +652,7 @@ async fn cross_batch_identical_call_does_not_collide() {
         Ok(same_call()),
         Ok(assistant_endturn("done")),
     ]));
-    let (runner, cfg) = runner_with(gw, vec![Arc::new(EchoTool)], TurnRunConfig::default());
+    let (runner, cfg) = runner_with(gw, vec![Arc::new(EchoTool)], TurnRunOptions::default());
     let out = runner
         .run(
             c,
@@ -724,6 +679,7 @@ async fn cross_batch_identical_call_does_not_collide() {
 }
 
 // [P1 regression] MaxTokens / Refusal reach their dedicated interruption causes
+
 #[tokio::test]
 async fn max_tokens_and_refusal_yield_dedicated_causes_without_blocks() {
     for (stop, expect) in [
@@ -740,7 +696,7 @@ async fn max_tokens_and_refusal_yield_dedicated_causes_without_blocks() {
             stop_reason: stop,
             reasoning: None,
         })]));
-        let (runner, cfg) = runner_with(gw, vec![], TurnRunConfig::default());
+        let (runner, cfg) = runner_with(gw, vec![], TurnRunOptions::default());
         let out = runner
             .run(
                 c,
@@ -766,6 +722,7 @@ async fn max_tokens_and_refusal_yield_dedicated_causes_without_blocks() {
 }
 
 // [P3 acceptance #14] UnknownOutcomePolicy::Continue → append result and continue
+
 #[tokio::test]
 async fn unknown_outcome_continue_continues_turn() {
     struct UnknownContinueTool;
@@ -797,7 +754,7 @@ async fn unknown_outcome_continue_continues_turn() {
     let (runner, cfg) = runner_with(
         gw,
         vec![Arc::new(UnknownContinueTool)],
-        TurnRunConfig::default(),
+        TurnRunOptions::default(),
     );
     let out = runner
         .run(
@@ -814,6 +771,7 @@ async fn unknown_outcome_continue_continues_turn() {
 
 // [P3 §6.1.1] hung tool: executor call-deadline backstop yields UnknownOutcome;
 // Stop policy interrupts the turn.
+
 #[tokio::test]
 async fn hung_tool_stop_policy_interrupts_with_unknown_outcome() {
     struct HungTool;
@@ -840,8 +798,11 @@ async fn hung_tool_stop_policy_interrupts_with_unknown_outcome() {
     let (runner, cfg) = runner_with(
         gw,
         vec![Arc::new(HungTool)],
-        TurnRunConfig {
-            call_timeout: Some(std::time::Duration::from_millis(50)),
+        TurnRunOptions {
+            execution: ExecutionOptions {
+                call_timeout: Some(std::time::Duration::from_millis(50)),
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -864,6 +825,7 @@ async fn hung_tool_stop_policy_interrupts_with_unknown_outcome() {
 
 // [P3 §6.1.1] hung tool with Continue declaration → backstop UnknownOutcome is
 // committed and the turn proceeds to the next round.
+
 #[tokio::test]
 async fn hung_tool_continue_policy_still_completes() {
     struct HungContinueTool;
@@ -892,8 +854,11 @@ async fn hung_tool_continue_policy_still_completes() {
     let (runner, cfg) = runner_with(
         gw,
         vec![Arc::new(HungContinueTool)],
-        TurnRunConfig {
-            call_timeout: Some(std::time::Duration::from_millis(50)),
+        TurnRunOptions {
+            execution: ExecutionOptions {
+                call_timeout: Some(std::time::Duration::from_millis(50)),
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -909,6 +874,7 @@ async fn hung_tool_continue_policy_still_completes() {
 }
 
 // [P3 acceptance #14] parallel batch: one failing call does not abort the others
+
 #[tokio::test]
 async fn parallel_batch_partial_failure_does_not_abort() {
     let c = ctx("t1");
@@ -938,7 +904,7 @@ async fn parallel_batch_partial_failure_does_not_abort() {
     let (runner, cfg) = runner_with(
         gw,
         vec![Arc::new(EchoTool), Arc::new(FailTool)],
-        TurnRunConfig::default(),
+        TurnRunOptions::default(),
     );
     let out = runner
         .run(
@@ -962,6 +928,7 @@ async fn parallel_batch_partial_failure_does_not_abort() {
 }
 
 // [§6.1.1] completion_order reflects real completion, not submission order
+
 #[tokio::test]
 async fn completion_order_reflects_real_completion() {
     struct SlowTool;
@@ -1011,7 +978,7 @@ async fn completion_order_reflects_real_completion() {
     let (runner, cfg) = runner_with(
         gw,
         vec![Arc::new(SlowTool), Arc::new(EchoTool)],
-        TurnRunConfig::default(),
+        TurnRunOptions::default(),
     );
     let out = runner
         .run(
@@ -1034,183 +1001,7 @@ async fn completion_order_reflects_real_completion() {
 }
 
 // [P1 Phase 1] apply_model_output validation branches
-#[tokio::test]
-async fn apply_model_output_rejects_invalid_outputs() {
-    let mut c = ctx("t1");
-    let inv = InvocationId {
-        turn_id: turn_id("t1"),
-        round_id: RoundId(0),
-    };
-    // EndTurn must not carry tool_calls
-    let bad_endturn = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("x"),
-            tool_calls: vec![ToolCallDraft {
-                tool_name: "echo".into(),
-                arguments: json!({}),
-                provider_call_id: None,
-            }],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-    };
-    assert!(matches!(
-        c.apply_model_output(inv.clone(), bad_endturn),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // ToolUse requires non-empty tool name
-    let empty_name = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("x"),
-            tool_calls: vec![ToolCallDraft {
-                tool_name: "  ".into(),
-                arguments: json!({}),
-                provider_call_id: None,
-            }],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-    };
-    assert!(matches!(
-        c.apply_model_output(inv.clone(), empty_name),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // ToolUse requires object arguments
-    let non_object = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("x"),
-            tool_calls: vec![ToolCallDraft {
-                tool_name: "echo".into(),
-                arguments: json!(42),
-                provider_call_id: None,
-            }],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-    };
-    assert!(matches!(
-        c.apply_model_output(inv.clone(), non_object),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // identical (tool, args) twice in one batch is fine — positions differ
-    let dup_batch = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("x"),
-            tool_calls: vec![
-                ToolCallDraft {
-                    tool_name: "echo".into(),
-                    arguments: json!({"a": 1}),
-                    provider_call_id: None,
-                },
-                ToolCallDraft {
-                    tool_name: "echo".into(),
-                    arguments: json!({"a": 1}),
-                    provider_call_id: None,
-                },
-            ],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-    };
-    assert!(c.apply_model_output(inv.clone(), dup_batch).is_ok());
-    // sealed turn rejects everything — obtain a sealed context via a completed run
-    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn("final"))]));
-    let (runner, cfg) = runner_with(gw, vec![], TurnRunConfig::default());
-    let out = runner
-        .run(
-            ctx("t2"),
-            cfg,
-            RunControl::new(tokio_util::sync::CancellationToken::new(), None),
-        )
-        .await;
-    let mut sealed = out.context;
-    assert!(sealed.is_sealed());
-    let sealed_inv = InvocationId {
-        turn_id: turn_id("t2"),
-        round_id: RoundId(1),
-    };
-    assert!(matches!(
-        sealed.apply_model_output(sealed_inv, assistant_endturn("y")),
-        Err(ContextError::SealedTurn)
-    ));
-}
 
-// [P1 Phase 1] from_validated_blocks rejects corrupt state
-#[tokio::test]
-async fn from_validated_blocks_rejects_corrupt_state() {
-    fn block(seq: u64, payload: BlockPayload) -> ContextBlock {
-        let tid = turn_id("t1");
-        ContextBlock {
-            id: BlockId {
-                turn_id: tid,
-                sequence: BlockSequence(seq),
-            },
-            sequence: BlockSequence(seq),
-            meta: BlockMeta::default(),
-            payload,
-        }
-    }
-    // wrong turn_id
-    let mut b = block(0, BlockPayload::RequestUser(TextPayload::new("hi")));
-    b.id.turn_id = turn_id("other");
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), vec![b], ContextVersion(1)),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // non-contiguous sequence
-    let blocks = vec![
-        block(0, BlockPayload::RequestUser(TextPayload::new("a"))),
-        block(2, BlockPayload::RequestUser(TextPayload::new("b"))),
-    ];
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // duplicate tool.call ids
-    let blocks = vec![
-        block(
-            0,
-            BlockPayload::ToolCall(ToolCallPayload {
-                call_id: ToolCallId::new("dup"),
-                tool_name: "echo".into(),
-                arguments: json!({}),
-                provider_call_id: None,
-            }),
-        ),
-        block(
-            1,
-            BlockPayload::ToolCall(ToolCallPayload {
-                call_id: ToolCallId::new("dup"),
-                tool_name: "echo".into(),
-                arguments: json!({}),
-                provider_call_id: None,
-            }),
-        ),
-    ];
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
-        Err(ContextError::DuplicateToolCallId(_))
-    ));
-    // unpaired tool.result
-    let blocks = vec![block(
-        0,
-        BlockPayload::ToolResult(ToolResultPayload {
-            call_id: ToolCallId::new("ghost"),
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({})),
-        }),
-    )];
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(1)),
-        Err(ContextError::UnpairedToolResult(_))
-    ));
-}
-
-// [P3] MaxToolCalls counts raw calls (incl. rejected duplicates) and records trace
 #[tokio::test]
 async fn max_tool_calls_interrupt_records_total() {
     let c = ctx("t1");
@@ -1238,8 +1029,11 @@ async fn max_tool_calls_interrupt_records_total() {
     let (runner, cfg) = runner_with(
         gw,
         vec![Arc::new(EchoTool)],
-        TurnRunConfig {
-            limits: limits(5, 1), // 2 raw calls > limit 1
+        TurnRunOptions {
+            policy: TurnPolicy {
+                limits: limits(5, 1),
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -1262,157 +1056,166 @@ async fn max_tool_calls_interrupt_records_total() {
     assert!(out.trace.rounds[0].tool_batch.is_none());
 }
 
-// ---- Phase B: fact-fidelity fields are recorded verbatim and serde-stable ----
+// ---- Phase C: frame policy is driver-owned; evaluation stays canonical ----
 
-#[test]
-fn provider_call_id_passes_through_draft_to_persisted_block() {
-    let mut c = ctx("t1");
-    let inv = InvocationId {
-        turn_id: turn_id("t1"),
-        round_id: RoundId(0),
-    };
-    let out = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("with provider id"),
-            tool_calls: vec![
-                ToolCallDraft {
-                    tool_name: "echo".into(),
-                    arguments: json!({"a": 1}),
-                    provider_call_id: Some("call_provider_1".into()),
-                },
-                ToolCallDraft {
-                    tool_name: "echo".into(),
-                    arguments: json!({"b": 2}),
-                    provider_call_id: None,
-                },
-            ],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-    };
-    let applied = c.apply_model_output(inv, out).expect("record facts");
-    let call_blocks: Vec<&ContextBlock> = c
-        .blocks()
-        .iter()
-        .filter(|b| matches!(b.payload, BlockPayload::ToolCall(_)))
-        .collect();
-    assert_eq!(applied.block_ids.len(), 3); // assistant text + 2 calls
-    assert_eq!(call_blocks.len(), 2);
-    match (&call_blocks[0].payload, &call_blocks[1].payload) {
-        (BlockPayload::ToolCall(a), BlockPayload::ToolCall(b)) => {
-            assert_eq!(a.provider_call_id.as_deref(), Some("call_provider_1"));
-            assert_eq!(b.provider_call_id, None);
-        }
-        _ => panic!("expected tool call payloads"),
-    }
-    // serde round-trip of the fact state preserves the passthrough verbatim
-    let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
-    let blocks: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
-    let restored: Vec<Option<String>> = blocks
-        .iter()
-        .filter_map(|b| match &b.payload {
-            BlockPayload::ToolCall(p) => Some(p.provider_call_id.clone()),
-            _ => None,
+struct DropAllCompaction;
+
+#[async_trait::async_trait]
+impl Compaction for DropAllCompaction {
+    async fn compact(&self, _input: CompactionInput) -> Result<CompactionOutput, CompactionError> {
+        Ok(CompactionOutput {
+            blocks: vec![],
+            summary: None,
+            truncated: true,
         })
-        .collect();
-    assert_eq!(restored, vec![Some("call_provider_1".into()), None]);
+    }
 }
 
-#[test]
-fn apply_model_output_records_max_tokens_and_refusal_as_facts() {
+#[tokio::test]
+async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     let mut c = ctx("t1");
-    let inv = InvocationId {
-        turn_id: turn_id("t1"),
-        round_id: RoundId(0),
-    };
-    // Structural validation only: any stop reason may be recorded as facts.
-    // Interpreting terminal reasons stays driver policy above the kernel.
-    let max_tokens = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("partial"),
-            tool_calls: vec![],
+    c.append_input(InputPayload::RequestUser(TextPayload::new("hello")))
+        .unwrap();
+    // any non-empty content trips the placeholder trigger
+    let frame_policy = FramePolicy {
+        window_budget: WindowBudget {
+            model_window_limit: 100,
+            compaction_trigger: 1,
         },
-        usage: None,
-        stop_reason: ModelStopReason::MaxTokens,
-        reasoning: None,
+        compaction: Some(Arc::new(DropAllCompaction)),
+        token_counter: None,
     };
-    let applied = c
-        .apply_model_output(inv.clone(), max_tokens)
-        .expect("MaxTokens is recordable");
-    assert_eq!(applied.block_ids.len(), 1); // ResponseAssistant only
-    let refusal_with_calls = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new(""),
-            tool_calls: vec![ToolCallDraft {
-                tool_name: "echo".into(),
-                arguments: json!({}),
-                provider_call_id: None,
-            }],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::Refusal,
-        reasoning: None,
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn("done"))]));
+    let (runner, base_cfg) = runner_with(gw.clone(), vec![], TurnRunOptions::default());
+    let cfg = TurnRunOptions {
+        frame: frame_policy,
+        ..base_cfg
     };
-    assert!(
-        c.apply_model_output(inv.clone(), refusal_with_calls)
-            .is_ok()
-    );
-    // Structural rules for EndTurn/ToolUse are untouched by the loosening.
-    let bad_endturn = ModelOutput {
-        assistant: AssistantPayload {
-            text: TextPayload::new("x"),
-            tool_calls: vec![ToolCallDraft {
-                tool_name: "echo".into(),
-                arguments: json!({}),
-                provider_call_id: None,
-            }],
-        },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-    };
+    let out = runner
+        .run(
+            c,
+            cfg,
+            RunControl::new(tokio_util::sync::CancellationToken::new(), None),
+        )
+        .await;
+    assert!(matches!(out.result, TurnResult::Completed { .. }));
+    // the gateway saw the COMPACTED projection (empty blocks)
+    let recorded = gw.recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].frame.model_context.blocks.is_empty());
+    drop(recorded);
+    // the fact state is untouched — compaction is frame-local, never writes
+    // back; blocks are still [RequestUser, ResponseAssistant]
+    assert_eq!(out.context.blocks().len(), 2);
     assert!(matches!(
-        c.apply_model_output(inv, bad_endturn),
-        Err(ContextError::InvalidSequence(_))
+        out.context.blocks()[0].payload,
+        BlockPayload::RequestUser(_)
     ));
 }
 
-#[test]
-fn fidelity_fields_are_serde_additive() {
-    let usage = ModelUsage {
-        input_tokens: 120,
-        output_tokens: 30,
-        cache_read_tokens: Some(64),
-        cache_write_tokens: Some(12),
-        reasoning_tokens: Some(8),
+// ---- Phase D boundary: artifact failure and loss-free fidelity ----
+
+struct FailingStore;
+#[async_trait::async_trait]
+impl ArtifactStore for FailingStore {
+    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        Err(StoreError::Persist("disk full".into()))
+    }
+    async fn read(
+        &self,
+        _id: &str,
+        _range: Option<std::ops::Range<u64>>,
+    ) -> Result<Vec<u8>, StoreError> {
+        Err(StoreError::Read("missing".into()))
+    }
+}
+
+#[tokio::test]
+async fn artifact_store_failure_still_truncates_without_artifact() {
+    let c = ctx("t1");
+    let big = "x".repeat(400);
+    let gw = Arc::new(RecordingGateway::new(vec![
+        Ok(assistant_tooluse("big", "echo", json!({"pad": big}))),
+        Ok(assistant_endturn("done")),
+    ]));
+    let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
+    let runner = TurnRunner::new(gw, exec);
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            limits: limits(5, 10),
+            ..Default::default()
+        },
+        execution: ExecutionOptions {
+            tool_output_limits: ToolOutputLimits { max_tokens: 10 },
+            artifact_store: Some(Arc::new(FailingStore)),
+            ..Default::default()
+        },
+        ..Default::default()
     };
-    let back: ModelUsage = serde_json::from_str(&serde_json::to_string(&usage).unwrap()).unwrap();
-    assert_eq!(back.input_tokens, 120);
-    assert_eq!(back.cache_read_tokens, Some(64));
-    assert_eq!(back.cache_write_tokens, Some(12));
-    assert_eq!(back.reasoning_tokens, Some(8));
-    // pre-fidelity payloads (without the new fields) still deserialize
-    let legacy: ModelUsage =
-        serde_json::from_str(r#"{"input_tokens":1,"output_tokens":2}"#).unwrap();
+    let out = runner
+        .run(
+            c,
+            cfg,
+            RunControl::new(tokio_util::sync::CancellationToken::new(), None),
+        )
+        .await;
+    assert!(matches!(out.result, TurnResult::Completed { .. }));
+    let result_block = out
+        .context
+        .blocks()
+        .iter()
+        .find(|b| {
+            matches!(
+                &b.payload,
+                BlockPayload::ToolResult(r) if r.output.truncation == Truncation::Middle
+            )
+        })
+        .expect("truncated");
+    if let BlockPayload::ToolResult(r) = &result_block.payload {
+        // persist failed -> observation degrades to head+tail, no artifact ref
+        assert!(r.output.artifact.is_none());
+        assert!(r.output.is_truncated());
+    } else {
+        panic!()
+    }
+}
+
+#[tokio::test]
+async fn completed_output_carries_reasoning_and_usage_unchanged() {
+    // gate 12: reasoning signature + rich usage survive the staged driver losslessly
+    let final_output = ModelOutput {
+        assistant: AssistantPayload {
+            text: TextPayload::new("final"),
+            tool_calls: vec![],
+        },
+        usage: Some(ModelUsage {
+            input_tokens: 42,
+            output_tokens: 7,
+            cache_read_tokens: Some(11),
+            cache_write_tokens: Some(3),
+            reasoning_tokens: Some(5),
+        }),
+        stop_reason: ModelStopReason::EndTurn,
+        reasoning: Some(ReasoningPayload {
+            text: "thinking".into(),
+            signature: Some("sig-xyz".into()),
+        }),
+    };
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(final_output.clone())]));
+    let (runner, cfg) = runner_with(gw, vec![], TurnRunOptions::default());
+    let out = runner
+        .run(
+            ctx("t1"),
+            cfg,
+            RunControl::new(tokio_util::sync::CancellationToken::new(), None),
+        )
+        .await;
+    let completed = match out.result {
+        TurnResult::Completed { final_output } => final_output,
+        other => panic!("expected completion, got {other:?}"),
+    };
     assert_eq!(
-        (
-            legacy.cache_read_tokens,
-            legacy.cache_write_tokens,
-            legacy.reasoning_tokens
-        ),
-        (None, None, None)
+        serde_json::to_string(&completed).unwrap(),
+        serde_json::to_string(&final_output).unwrap()
     );
-    let reasoning = ReasoningPayload {
-        text: "thinking".into(),
-        signature: Some("sig-abc".into()),
-    };
-    let back: ReasoningPayload =
-        serde_json::from_str(&serde_json::to_string(&reasoning).unwrap()).unwrap();
-    assert_eq!(back.text, "thinking");
-    assert_eq!(back.signature.as_deref(), Some("sig-abc"));
-    let legacy_call: ToolCallPayload =
-        serde_json::from_str(r#"{"call_id":"echo:abcd1234:0","tool_name":"echo","arguments":{}}"#)
-            .unwrap();
-    assert_eq!(legacy_call.provider_call_id, None);
 }

@@ -1,4 +1,5 @@
-//! Window budget and compaction seam — internal to context-kernel.
+//! Frame-materialization ports — window budget, compaction seam, token
+//! counter, and the canonical `FramePolicy` carrier.
 
 use crate::block::ContextBlock;
 
@@ -45,39 +46,47 @@ pub trait Compaction: Send + Sync {
     async fn compact(&self, input: CompactionInput) -> Result<CompactionOutput, CompactionError>;
 }
 
-pub struct NoopCompaction;
-#[async_trait::async_trait]
-impl Compaction for NoopCompaction {
-    async fn compact(&self, input: CompactionInput) -> Result<CompactionOutput, CompactionError> {
-        Ok(CompactionOutput {
-            blocks: input.blocks,
-            summary: None,
-            truncated: false,
-        })
-    }
-}
-
 /// 纯同步估算接口；无需 async_trait。
 pub trait TokenCounter: Send + Sync {
     fn estimate(&self, blocks: &[ContextBlock]) -> usize;
     fn estimate_value(&self, value: &serde_json::Value) -> usize;
 }
 
-pub struct NoopTokenCounter;
-impl TokenCounter for NoopTokenCounter {
-    fn estimate(&self, blocks: &[ContextBlock]) -> usize {
-        blocks
-            .iter()
-            .map(|b| {
-                serde_json::to_string(&b.payload)
-                    .map(|s| s.len() / 4)
-                    .unwrap_or(0)
-            })
-            .sum()
+/// Carrier of the frame-materialization policy: trigger budget, optional
+/// compaction, optional token counter. A canonical value assembled from port
+/// instances — drivers (staged) build and own it, `TurnContext::frame()`
+/// (canonical) evaluates it. Placeholder semantics stay frame-local and
+/// non-persisting; real conversation-level policy is Slice 5 territory.
+#[derive(Clone, Default)]
+pub struct FramePolicy {
+    pub window_budget: WindowBudget,
+    pub compaction: Option<std::sync::Arc<dyn Compaction>>,
+    pub token_counter: Option<std::sync::Arc<dyn TokenCounter>>,
+}
+impl std::fmt::Debug for FramePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FramePolicy")
+            .field("window_budget", &self.window_budget)
+            .field("compaction", &self.compaction.is_some())
+            .field("token_counter", &self.token_counter.is_some())
+            .finish()
     }
-    fn estimate_value(&self, value: &serde_json::Value) -> usize {
-        serde_json::to_string(value)
-            .map(|s| s.len() / 4)
-            .unwrap_or(0)
+}
+impl FramePolicy {
+    /// Token estimate for a block list: the supplied counter if any, else the
+    /// placeholder JSON-length/4 heuristic.
+    pub fn estimate(&self, blocks: &[ContextBlock]) -> usize {
+        if let Some(counter) = &self.token_counter {
+            counter.estimate(blocks)
+        } else {
+            blocks
+                .iter()
+                .map(|b| {
+                    serde_json::to_string(&b.payload)
+                        .map(|s| s.len() / 4)
+                        .unwrap_or(0)
+                })
+                .sum()
+        }
     }
 }
