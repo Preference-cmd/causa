@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{BlockId, BlockSequence};
-pub use crate::tool::{ToolOutput, ToolResultPayload, ToolResultStatus};
+pub use crate::tool_data::{ToolOutput, ToolResultPayload, ToolResultStatus};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BlockMeta {}
@@ -22,9 +22,14 @@ pub struct ContextInjectPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallPayload {
-    pub call_id: crate::tool::ToolCallId,
+    pub call_id: crate::tool_data::ToolCallId,
     pub tool_name: String,
     pub arguments: serde_json::Value,
+    /// Provider-issued identifier carried through from the model draft, if
+    /// the upstream API assigned one. Recorded as-is; pairing stays on the
+    /// kernel-generated `call_id`.
+    #[serde(default)]
+    pub provider_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

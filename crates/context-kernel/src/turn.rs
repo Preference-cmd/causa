@@ -4,7 +4,7 @@ use crate::block::{
 };
 use crate::ids::{BlockId, BlockSequence, ContextVersion, FrameId, RoundId, TurnId, TurnSequence};
 use crate::model::ModelOutput;
-use crate::tool::ToolCallId;
+use crate::tool_data::ToolCallId;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -47,9 +47,9 @@ pub enum ContextError {
     #[error("invalid sequence: {0}")]
     InvalidSequence(String),
     #[error("duplicate tool call id: {0:?}")]
-    DuplicateToolCallId(crate::tool::ToolCallId),
+    DuplicateToolCallId(crate::tool_data::ToolCallId),
     #[error("unpaired tool result: {0:?}")]
-    UnpairedToolResult(crate::tool::ToolCallId),
+    UnpairedToolResult(crate::tool_data::ToolCallId),
     #[error("invalid model output: {0}")]
     InvalidModelOutput(String),
 }
@@ -205,7 +205,9 @@ impl TurnContext {
         if self.is_sealed() {
             return Err(ContextError::SealedTurn);
         }
-        // Validate stop_reason vs tool_calls
+        // Structural validation only — any stop reason is recordable as
+        // facts; interpreting terminal reasons (e.g. interrupting on
+        // MaxTokens/Refusal) is driver policy above the kernel.
         match output.stop_reason {
             crate::model::ModelStopReason::EndTurn => {
                 if !output.assistant.tool_calls.is_empty() {
@@ -221,14 +223,7 @@ impl TurnContext {
                     ));
                 }
             }
-            crate::model::ModelStopReason::MaxTokens | crate::model::ModelStopReason::Refusal => {
-                // For Slice 1 we allow but not store? Instead reject to let runner handle.
-                // Return InvalidSequence so runner can map to appropriate interruption.
-                return Err(ContextError::InvalidSequence(format!(
-                    "stop_reason {:?} not persisted via apply_model_output",
-                    output.stop_reason
-                )));
-            }
+            crate::model::ModelStopReason::MaxTokens | crate::model::ModelStopReason::Refusal => {}
         }
         // Validate tool drafts
         for draft in &output.assistant.tool_calls {
@@ -276,6 +271,7 @@ impl TurnContext {
                 call_id: call_id.clone(),
                 tool_name: draft.tool_name,
                 arguments: draft.arguments,
+                provider_call_id: draft.provider_call_id,
             };
             let id = self.push_block(BlockPayload::ToolCall(payload));
             block_ids.push(id);
@@ -289,7 +285,7 @@ impl TurnContext {
 
     pub fn append_tool_results(
         &mut self,
-        results: &[crate::tool::ToolResultPayload],
+        results: &[ToolResultPayload],
     ) -> Result<Vec<BlockId>, ContextError> {
         if self.is_sealed() {
             return Err(ContextError::SealedTurn);

@@ -11,6 +11,7 @@ pub mod ids;
 pub mod model;
 pub mod runtime;
 pub mod tool;
+pub mod tool_data;
 pub mod turn;
 
 pub use block::{
@@ -25,16 +26,17 @@ pub use ids::{
 };
 pub use model::{
     AssistantPayload, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
-    ModelRef, ModelStopReason, ModelUsage, RetryPolicy, ToolCallDraft, ToolSurface,
+    ModelRef, ModelStopReason, ModelUsage, ReasoningPayload, RetryPolicy, ToolCallDraft,
+    ToolSurface,
 };
 pub use runtime::{
     AttemptTrace, ModelRoundTrace, OutputSummary, ToolBatchTrace, ToolCallTrace, TurnInterruption,
     TurnOutcome, TurnResult, TurnRunner, TurnTrace,
 };
-pub use tool::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, IsolationLevel, StoreError, Tool,
-    ToolCallContext, ToolCallId, ToolDefinition, ToolExecutionOutcome, ToolExecutor, ToolOutput,
-    ToolOutputLimits, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation,
+pub use tool::{ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolExecutor};
+pub use tool_data::{
+    ArtifactKind, ArtifactRef, ToolCallContext, ToolCallId, ToolDefinition, ToolExecutionOutcome,
+    ToolOutput, ToolOutputLimits, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation,
     UnknownOutcomePolicy,
 };
 pub use turn::{

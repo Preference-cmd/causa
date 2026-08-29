@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::block::TextPayload;
-use crate::tool::ToolDefinition;
+use crate::tool_data::ToolDefinition;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRef(pub String);
@@ -30,25 +30,32 @@ impl ToolSurface {
     pub fn from_definitions(definitions: Vec<ToolDefinition>) -> Self {
         Self { definitions }
     }
-    /// Spec §4 constructor `ToolSurface::from_tools(&[Box<dyn Tool>])`.
-    /// Kept as alias to `from_definitions` for API compatibility.
-    pub fn from_tools(tools: &[Box<dyn crate::tool::Tool>]) -> Self {
-        Self {
-            definitions: tools.iter().map(|t| t.definition()).collect(),
-        }
-    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub input_tokens: usize,
     pub output_tokens: usize,
+    /// Provider-reported prompt-cache read (hit) tokens, if disclosed.
+    #[serde(default)]
+    pub cache_read_tokens: Option<usize>,
+    /// Provider-reported prompt-cache write (population) tokens, if disclosed.
+    #[serde(default)]
+    pub cache_write_tokens: Option<usize>,
+    /// Provider-reported reasoning/thinking tokens, if disclosed.
+    #[serde(default)]
+    pub reasoning_tokens: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolCallDraft {
     pub tool_name: String,
     pub arguments: serde_json::Value,
+    /// Provider-issued identifier for this tool call, if the upstream model
+    /// API assigned one. The kernel records it verbatim and pairs tool
+    /// results by the kernel-generated `ToolCallId`, never by this field.
+    #[serde(default)]
+    pub provider_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,12 +73,22 @@ pub struct AssistantPayload {
     pub tool_calls: Vec<ToolCallDraft>,
 }
 
+/// Structured reasoning content: the model's thinking text plus the optional
+/// provider signature some APIs attach so it can be replayed on later turns.
+/// Recorded as-is; the kernel does not interpret it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReasoningPayload {
+    pub text: String,
+    #[serde(default)]
+    pub signature: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelOutput {
     pub assistant: AssistantPayload,
     pub usage: Option<ModelUsage>,
     pub stop_reason: ModelStopReason,
-    pub reasoning: Option<String>,
+    pub reasoning: Option<ReasoningPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

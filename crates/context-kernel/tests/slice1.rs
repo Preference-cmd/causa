@@ -27,6 +27,7 @@ fn assistant_tooluse(text: &str, tool_name: &str, args: serde_json::Value) -> Mo
             tool_calls: vec![ToolCallDraft {
                 tool_name: tool_name.into(),
                 arguments: args,
+                provider_call_id: None,
             }],
         },
         usage: None,
@@ -380,10 +381,12 @@ async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
                 ToolCallDraft {
                     tool_name: "echo".into(),
                     arguments: json!({"x":1}),
+                    provider_call_id: None,
                 },
                 ToolCallDraft {
                     tool_name: "echo".into(),
                     arguments: json!({"x":1}),
+                    provider_call_id: None,
                 },
             ],
         },
@@ -917,10 +920,12 @@ async fn parallel_batch_partial_failure_does_not_abort() {
                     ToolCallDraft {
                         tool_name: "echo".into(),
                         arguments: json!({"a": 1}),
+                        provider_call_id: None,
                     },
                     ToolCallDraft {
                         tool_name: "fail".into(),
                         arguments: json!({}),
+                        provider_call_id: None,
                     },
                 ],
             },
@@ -988,10 +993,12 @@ async fn completion_order_reflects_real_completion() {
                     ToolCallDraft {
                         tool_name: "slow".into(),
                         arguments: json!({}),
+                        provider_call_id: None,
                     },
                     ToolCallDraft {
                         tool_name: "echo".into(),
                         arguments: json!({}),
+                        provider_call_id: None,
                     },
                 ],
             },
@@ -1041,6 +1048,7 @@ async fn apply_model_output_rejects_invalid_outputs() {
             tool_calls: vec![ToolCallDraft {
                 tool_name: "echo".into(),
                 arguments: json!({}),
+                provider_call_id: None,
             }],
         },
         usage: None,
@@ -1058,6 +1066,7 @@ async fn apply_model_output_rejects_invalid_outputs() {
             tool_calls: vec![ToolCallDraft {
                 tool_name: "  ".into(),
                 arguments: json!({}),
+                provider_call_id: None,
             }],
         },
         usage: None,
@@ -1075,6 +1084,7 @@ async fn apply_model_output_rejects_invalid_outputs() {
             tool_calls: vec![ToolCallDraft {
                 tool_name: "echo".into(),
                 arguments: json!(42),
+                provider_call_id: None,
             }],
         },
         usage: None,
@@ -1093,10 +1103,12 @@ async fn apply_model_output_rejects_invalid_outputs() {
                 ToolCallDraft {
                     tool_name: "echo".into(),
                     arguments: json!({"a": 1}),
+                    provider_call_id: None,
                 },
                 ToolCallDraft {
                     tool_name: "echo".into(),
                     arguments: json!({"a": 1}),
+                    provider_call_id: None,
                 },
             ],
         },
@@ -1166,6 +1178,7 @@ async fn from_validated_blocks_rejects_corrupt_state() {
                 call_id: ToolCallId::new("dup"),
                 tool_name: "echo".into(),
                 arguments: json!({}),
+                provider_call_id: None,
             }),
         ),
         block(
@@ -1174,6 +1187,7 @@ async fn from_validated_blocks_rejects_corrupt_state() {
                 call_id: ToolCallId::new("dup"),
                 tool_name: "echo".into(),
                 arguments: json!({}),
+                provider_call_id: None,
             }),
         ),
     ];
@@ -1207,10 +1221,12 @@ async fn max_tool_calls_interrupt_records_total() {
                 ToolCallDraft {
                     tool_name: "echo".into(),
                     arguments: json!({"a": 1}),
+                    provider_call_id: None,
                 },
                 ToolCallDraft {
                     tool_name: "echo".into(),
                     arguments: json!({"a": 1}),
+                    provider_call_id: None,
                 },
             ],
         },
@@ -1244,4 +1260,159 @@ async fn max_tool_calls_interrupt_records_total() {
     assert_eq!(out.trace.tool_calls_total, 2);
     assert_eq!(out.trace.rounds.len(), 1);
     assert!(out.trace.rounds[0].tool_batch.is_none());
+}
+
+// ---- Phase B: fact-fidelity fields are recorded verbatim and serde-stable ----
+
+#[test]
+fn provider_call_id_passes_through_draft_to_persisted_block() {
+    let mut c = ctx("t1");
+    let inv = InvocationId {
+        turn_id: turn_id("t1"),
+        round_id: RoundId(0),
+    };
+    let out = ModelOutput {
+        assistant: AssistantPayload {
+            text: TextPayload::new("with provider id"),
+            tool_calls: vec![
+                ToolCallDraft {
+                    tool_name: "echo".into(),
+                    arguments: json!({"a": 1}),
+                    provider_call_id: Some("call_provider_1".into()),
+                },
+                ToolCallDraft {
+                    tool_name: "echo".into(),
+                    arguments: json!({"b": 2}),
+                    provider_call_id: None,
+                },
+            ],
+        },
+        usage: None,
+        stop_reason: ModelStopReason::ToolUse,
+        reasoning: None,
+    };
+    let applied = c.apply_model_output(inv, out).expect("record facts");
+    let call_blocks: Vec<&ContextBlock> = c
+        .blocks()
+        .iter()
+        .filter(|b| matches!(b.payload, BlockPayload::ToolCall(_)))
+        .collect();
+    assert_eq!(applied.block_ids.len(), 3); // assistant text + 2 calls
+    assert_eq!(call_blocks.len(), 2);
+    match (&call_blocks[0].payload, &call_blocks[1].payload) {
+        (BlockPayload::ToolCall(a), BlockPayload::ToolCall(b)) => {
+            assert_eq!(a.provider_call_id.as_deref(), Some("call_provider_1"));
+            assert_eq!(b.provider_call_id, None);
+        }
+        _ => panic!("expected tool call payloads"),
+    }
+    // serde round-trip of the fact state preserves the passthrough verbatim
+    let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
+    let blocks: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
+    let restored: Vec<Option<String>> = blocks
+        .iter()
+        .filter_map(|b| match &b.payload {
+            BlockPayload::ToolCall(p) => Some(p.provider_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(restored, vec![Some("call_provider_1".into()), None]);
+}
+
+#[test]
+fn apply_model_output_records_max_tokens_and_refusal_as_facts() {
+    let mut c = ctx("t1");
+    let inv = InvocationId {
+        turn_id: turn_id("t1"),
+        round_id: RoundId(0),
+    };
+    // Structural validation only: any stop reason may be recorded as facts.
+    // Interpreting terminal reasons stays driver policy above the kernel.
+    let max_tokens = ModelOutput {
+        assistant: AssistantPayload {
+            text: TextPayload::new("partial"),
+            tool_calls: vec![],
+        },
+        usage: None,
+        stop_reason: ModelStopReason::MaxTokens,
+        reasoning: None,
+    };
+    let applied = c
+        .apply_model_output(inv.clone(), max_tokens)
+        .expect("MaxTokens is recordable");
+    assert_eq!(applied.block_ids.len(), 1); // ResponseAssistant only
+    let refusal_with_calls = ModelOutput {
+        assistant: AssistantPayload {
+            text: TextPayload::new(""),
+            tool_calls: vec![ToolCallDraft {
+                tool_name: "echo".into(),
+                arguments: json!({}),
+                provider_call_id: None,
+            }],
+        },
+        usage: None,
+        stop_reason: ModelStopReason::Refusal,
+        reasoning: None,
+    };
+    assert!(
+        c.apply_model_output(inv.clone(), refusal_with_calls)
+            .is_ok()
+    );
+    // Structural rules for EndTurn/ToolUse are untouched by the loosening.
+    let bad_endturn = ModelOutput {
+        assistant: AssistantPayload {
+            text: TextPayload::new("x"),
+            tool_calls: vec![ToolCallDraft {
+                tool_name: "echo".into(),
+                arguments: json!({}),
+                provider_call_id: None,
+            }],
+        },
+        usage: None,
+        stop_reason: ModelStopReason::EndTurn,
+        reasoning: None,
+    };
+    assert!(matches!(
+        c.apply_model_output(inv, bad_endturn),
+        Err(ContextError::InvalidSequence(_))
+    ));
+}
+
+#[test]
+fn fidelity_fields_are_serde_additive() {
+    let usage = ModelUsage {
+        input_tokens: 120,
+        output_tokens: 30,
+        cache_read_tokens: Some(64),
+        cache_write_tokens: Some(12),
+        reasoning_tokens: Some(8),
+    };
+    let back: ModelUsage = serde_json::from_str(&serde_json::to_string(&usage).unwrap()).unwrap();
+    assert_eq!(back.input_tokens, 120);
+    assert_eq!(back.cache_read_tokens, Some(64));
+    assert_eq!(back.cache_write_tokens, Some(12));
+    assert_eq!(back.reasoning_tokens, Some(8));
+    // pre-fidelity payloads (without the new fields) still deserialize
+    let legacy: ModelUsage =
+        serde_json::from_str(r#"{"input_tokens":1,"output_tokens":2}"#).unwrap();
+    assert_eq!(
+        (
+            legacy.cache_read_tokens,
+            legacy.cache_write_tokens,
+            legacy.reasoning_tokens
+        ),
+        (None, None, None)
+    );
+    let reasoning = ReasoningPayload {
+        text: "thinking".into(),
+        signature: Some("sig-abc".into()),
+    };
+    let back: ReasoningPayload =
+        serde_json::from_str(&serde_json::to_string(&reasoning).unwrap()).unwrap();
+    assert_eq!(back.text, "thinking");
+    assert_eq!(back.signature.as_deref(), Some("sig-abc"));
+    let legacy_call: ToolCallPayload =
+        serde_json::from_str(r#"{"call_id":"echo:abcd1234:0","tool_name":"echo","arguments":{}}"#)
+            .unwrap();
+    assert_eq!(legacy_call.provider_call_id, None);
 }

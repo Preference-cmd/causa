@@ -4,9 +4,10 @@ use crate::control::RunControl;
 use crate::gateway::{ModelRequest, TurnRunConfig};
 use crate::ids::{AttemptNumber, BlockId, InvocationId, RoundId};
 use crate::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelStopReason};
-use crate::tool::{
-    ArtifactRef, ToolCallId, ToolExecutionOutcome, ToolExecutor, ToolOutput, ToolResultPayload,
-    ToolResultStatus, Truncation, UnknownOutcomePolicy,
+use crate::tool::ToolExecutor;
+use crate::tool_data::{
+    ArtifactRef, ToolCallId, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
+    Truncation, UnknownOutcomePolicy,
 };
 use crate::turn::{FrameScope, TurnContext};
 use std::collections::HashMap;
