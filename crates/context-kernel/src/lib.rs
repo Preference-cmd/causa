@@ -3,64 +3,54 @@
 //!
 //! # Layering (Slice 1.5)
 //!
-//! - **Canonical facts** — block/turn/ids/model values: the recorded turn
-//!   state, its validated transitions, and deterministic projections.
-//! - **Public ports** — `ModelGateway`, `Tool` + `ArtifactStore`, control
-//!   planes (`RunControl`/`AttemptControl`/`CallControl`), budget seams
-//!   (`WindowBudget`/`Compaction`/`TokenCounter`/`FramePolicy`). External
-//!   implementors supply the behavior; the crate root is the only advertised
-//!   surface (physical modules are private by design).
-//! - **Staged perimeter** — the reference driver, config axes, executor,
-//!   fakes, and noop defaults under `internal` (root-exported deliberately,
-//!   but holding no claim on the kernel contract).
+//! - **`context`** — the external rule interface: block taxonomy, turn fact
+//!   machine and deterministic projections, model/tool value shapes, ids.
+//! - **`ports`** — the behavior seams external implementors fill in:
+//!   `ModelGateway`, `Tool` + `ArtifactStore`, control planes, budget seams.
+//! - **`internal`** — staged reference implementation (driver, config axes,
+//!   executor, fakes, noop defaults), root-exported deliberately but holding
+//!   no claim on the kernel contract.
 //!
-//! Everything below re-exports exactly what the public facade promises;
-//! nothing else is a cross-crate commitment.
+//! The physical modules are private; every re-export below is the entire
+//! public contract. Nothing else is a cross-crate commitment.
 
 #![deny(unsafe_code)]
 
-mod block;
-mod budget;
-mod control;
-mod gateway;
-mod ids;
+mod context;
 mod internal;
-mod model;
-mod tool;
-mod tool_data;
-mod turn;
+mod ports;
 
-// --- canonical facts -------------------------------------------------------
-pub use block::{
-    BlockMeta, BlockPayload, ContextBlock, ContextInjectPayload, InputPayload, TextPayload,
-    ToolCallPayload,
-};
-pub use ids::{
+// --- context: the external rule interface ------------------------------------
+pub use context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
+pub use context::ids::{
     AttemptNumber, BlockId, BlockSequence, ContextVersion, ConversationId, ConversationVersion,
     FrameId, InvocationId, RoundId, TurnId, TurnSequence,
 };
-pub use model::{
-    AssistantPayload, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
-    ModelRef, ModelStopReason, ModelUsage, ReasoningPayload, ToolCallDraft, ToolSurface,
+pub use context::model::{
+    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
+    ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, ToolCallDraft, ToolSurface,
 };
-pub use tool_data::{
+pub use context::tool_data::{
     ArtifactKind, ArtifactRef, ToolCallContext, ToolCallId, ToolDefinition, ToolExecutionOutcome,
     ToolOutput, ToolOutputLimits, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation,
     UnknownOutcomePolicy,
 };
-pub use turn::{
-    AppliedModelOutput, Compaction, CompactionError, CompactionInput, CompactionOutput,
-    ContextError, ContextFrame, FrameError, FramePolicy, FrameScope, ModelContext, OrderedBlocks,
-    TokenCounter, TurnContext, TurnLifecycle, TurnSnapshot, WindowBudget,
+pub use context::turn::{
+    AppliedModelOutput, ContextError, ContextFrame, FrameError, FrameScope, ModelContext,
+    OrderedBlocks, TurnContext, TurnLifecycle, TurnSnapshot,
 };
 
-// --- public ports ----------------------------------------------------------
-pub use control::{AttemptControl, CallControl, ControlError, RunControl};
-pub use gateway::{ModelGateway, ModelRequest};
+// --- ports: behavior seams for external implementors ------------------------
+pub use ports::budget::{
+    Compaction, CompactionError, CompactionInput, CompactionOutput, FramePolicy, TokenCounter,
+    WindowBudget,
+};
+pub use ports::control::{AttemptControl, CallControl, ControlError, RunControl};
+pub use ports::gateway::{ModelGateway, ModelRequest};
+pub use ports::tool::{ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool};
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.
 pub use tokio_util::sync::CancellationToken;
-pub use tool::{ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool};
 
 // --- staged perimeter (deliberately root-exported reference wiring; holds no
 //     claim on the kernel contract and may move or decompose without notice) --

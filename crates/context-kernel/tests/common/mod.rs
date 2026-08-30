@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use reimagine_context_kernel::{
-    AssistantPayload, ModelOutput, ModelStopReason, TextPayload, ToolCallDraft, TurnContext, TurnId,
+    ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnContext, TurnId,
 };
 
 pub fn turn_id(s: &str) -> TurnId {
@@ -17,9 +17,9 @@ pub fn ctx(s: &str) -> TurnContext {
     TurnContext::new(turn_id(s))
 }
 
-pub fn assistant_endturn(text: &str) -> ModelOutput {
+pub fn endturn_output(text: &str) -> ModelOutput {
     ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new(text),
             tool_calls: vec![],
         },
@@ -29,9 +29,9 @@ pub fn assistant_endturn(text: &str) -> ModelOutput {
     }
 }
 
-pub fn assistant_tooluse(text: &str, tool_name: &str, args: serde_json::Value) -> ModelOutput {
+pub fn tooluse_output(text: &str, tool_name: &str, args: serde_json::Value) -> ModelOutput {
     ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new(text),
             tool_calls: vec![ToolCallDraft {
                 tool_name: tool_name.into(),

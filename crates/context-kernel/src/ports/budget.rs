@@ -1,7 +1,7 @@
 //! Frame-materialization ports — window budget, compaction seam, token
 //! counter, and the canonical `FramePolicy` carrier.
 
-use crate::block::ContextBlock;
+use crate::context::block::ContextBlock;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowBudget {
@@ -82,7 +82,7 @@ impl FramePolicy {
             blocks
                 .iter()
                 .map(|b| {
-                    serde_json::to_string(&b.payload)
+                    serde_json::to_string(&b.content)
                         .map(|s| s.len() / 4)
                         .unwrap_or(0)
                 })

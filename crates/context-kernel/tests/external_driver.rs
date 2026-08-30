@@ -5,11 +5,10 @@
 //! (`TurnRunner`) and without any private module path.
 
 use reimagine_context_kernel::{
-    AssistantPayload, AttemptControl, AttemptNumber, CancellationToken, ContextError,
-    ContextVersion, FramePolicy, GenerationOptions, InputPayload, InvocationId, ModelGateway,
-    ModelInvokeError, ModelOutput, ModelRef, ModelRequest, ModelStopReason, ModelUsage,
-    ReasoningPayload, RoundId, RunControl, TextPayload, ToolSurface, TurnContext, TurnId,
-    TurnSnapshot,
+    AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion, FramePolicy,
+    GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef,
+    ModelRequest, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
+    RunControl, TextPayload, ToolSurface, TurnContext, TurnId, TurnSnapshot,
 };
 
 /// A gateway that returns one canned output and asserts the invocation
@@ -37,12 +36,12 @@ impl ModelGateway for OneShotGateway {
 async fn external_single_shot_driver_assembles_from_root_facade() {
     let mut context = TurnContext::new(TurnId::new("ext-1"));
     context
-        .append_input(InputPayload::RequestUser(TextPayload::new("hi")))
+        .append_input(TextPayload::new("hi"), "user")
         .unwrap();
 
     let gateway = OneShotGateway {
         output: ModelOutput {
-            assistant: AssistantPayload {
+            response: ModelResponse {
                 text: TextPayload::new("hello"),
                 tool_calls: vec![],
             },
@@ -85,11 +84,13 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
         .invoke(&request, &ctrl.for_attempt(None))
         .await
         .unwrap();
-    let applied = context.apply_model_output(invocation, output).unwrap();
+    let applied = context
+        .append_model_output(invocation, &output.response, output.stop_reason)
+        .unwrap();
     context.seal();
 
     assert!(context.is_sealed());
-    assert_eq!(applied.block_ids.len(), 1); // ResponseAssistant only
+    assert_eq!(applied.block_ids.len(), 1); // response text only
     assert_eq!(context.version(), ContextVersion(2));
     // facts round-trip losslessly through a snapshot
     let json = serde_json::to_string(&context.snapshot()).unwrap();
@@ -97,7 +98,7 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
     assert_eq!(snapshot.blocks.as_slice().len(), 2);
     // sealed turn rejects further mutation
     assert!(matches!(
-        context.append_input(InputPayload::RequestUser(TextPayload::new("more"))),
+        context.append_input(TextPayload::new("more"), "user"),
         Err(ContextError::SealedTurn)
     ));
 }

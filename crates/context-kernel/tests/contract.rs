@@ -1,16 +1,16 @@
-//! Contract tests — canonical facts, validated transitions, deterministic
+//! Contract tests -- canonical facts, validated transitions, deterministic
 //! projections, and fact fidelity. No reference driver involved; every
 //! import comes from the public root facade.
 
 mod common;
 
-use common::{assistant_endturn, ctx, turn_id};
+use common::{ctx, endturn_output, turn_id};
 use reimagine_context_kernel::{
-    AssistantPayload, BlockId, BlockMeta, BlockPayload, BlockSequence, Compaction, CompactionError,
-    CompactionInput, CompactionOutput, ContextBlock, ContextError, ContextVersion, FramePolicy,
-    InputPayload, InvocationId, ModelOutput, ModelStopReason, ModelUsage, ReasoningPayload,
-    RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload, ToolOutput,
-    ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
+    BlockContent, BlockId, BlockMeta, BlockSequence, Compaction, CompactionError, CompactionInput,
+    CompactionOutput, ContextBlock, ContextError, ContextVersion, FramePolicy, InvocationId,
+    ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
+    TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload, ToolOutput, ToolResultPayload,
+    ToolResultStatus, TurnContext, WindowBudget,
 };
 use serde_json::json;
 
@@ -26,58 +26,54 @@ async fn empty_frame_deterministic() {
 #[tokio::test]
 async fn append_input_and_frame_order() {
     let mut c = ctx("t1");
-    c.apply_inputs(vec![
-        InputPayload::RequestUser(TextPayload::new("hello")),
-        InputPayload::InstructionSystem(TextPayload::new("sys")),
-    ])
-    .unwrap();
+    c.append_input(TextPayload::new("hello"), "user").unwrap();
+    c.append_input(TextPayload::new("sys"), "user").unwrap();
     let f = c.frame_sync(RoundId(0)).unwrap();
     assert_eq!(f.model_context.blocks.len(), 2);
-    // Order preserved
+    // Order preserved.
     assert!(matches!(
-        f.model_context.blocks[0].payload,
-        BlockPayload::RequestUser(_)
+        f.model_context.blocks[0].content,
+        BlockContent::Text(_)
     ));
     assert!(matches!(
-        f.model_context.blocks[1].payload,
-        BlockPayload::InstructionSystem(_)
+        f.model_context.blocks[1].content,
+        BlockContent::Text(_)
     ));
-    // After frame, seal should make further append fail
-    let mut c2 =
-        TurnContext::from_validated_blocks(turn_id("t1"), c.snapshot_blocks(), c.version())
-            .unwrap();
-    // not sealed, should allow
-    c2.append_input(InputPayload::RequestUser(TextPayload::new("more")))
-        .unwrap();
+    // Sealed turn rejects further append.
+    c.seal();
+    let mut sealed = c;
+    assert!(matches!(
+        sealed.append_input(TextPayload::new("x"), "user"),
+        Err(ContextError::SealedTurn)
+    ));
 }
 
 #[tokio::test]
 async fn sealed_turn_append_closed() {
     let mut c = ctx("t1");
-    c.append_input(InputPayload::RequestUser(TextPayload::new("hi")))
-        .unwrap();
-    // seal is a public lifecycle transition owned by the driver (Phase D)
+    c.append_input(TextPayload::new("hi"), "user").unwrap();
     c.seal();
     assert!(c.is_sealed());
     let mut sealed = c;
     assert!(matches!(
-        sealed.append_input(InputPayload::RequestUser(TextPayload::new("x"))),
+        sealed.append_input(TextPayload::new("x"), "user"),
         Err(ContextError::SealedTurn)
     ));
     assert!(matches!(
-        sealed.apply_model_output(
+        sealed.append_model_output(
             InvocationId {
                 turn_id: turn_id("t1"),
                 round_id: RoundId(1)
             },
-            assistant_endturn("y")
+            &endturn_output("y").response,
+            ModelStopReason::EndTurn
         ),
         Err(ContextError::SealedTurn)
     ));
 }
 
 #[tokio::test]
-async fn apply_model_output_rejects_invalid_outputs() {
+async fn append_model_output_rejects_invalid_outputs() {
     let mut c = ctx("t1");
     let inv = InvocationId {
         turn_id: turn_id("t1"),
@@ -85,7 +81,7 @@ async fn apply_model_output_rejects_invalid_outputs() {
     };
     // EndTurn must not carry tool_calls
     let bad_endturn = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("x"),
             tool_calls: vec![ToolCallDraft {
                 tool_name: "echo".into(),
@@ -98,12 +94,12 @@ async fn apply_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(matches!(
-        c.apply_model_output(inv.clone(), bad_endturn),
-        Err(ContextError::InvalidSequence(_))
+        c.append_model_output(inv.clone(), &bad_endturn.response, bad_endturn.stop_reason),
+        Err(ContextError::InvalidModelOutput(_))
     ));
     // ToolUse requires non-empty tool name
     let empty_name = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("x"),
             tool_calls: vec![ToolCallDraft {
                 tool_name: "  ".into(),
@@ -116,12 +112,12 @@ async fn apply_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(matches!(
-        c.apply_model_output(inv.clone(), empty_name),
-        Err(ContextError::InvalidSequence(_))
+        c.append_model_output(inv.clone(), &empty_name.response, empty_name.stop_reason),
+        Err(ContextError::InvalidModelOutput(_))
     ));
     // ToolUse requires object arguments
     let non_object = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("x"),
             tool_calls: vec![ToolCallDraft {
                 tool_name: "echo".into(),
@@ -134,12 +130,12 @@ async fn apply_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(matches!(
-        c.apply_model_output(inv.clone(), non_object),
-        Err(ContextError::InvalidSequence(_))
+        c.append_model_output(inv.clone(), &non_object.response, non_object.stop_reason),
+        Err(ContextError::InvalidModelOutput(_))
     ));
-    // identical (tool, args) twice in one batch is fine — positions differ
+    // Identical (tool, args) twice in one batch is fine -- positions differ
     let dup_batch = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("x"),
             tool_calls: vec![
                 ToolCallDraft {
@@ -158,8 +154,11 @@ async fn apply_model_output_rejects_invalid_outputs() {
         stop_reason: ModelStopReason::ToolUse,
         reasoning: None,
     };
-    assert!(c.apply_model_output(inv.clone(), dup_batch).is_ok());
-    // sealed turn rejects everything — seal is the public lifecycle transition
+    assert!(
+        c.append_model_output(inv.clone(), &dup_batch.response, dup_batch.stop_reason)
+            .is_ok()
+    );
+    // Sealed turn rejects everything.
     c.seal();
     let mut sealed = c;
     assert!(sealed.is_sealed());
@@ -168,16 +167,18 @@ async fn apply_model_output_rejects_invalid_outputs() {
         round_id: RoundId(1),
     };
     assert!(matches!(
-        sealed.apply_model_output(sealed_inv, assistant_endturn("y")),
+        sealed.append_model_output(
+            sealed_inv,
+            &endturn_output("y").response,
+            ModelStopReason::EndTurn
+        ),
         Err(ContextError::SealedTurn)
     ));
 }
 
-// [P1 Phase 1] from_validated_blocks rejects corrupt state
-
 #[tokio::test]
 async fn from_validated_blocks_rejects_corrupt_state() {
-    fn block(seq: u64, payload: BlockPayload) -> ContextBlock {
+    fn block(seq: u64, content: BlockContent) -> ContextBlock {
         let tid = turn_id("t1");
         ContextBlock {
             id: BlockId {
@@ -185,44 +186,42 @@ async fn from_validated_blocks_rejects_corrupt_state() {
                 sequence: BlockSequence(seq),
             },
             sequence: BlockSequence(seq),
+            content,
             meta: BlockMeta::default(),
-            payload,
         }
     }
-    // wrong turn_id
-    let mut b = block(0, BlockPayload::RequestUser(TextPayload::new("hi")));
+    // Wrong turn_id
+    let mut b = block(0, BlockContent::Text(TextPayload::new("hi")));
     b.id.turn_id = turn_id("other");
     assert!(matches!(
         TurnContext::from_validated_blocks(turn_id("t1"), vec![b], ContextVersion(1)),
         Err(ContextError::InvalidSequence(_))
     ));
-    // non-contiguous sequence
+    // Non-contiguous sequence
     let blocks = vec![
-        block(0, BlockPayload::RequestUser(TextPayload::new("a"))),
-        block(2, BlockPayload::RequestUser(TextPayload::new("b"))),
+        block(0, BlockContent::Text(TextPayload::new("a"))),
+        block(2, BlockContent::Text(TextPayload::new("b"))),
     ];
     assert!(matches!(
         TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
         Err(ContextError::InvalidSequence(_))
     ));
-    // duplicate tool.call ids
+    // Duplicate tool.call ids
     let blocks = vec![
         block(
             0,
-            BlockPayload::ToolCall(ToolCallPayload {
+            BlockContent::ToolCall(ToolCallPayload {
                 call_id: ToolCallId::new("dup"),
                 tool_name: "echo".into(),
                 arguments: json!({}),
-                provider_call_id: None,
             }),
         ),
         block(
             1,
-            BlockPayload::ToolCall(ToolCallPayload {
+            BlockContent::ToolCall(ToolCallPayload {
                 call_id: ToolCallId::new("dup"),
                 tool_name: "echo".into(),
                 arguments: json!({}),
-                provider_call_id: None,
             }),
         ),
     ];
@@ -230,10 +229,10 @@ async fn from_validated_blocks_rejects_corrupt_state() {
         TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
         Err(ContextError::DuplicateToolCallId(_))
     ));
-    // unpaired tool.result
+    // Unpaired tool.result
     let blocks = vec![block(
         0,
-        BlockPayload::ToolResult(ToolResultPayload {
+        BlockContent::ToolResult(ToolResultPayload {
             call_id: ToolCallId::new("ghost"),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!({})),
@@ -245,10 +244,6 @@ async fn from_validated_blocks_rejects_corrupt_state() {
     ));
 }
 
-// [P3] MaxToolCalls counts raw calls (incl. rejected duplicates) and records trace
-
-// ---- Phase B: fact-fidelity fields are recorded verbatim and serde-stable ----
-
 #[test]
 fn provider_call_id_passes_through_draft_to_persisted_block() {
     let mut c = ctx("t1");
@@ -257,7 +252,7 @@ fn provider_call_id_passes_through_draft_to_persisted_block() {
         round_id: RoundId(0),
     };
     let out = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("with provider id"),
             tool_calls: vec![
                 ToolCallDraft {
@@ -276,45 +271,41 @@ fn provider_call_id_passes_through_draft_to_persisted_block() {
         stop_reason: ModelStopReason::ToolUse,
         reasoning: None,
     };
-    let applied = c.apply_model_output(inv, out).expect("record facts");
+    let applied = c
+        .append_model_output(inv, &out.response, out.stop_reason)
+        .expect("record facts");
     let call_blocks: Vec<&ContextBlock> = c
         .blocks()
         .iter()
-        .filter(|b| matches!(b.payload, BlockPayload::ToolCall(_)))
+        .filter(|b| matches!(b.content, BlockContent::ToolCall(_)))
         .collect();
-    assert_eq!(applied.block_ids.len(), 3); // assistant text + 2 calls
+    assert_eq!(applied.block_ids.len(), 3);
     assert_eq!(call_blocks.len(), 2);
-    match (&call_blocks[0].payload, &call_blocks[1].payload) {
-        (BlockPayload::ToolCall(a), BlockPayload::ToolCall(b)) => {
-            assert_eq!(a.provider_call_id.as_deref(), Some("call_provider_1"));
-            assert_eq!(b.provider_call_id, None);
-        }
-        _ => panic!("expected tool call payloads"),
-    }
-    // serde round-trip of the fact state preserves the passthrough verbatim
+    // provider_call_id rides on envelope BlockMeta.
+    assert_eq!(
+        call_blocks[0].meta.provider_call_id.as_deref(),
+        Some("call_provider_1")
+    );
+    assert_eq!(call_blocks[1].meta.provider_call_id, None);
     let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
     let blocks: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
     let restored: Vec<Option<String>> = blocks
         .iter()
-        .filter_map(|b| match &b.payload {
-            BlockPayload::ToolCall(p) => Some(p.provider_call_id.clone()),
-            _ => None,
-        })
+        .filter(|b| matches!(b.content, BlockContent::ToolCall(_)))
+        .map(|b| b.meta.provider_call_id.clone())
         .collect();
     assert_eq!(restored, vec![Some("call_provider_1".into()), None]);
 }
 
 #[test]
-fn apply_model_output_records_max_tokens_and_refusal_as_facts() {
+fn append_model_output_records_max_tokens_and_refusal_as_facts() {
     let mut c = ctx("t1");
     let inv = InvocationId {
         turn_id: turn_id("t1"),
         round_id: RoundId(0),
     };
-    // Structural validation only: any stop reason may be recorded as facts.
-    // Interpreting terminal reasons stays driver policy above the kernel.
     let max_tokens = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("partial"),
             tool_calls: vec![],
         },
@@ -323,11 +314,11 @@ fn apply_model_output_records_max_tokens_and_refusal_as_facts() {
         reasoning: None,
     };
     let applied = c
-        .apply_model_output(inv.clone(), max_tokens)
+        .append_model_output(inv.clone(), &max_tokens.response, max_tokens.stop_reason)
         .expect("MaxTokens is recordable");
-    assert_eq!(applied.block_ids.len(), 1); // ResponseAssistant only
+    assert_eq!(applied.block_ids.len(), 1);
     let refusal_with_calls = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new(""),
             tool_calls: vec![ToolCallDraft {
                 tool_name: "echo".into(),
@@ -340,12 +331,15 @@ fn apply_model_output_records_max_tokens_and_refusal_as_facts() {
         reasoning: None,
     };
     assert!(
-        c.apply_model_output(inv.clone(), refusal_with_calls)
-            .is_ok()
+        c.append_model_output(
+            inv.clone(),
+            &refusal_with_calls.response,
+            refusal_with_calls.stop_reason
+        )
+        .is_ok()
     );
-    // Structural rules for EndTurn/ToolUse are untouched by the loosening.
     let bad_endturn = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("x"),
             tool_calls: vec![ToolCallDraft {
                 tool_name: "echo".into(),
@@ -358,8 +352,8 @@ fn apply_model_output_records_max_tokens_and_refusal_as_facts() {
         reasoning: None,
     };
     assert!(matches!(
-        c.apply_model_output(inv, bad_endturn),
-        Err(ContextError::InvalidSequence(_))
+        c.append_model_output(inv, &bad_endturn.response, bad_endturn.stop_reason),
+        Err(ContextError::InvalidModelOutput(_))
     ));
 }
 
@@ -377,7 +371,6 @@ fn fidelity_fields_are_serde_additive() {
     assert_eq!(back.cache_read_tokens, Some(64));
     assert_eq!(back.cache_write_tokens, Some(12));
     assert_eq!(back.reasoning_tokens, Some(8));
-    // pre-fidelity payloads (without the new fields) still deserialize
     let legacy: ModelUsage =
         serde_json::from_str(r#"{"input_tokens":1,"output_tokens":2}"#).unwrap();
     assert_eq!(
@@ -396,10 +389,24 @@ fn fidelity_fields_are_serde_additive() {
         serde_json::from_str(&serde_json::to_string(&reasoning).unwrap()).unwrap();
     assert_eq!(back.text, "thinking");
     assert_eq!(back.signature.as_deref(), Some("sig-abc"));
+    // provider_call_id is on BlockMeta (envelope-level); verify BlockMeta
+    // serde-additivity.
+    let legacy_meta: BlockMeta = serde_json::from_str("{}").unwrap();
+    assert_eq!(legacy_meta.provider_call_id, None);
+    assert_eq!(legacy_meta.source, None);
+    let full_meta = BlockMeta {
+        provider_call_id: Some("abc".into()),
+        source: Some("kernel".into()),
+    };
+    let back: BlockMeta =
+        serde_json::from_str(&serde_json::to_string(&full_meta).unwrap()).unwrap();
+    assert_eq!(back.provider_call_id.as_deref(), Some("abc"));
+    assert_eq!(back.source.as_deref(), Some("kernel"));
+    // ToolCallPayload stays slim (no provider_call_id field).
     let legacy_call: ToolCallPayload =
         serde_json::from_str(r#"{"call_id":"echo:abcd1234:0","tool_name":"echo","arguments":{}}"#)
             .unwrap();
-    assert_eq!(legacy_call.provider_call_id, None);
+    assert_eq!(legacy_call.call_id.0, "echo:abcd1234:0");
 }
 
 // ---- Phase D boundary: compaction projection identity ----
@@ -419,8 +426,7 @@ impl Compaction for DropAllCompaction {
 #[tokio::test]
 async fn compaction_projection_identity() {
     let mut c = ctx("t1");
-    c.append_input(InputPayload::RequestUser(TextPayload::new("hello")))
-        .unwrap();
+    c.append_input(TextPayload::new("hello"), "user").unwrap();
     let lossless = FramePolicy::default();
     let compacting = FramePolicy {
         window_budget: WindowBudget {
@@ -432,7 +438,6 @@ async fn compaction_projection_identity() {
     };
     let sync_frame = c.frame_sync(RoundId(0)).unwrap();
     let lossless_frame = c.frame(RoundId(0), &lossless).await.unwrap();
-    // lossless projection == facts; equal inputs materialize equal frames
     assert_eq!(sync_frame.frame_id, lossless_frame.frame_id);
     assert_eq!(
         serde_json::to_string(&sync_frame.model_context.blocks).unwrap(),
@@ -442,10 +447,204 @@ async fn compaction_projection_identity() {
         serde_json::to_string(&lossless_frame.model_context.blocks).unwrap(),
         serde_json::to_string(&c.snapshot_blocks()).unwrap()
     );
-    // policy-shaped projection: compacted content under the SAME frame identity
     let projected = c.frame(RoundId(0), &compacting).await.unwrap();
     assert_eq!(projected.frame_id, sync_frame.frame_id);
     assert!(projected.model_context.blocks.is_empty());
-    // facts untouched — compaction is frame-local
     assert_eq!(c.snapshot_blocks().len(), 1);
+}
+
+// ---- New: content is the only axis, no kind field ----
+
+#[test]
+fn content_is_first_class_with_three_shapes() {
+    // Three content shapes: Text, ToolCall, ToolResult. No kind field.
+    let t = turn_id("t1");
+    let make = |content: BlockContent, seq: u64| ContextBlock {
+        id: BlockId {
+            turn_id: t.clone(),
+            sequence: BlockSequence(seq),
+        },
+        sequence: BlockSequence(seq),
+        content,
+        meta: BlockMeta::default(),
+    };
+
+    let text = make(BlockContent::Text(TextPayload::new("any role")), 0);
+    assert!(matches!(text.content, BlockContent::Text(_)));
+
+    let call_id = ToolCallId::new("echo:abcd1234:0");
+    let call = make(
+        BlockContent::ToolCall(ToolCallPayload {
+            call_id: call_id.clone(),
+            tool_name: "echo".into(),
+            arguments: json!({}),
+        }),
+        1,
+    );
+    assert!(matches!(call.content, BlockContent::ToolCall(_)));
+
+    let result = make(
+        BlockContent::ToolResult(ToolResultPayload {
+            call_id,
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!({})),
+        }),
+        2,
+    );
+    assert!(matches!(result.content, BlockContent::ToolResult(_)));
+}
+
+#[test]
+fn context_block_serde_format_is_flat_with_content() {
+    // No kind field. The shape tag is "shape"; the value is the inner data.
+    let mut c = ctx("t1");
+    c.append_input(TextPayload::new("sys"), "user").unwrap();
+    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
+    // No legacy kind field.
+    assert!(!blocks_json.contains("\"kind\""));
+    // Content with shape + value.
+    assert!(blocks_json.contains("\"content\":{\"shape\":\"text\",\"value\":\"sys\"}"));
+    assert!(blocks_json.contains("\"content\":{\"shape\":\"text\",\"value\":\"hi\"}"));
+    // Round-trip works through the root facade.
+    let restored: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
+    assert_eq!(restored.len(), 2);
+    assert!(matches!(restored[0].content, BlockContent::Text(_)));
+    assert!(matches!(restored[1].content, BlockContent::Text(_)));
+}
+
+// ---- Phase F: door contracts ------------------------------------------------
+
+#[test]
+fn foreign_invocation_is_rejected() {
+    let mut c = ctx("t1");
+    let inv = InvocationId {
+        turn_id: turn_id("t2"),
+        round_id: RoundId(0),
+    };
+    let out = endturn_output("hi");
+    assert!(matches!(
+        c.append_model_output(inv, &out.response, out.stop_reason),
+        Err(ContextError::ForeignInvocation { .. })
+    ));
+    assert!(c.blocks().is_empty());
+    assert_eq!(c.version(), ContextVersion(0));
+}
+
+#[test]
+fn empty_output_commits_nothing_and_does_not_bump_version() {
+    let mut c = ctx("t1");
+    let inv = InvocationId {
+        turn_id: turn_id("t1"),
+        round_id: RoundId(0),
+    };
+    let empty = ModelOutput {
+        response: ModelResponse {
+            text: TextPayload::new("   "),
+            tool_calls: vec![],
+        },
+        usage: None,
+        stop_reason: ModelStopReason::EndTurn,
+        reasoning: None,
+    };
+    let applied = c
+        .append_model_output(inv, &empty.response, empty.stop_reason)
+        .expect("empty output is recordable");
+    assert!(applied.block_ids.is_empty());
+    assert!(applied.tool_calls.is_empty());
+    assert!(c.blocks().is_empty());
+    // ContextVersion counts canonical fact commits, not attempts.
+    assert_eq!(c.version(), ContextVersion(0));
+}
+
+#[test]
+fn input_source_is_recorded_verbatim_in_envelope() {
+    let mut c = ctx("t1");
+    c.append_input(TextPayload::new("sys"), "system").unwrap();
+    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    let blocks = c.blocks();
+    assert_eq!(blocks[0].meta.source.as_deref(), Some("system"));
+    assert_eq!(blocks[1].meta.source.as_deref(), Some("user"));
+    // Source survives snapshot round-trip — the raw material for role
+    // reconstruction at replay time.
+    let json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
+    let back: Vec<ContextBlock> = serde_json::from_str(&json).unwrap();
+    assert_eq!(back[0].meta.source.as_deref(), Some("system"));
+    assert_eq!(back[1].meta.source.as_deref(), Some("user"));
+}
+
+#[test]
+fn tool_results_commit_in_call_order_regardless_of_submission_order() {
+    let mut c = ctx("t1");
+    let inv = InvocationId {
+        turn_id: turn_id("t1"),
+        round_id: RoundId(0),
+    };
+    let out = ModelOutput {
+        response: ModelResponse {
+            text: TextPayload::new(""),
+            tool_calls: vec![
+                ToolCallDraft {
+                    tool_name: "echo".into(),
+                    arguments: json!({"n": 1}),
+                    provider_call_id: None,
+                },
+                ToolCallDraft {
+                    tool_name: "echo".into(),
+                    arguments: json!({"n": 2}),
+                    provider_call_id: None,
+                },
+            ],
+        },
+        usage: None,
+        stop_reason: ModelStopReason::ToolUse,
+        reasoning: None,
+    };
+    let applied = c
+        .append_model_output(inv, &out.response, out.stop_reason)
+        .unwrap();
+    assert_eq!(applied.tool_calls.len(), 2);
+    // The receipt preserves draft order and matches the committed call blocks.
+    let call_ids: Vec<ToolCallId> = applied
+        .tool_calls
+        .iter()
+        .map(|p| p.call_id.clone())
+        .collect();
+    let committed: Vec<ToolCallId> = c
+        .blocks()
+        .iter()
+        .filter_map(|b| match &b.content {
+            BlockContent::ToolCall(p) => Some(p.call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(call_ids, committed);
+    assert_eq!(c.version(), ContextVersion(1));
+
+    // Submit results in reverse completion order; the kernel commits in
+    // the paired calls' block order.
+    let results = vec![
+        ToolResultPayload {
+            call_id: call_ids[1].clone(),
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!("second")),
+        },
+        ToolResultPayload {
+            call_id: call_ids[0].clone(),
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!("first")),
+        },
+    ];
+    c.append_tool_results(results).unwrap();
+    let result_order: Vec<ToolCallId> = c
+        .blocks()
+        .iter()
+        .filter_map(|b| match &b.content {
+            BlockContent::ToolResult(r) => Some(r.call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(result_order, call_ids);
+    // The whole batch was one canonical commit: exactly one version bump.
+    assert_eq!(c.version(), ContextVersion(2));
 }

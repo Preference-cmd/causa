@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::block::TextPayload;
-use crate::tool_data::ToolDefinition;
+use crate::context::block::TextPayload;
+use crate::context::tool_data::ToolDefinition;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRef(pub String);
@@ -68,7 +68,9 @@ pub enum ModelStopReason {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantPayload {
+/// The model door's fact shape: what the model said (text) and asked (tool
+/// calls). Named for the participant, not for any wire role.
+pub struct ModelResponse {
     pub text: TextPayload,
     pub tool_calls: Vec<ToolCallDraft>,
 }
@@ -85,7 +87,7 @@ pub struct ReasoningPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelOutput {
-    pub assistant: AssistantPayload,
+    pub response: ModelResponse,
     pub usage: Option<ModelUsage>,
     pub stop_reason: ModelStopReason,
     pub reasoning: Option<ReasoningPayload>,

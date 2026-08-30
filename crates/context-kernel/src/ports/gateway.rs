@@ -3,10 +3,12 @@
 
 use async_trait::async_trait;
 
-use crate::control::AttemptControl;
-use crate::ids::{AttemptNumber, InvocationId};
-use crate::model::{GenerationOptions, ModelInvokeError, ModelOutput, ModelRef, ToolSurface};
-use crate::turn::ContextFrame;
+use crate::context::ids::{AttemptNumber, InvocationId};
+use crate::context::model::{
+    GenerationOptions, ModelInvokeError, ModelOutput, ModelRef, ToolSurface,
+};
+use crate::context::turn::ContextFrame;
+use crate::ports::control::AttemptControl;
 
 #[derive(Debug, Clone)]
 pub struct ModelRequest {

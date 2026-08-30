@@ -1,14 +1,13 @@
 //! TurnContext / ContextFrame / TurnSnapshot — Slice 1 single-turn fact machine.
-use crate::block::{BlockPayload, ContextBlock, InputPayload, TextPayload, ToolCallPayload};
-use crate::ids::{BlockId, BlockSequence, ContextVersion, FrameId, RoundId, TurnId, TurnSequence};
-use crate::model::ModelOutput;
-use crate::tool_data::{ToolCallId, ToolResultPayload};
-use std::collections::HashSet;
-
-pub use crate::budget::{
-    Compaction, CompactionError, CompactionInput, CompactionOutput, FramePolicy, TokenCounter,
-    WindowBudget,
+use crate::context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
+use crate::context::ids::{
+    BlockId, BlockSequence, ContextVersion, FrameId, RoundId, TurnId, TurnSequence,
 };
+use crate::context::model::{ModelResponse, ModelStopReason};
+use crate::context::tool_data::{ToolCallId, ToolResultPayload};
+use std::collections::{HashMap, HashSet};
+
+use crate::ports::budget::{CompactionInput, FramePolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnLifecycle {
@@ -41,14 +40,16 @@ pub struct ContextFrame {
 pub enum ContextError {
     #[error("sealed turn")]
     SealedTurn,
+    #[error("foreign invocation: expected turn {expected:?}, got {actual:?}")]
+    ForeignInvocation { expected: TurnId, actual: TurnId },
+    #[error("invalid model output: {0}")]
+    InvalidModelOutput(String),
     #[error("invalid sequence: {0}")]
     InvalidSequence(String),
     #[error("duplicate tool call id: {0:?}")]
-    DuplicateToolCallId(crate::tool_data::ToolCallId),
+    DuplicateToolCallId(crate::context::tool_data::ToolCallId),
     #[error("unpaired tool result: {0:?}")]
-    UnpairedToolResult(crate::tool_data::ToolCallId),
-    #[error("invalid model output: {0}")]
-    InvalidModelOutput(String),
+    UnpairedToolResult(crate::context::tool_data::ToolCallId),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,10 +58,14 @@ pub enum FrameError {
     CompactionFailed(String),
 }
 
+/// Receipt of the model door: the committed fact block ids plus the prepared
+/// tool calls in model draft order. The tool calls are the execution handoff —
+/// call ids are generated exactly once, here, so the driver dispatches the
+/// same payloads the kernel committed and never re-reads blocks.
 #[derive(Debug, Clone)]
 pub struct AppliedModelOutput {
     pub block_ids: Vec<BlockId>,
-    pub invocation_id: crate::ids::InvocationId,
+    pub tool_calls: Vec<ToolCallPayload>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -74,9 +79,10 @@ impl OrderedBlocks {
     }
 }
 
-/// Current turn's ordered fact state. All mutation goes through the controlled
-/// operations (`append_input` / `apply_model_output` / `append_tool_results` /
-/// `seal`); there is no second `&mut` seam — fields are private by design.
+/// Current turn's ordered fact state. All mutation goes through the three
+/// controlled doors (`append_input` / `append_model_output` /
+/// `append_tool_results`) plus `seal`; there is no second `&mut` seam —
+/// fields are private by design.
 /// Frame-materialization policy (budget/compaction/counter) is NOT stored
 /// here — facts stay facts; drivers pass a `FramePolicy` into `frame()`.
 pub struct TurnContext {
@@ -96,14 +102,6 @@ impl std::fmt::Debug for TurnContext {
             .field("blocks_len", &self.blocks.0.len())
             .field("next_seq", &self.next_seq)
             .finish()
-    }
-}
-
-fn input_to_payload(payload: InputPayload) -> BlockPayload {
-    match payload {
-        InputPayload::InstructionSystem(p) => BlockPayload::InstructionSystem(p),
-        InputPayload::ContextInject(p) => BlockPayload::ContextInject(p),
-        InputPayload::RequestUser(p) => BlockPayload::RequestUser(p),
     }
 }
 
@@ -137,172 +135,186 @@ impl TurnContext {
         self.blocks.0.clone()
     }
 
-    pub fn append_input(&mut self, payload: InputPayload) -> Result<BlockId, ContextError> {
-        if self.is_sealed() {
-            return Err(ContextError::SealedTurn);
-        }
-        let block_payload = input_to_payload(payload);
-        let id = self.push_block(block_payload);
-        self.version = ContextVersion(self.version.0 + 1);
-        Ok(id)
+    /// Host door: admit one text fact with its provenance label, recorded
+    /// verbatim in the envelope. The kernel does not interpret the label;
+    /// role assignment is the renderer's job.
+    pub fn append_input(
+        &mut self,
+        text: TextPayload,
+        source: impl Into<String>,
+    ) -> Result<BlockId, ContextError> {
+        self.ensure_open()?;
+        let meta = BlockMeta {
+            source: Some(source.into()),
+            ..BlockMeta::default()
+        };
+        let mut ids = self.commit_blocks(vec![(BlockContent::Text(text), meta)]);
+        Ok(ids.pop().expect("single-block commit yields one id"))
     }
 
-    pub fn apply_inputs(
+    /// Model door: record the model's response as facts. Borrows the response
+    /// so the caller keeps the envelope for its own traces; usage and
+    /// reasoning are deliberately caller-retained and never enter the fact
+    /// state. Tool call ids are generated exactly once and returned in the
+    /// receipt as the execution handoff.
+    pub fn append_model_output(
         &mut self,
-        payloads: Vec<InputPayload>,
-    ) -> Result<Vec<BlockId>, ContextError> {
-        let mut ids = Vec::with_capacity(payloads.len());
-        for p in payloads {
-            ids.push(self.append_input(p)?);
-        }
-        Ok(ids)
-    }
-
-    pub fn apply_model_output(
-        &mut self,
-        invocation: crate::ids::InvocationId,
-        output: ModelOutput,
+        invocation: crate::context::ids::InvocationId,
+        response: &ModelResponse,
+        stop_reason: ModelStopReason,
     ) -> Result<AppliedModelOutput, ContextError> {
-        if self.is_sealed() {
-            return Err(ContextError::SealedTurn);
+        self.ensure_open()?;
+        if invocation.turn_id != self.turn_id {
+            return Err(ContextError::ForeignInvocation {
+                expected: self.turn_id.clone(),
+                actual: invocation.turn_id.clone(),
+            });
         }
         // Structural validation only — any stop reason is recordable as
         // facts; interpreting terminal reasons (e.g. interrupting on
         // MaxTokens/Refusal) is driver policy above the kernel.
-        match output.stop_reason {
-            crate::model::ModelStopReason::EndTurn => {
-                if !output.assistant.tool_calls.is_empty() {
-                    return Err(ContextError::InvalidSequence(
-                        "EndTurn must have empty tool_calls".into(),
-                    ));
-                }
+        match stop_reason {
+            ModelStopReason::EndTurn if !response.tool_calls.is_empty() => {
+                return Err(ContextError::InvalidModelOutput(
+                    "EndTurn must have empty tool_calls".into(),
+                ));
             }
-            crate::model::ModelStopReason::ToolUse => {
-                if output.assistant.tool_calls.is_empty() {
-                    return Err(ContextError::InvalidSequence(
-                        "ToolUse must have non-empty tool_calls".into(),
-                    ));
-                }
+            ModelStopReason::ToolUse if response.tool_calls.is_empty() => {
+                return Err(ContextError::InvalidModelOutput(
+                    "ToolUse must have non-empty tool_calls".into(),
+                ));
             }
-            crate::model::ModelStopReason::MaxTokens | crate::model::ModelStopReason::Refusal => {}
+            _ => {}
         }
-        // Validate tool drafts
-        for draft in &output.assistant.tool_calls {
+        // Prepare everything before committing anything: text (when
+        // non-empty), then one call payload per draft with its id generated
+        // exactly once. Nothing touches the fact state until `commit_blocks`.
+        let mut prepared: Vec<(BlockContent, BlockMeta)> = Vec::new();
+        let mut tool_calls: Vec<ToolCallPayload> = Vec::new();
+        if !response.text.0.trim().is_empty() {
+            prepared.push((
+                BlockContent::Text(TextPayload(response.text.0.clone())),
+                BlockMeta::default(),
+            ));
+        }
+        let mut seen: HashSet<ToolCallId> = HashSet::new();
+        for (pos, draft) in response.tool_calls.iter().enumerate() {
             if draft.tool_name.trim().is_empty() {
-                return Err(ContextError::InvalidSequence("tool_name empty".into()));
+                return Err(ContextError::InvalidModelOutput("tool_name empty".into()));
             }
             if !draft.arguments.is_object() {
-                return Err(ContextError::InvalidSequence(
+                return Err(ContextError::InvalidModelOutput(
                     "arguments must be object".into(),
                 ));
             }
-        }
-        // Check duplicate call ids that would be generated in this batch
-        let mut seen_call_ids = HashSet::new();
-        for (pos, draft) in output.assistant.tool_calls.iter().enumerate() {
-            let cid =
+            let call_id =
                 ToolCallId::generate(invocation.round_id, &draft.tool_name, &draft.arguments, pos);
-            if !seen_call_ids.insert(cid.clone()) {
-                return Err(ContextError::DuplicateToolCallId(cid));
+            if !seen.insert(call_id.clone()) {
+                return Err(ContextError::DuplicateToolCallId(call_id));
             }
-            // also check against existing blocks duplicate
             for b in &self.blocks.0 {
-                if let BlockPayload::ToolCall(tc) = &b.payload {
-                    if tc.call_id == cid {
-                        return Err(ContextError::DuplicateToolCallId(cid));
+                if let BlockContent::ToolCall(tc) = &b.content {
+                    if tc.call_id == call_id {
+                        return Err(ContextError::DuplicateToolCallId(call_id));
                     }
                 }
             }
-        }
-
-        let mut block_ids = Vec::new();
-        // ResponseAssistant if text non-empty (trimmed)
-        let text_trimmed = output.assistant.text.0.trim().to_string();
-        if !text_trimmed.is_empty() {
-            let id = self.push_block(BlockPayload::ResponseAssistant(TextPayload(
-                output.assistant.text.0.clone(),
-            )));
-            block_ids.push(id);
-        }
-        // ToolCall blocks
-        for (pos, draft) in output.assistant.tool_calls.into_iter().enumerate() {
-            let call_id =
-                ToolCallId::generate(invocation.round_id, &draft.tool_name, &draft.arguments, pos);
-            let payload = ToolCallPayload {
+            tool_calls.push(ToolCallPayload {
                 call_id: call_id.clone(),
-                tool_name: draft.tool_name,
-                arguments: draft.arguments,
-                provider_call_id: draft.provider_call_id,
-            };
-            let id = self.push_block(BlockPayload::ToolCall(payload));
-            block_ids.push(id);
+                tool_name: draft.tool_name.clone(),
+                arguments: draft.arguments.clone(),
+            });
+            // `provider_call_id` rides on the envelope `BlockMeta`; pairing
+            // stays on the kernel-generated `call_id`.
+            prepared.push((
+                BlockContent::ToolCall(ToolCallPayload {
+                    call_id: call_id.clone(),
+                    tool_name: draft.tool_name.clone(),
+                    arguments: draft.arguments.clone(),
+                }),
+                BlockMeta {
+                    provider_call_id: draft.provider_call_id.clone(),
+                    ..BlockMeta::default()
+                },
+            ));
         }
-        self.version = ContextVersion(self.version.0 + 1);
+        let block_ids = self.commit_blocks(prepared);
         Ok(AppliedModelOutput {
             block_ids,
-            invocation_id: invocation,
+            tool_calls,
         })
     }
 
+    /// Tool door: commit tool results. Canonical commit order is the paired
+    /// call's block order (the model's original draft order), so two drivers
+    /// submitting the same logical results in different completion orders
+    /// produce identical snapshots. Batch completeness is runner policy; the
+    /// kernel enforces pairing only.
     pub fn append_tool_results(
         &mut self,
-        results: &[ToolResultPayload],
+        results: Vec<ToolResultPayload>,
     ) -> Result<Vec<BlockId>, ContextError> {
-        if self.is_sealed() {
-            return Err(ContextError::SealedTurn);
-        }
+        self.ensure_open()?;
         if results.is_empty() {
             return Ok(vec![]);
         }
-        // gather existing tool call ids and paired set
-        let mut call_ids_present: HashSet<ToolCallId> = HashSet::new();
+        // Pairing state from committed facts: each call's block sequence and
+        // the set of already-paired calls.
+        let mut call_seq: HashMap<ToolCallId, BlockSequence> = HashMap::new();
         let mut paired: HashSet<ToolCallId> = HashSet::new();
         for b in &self.blocks.0 {
-            match &b.payload {
-                BlockPayload::ToolCall(tc) => {
-                    call_ids_present.insert(tc.call_id.clone());
+            match &b.content {
+                BlockContent::ToolCall(tc) => {
+                    call_seq.insert(tc.call_id.clone(), b.sequence);
                 }
-                BlockPayload::ToolResult(tr) => {
+                BlockContent::ToolResult(tr) => {
                     paired.insert(tr.call_id.clone());
                 }
                 _ => {}
             }
         }
-        // validate all results atomically
-        let mut to_check_paired = HashSet::new();
-        for r in results {
-            if !call_ids_present.contains(&r.call_id) {
-                return Err(ContextError::UnpairedToolResult(r.call_id.clone()));
-            }
+        // Validate all results atomically, then commit in canonical order.
+        let mut batch: HashSet<ToolCallId> = HashSet::new();
+        let mut ordered: Vec<(BlockSequence, &ToolResultPayload)> = Vec::new();
+        for r in &results {
+            let seq = match call_seq.get(&r.call_id) {
+                Some(seq) => *seq,
+                None => return Err(ContextError::UnpairedToolResult(r.call_id.clone())),
+            };
             if paired.contains(&r.call_id) {
                 return Err(ContextError::InvalidSequence(format!(
                     "tool call already paired: {:?}",
                     r.call_id
                 )));
             }
-            if !to_check_paired.insert(r.call_id.clone()) {
+            if !batch.insert(r.call_id.clone()) {
                 return Err(ContextError::InvalidSequence(format!(
                     "duplicate tool result in batch: {:?}",
                     r.call_id
                 )));
             }
+            ordered.push((seq, r));
         }
-        // all valid, append
-        let mut ids = Vec::with_capacity(results.len());
-        for r in results {
-            let id = self.push_block(BlockPayload::ToolResult(ToolResultPayload {
-                call_id: r.call_id.clone(),
-                status: r.status.clone(),
-                output: r.output.clone(),
-            }));
-            ids.push(id);
-        }
-        self.version = ContextVersion(self.version.0 + 1);
-        Ok(ids)
+        ordered.sort_by_key(|(seq, _)| *seq);
+        let prepared = ordered
+            .into_iter()
+            .map(|(_, r)| {
+                (
+                    BlockContent::ToolResult(ToolResultPayload {
+                        call_id: r.call_id.clone(),
+                        status: r.status.clone(),
+                        output: r.output.clone(),
+                    }),
+                    BlockMeta::default(),
+                )
+            })
+            .collect();
+        Ok(self.commit_blocks(prepared))
     }
 
     pub fn frame_sync(&self, round_id: RoundId) -> Result<ContextFrame, FrameError> {
-        let frame_id = crate::ids::FrameId::deterministic(&self.turn_id, self.version, round_id);
+        let frame_id =
+            crate::context::ids::FrameId::deterministic(&self.turn_id, self.version, round_id);
         Ok(ContextFrame {
             frame_id,
             scope: FrameScope::Turn {
@@ -337,8 +349,11 @@ impl TurnContext {
                     .compact(input)
                     .await
                     .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
-                let frame_id =
-                    crate::ids::FrameId::deterministic(&self.turn_id, self.version, round_id);
+                let frame_id = crate::context::ids::FrameId::deterministic(
+                    &self.turn_id,
+                    self.version,
+                    round_id,
+                );
                 let blocks = out.blocks;
                 return Ok(ContextFrame {
                     frame_id,
@@ -362,7 +377,31 @@ impl TurnContext {
         self.lifecycle = TurnLifecycle::Sealed;
     }
 
-    fn push_block(&mut self, payload: BlockPayload) -> BlockId {
+    fn ensure_open(&self) -> Result<(), ContextError> {
+        if self.is_sealed() {
+            Err(ContextError::SealedTurn)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The single commit primitive: write prepared blocks, then bump the
+    /// version exactly once iff the commit is non-empty. `ContextVersion`
+    /// counts canonical fact commits — no-ops (empty output, empty results,
+    /// failed validation, retries, compaction) leave it untouched.
+    fn commit_blocks(&mut self, prepared: Vec<(BlockContent, BlockMeta)>) -> Vec<BlockId> {
+        if prepared.is_empty() {
+            return Vec::new();
+        }
+        let mut ids = Vec::with_capacity(prepared.len());
+        for (content, meta) in prepared {
+            ids.push(self.push_block(content, meta));
+        }
+        self.version = self.version.next();
+        ids
+    }
+
+    fn push_block(&mut self, content: BlockContent, meta: BlockMeta) -> BlockId {
         let seq = BlockSequence(self.next_seq);
         let id = BlockId {
             turn_id: self.turn_id.clone(),
@@ -371,8 +410,8 @@ impl TurnContext {
         let block = ContextBlock {
             id: id.clone(),
             sequence: seq,
-            meta: crate::block::BlockMeta::default(),
-            payload,
+            content,
+            meta,
         };
         self.blocks.0.push(block);
         self.next_seq += 1;
@@ -409,13 +448,13 @@ impl TurnContext {
         let mut call_set = HashSet::new();
         let mut seen_results = HashSet::new();
         for b in &blocks {
-            match &b.payload {
-                BlockPayload::ToolCall(tc) => {
+            match &b.content {
+                BlockContent::ToolCall(tc) => {
                     if !call_set.insert(tc.call_id.clone()) {
                         return Err(ContextError::DuplicateToolCallId(tc.call_id.clone()));
                     }
                 }
-                BlockPayload::ToolResult(tr) => {
+                BlockContent::ToolResult(tr) => {
                     if !call_set.contains(&tr.call_id) {
                         return Err(ContextError::UnpairedToolResult(tr.call_id.clone()));
                     }

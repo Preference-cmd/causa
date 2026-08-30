@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 
-use crate::control::AttemptControl;
-use crate::gateway::ModelGateway;
-use crate::gateway::ModelRequest;
-use crate::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
+use crate::context::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
+use crate::ports::control::AttemptControl;
+use crate::ports::gateway::ModelGateway;
+use crate::ports::gateway::ModelRequest;
 
 pub struct FakeGateway {
     pub outputs: std::sync::Mutex<Vec<Result<ModelOutput, ModelInvokeErrorKind>>>,

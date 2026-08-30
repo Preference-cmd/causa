@@ -4,17 +4,17 @@
 //! references this module.
 use super::config::TurnRunOptions;
 use super::executor::ToolExecutor;
-use crate::block::ToolCallPayload;
-use crate::control::RunControl;
-use crate::gateway::ModelGateway;
-use crate::gateway::ModelRequest;
-use crate::ids::{AttemptNumber, BlockId, InvocationId, RoundId};
-use crate::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelStopReason};
-use crate::tool_data::{
+use crate::context::block::ToolCallPayload;
+use crate::context::ids::{AttemptNumber, BlockId, InvocationId, RoundId};
+use crate::context::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelStopReason};
+use crate::context::tool_data::{
     ArtifactRef, ToolCallId, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
     Truncation, UnknownOutcomePolicy,
 };
-use crate::turn::{FrameScope, TurnContext};
+use crate::context::turn::{FrameScope, TurnContext};
+use crate::ports::control::RunControl;
+use crate::ports::gateway::ModelGateway;
+use crate::ports::gateway::ModelRequest;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -81,10 +81,10 @@ pub struct AttemptTrace {
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutputSummary {
-    pub stop_reason: crate::model::ModelStopReason,
-    pub usage: Option<crate::model::ModelUsage>,
+    pub stop_reason: crate::context::model::ModelStopReason,
+    pub usage: Option<crate::context::model::ModelUsage>,
     pub tool_call_count: usize,
-    pub assistant_text_bytes: usize,
+    pub response_text_bytes: usize,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallTrace {
@@ -107,7 +107,7 @@ pub struct ModelRoundTrace {
     pub round_id: RoundId,
     pub invocation_id: InvocationId,
     /// frame 物化时的 `source_version`（apply 之前的版本）。
-    pub frame_version: crate::ids::ContextVersion,
+    pub frame_version: crate::context::ids::ContextVersion,
     pub attempts: Vec<AttemptTrace>,
     pub output_summary: Option<OutputSummary>,
     pub applied_block_ids: Vec<BlockId>,
@@ -312,12 +312,12 @@ impl TurnRunner {
             let output_summary = Some(OutputSummary {
                 stop_reason: output.stop_reason,
                 usage: output.usage.clone(),
-                tool_call_count: output.assistant.tool_calls.len(),
-                assistant_text_bytes: output.assistant.text.0.len(),
+                tool_call_count: output.response.tool_calls.len(),
+                response_text_bytes: output.response.text.0.len(),
             });
             // MaxTokens / Refusal never persist blocks (§5.6); they carry their
             // own dedicated interruption causes, so dispatch before apply.
-            // This is driver policy: the canonical apply_model_output would
+            // This is driver policy: the canonical append_model_output would
             // happily record them as facts.
             if matches!(
                 output.stop_reason,
@@ -345,7 +345,11 @@ impl TurnRunner {
                     start,
                 );
             }
-            let applied = match context.apply_model_output(invocation.clone(), output.clone()) {
+            let applied = match context.append_model_output(
+                invocation.clone(),
+                &output.response,
+                output.stop_reason,
+            ) {
                 Ok(a) => a,
                 Err(e) => {
                     trace.rounds.push(ModelRoundTrace {
@@ -370,23 +374,10 @@ impl TurnRunner {
                     );
                 }
             };
-            // ToolCallId is generated exactly once — inside apply_model_output.
-            // The runner reuses the persisted tool.call payloads instead of
-            // regenerating ids, so positions always match the context.
-            let call_payloads: Vec<ToolCallPayload> = applied
-                .block_ids
-                .iter()
-                .filter_map(|bid| {
-                    context
-                        .blocks()
-                        .iter()
-                        .find(|b| &b.id == bid)
-                        .and_then(|b| match &b.payload {
-                            crate::block::BlockPayload::ToolCall(p) => Some(p.clone()),
-                            _ => None,
-                        })
-                })
-                .collect();
+            // The receipt carries the prepared tool calls in model draft
+            // order — the same payloads the kernel committed, with ids
+            // generated exactly once. No re-reading of blocks.
+            let call_payloads: Vec<ToolCallPayload> = applied.tool_calls;
             trace.rounds.push(ModelRoundTrace {
                 round_id: RoundId(round),
                 invocation_id: invocation.clone(),
@@ -398,7 +389,7 @@ impl TurnRunner {
             });
             match output.stop_reason {
                 ModelStopReason::EndTurn => {
-                    // apply_model_output guarantees EndTurn has empty tool_calls
+                    // append_model_output guarantees EndTurn has empty tool_calls
                     return finish(
                         context,
                         TurnResult::Completed {
@@ -469,7 +460,16 @@ impl TurnRunner {
                     });
                     let mut results = futures_util::future::join_all(futs).await;
                     results.extend(rejected);
-                    results.sort_by_key(|r| r.result.call_id.position());
+                    // Canonical order = model draft order, taken from the
+                    // receipt's position — not from ToolCallId encoding. The
+                    // kernel re-derives the same order from call block
+                    // sequences when committing.
+                    let order_index: HashMap<ToolCallId, usize> = call_payloads
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| (p.call_id.clone(), i))
+                        .collect();
+                    results.sort_by_key(|r| order_index.get(&r.result.call_id).copied());
                     let (completion_order, call_durations): (
                         Vec<ToolCallId>,
                         HashMap<ToolCallId, u64>,
@@ -496,7 +496,10 @@ impl TurnRunner {
                                         .get(&r.result.call_id)
                                         .cloned()
                                         .unwrap_or_default(),
-                                    position: r.result.call_id.position(),
+                                    position: order_index
+                                        .get(&r.result.call_id)
+                                        .copied()
+                                        .unwrap_or_default(),
                                     status: r.result.status.clone(),
                                     truncation: r.result.output.truncation,
                                     artifact: r.result.output.artifact.clone(),
@@ -509,9 +512,9 @@ impl TurnRunner {
                             completion_order,
                         });
                     }
-                    if let Err(e) = context.append_tool_results(
-                        &results.iter().map(|o| o.result.clone()).collect::<Vec<_>>(),
-                    ) {
+                    if let Err(e) = context
+                        .append_tool_results(results.iter().map(|o| o.result.clone()).collect())
+                    {
                         return finish(
                             context,
                             TurnResult::Interrupted {
@@ -545,7 +548,7 @@ impl TurnRunner {
                     round += 1;
                 }
                 ModelStopReason::MaxTokens | ModelStopReason::Refusal => {
-                    unreachable!("handled before apply_model_output")
+                    unreachable!("handled before append_model_output")
                 }
             }
         }

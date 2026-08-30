@@ -4,12 +4,12 @@
 
 mod common;
 
-use common::{assistant_endturn, assistant_tooluse, ctx};
+use common::{ctx, endturn_output, tooluse_output};
 use reimagine_context_kernel::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AssistantPayload, AttemptControl,
-    AttemptNumber, BlockPayload, CallControl, Compaction, CompactionError, CompactionInput,
-    CompactionOutput, ContextBlock, ExecutionOptions, FramePolicy, InputPayload, ModelGateway,
-    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelStopReason, ModelUsage,
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptControl, AttemptNumber,
+    BlockContent, CallControl, Compaction, CompactionError, CompactionInput, CompactionOutput,
+    ContextBlock, ExecutionOptions, FramePolicy, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelUsage,
     ReasoningPayload, RetryPolicy, RunControl, StoreError, TextPayload, Tool, ToolCallContext,
     ToolCallDraft, ToolDefinition, ToolExecutionOutcome, ToolExecutor, ToolOutput,
     ToolOutputLimits, ToolResultPayload, ToolResultStatus, Truncation, TurnInterruption,
@@ -136,7 +136,7 @@ fn limits(r: u32, t: u32) -> TurnLimits {
 #[tokio::test]
 async fn final_assistant_completes_once() {
     let c = ctx("t1");
-    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn("final"))]));
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(endturn_output("final"))]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
     let runner = TurnRunner::new(gw, exec);
     let cfg = TurnRunOptions {
@@ -162,8 +162,8 @@ async fn final_assistant_completes_once() {
 async fn tool_calls_drive_next_frame_and_causality() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
-        Ok(assistant_tooluse("call echo", "echo", json!({"a":1}))),
-        Ok(assistant_endturn("done")),
+        Ok(tooluse_output("call echo", "echo", json!({"a":1}))),
+        Ok(endturn_output("done")),
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
     let runner = TurnRunner::new(gw, exec);
@@ -187,11 +187,11 @@ async fn tool_calls_drive_next_frame_and_causality() {
     let blocks = out.context.blocks();
     let pos_call = blocks
         .iter()
-        .position(|b| matches!(&b.payload, BlockPayload::ToolCall(_)))
+        .position(|b| matches!(b.content, BlockContent::ToolCall(_)))
         .unwrap();
     let pos_result = blocks
         .iter()
-        .position(|b| matches!(&b.payload, BlockPayload::ToolResult(_)))
+        .position(|b| matches!(b.content, BlockContent::ToolResult(_)))
         .unwrap();
     assert!(pos_result > pos_call);
 }
@@ -201,7 +201,7 @@ async fn retry_same_frame_only_attempt_increments_and_no_block_on_failure() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
         Err(ModelInvokeErrorKind::Transient),
-        Ok(assistant_endturn("ok")),
+        Ok(endturn_output("ok")),
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
     let runner = TurnRunner::new(gw.clone(), exec);
@@ -276,8 +276,8 @@ async fn retry_exhaustion_interrupted_and_counts() {
 async fn tool_failure_is_observation_not_terminal_and_next_round() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
-        Ok(assistant_tooluse("call fail", "fail", json!({}))),
-        Ok(assistant_endturn("done after fail")),
+        Ok(tooluse_output("call fail", "fail", json!({}))),
+        Ok(endturn_output("done after fail")),
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(FailTool)]));
     let runner = TurnRunner::new(gw, exec);
@@ -304,7 +304,7 @@ async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
     let c = ctx("t1");
     // Two identical echo calls in same batch => one rejected
     let out1 = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("dup"),
             tool_calls: vec![
                 ToolCallDraft {
@@ -325,7 +325,7 @@ async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
     };
     let gw = Arc::new(RecordingGateway::new(vec![
         Ok(out1),
-        Ok(assistant_endturn("done")),
+        Ok(endturn_output("done")),
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
     let runner = TurnRunner::new(gw, exec);
@@ -357,7 +357,7 @@ async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
 #[tokio::test]
 async fn unknown_outcome_stop_interrupts() {
     let c = ctx("t1");
-    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_tooluse(
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(tooluse_output(
         "call unk",
         "unk",
         json!({}),
@@ -391,8 +391,8 @@ async fn same_input_same_fake_output_same_snapshot() {
     async fn run_once() -> Vec<ContextBlock> {
         let c = ctx("t1");
         let gw = Arc::new(RecordingGateway::new(vec![
-            Ok(assistant_tooluse("hi", "echo", json!({"k":1}))),
-            Ok(assistant_endturn("bye")),
+            Ok(tooluse_output("hi", "echo", json!({"k":1}))),
+            Ok(endturn_output("bye")),
         ]));
         let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
         let runner = TurnRunner::new(gw, exec);
@@ -446,8 +446,8 @@ async fn token_limits_and_artifact_truncation() {
     }
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
-        Ok(assistant_tooluse("call big", "big", json!({}))),
-        Ok(assistant_endturn("done")),
+        Ok(tooluse_output("call big", "big", json!({}))),
+        Ok(endturn_output("done")),
     ]));
     struct MemStore;
     #[async_trait::async_trait]
@@ -495,8 +495,15 @@ async fn token_limits_and_artifact_truncation() {
         .await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     // Find truncated output
-    let result_block = out.context.blocks().iter().find(|b| matches!(&b.payload, BlockPayload::ToolResult(r) if r.output.truncation == Truncation::Middle)).expect("truncated");
-    if let BlockPayload::ToolResult(r) = &result_block.payload {
+    let result_block = out
+        .context
+        .blocks()
+        .iter()
+        .find(|b| {
+            matches!(&b.content, BlockContent::ToolResult(r) if r.output.truncation == Truncation::Middle)
+        })
+        .expect("truncated");
+    if let BlockContent::ToolResult(r) = &result_block.content {
         assert!(r.output.artifact.is_some());
     } else {
         panic!()
@@ -508,7 +515,7 @@ async fn parent_cancellation_interrupted() {
     let c = ctx("t1");
     let token = tokio_util::sync::CancellationToken::new();
     token.cancel();
-    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn(
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(endturn_output(
         "should not",
     ))]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![]));
@@ -646,11 +653,11 @@ async fn non_retryable_error_records_round_trace() {
 #[tokio::test]
 async fn cross_batch_identical_call_does_not_collide() {
     let c = ctx("t1");
-    let same_call = || assistant_tooluse("retry read", "echo", json!({"path": "A"}));
+    let same_call = || tooluse_output("retry read", "echo", json!({"path": "A"}));
     let gw = Arc::new(RecordingGateway::new(vec![
         Ok(same_call()),
         Ok(same_call()),
-        Ok(assistant_endturn("done")),
+        Ok(endturn_output("done")),
     ]));
     let (runner, cfg) = runner_with(gw, vec![Arc::new(EchoTool)], TurnRunOptions::default());
     let out = runner
@@ -669,8 +676,8 @@ async fn cross_batch_identical_call_does_not_collide() {
         .context
         .blocks()
         .iter()
-        .filter_map(|b| match &b.payload {
-            BlockPayload::ToolCall(tc) => Some(tc.call_id.clone()),
+        .filter_map(|b| match &b.content {
+            BlockContent::ToolCall(tc) => Some(tc.call_id.clone()),
             _ => None,
         })
         .collect();
@@ -688,7 +695,7 @@ async fn max_tokens_and_refusal_yield_dedicated_causes_without_blocks() {
     ] {
         let c = ctx("t1");
         let gw = Arc::new(RecordingGateway::new(vec![Ok(ModelOutput {
-            assistant: AssistantPayload {
+            response: ModelResponse {
                 text: TextPayload::new("cut"),
                 tool_calls: vec![],
             },
@@ -748,8 +755,8 @@ async fn unknown_outcome_continue_continues_turn() {
     }
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
-        Ok(assistant_tooluse("call unkc", "unkc", json!({}))),
-        Ok(assistant_endturn("done")),
+        Ok(tooluse_output("call unkc", "unkc", json!({}))),
+        Ok(endturn_output("done")),
     ]));
     let (runner, cfg) = runner_with(
         gw,
@@ -765,7 +772,7 @@ async fn unknown_outcome_continue_continues_turn() {
         .await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     assert!(out.context.blocks().iter().any(
-        |b| matches!(&b.payload, BlockPayload::ToolResult(r) if r.status == ToolResultStatus::UnknownOutcome)
+        |b| matches!(&b.content, BlockContent::ToolResult(r) if r.status == ToolResultStatus::UnknownOutcome)
     ));
 }
 
@@ -790,7 +797,7 @@ async fn hung_tool_stop_policy_interrupts_with_unknown_outcome() {
         }
     }
     let c = ctx("t1");
-    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_tooluse(
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(tooluse_output(
         "call hung",
         "hung",
         json!({}),
@@ -848,8 +855,8 @@ async fn hung_tool_continue_policy_still_completes() {
     }
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
-        Ok(assistant_tooluse("call hungc", "hungc", json!({}))),
-        Ok(assistant_endturn("done")),
+        Ok(tooluse_output("call hungc", "hungc", json!({}))),
+        Ok(endturn_output("done")),
     ]));
     let (runner, cfg) = runner_with(
         gw,
@@ -880,7 +887,7 @@ async fn parallel_batch_partial_failure_does_not_abort() {
     let c = ctx("t1");
     let gw = Arc::new(RecordingGateway::new(vec![
         Ok(ModelOutput {
-            assistant: AssistantPayload {
+            response: ModelResponse {
                 text: TextPayload::new("two calls"),
                 tool_calls: vec![
                     ToolCallDraft {
@@ -899,7 +906,7 @@ async fn parallel_batch_partial_failure_does_not_abort() {
             stop_reason: ModelStopReason::ToolUse,
             reasoning: None,
         }),
-        Ok(assistant_endturn("done")),
+        Ok(endturn_output("done")),
     ]));
     let (runner, cfg) = runner_with(
         gw,
@@ -918,8 +925,8 @@ async fn parallel_batch_partial_failure_does_not_abort() {
         .context
         .blocks()
         .iter()
-        .filter_map(|b| match &b.payload {
-            BlockPayload::ToolResult(r) => Some(r.status.clone()),
+        .filter_map(|b| match &b.content {
+            BlockContent::ToolResult(r) => Some(r.status.clone()),
             _ => None,
         })
         .collect();
@@ -954,7 +961,7 @@ async fn completion_order_reflects_real_completion() {
     // slow is dispatched first (position 0) but completes last
     let gw = Arc::new(RecordingGateway::new(vec![
         Ok(ModelOutput {
-            assistant: AssistantPayload {
+            response: ModelResponse {
                 text: TextPayload::new("mixed"),
                 tool_calls: vec![
                     ToolCallDraft {
@@ -973,7 +980,7 @@ async fn completion_order_reflects_real_completion() {
             stop_reason: ModelStopReason::ToolUse,
             reasoning: None,
         }),
-        Ok(assistant_endturn("done")),
+        Ok(endturn_output("done")),
     ]));
     let (runner, cfg) = runner_with(
         gw,
@@ -1000,13 +1007,13 @@ async fn completion_order_reflects_real_completion() {
     assert!(batch.calls[1].duration_ms < batch.calls[0].duration_ms);
 }
 
-// [P1 Phase 1] apply_model_output validation branches
+// [P1 Phase 1] append_model_output validation branches
 
 #[tokio::test]
 async fn max_tool_calls_interrupt_records_total() {
     let c = ctx("t1");
     let two_calls = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("two"),
             tool_calls: vec![
                 ToolCallDraft {
@@ -1074,8 +1081,7 @@ impl Compaction for DropAllCompaction {
 #[tokio::test]
 async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     let mut c = ctx("t1");
-    c.append_input(InputPayload::RequestUser(TextPayload::new("hello")))
-        .unwrap();
+    c.append_input(TextPayload::new("hello"), "user").unwrap();
     // any non-empty content trips the placeholder trigger
     let frame_policy = FramePolicy {
         window_budget: WindowBudget {
@@ -1085,7 +1091,7 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
         compaction: Some(Arc::new(DropAllCompaction)),
         token_counter: None,
     };
-    let gw = Arc::new(RecordingGateway::new(vec![Ok(assistant_endturn("done"))]));
+    let gw = Arc::new(RecordingGateway::new(vec![Ok(endturn_output("done"))]));
     let (runner, base_cfg) = runner_with(gw.clone(), vec![], TurnRunOptions::default());
     let cfg = TurnRunOptions {
         frame: frame_policy,
@@ -1105,11 +1111,11 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     assert!(recorded[0].frame.model_context.blocks.is_empty());
     drop(recorded);
     // the fact state is untouched — compaction is frame-local, never writes
-    // back; blocks are still [RequestUser, ResponseAssistant]
+    // back; blocks are still [input text, response text]
     assert_eq!(out.context.blocks().len(), 2);
     assert!(matches!(
-        out.context.blocks()[0].payload,
-        BlockPayload::RequestUser(_)
+        out.context.blocks()[0].content,
+        BlockContent::Text(_)
     ));
 }
 
@@ -1135,8 +1141,8 @@ async fn artifact_store_failure_still_truncates_without_artifact() {
     let c = ctx("t1");
     let big = "x".repeat(400);
     let gw = Arc::new(RecordingGateway::new(vec![
-        Ok(assistant_tooluse("big", "echo", json!({"pad": big}))),
-        Ok(assistant_endturn("done")),
+        Ok(tooluse_output("big", "echo", json!({"pad": big}))),
+        Ok(endturn_output("done")),
     ]));
     let exec = Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)]));
     let runner = TurnRunner::new(gw, exec);
@@ -1166,12 +1172,12 @@ async fn artifact_store_failure_still_truncates_without_artifact() {
         .iter()
         .find(|b| {
             matches!(
-                &b.payload,
-                BlockPayload::ToolResult(r) if r.output.truncation == Truncation::Middle
+                &b.content,
+                BlockContent::ToolResult(r) if r.output.truncation == Truncation::Middle
             )
         })
         .expect("truncated");
-    if let BlockPayload::ToolResult(r) = &result_block.payload {
+    if let BlockContent::ToolResult(r) = &result_block.content {
         // persist failed -> observation degrades to head+tail, no artifact ref
         assert!(r.output.artifact.is_none());
         assert!(r.output.is_truncated());
@@ -1184,7 +1190,7 @@ async fn artifact_store_failure_still_truncates_without_artifact() {
 async fn completed_output_carries_reasoning_and_usage_unchanged() {
     // gate 12: reasoning signature + rich usage survive the staged driver losslessly
     let final_output = ModelOutput {
-        assistant: AssistantPayload {
+        response: ModelResponse {
             text: TextPayload::new("final"),
             tool_calls: vec![],
         },

@@ -2,7 +2,7 @@
 //!
 //! This module holds only data: observable tool facts that the fact machine
 //! persists and projects. Behavior (the `Tool` trait, the `ArtifactStore`
-//! port, panic/deadline/truncation dispatch) lives in `crate::tool`, and
+//! port, panic/deadline/truncation dispatch) lives in `crate::ports::tool`, and
 //! canonical modules must depend on `tool_data`, never on the executor-sized
 //! behavior module.
 
@@ -26,7 +26,7 @@ impl ToolCallId {
     /// 生成不同 id——模型跨 round 重发同一调用（去重后的合法恢复路径）不得与
     /// 历史 call_id 碰撞。唯一性范围是单个 TurnContext。
     pub fn generate(
-        round_id: crate::ids::RoundId,
+        round_id: crate::context::ids::RoundId,
         tool_name: &str,
         arguments: &serde_json::Value,
         position: usize,
@@ -37,13 +37,6 @@ impl ToolCallId {
         let hash = blake3::hash(preimage.as_bytes());
         let hex = hash.to_hex();
         Self(format!("{}:{}:{}", tool_name, &hex[..8], position))
-    }
-    pub fn position(&self) -> usize {
-        self.0
-            .rsplit(':')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
     }
 }
 

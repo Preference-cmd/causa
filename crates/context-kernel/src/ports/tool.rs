@@ -1,14 +1,14 @@
 //! Tool behavior — the `Tool` trait and the `ArtifactStore` port. Value
-//! types live in `crate::tool_data`; batch dispatch lives in the staged
+//! types live in `crate::context::tool_data`; batch dispatch lives in the staged
 //! `internal::executor`.
 
 use async_trait::async_trait;
 
-use crate::control::CallControl;
-use crate::tool_data::{
+use crate::context::tool_data::{
     ArtifactKind, ArtifactRef, ToolCallContext, ToolCallId, ToolExecutionOutcome, ToolOutputLimits,
     UnknownOutcomePolicy,
 };
+use crate::ports::control::CallControl;
 
 #[derive(Debug, Clone, Copy)]
 pub enum IsolationLevel {
@@ -47,7 +47,7 @@ pub trait ArtifactStore: Send + Sync {
 
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn definition(&self) -> crate::tool_data::ToolDefinition;
+    fn definition(&self) -> crate::context::tool_data::ToolDefinition;
     fn output_limits(&self) -> Option<ToolOutputLimits> {
         None
     }
