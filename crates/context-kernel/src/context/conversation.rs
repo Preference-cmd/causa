@@ -9,8 +9,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::context::ids::{ConversationId, ConversationVersion, TurnId, TurnSequence};
-use crate::context::turn::{TurnContext, TurnSnapshot};
+use crate::context::ids::{
+    ConversationId, ConversationVersion, FrameId, FrameScope, RoundId, TurnId, TurnSequence,
+};
+use crate::context::turn::{ContextFrame, ModelContext, TurnContext, TurnSnapshot};
 
 /// Kernel-side eligibility stamp recorded when the driver finalizes the
 /// active turn. Marker only — the rich cause stays with the caller via the
@@ -192,6 +194,25 @@ impl ConversationState {
         Ok(active)
     }
 
+    /// Lossless merged view: committed history (TurnSequence ascending,
+    /// blocks in BlockSequence order) followed by the active turn's blocks,
+    /// under the Conversation scope identity. Sync and policy-free by
+    /// design — budget, selection and compaction over the merged view are
+    /// Slice 5 and will orchestrate through the policy layer, never mutate
+    /// facts. The only failure source is a missing active turn.
+    pub fn frame(&self, round_id: RoundId) -> Result<ContextFrame, ConversationError> {
+        let active = match &self.active_turn {
+            Some(active) => active,
+            None => return Err(ConversationError::NoActiveTurn),
+        };
+        Ok(merged_frame(
+            &self.conversation_id,
+            self.completed_turns.ordered(),
+            active,
+            round_id,
+        ))
+    }
+
     pub fn completed_turns(&self) -> &[TurnSnapshot] {
         self.completed_turns.ordered()
     }
@@ -217,5 +238,33 @@ impl ConversationState {
             self.sealed_result.is_none()
                 || self.active_turn.as_ref().is_some_and(|t| t.is_sealed())
         );
+    }
+}
+
+/// Shared lossless merged materialization over committed history plus the
+/// active turn — the single semantics both `ConversationState::frame()` and
+/// the staged runner's conversation entry use. No reordering, no dedup, no
+/// trimming; nothing is written back.
+pub(crate) fn merged_frame(
+    conversation_id: &ConversationId,
+    history: &[TurnSnapshot],
+    active: &TurnContext,
+    round_id: RoundId,
+) -> ContextFrame {
+    let mut blocks = Vec::new();
+    for snapshot in history {
+        blocks.extend(snapshot.blocks.as_slice().iter().cloned());
+    }
+    blocks.extend(active.blocks().iter().cloned());
+    let scope = FrameScope::Conversation {
+        conversation_id: conversation_id.clone(),
+        active_turn_id: active.turn_id(),
+        source_version: active.version(),
+    };
+    ContextFrame {
+        frame_id: FrameId::from_scope(&scope, round_id),
+        scope,
+        round_id,
+        model_context: ModelContext { blocks },
     }
 }

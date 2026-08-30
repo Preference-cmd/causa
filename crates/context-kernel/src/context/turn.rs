@@ -1,7 +1,7 @@
 //! TurnContext / ContextFrame / TurnSnapshot — Slice 1 single-turn fact machine.
 use crate::context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
 use crate::context::ids::{
-    BlockId, BlockSequence, ContextVersion, FrameId, RoundId, TurnId, TurnSequence,
+    BlockId, BlockSequence, ContextVersion, FrameId, FrameScope, RoundId, TurnId, TurnSequence,
 };
 use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::context::tool_data::{ToolCallId, ToolResultPayload};
@@ -11,14 +11,6 @@ use std::collections::{HashMap, HashSet};
 pub enum TurnLifecycle {
     Open,
     Sealed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum FrameScope {
-    Turn {
-        turn_id: TurnId,
-        source_version: ContextVersion,
-    },
 }
 
 #[derive(Debug, Clone)]

@@ -4,8 +4,8 @@
 //! projection and never awaits behavior.
 
 use crate::context::block::ContextBlock;
-use crate::context::ids::{FrameId, RoundId};
-use crate::context::turn::{ContextFrame, FrameScope, ModelContext, TurnContext};
+use crate::context::ids::{FrameId, FrameScope, RoundId};
+use crate::context::turn::{ContextFrame, ModelContext, TurnContext};
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowBudget {

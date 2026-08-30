@@ -28,7 +28,7 @@ pub use context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, Too
 pub use context::conversation::{ConversationError, ConversationState, OrderedTurns, SealedResult};
 pub use context::ids::{
     BlockId, BlockSequence, ContextVersion, ConversationId, ConversationVersion, FrameId,
-    InvocationId, RoundId, TurnId, TurnSequence,
+    FrameScope, InvocationId, RoundId, TurnId, TurnSequence,
 };
 pub use context::model::{ModelResponse, ModelStopReason, ToolCallDraft};
 pub use context::tool_data::{
@@ -36,8 +36,8 @@ pub use context::tool_data::{
     ToolResultStatus, Truncation,
 };
 pub use context::turn::{
-    AppliedModelOutput, ContextError, ContextFrame, FrameScope, ModelContext, OrderedBlocks,
-    TurnContext, TurnLifecycle, TurnSnapshot,
+    AppliedModelOutput, ContextError, ContextFrame, ModelContext, OrderedBlocks, TurnContext,
+    TurnLifecycle, TurnSnapshot,
 };
 
 // --- ports: behavior seams for external implementors ------------------------

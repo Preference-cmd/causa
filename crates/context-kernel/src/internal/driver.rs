@@ -6,12 +6,12 @@ use super::config::TurnRunOptions;
 use super::control::RunControl;
 use super::executor::ToolExecutor;
 use crate::context::block::ToolCallPayload;
-use crate::context::ids::{BlockId, InvocationId, RoundId};
+use crate::context::ids::{BlockId, FrameScope, InvocationId, RoundId};
 use crate::context::model::ModelStopReason;
 use crate::context::tool_data::{
     ArtifactRef, ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
 };
-use crate::context::turn::{FrameScope, TurnContext};
+use crate::context::turn::TurnContext;
 use crate::ports::gateway::AttemptNumber;
 use crate::ports::gateway::ModelGateway;
 use crate::ports::gateway::ModelRequest;
@@ -236,6 +236,11 @@ impl TurnRunner {
             };
             let frame_version = match &frame.scope {
                 FrameScope::Turn { source_version, .. } => *source_version,
+                // The single-turn runner only materializes Turn scopes; the
+                // conversation entry (Phase C) drives merged frames itself.
+                FrameScope::Conversation { .. } => {
+                    unreachable!("conversation scope never reaches the single-turn runner")
+                }
             };
             let invocation = InvocationId {
                 turn_id: context.turn_id(),

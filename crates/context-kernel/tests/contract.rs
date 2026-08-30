@@ -7,10 +7,10 @@ mod common;
 use common::{ctx, endturn_output, turn_id};
 use reimagine_context_kernel::{
     BlockContent, BlockId, BlockMeta, BlockSequence, Compaction, CompactionError, CompactionInput,
-    CompactionOutput, ContextBlock, ContextError, ContextVersion, FramePolicy, InvocationId,
-    ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
-    TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload, ToolOutput, ToolResultPayload,
-    ToolResultStatus, TurnContext, WindowBudget,
+    CompactionOutput, ContextBlock, ContextError, ContextVersion, FrameId, FramePolicy, FrameScope,
+    InvocationId, ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload,
+    RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
 };
 use serde_json::json;
 
@@ -647,4 +647,27 @@ fn tool_results_commit_in_call_order_regardless_of_submission_order() {
     assert_eq!(result_order, call_ids);
     // The whole batch was one canonical commit: exactly one version bump.
     assert_eq!(c.version(), ContextVersion(2));
+}
+
+// ---- Slice 2 Phase B: scope-driven frame identity ---------------------------
+
+#[test]
+fn frame_id_from_scope_matches_deterministic_for_turn_scope() {
+    // The Turn branch of from_scope must replicate the historical preimage
+    // byte-for-byte so no pre-Slice-2 frame id changes.
+    let scope = FrameScope::Turn {
+        turn_id: turn_id("t1"),
+        source_version: ContextVersion(7),
+    };
+    assert_eq!(
+        FrameId::from_scope(&scope, RoundId(3)),
+        FrameId::deterministic(&turn_id("t1"), ContextVersion(7), RoundId(3))
+    );
+    // 16-hex truncation unchanged by the generalization.
+    assert_eq!(
+        FrameId::deterministic(&turn_id("t1"), ContextVersion(7), RoundId(3))
+            .0
+            .len(),
+        16
+    );
 }
