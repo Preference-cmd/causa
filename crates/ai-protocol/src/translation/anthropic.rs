@@ -6,38 +6,22 @@
 //! back to [`reimagine_context_kernel::ModelOutput`]. Transport-free —
 //! the reqwest adapter in `reimagine-agent-provider` owns HTTP.
 //!
-//! # `BlockMeta::source` vocabulary
+//! The renderer-independent policy (source vocabulary, empty-text skip,
+//! text joining, tool id pairing, observation stringification) lives in
+//! [`super::context_frame`]; this module only shapes the Anthropic wire.
 //!
-//! The kernel records `source` verbatim and never interprets it; this
-//! module is its interpreter. The vocabulary is open — unknown tags fall
-//! back to the user role rather than failing, because renderers must be
-//! total over frames that outlive any single vocabulary revision.
+//! # Anthropic-specific structural rules
 //!
-//! | `BlockMeta::source`      | Rendering semantics                                  |
-//! |--------------------------|------------------------------------------------------|
-//! | `None`                   | assistant — the model door never stamps `source`      |
-//! | `"assistant"`            | assistant — host-prepared model turn (history replay) |
-//! | `"system"`               | top-level `system` parameter (joined with `\n`)       |
-//! | `"user"`                 | user role                                             |
-//! | `"inject"` / `"inject:…"`| user role (rendering policy for injected context)     |
-//! | anything else            | user role (documented open-vocabulary fallback)       |
-//!
-//! # Structural rules
-//!
-//! - Consecutive blocks with the same wire role merge into one message;
-//!   Anthropic requires strictly alternating `user` / `assistant` roles.
-//! - Tool call blocks render as assistant `tool_use` content blocks. The
-//!   wire id is `meta.provider_call_id`, falling back to the kernel
-//!   `call_id` for synthetic calls the provider never named.
-//! - Tool result blocks render as `tool_result` content blocks in the
-//!   following user message, with `tool_use_id` resolved through the
-//!   `call_id → provider id` map built from the frame's call blocks. An
-//!   unpaired result (its call block was dropped, e.g. by compaction)
-//!   falls back to the kernel `call_id`; the provider rejects the orphan
-//!   at HTTP time, which is the loud failure path. Any status other than
-//!   `Succeeded` sets `is_error: true`. Result `content` passes through
-//!   as a string when the observation is a JSON string; any other JSON
-//!   value is serialized to a string.
+//! - `system` text segments move to the top-level `system` parameter
+//!   (joined with `\n`); Anthropic has no system message role.
+//! - Consecutive segments with the same wire role merge into one
+//!   message; Anthropic requires strictly alternating `user` /
+//!   `assistant` roles.
+//! - Tool calls render as assistant `tool_use` content blocks with
+//!   `input` as a JSON object; tool results render as `tool_result`
+//!   content blocks in the following user message. Any status other
+//!   than `Succeeded` sets `is_error: true` (the flag is Anthropic-only;
+//!   OpenAI-family wires carry error information in the content).
 //! - `GenerationOptions::max_tokens` is required by Anthropic; a `None`
 //!   renders as [`DEFAULT_MAX_TOKENS`].
 //! - `reasoning` is parsed as a wire envelope only. The kernel does not
@@ -46,15 +30,15 @@
 //! - `redacted_thinking` and unknown content block types are skipped for
 //!   forward compatibility with provider extensions.
 
-use std::collections::HashMap;
-
 use serde_json::{Value, json};
 
 use reimagine_context_kernel::{
-    BlockContent, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
-    ToolCallDraft, ToolResultStatus, ToolSurface,
+    ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
+    ModelResponse, ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolResultStatus,
+    ToolSurface,
 };
+
+use super::context_frame::{self, Role, Segment};
 
 /// Anthropic requires `max_tokens`; this is the documented default when
 /// `GenerationOptions::max_tokens` is `None`.
@@ -72,81 +56,55 @@ pub fn render_anthropic_messages(
     generation: &GenerationOptions,
     model: &ModelRef,
 ) -> Result<Value, ModelInvokeError> {
-    let blocks = &frame.model_context.blocks;
+    let normalized = context_frame::normalize(frame);
 
-    // Pairing map: kernel call_id -> the id the provider saw on the
-    // tool_use block. Synthetic calls (no provider id) render with the
-    // kernel call_id, so the map's fallback is the same rule applied at
-    // result-render time.
-    let mut provider_ids: HashMap<String, String> = HashMap::new();
+    // Group consecutive same-wire-role segments into one message
+    // (Anthropic requires strictly alternating roles).
     let mut system_parts: Vec<String> = Vec::new();
-    for block in blocks {
-        match &block.content {
-            BlockContent::ToolCall(call) => {
-                provider_ids.insert(
-                    call.call_id.0.clone(),
-                    block
-                        .meta
-                        .provider_call_id
-                        .clone()
-                        .unwrap_or_else(|| call.call_id.0.clone()),
-                );
-            }
-            BlockContent::Text(text) if block.meta.source.as_deref() == Some("system") => {
-                system_parts.push(text.0.clone());
-            }
-            _ => {}
-        }
-    }
-
-    // Assemble messages: consecutive same-role blocks merge into one
-    // message (Anthropic requires strictly alternating roles).
     let mut messages: Vec<(&'static str, Vec<Value>)> = Vec::new();
-    for block in blocks {
-        match &block.content {
-            // Already extracted into the top-level system parameter.
-            BlockContent::Text(_) if block.meta.source.as_deref() == Some("system") => {}
-            BlockContent::Text(text) => {
-                let role = match block.meta.source.as_deref() {
-                    None | Some("assistant") => "assistant",
-                    // "user", "inject[:detail]", unknown open-vocabulary
-                    // tags — all render as user.
-                    Some(_) => "user",
-                };
-                append_message(&mut messages, role, json!({"type": "text", "text": text.0}));
+    for segment in &normalized.segments {
+        match segment {
+            Segment::Text {
+                role: Role::System,
+                text,
+            } => system_parts.push(text.clone()),
+            Segment::Text {
+                role: Role::User,
+                text,
+            } => {
+                append_message(&mut messages, "user", json!({"type": "text", "text": text}));
             }
-            BlockContent::ToolCall(call) => {
-                let id = block
-                    .meta
-                    .provider_call_id
-                    .clone()
-                    .unwrap_or_else(|| call.call_id.0.clone());
+            Segment::Text {
+                role: Role::Assistant,
+                text,
+            } => {
                 append_message(
                     &mut messages,
                     "assistant",
-                    json!({
-                        "type": "tool_use",
-                        "id": id,
-                        "name": call.tool_name,
-                        "input": call.arguments,
-                    }),
+                    json!({"type": "text", "text": text}),
                 );
             }
-            BlockContent::ToolResult(result) => {
-                let tool_use_id = provider_ids
-                    .get(&result.call_id.0)
-                    .cloned()
-                    .unwrap_or_else(|| result.call_id.0.clone());
-                let content = match &result.output.content {
-                    Value::String(s) => Value::String(s.clone()),
-                    other => Value::String(other.to_string()),
-                };
+            Segment::ToolCall(call) => append_message(
+                &mut messages,
+                "assistant",
+                json!({
+                    "type": "tool_use",
+                    "id": call.wire_id,
+                    "name": call.name,
+                    "input": call.arguments,
+                }),
+            ),
+            Segment::ToolResult {
+                wire_id,
+                status,
+                content,
+            } => {
                 let mut block_json = json!({
                     "type": "tool_result",
-                    "tool_use_id": tool_use_id,
+                    "tool_use_id": wire_id,
                     "content": content,
                 });
-                if result.status != ToolResultStatus::Succeeded {
+                if *status != ToolResultStatus::Succeeded {
                     block_json["is_error"] = json!(true);
                 }
                 append_message(&mut messages, "user", block_json);
@@ -318,9 +276,9 @@ fn append_message(
 mod tests {
     use super::*;
     use reimagine_context_kernel::{
-        BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion, ConversationId, FrameId,
-        FrameScope, ModelContext, ModelUsage, RoundId, ToolCallId, ToolCallPayload, ToolDefinition,
-        ToolOutput, ToolResultPayload, TurnId,
+        BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion,
+        ConversationId, FrameId, FrameScope, ModelContext, ModelUsage, RoundId, ToolCallId,
+        ToolCallPayload, ToolDefinition, ToolOutput, ToolResultPayload, TurnId,
     };
 
     fn block(
@@ -434,14 +392,32 @@ mod tests {
         assert_eq!(msgs[1]["role"], "user");
         assert_eq!(msgs[2]["role"], "assistant");
         assert_eq!(msgs[3]["role"], "user");
+        // adjacent same-role texts join into one block (shared policy)
         assert_eq!(
             msgs[3]["content"],
-            json!([
-                {"type": "text", "text": "injected"},
-                {"type": "text", "text": "bare inject"},
-                {"type": "text", "text": "unknown tag"},
-            ])
+            json!([{"type": "text", "text": "injected\nbare inject\nunknown tag"}])
         );
+    }
+
+    #[test]
+    fn empty_text_blocks_are_skipped() {
+        // The host door can commit empty texts; the renderer mirrors the
+        // model door and skips them.
+        let f = turn_frame(vec![
+            text(0, "", Some("user")),
+            text(1, "real", Some("user")),
+            text(2, "", Some("system")),
+            text(3, "still here", None),
+        ]);
+        let v = render(&f);
+        // the skipped leading empty text must not leave an empty message
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(
+            msgs[0]["content"],
+            json!([{"type": "text", "text": "real"}])
+        );
+        assert!(v.get("system").is_none());
     }
 
     #[test]

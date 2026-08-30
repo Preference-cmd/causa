@@ -6,45 +6,43 @@
 //! Transport-free; the reqwest adapter in `reimagine-agent-provider` owns
 //! HTTP.
 //!
-//! # `BlockMeta::source` vocabulary
+//! The renderer-independent policy (source vocabulary, empty-text skip,
+//! text joining, tool id pairing, observation stringification) lives in
+//! [`super::context_frame`]; this module only shapes the chat wire.
 //!
-//! Same vocabulary as [`super::anthropic`] (see its docs): `None` and
-//! `"assistant"` render as assistant, `"system"` as a system message
-//! (OpenAI carries system inline — it stays in frame position), `"user"`,
-//! `"inject[:…]"` and unknown tags as user.
+//! # Chat-specific structural rules
 //!
-//! # Structural rules
-//!
-//! - Adjacent user/system text blocks merge into one message (joined with
-//!   `\n`); adjacent assistant text and tool call blocks merge into a
-//!   single assistant message carrying `content` and `tool_calls` together.
-//! - Each tool result block renders as its own `role: "tool"` message —
-//!   `tool_call_id` pairing requires one message per call. The wire id
-//!   resolves through the frame's `call_id → provider id` map (built from
-//!   `meta.provider_call_id`, falling back to the kernel `call_id`).
-//! - Tool call arguments are a JSON *string* on the wire; rendering
-//!   serializes the kernel arguments deterministically, parsing rejects a
-//!   non-JSON arguments string as `Permanent`.
+//! - `system` text segments stay in frame position as `role: "system"`
+//!   messages (OpenAI carries system inline, unlike Anthropic's
+//!   top-level parameter).
+//! - A run of assistant text segments and tool call segments coalesces
+//!   into ONE assistant message. The wire carries assistant content as a
+//!   single string, so text around tool calls joins in frame order; a
+//!   run with no text omits `content`, a run with no calls omits
+//!   `tool_calls`.
+//! - Each tool result segment renders as its own `role: "tool"` message
+//!   — `tool_call_id` pairing requires one message per call. There is no
+//!   `is_error` flag on this wire; error information travels in the
+//!   content.
+//! - Tool call arguments are a JSON *string* on the wire (encoded by the
+//!   emitter, decoded by the shared [`super::context_frame`] codec);
+//!   parsing rejects a non-JSON arguments string as `Permanent`.
 //! - `max_tokens` is optional for OpenAI (no default injected).
 
 use serde_json::{Value, json};
 
 use reimagine_context_kernel::{
-    BlockContent, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
-    ToolCallDraft, ToolSurface,
+    ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
+    ModelResponse, ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolSurface,
 };
 
-/// Assign the wire role for a text block from its `source` tag. `"system"`
-/// stays a system *message* (OpenAI carries system inline, unlike
-/// Anthropic's top-level parameter).
-fn text_role(source: Option<&str>) -> &'static str {
-    match source {
-        None | Some("assistant") => "assistant",
-        Some("system") => "system",
-        // "user", "inject[:detail]", unknown open-vocabulary tags
-        Some(_) => "user",
-    }
+use super::context_frame::{self, Role, Segment};
+
+/// A run of assistant text + tool call segments coalescing into one
+/// assistant message.
+struct AssistantRun {
+    text: String,
+    calls: Vec<Value>,
 }
 
 /// Render a [`ContextFrame`] into an OpenAI Chat Completions request body.
@@ -55,145 +53,91 @@ pub fn render_openai_chat_messages(
     generation: &GenerationOptions,
     model: &ModelRef,
 ) -> Result<Value, ModelInvokeError> {
-    let blocks = &frame.model_context.blocks;
+    let normalized = context_frame::normalize(frame);
 
-    // Pairing map: kernel call_id -> the id the provider saw on the tool
-    // call. Synthetic calls (no provider id) render with the kernel
-    // call_id, so the map's fallback is the same rule applied at
-    // result-render time.
-    let mut provider_ids = std::collections::HashMap::new();
-    for block in blocks {
-        if let BlockContent::ToolCall(call) = &block.content {
-            provider_ids.insert(
-                call.call_id.0.clone(),
-                block
-                    .meta
-                    .provider_call_id
-                    .clone()
-                    .unwrap_or_else(|| call.call_id.0.clone()),
-            );
+    // A run of assistant text + tool call segments coalesces into one
+    // assistant message; any other segment closes the open run.
+    let mut messages: Vec<Value> = Vec::new();
+    let mut run: Option<AssistantRun> = None;
+    for segment in &normalized.segments {
+        let closes_run = !matches!(
+            segment,
+            Segment::Text {
+                role: Role::Assistant,
+                ..
+            } | Segment::ToolCall(_)
+        );
+        if closes_run && let Some(finished) = run.take() {
+            messages.push(assistant_message(finished));
         }
-    }
-
-    // Intermediate message drafts. `Role` merges with adjacent same-role
-    // drafts; `Assistant` collects adjacent assistant text + tool calls
-    // into one wire message; `ToolResult` never merges (one message per
-    // tool_call_id).
-    enum Draft {
-        Role {
-            role: &'static str,
-            text: String,
-        },
-        Assistant {
-            text: Option<String>,
-            tool_calls: Vec<Value>,
-        },
-        ToolResult {
-            tool_call_id: String,
-            content: String,
-        },
-    }
-    let mut drafts: Vec<Draft> = Vec::new();
-
-    for block in blocks {
-        match &block.content {
-            BlockContent::Text(text) => match text_role(block.meta.source.as_deref()) {
-                "assistant" => match drafts.last_mut() {
-                    Some(Draft::Assistant { text: slot, .. }) if slot.is_none() => {
-                        *slot = Some(text.0.clone());
-                    }
-                    _ => drafts.push(Draft::Assistant {
-                        text: Some(text.0.clone()),
-                        tool_calls: Vec::new(),
-                    }),
-                },
-                role => match drafts.last_mut() {
-                    Some(Draft::Role {
-                        role: last_role,
-                        text: last_text,
-                    }) if *last_role == role => {
-                        last_text.push('\n');
-                        last_text.push_str(&text.0);
-                    }
-                    _ => drafts.push(Draft::Role {
-                        role,
-                        text: text.0.clone(),
-                    }),
-                },
+        match segment {
+            Segment::Text {
+                role: Role::System,
+                text,
+            } => {
+                messages.push(json!({"role": "system", "content": text}));
+            }
+            Segment::Text {
+                role: Role::User,
+                text,
+            } => {
+                messages.push(json!({"role": "user", "content": text}));
+            }
+            Segment::Text {
+                role: Role::Assistant,
+                text,
+            } => match &mut run {
+                Some(state) => {
+                    state.text.push('\n');
+                    state.text.push_str(text);
+                }
+                None => {
+                    run = Some(AssistantRun {
+                        text: text.clone(),
+                        calls: Vec::new(),
+                    })
+                }
             },
-            BlockContent::ToolCall(call) => {
-                let id = block
-                    .meta
-                    .provider_call_id
-                    .clone()
-                    .unwrap_or_else(|| call.call_id.0.clone());
+            Segment::ToolCall(call) => {
                 let wire_call = json!({
-                    "id": id,
+                    "id": call.wire_id,
                     "type": "function",
                     "function": {
-                        "name": call.tool_name,
+                        "name": call.name,
                         "arguments": call.arguments.to_string(),
                     },
                 });
-                match drafts.last_mut() {
-                    Some(Draft::Assistant { tool_calls, .. }) => tool_calls.push(wire_call),
-                    _ => drafts.push(Draft::Assistant {
-                        text: None,
-                        tool_calls: vec![wire_call],
-                    }),
+                match &mut run {
+                    Some(state) => state.calls.push(wire_call),
+                    None => {
+                        run = Some(AssistantRun {
+                            text: String::new(),
+                            calls: vec![wire_call],
+                        })
+                    }
                 }
             }
-            BlockContent::ToolResult(result) => {
-                let tool_call_id = provider_ids
-                    .get(&result.call_id.0)
-                    .cloned()
-                    .unwrap_or_else(|| result.call_id.0.clone());
-                let content = match &result.output.content {
-                    Value::String(s) => Value::String(s.clone()),
-                    other => Value::String(other.to_string()),
-                };
-                drafts.push(Draft::ToolResult {
-                    tool_call_id,
-                    content: content.as_str().unwrap_or_default().to_string(),
-                });
+            Segment::ToolResult {
+                wire_id, content, ..
+            } => {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": wire_id,
+                    "content": content,
+                }));
             }
         }
     }
+    if let Some(finished) = run.take() {
+        messages.push(assistant_message(finished));
+    }
 
-    if drafts.is_empty() {
+    if messages.is_empty() {
         return Err(ModelInvokeError::new(
             ModelInvokeErrorKind::InvalidRequest,
             "frame rendered to zero messages; nothing to send",
         ));
     }
-
-    let messages = drafts
-        .into_iter()
-        .map(|draft| match draft {
-            Draft::Role { role, text } => json!({"role": role, "content": text}),
-            Draft::Assistant { text, tool_calls } => {
-                let mut message = json!({"role": "assistant"});
-                // Deterministic: empty assistant text is omitted, not
-                // rendered as an empty string; a pure-text message carries
-                // no `tool_calls` key.
-                if let Some(text) = text.filter(|t| !t.is_empty()) {
-                    message["content"] = json!(text);
-                }
-                if !tool_calls.is_empty() {
-                    message["tool_calls"] = json!(tool_calls);
-                }
-                message
-            }
-            Draft::ToolResult {
-                tool_call_id,
-                content,
-            } => json!({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": content,
-            }),
-        })
-        .collect::<Vec<_>>();
 
     let mut body = json!({
         "model": model.0,
@@ -222,6 +166,20 @@ pub fn render_openai_chat_messages(
         );
     }
     Ok(body)
+}
+
+/// Materialize an assistant run: empty text is omitted (a calls-only
+/// message carries no `content`), a text-only message carries no
+/// `tool_calls` key.
+fn assistant_message(run: AssistantRun) -> Value {
+    let mut message = json!({"role": "assistant"});
+    if !run.text.is_empty() {
+        message["content"] = json!(run.text);
+    }
+    if !run.calls.is_empty() {
+        message["tool_calls"] = json!(run.calls);
+    }
+    message
 }
 
 /// Parse an OpenAI Chat Completions response body into a kernel
@@ -266,14 +224,8 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
                 .and_then(Value::as_str)
                 .ok_or_else(|| permanent("tool_calls[].function: missing `name` string"))?;
             // The wire carries arguments as a JSON string; an empty string
-            // degrades to an empty object.
-            let arguments = match function.get("arguments") {
-                None | Some(Value::Null) => json!({}),
-                Some(Value::String(s)) if s.trim().is_empty() => json!({}),
-                Some(Value::String(s)) => serde_json::from_str(s)
-                    .map_err(|e| permanent(format!("tool_calls[].function.arguments: {e}")))?,
-                Some(other) => other.clone(),
-            };
+            // degrades to an empty object (shared OpenAI-family codec).
+            let arguments = context_frame::decode_wire_arguments(function.get("arguments"))?;
             tool_calls.push(ToolCallDraft {
                 tool_name: name.to_string(),
                 arguments,
@@ -339,9 +291,9 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
 mod tests {
     use super::*;
     use reimagine_context_kernel::{
-        BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion, FrameId, FrameScope,
-        ModelContext, ModelUsage, RoundId, ToolCallId, ToolCallPayload, ToolDefinition, ToolOutput,
-        ToolResultPayload, ToolResultStatus, TurnId,
+        BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion, FrameId,
+        FrameScope, ModelContext, ModelUsage, RoundId, ToolCallId, ToolCallPayload, ToolDefinition,
+        ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
     };
 
     fn block(
@@ -511,6 +463,31 @@ mod tests {
             })
         );
         assert!(v["messages"][0].get("content").is_none());
+    }
+
+    #[test]
+    fn adjacent_assistant_texts_join_into_one_message() {
+        // P1-1: assistant text runs coalesce across calls too — the wire
+        // carries assistant content as a single string.
+        let f = frame(vec![
+            text(0, "first", None),
+            call(1, "kc1", Some("toolu_a"), "read", json!({})),
+            text(2, "second", None),
+        ]);
+        let v = render(&f);
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["content"], json!("first\nsecond"));
+        assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 1);
+
+        // no calls in between: still one message, text joined
+        let f = frame(vec![text(0, "a", None), text(1, "b", None)]);
+        let v = render(&f);
+        assert_eq!(
+            v["messages"],
+            json!([{"role": "assistant", "content": "a\nb"}])
+        );
     }
 
     #[test]

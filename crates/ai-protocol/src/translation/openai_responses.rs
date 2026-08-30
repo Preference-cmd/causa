@@ -6,23 +6,23 @@
 //! Transport-free; the reqwest adapter in `reimagine-agent-provider` owns
 //! HTTP.
 //!
-//! # `BlockMeta::source` vocabulary
+//! The renderer-independent policy (source vocabulary, empty-text skip,
+//! text joining, tool id pairing, observation stringification) lives in
+//! [`super::context_frame`]; this module only shapes the Responses wire.
 //!
-//! Same vocabulary as [`super::anthropic`] (see its docs): `None` and
-//! `"assistant"` render as assistant, `"system"` becomes the top-level
-//! `instructions` parameter, `"user"`, `"inject[:…]"` and unknown tags as
-//! user.
+//! # Responses-specific structural rules
 //!
-//! # Structural rules
-//!
-//! - Adjacent same-role text blocks merge into one input message
-//!   (`content` items joined); each tool call renders as a `function_call`
-//!   input item and each tool result as a `function_call_output` item —
-//!   the Responses wire pairs through flat `call_id`s, not message roles.
-//! - The `call_id → provider id` map resolves result ids the same way as
-//!   the other renderers (`meta.provider_call_id`, falling back to the
-//!   kernel `call_id`).
-//! - Function call `arguments` are a JSON *string* on the wire.
+//! - `system` text segments move to the top-level `instructions`
+//!   parameter (joined with `\n`).
+//! - User/assistant text segments become input messages with typed
+//!   content items (`input_text` / `output_text`); each tool call
+//!   renders as a flat `function_call` item and each tool result as a
+//!   flat `function_call_output` item — the Responses wire pairs
+//!   through `call_id`s, not message roles. There is no `is_error`
+//!   flag on this wire; error information travels in the content.
+//! - Function call `arguments` are a JSON *string* on the wire (encoded
+//!   by the emitter, decoded by the shared [`super::context_frame`]
+//!   codec).
 //! - Stop-reason derivation: the Responses wire has no `finish_reason`.
 //!   A refusal output item wins, then `incomplete` + `max_output_tokens`
 //!   → MaxTokens, then any `function_call` output → ToolUse, else
@@ -34,10 +34,11 @@
 use serde_json::{Value, json};
 
 use reimagine_context_kernel::{
-    BlockContent, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
-    ToolCallDraft, ToolSurface,
+    ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
+    ModelResponse, ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolSurface,
 };
+
+use super::context_frame::{self, Role, Segment};
 
 /// Render a [`ContextFrame`] into an OpenAI Responses API request body.
 /// Deterministic: identical inputs produce byte-identical JSON.
@@ -47,132 +48,44 @@ pub fn render_openai_responses_input(
     generation: &GenerationOptions,
     model: &ModelRef,
 ) -> Result<Value, ModelInvokeError> {
-    let blocks = &frame.model_context.blocks;
+    let normalized = context_frame::normalize(frame);
 
-    let mut provider_ids = std::collections::HashMap::new();
-    for block in blocks {
-        if let BlockContent::ToolCall(call) = &block.content {
-            provider_ids.insert(
-                call.call_id.0.clone(),
-                block
-                    .meta
-                    .provider_call_id
-                    .clone()
-                    .unwrap_or_else(|| call.call_id.0.clone()),
-            );
-        }
-    }
-
-    // Input items: (role, Vec<content-item>) merges adjacent same-role
-    // text blocks; function_call / function_call_output are flat items.
-    enum Draft {
-        Message {
-            role: &'static str,
-            content_type: &'static str,
-            texts: Vec<String>,
-        },
-        FunctionCall {
-            call_id: String,
-            name: String,
-            arguments: String,
-        },
-        FunctionCallOutput {
-            call_id: String,
-            output: String,
-        },
-    }
     let mut instructions: Vec<String> = Vec::new();
-    for block in blocks {
-        if let BlockContent::Text(text) = &block.content
-            && block.meta.source.as_deref() == Some("system")
-        {
-            instructions.push(text.0.clone());
-        }
-    }
-
-    let mut drafts: Vec<Draft> = Vec::new();
-
-    for block in blocks {
-        match &block.content {
-            // Already extracted into the top-level `instructions` parameter.
-            BlockContent::Text(_) if block.meta.source.as_deref() == Some("system") => {}
-            BlockContent::Text(text) => {
-                let (role, content_type) = match block.meta.source.as_deref() {
-                    None | Some("assistant") => ("assistant", "output_text"),
-                    // "user", "inject[:detail]", unknown tags
-                    Some(_) => ("user", "input_text"),
-                };
-                match drafts.last_mut() {
-                    Some(Draft::Message {
-                        role: last_role,
-                        content_type: last_type,
-                        texts,
-                    }) if *last_role == role && *last_type == content_type => {
-                        texts.push(text.0.clone());
-                    }
-                    _ => drafts.push(Draft::Message {
-                        role,
-                        content_type,
-                        texts: vec![text.0.clone()],
-                    }),
-                }
-            }
-            BlockContent::ToolCall(call) => drafts.push(Draft::FunctionCall {
-                call_id: block
-                    .meta
-                    .provider_call_id
-                    .clone()
-                    .unwrap_or_else(|| call.call_id.0.clone()),
-                name: call.tool_name.clone(),
-                arguments: call.arguments.to_string(),
-            }),
-            BlockContent::ToolResult(result) => {
-                let call_id = provider_ids
-                    .get(&result.call_id.0)
-                    .cloned()
-                    .unwrap_or_else(|| result.call_id.0.clone());
-                let output = match &result.output.content {
-                    Value::String(s) => Value::String(s.clone()),
-                    other => Value::String(other.to_string()),
-                };
-                drafts.push(Draft::FunctionCallOutput {
-                    call_id,
-                    output: output.as_str().unwrap_or_default().to_string(),
-                });
-            }
-        }
-    }
-
     let mut items: Vec<Value> = Vec::new();
-    for draft in drafts {
-        items.push(match draft {
-            Draft::Message {
-                role,
-                content_type,
-                texts,
-            } => json!({
-                "role": role,
-                "content": texts
-                    .into_iter()
-                    .map(|t| json!({"type": content_type, "text": t}))
-                    .collect::<Vec<_>>(),
-            }),
-            Draft::FunctionCall {
-                call_id,
-                name,
-                arguments,
-            } => json!({
+    for segment in &normalized.segments {
+        match segment {
+            Segment::Text {
+                role: Role::System,
+                text,
+            } => instructions.push(text.clone()),
+            Segment::Text {
+                role: Role::User,
+                text,
+            } => items.push(json!({
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            })),
+            Segment::Text {
+                role: Role::Assistant,
+                text,
+            } => items.push(json!({
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            })),
+            Segment::ToolCall(call) => items.push(json!({
                 "type": "function_call",
-                "call_id": call_id,
-                "name": name,
-                "arguments": arguments,
-            }),
-            Draft::FunctionCallOutput { call_id, output } => json!({
+                "call_id": call.wire_id,
+                "name": call.name,
+                "arguments": call.arguments.to_string(),
+            })),
+            Segment::ToolResult {
+                wire_id, content, ..
+            } => items.push(json!({
                 "type": "function_call_output",
-                "call_id": call_id,
-                "output": output,
-            }),
-        });
+                "call_id": wire_id,
+                "output": content,
+            })),
+        }
     }
 
     if items.is_empty() {
@@ -264,13 +177,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| permanent("function_call: missing `name` string"))?;
-                let arguments = match item.get("arguments") {
-                    None | Some(Value::Null) => json!({}),
-                    Some(Value::String(s)) if s.trim().is_empty() => json!({}),
-                    Some(Value::String(s)) => serde_json::from_str(s)
-                        .map_err(|e| permanent(format!("function_call.arguments: {e}")))?,
-                    Some(other) => other.clone(),
-                };
+                let arguments = context_frame::decode_wire_arguments(item.get("arguments"))?;
                 tool_calls.push(ToolCallDraft {
                     tool_name: name.to_string(),
                     arguments,
@@ -366,9 +273,9 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
 mod tests {
     use super::*;
     use reimagine_context_kernel::{
-        BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion, FrameId, FrameScope,
-        ModelContext, ModelUsage, RoundId, ToolCallId, ToolCallPayload, ToolDefinition, ToolOutput,
-        ToolResultPayload, ToolResultStatus, TurnId,
+        BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion, FrameId,
+        FrameScope, ModelContext, ModelUsage, RoundId, ToolCallId, ToolCallPayload, ToolDefinition,
+        ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
     };
 
     fn block(
@@ -488,8 +395,7 @@ mod tests {
         assert_eq!(
             input[3],
             json!({"role": "user", "content": [
-                {"type": "input_text", "text": "injected"},
-                {"type": "input_text", "text": "unknown tag"},
+                {"type": "input_text", "text": "injected\nunknown tag"},
             ]})
         );
     }
