@@ -57,3 +57,8 @@ pub struct TurnSequence(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationVersion(pub u64);
+impl ConversationVersion {
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}

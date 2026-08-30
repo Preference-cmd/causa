@@ -25,6 +25,7 @@ mod ports;
 
 // --- context: the external rule interface ------------------------------------
 pub use context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
+pub use context::conversation::{ConversationError, ConversationState, OrderedTurns, SealedResult};
 pub use context::ids::{
     BlockId, BlockSequence, ContextVersion, ConversationId, ConversationVersion, FrameId,
     InvocationId, RoundId, TurnId, TurnSequence,

@@ -8,6 +8,7 @@
 //! implementation in `crate::internal`.
 
 pub mod block;
+pub mod conversation;
 pub mod ids;
 pub mod model;
 pub mod tool_data;
