@@ -136,4 +136,36 @@ async fn run_in_conversation_completes_two_tool_round_trips_over_http() {
             .expect("active turn")
             .is_sealed()
     );
+
+    // P1-5: the scripted responder ignores request bodies, so the pairing
+    // round trip is pinned by inspecting what actually went over the wire.
+    // Each round's frame must carry the PRIOR round's tool result with the
+    // matching provider id — a broken pairing map would fail here.
+    let requests = server.received_requests().await.expect("requests captured");
+    assert_eq!(requests.len(), 3, "one request per model round");
+    let bodies: Vec<Value> = requests
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).expect("request body is JSON"))
+        .collect();
+
+    // Round 0: the bare input frame — no tool results yet.
+    let messages = bodies[0]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+
+    // Round 1: carries round 0's tool result, paired to toolu_1.
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages[2]["content"][0],
+        json!({"type": "tool_result", "tool_use_id": "toolu_1", "content": "file-a"}),
+    );
+
+    // Round 2: carries round 1's tool result, paired to toolu_2.
+    let messages = bodies[2]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 5);
+    assert_eq!(
+        messages[4]["content"][0],
+        json!({"type": "tool_result", "tool_use_id": "toolu_2", "content": "file-a"}),
+    );
 }
