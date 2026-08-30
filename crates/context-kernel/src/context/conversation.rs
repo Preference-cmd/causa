@@ -250,12 +250,8 @@ impl ConversationState {
                     snapshot.turn_sequence
                 )));
             }
-            TurnContext::from_validated_blocks(
-                snapshot.turn_id.clone(),
-                snapshot.blocks.as_slice().to_vec(),
-                snapshot.source_version,
-            )
-            .map_err(|e| ConversationError::InvalidSequence(e.to_string()))?;
+            TurnContext::validate_blocks(&snapshot.turn_id, snapshot.blocks.as_slice())
+                .map_err(|e| ConversationError::InvalidSequence(e.to_string()))?;
             next_turn_sequence = TurnSequence(snapshot.turn_sequence.0 + 1);
         }
         Ok(Self {

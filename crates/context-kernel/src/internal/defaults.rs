@@ -4,6 +4,7 @@
 
 use crate::ports::budget::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, TokenCounter,
+    placeholder_token_estimate, placeholder_token_estimate_value,
 };
 use async_trait::async_trait;
 
@@ -22,18 +23,9 @@ impl Compaction for NoopCompaction {
 pub struct NoopTokenCounter;
 impl TokenCounter for NoopTokenCounter {
     fn estimate(&self, blocks: &[crate::context::block::ContextBlock]) -> usize {
-        blocks
-            .iter()
-            .map(|b| {
-                serde_json::to_string(&b.content)
-                    .map(|s| s.len() / 4)
-                    .unwrap_or(0)
-            })
-            .sum()
+        placeholder_token_estimate(blocks)
     }
     fn estimate_value(&self, value: &serde_json::Value) -> usize {
-        serde_json::to_string(value)
-            .map(|s| s.len() / 4)
-            .unwrap_or(0)
+        placeholder_token_estimate_value(value)
     }
 }

@@ -2,20 +2,16 @@
 //! No runner involved: the test plays the driver's stamping role via
 //! `seal_turn` (the same seam the runner uses from Phase C on).
 
-use async_trait::async_trait;
-
 mod common;
 
-use common::endturn_output;
+use common::{DropAllCompaction, RecordingGateway, ctrl, endturn_output, runner_with};
+use std::sync::Arc;
+
 use reimagine_context_kernel::{
-    AttemptControl, CancellationToken, Compaction, CompactionError, CompactionInput,
-    CompactionOutput, ContextFrame, ContextVersion, ConversationError, ConversationId,
-    ConversationState, FakeGateway, FramePolicy, FrameScope, ModelGateway, ModelInvokeError,
-    ModelInvokeErrorKind, ModelOutput, ModelRequest, OrderedBlocks, RoundId, RunControl,
-    SealedResult, TextPayload, ToolExecutor, TurnContext, TurnId, TurnOutcome, TurnResult,
-    TurnRunOptions, TurnRunner, TurnSequence, TurnSnapshot, WindowBudget,
+    ContextVersion, ConversationError, ConversationId, ConversationState, FramePolicy, FrameScope,
+    ModelInvokeErrorKind, OrderedBlocks, RoundId, SealedResult, TextPayload, TurnContext, TurnId,
+    TurnOutcome, TurnResult, TurnRunOptions, TurnSequence, TurnSnapshot, WindowBudget,
 };
-use std::sync::{Arc, Mutex};
 
 fn conv() -> ConversationState {
     ConversationState::new(ConversationId("conv-1".into()))
@@ -294,63 +290,14 @@ fn frame_without_active_turn_is_rejected() {
 
 // ---- Phase C: runner seam ----------------------------------------------------
 
-/// Minimal recording gateway: replays canned outcomes in order (last one
-/// repeats) and captures every request frame for inspection.
-struct RecordingGateway {
-    outputs: Mutex<Vec<Result<ModelOutput, ModelInvokeErrorKind>>>,
-    frames: Mutex<Vec<ContextFrame>>,
-}
-impl RecordingGateway {
-    fn completing(text: &str) -> Self {
-        Self {
-            outputs: Mutex::new(vec![Ok(endturn_output(text))]),
-            frames: Mutex::new(vec![]),
-        }
-    }
-}
-#[async_trait]
-impl ModelGateway for RecordingGateway {
-    async fn invoke(
-        &self,
-        request: &ModelRequest,
-        _control: &AttemptControl,
-    ) -> Result<ModelOutput, ModelInvokeError> {
-        self.frames.lock().unwrap().push(request.frame.clone());
-        let mut g = self.outputs.lock().unwrap();
-        let out = if g.len() > 1 {
-            g.remove(0)
-        } else {
-            g[0].clone()
-        };
-        out.map_err(|kind| ModelInvokeError::new(kind, "scripted failure"))
-    }
-}
-
-fn runner_with(gateway: Arc<dyn ModelGateway>) -> TurnRunner {
-    TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(vec![])))
-}
-
-fn ctrl() -> RunControl {
-    RunControl::new(CancellationToken::new(), None)
-}
-
-struct DropEverything;
-#[async_trait]
-impl Compaction for DropEverything {
-    async fn compact(&self, _input: CompactionInput) -> Result<CompactionOutput, CompactionError> {
-        Ok(CompactionOutput {
-            blocks: vec![],
-            summary: None,
-            truncated: true,
-        })
-    }
-}
-
 /// Acceptance #1: both entries run the same state machine — same input
 /// sequence yields the same terminal result, round count, and facts.
 #[tokio::test]
 async fn dual_entries_share_one_state_machine() {
-    let runner = runner_with(Arc::new(RecordingGateway::completing("done")));
+    let runner = runner_with(
+        RecordingGateway::repeating_last(vec![Ok(endturn_output("done"))]),
+        vec![],
+    );
     // Single-turn entry — same turn id as the conversation path, so the
     // accumulated facts must be byte-identical.
     let mut ctx = TurnContext::new(TurnId::new("t1"));
@@ -388,7 +335,10 @@ async fn dual_entries_share_one_state_machine() {
 /// Acceptance #13: caller bugs fail fast at the entry, before the machine.
 #[tokio::test]
 async fn conversation_entry_rejects_missing_or_sealed_active() {
-    let runner = runner_with(Arc::new(RecordingGateway::completing("x")));
+    let runner = runner_with(
+        RecordingGateway::repeating_last(vec![Ok(endturn_output("x"))]),
+        vec![],
+    );
     let state = ConversationState::new(ConversationId("conv-1".into()));
     assert!(matches!(
         runner
@@ -414,14 +364,14 @@ async fn conversation_entry_rejects_missing_or_sealed_active() {
 /// frame lossless (the model still sees every block).
 #[tokio::test]
 async fn conversation_entry_is_inert_to_frame_policy() {
-    let gateway = Arc::new(RecordingGateway::completing("done"));
-    let runner = runner_with(gateway.clone());
+    let gateway = RecordingGateway::repeating_last(vec![Ok(endturn_output("done"))]);
+    let runner = runner_with(gateway.clone(), vec![]);
     let inert = FramePolicy {
         window_budget: WindowBudget {
             model_window_limit: 100,
             compaction_trigger: 1,
         },
-        compaction: Some(Arc::new(DropEverything)),
+        compaction: Some(Arc::new(DropAllCompaction)),
         token_counter: None,
     };
     let options = TurnRunOptions {
@@ -442,7 +392,7 @@ async fn conversation_entry_is_inert_to_frame_policy() {
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     // The model's frame contained the full history + active blocks — the
     // compacting policy never touched the merged view.
-    let frames = gateway.frames.lock().unwrap();
+    let frames = gateway.frames();
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].model_context.blocks.len(), 1);
     // History and active facts are untouched either way.
@@ -453,8 +403,10 @@ async fn conversation_entry_is_inert_to_frame_policy() {
 /// commit refuses, abort discards, history stays empty.
 #[tokio::test]
 async fn interrupted_conversation_turn_is_stamped_and_aborted() {
-    let gw = Arc::new(FakeGateway::new(vec![Err(ModelInvokeErrorKind::Permanent)]));
-    let runner = runner_with(gw);
+    let runner = runner_with(
+        RecordingGateway::scripted(vec![Err(ModelInvokeErrorKind::Permanent)]),
+        vec![],
+    );
     let mut state = ConversationState::new(ConversationId("conv-1".into()));
     state.begin_turn(TurnId::new("t1")).unwrap();
     state

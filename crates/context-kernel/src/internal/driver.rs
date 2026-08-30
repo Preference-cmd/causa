@@ -193,7 +193,8 @@ impl TurnRunner {
         options: TurnRunOptions,
         ctrl: RunControl,
     ) -> TurnOutcome {
-        let (result, trace) = self
+        let start = Instant::now();
+        let (result, mut trace, tool_calls_total) = self
             .drive(
                 &mut context,
                 FrameSource::Turn(&options.frame),
@@ -201,7 +202,10 @@ impl TurnRunner {
                 &ctrl,
             )
             .await;
-        // Every drive exit is terminal; the entry owns sealing.
+        // Every drive exit is terminal; the entry owns all terminal
+        // bookkeeping (totals, duration, sealing).
+        trace.tool_calls_total = tool_calls_total;
+        trace.total_duration_ms = millis_since(start);
         context.seal();
         TurnOutcome {
             context,
@@ -235,7 +239,8 @@ impl TurnRunner {
         // the public `seal_turn`, so no second &mut seam is exposed.
         let (conversation_id, history, active) = state.runner_parts();
         let active = active.expect("NoActiveTurn checked above");
-        let (result, trace) = self
+        let start = Instant::now();
+        let (result, mut trace, tool_calls_total) = self
             .drive(
                 active,
                 FrameSource::Conversation {
@@ -246,6 +251,8 @@ impl TurnRunner {
                 &ctrl,
             )
             .await;
+        trace.tool_calls_total = tool_calls_total;
+        trace.total_duration_ms = millis_since(start);
         let stamp = match &result {
             TurnResult::Completed { .. } => SealedResult::Completed,
             TurnResult::Interrupted { .. } => SealedResult::Interrupted,
@@ -269,22 +276,10 @@ impl TurnRunner {
         frames: FrameSource<'_>,
         options: &TurnRunOptions,
         ctrl: &RunControl,
-    ) -> (TurnResult, TurnTrace) {
-        let start = Instant::now();
+    ) -> (TurnResult, TurnTrace, usize) {
         let mut round: u32 = 0;
         let mut tool_calls_total: usize = 0;
         let mut trace = TurnTrace::new();
-
-        fn done(
-            result: TurnResult,
-            mut trace: TurnTrace,
-            tool_calls_total: usize,
-            start: Instant,
-        ) -> (TurnResult, TurnTrace) {
-            trace.tool_calls_total = tool_calls_total;
-            trace.total_duration_ms = millis_since(start);
-            (result, trace)
-        }
 
         loop {
             // boundary checks
@@ -294,15 +289,10 @@ impl TurnRunner {
                 } else {
                     TurnInterruption::TurnDeadlineExceeded
                 };
-                return done(
-                    TurnResult::Interrupted { cause },
-                    trace,
-                    tool_calls_total,
-                    start,
-                );
+                return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
             }
             if round >= options.policy.limits.max_model_rounds {
-                return done(
+                return (
                     TurnResult::Interrupted {
                         cause: TurnInterruption::MaxModelRounds {
                             limit: options.policy.limits.max_model_rounds,
@@ -310,7 +300,6 @@ impl TurnRunner {
                     },
                     trace,
                     tool_calls_total,
-                    start,
                 );
             }
             // materialize the round's frame — the single fork point between
@@ -321,7 +310,7 @@ impl TurnRunner {
                     match policy.materialize(active, RoundId(round)).await {
                         Ok(f) => f,
                         Err(e) => {
-                            return done(
+                            return (
                                 TurnResult::Interrupted {
                                     cause: TurnInterruption::CompactionFailed {
                                         reason: e.to_string(),
@@ -329,7 +318,6 @@ impl TurnRunner {
                                 },
                                 trace,
                                 tool_calls_total,
-                                start,
                             );
                         }
                     }
@@ -409,12 +397,7 @@ impl TurnRunner {
                         applied_block_ids: vec![],
                         tool_batch: None,
                     });
-                    return done(
-                        TurnResult::Interrupted { cause },
-                        trace,
-                        tool_calls_total,
-                        start,
-                    );
+                    return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
                 }
             };
             let output_summary = Some(OutputSummary {
@@ -422,6 +405,18 @@ impl TurnRunner {
                 usage: output.usage.clone(),
                 tool_call_count: output.response.tool_calls.len(),
                 response_text_bytes: output.response.text.0.len(),
+            });
+            // Every round lands in the trace exactly once, right after the
+            // output is summarized — including the paths that never apply a
+            // block. Later stages fill their fields through `last_mut`.
+            trace.rounds.push(ModelRoundTrace {
+                round_id: RoundId(round),
+                invocation_id: invocation.clone(),
+                frame_version,
+                attempts,
+                output_summary,
+                applied_block_ids: vec![],
+                tool_batch: None,
             });
             // MaxTokens / Refusal never persist blocks (§5.6); they carry their
             // own dedicated interruption causes, so dispatch before apply.
@@ -436,21 +431,7 @@ impl TurnRunner {
                 } else {
                     TurnInterruption::ModelRefusal
                 };
-                trace.rounds.push(ModelRoundTrace {
-                    round_id: RoundId(round),
-                    invocation_id: invocation,
-                    frame_version,
-                    attempts,
-                    output_summary,
-                    applied_block_ids: vec![],
-                    tool_batch: None,
-                });
-                return done(
-                    TurnResult::Interrupted { cause },
-                    trace,
-                    tool_calls_total,
-                    start,
-                );
+                return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
             }
             let applied = match active.append_model_output(
                 invocation.clone(),
@@ -459,16 +440,7 @@ impl TurnRunner {
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    trace.rounds.push(ModelRoundTrace {
-                        round_id: RoundId(round),
-                        invocation_id: invocation,
-                        frame_version,
-                        attempts,
-                        output_summary,
-                        applied_block_ids: vec![],
-                        tool_batch: None,
-                    });
-                    return done(
+                    return (
                         TurnResult::Interrupted {
                             cause: TurnInterruption::InvalidModelOutput {
                                 reason: e.to_string(),
@@ -476,7 +448,6 @@ impl TurnRunner {
                         },
                         trace,
                         tool_calls_total,
-                        start,
                     );
                 }
             };
@@ -484,31 +455,26 @@ impl TurnRunner {
             // order — the same payloads the kernel committed, with ids
             // generated exactly once. No re-reading of blocks.
             let call_payloads: Vec<ToolCallPayload> = applied.tool_calls;
-            trace.rounds.push(ModelRoundTrace {
-                round_id: RoundId(round),
-                invocation_id: invocation.clone(),
-                frame_version,
-                attempts,
-                output_summary,
-                applied_block_ids: applied.block_ids.clone(),
-                tool_batch: None,
-            });
+            trace
+                .rounds
+                .last_mut()
+                .expect("round trace just pushed")
+                .applied_block_ids = applied.block_ids.clone();
             match output.stop_reason {
                 ModelStopReason::EndTurn => {
                     // append_model_output guarantees EndTurn has empty tool_calls
-                    return done(
+                    return (
                         TurnResult::Completed {
                             final_output: output,
                         },
                         trace,
                         tool_calls_total,
-                        start,
                     );
                 }
                 ModelStopReason::ToolUse => {
                     tool_calls_total += call_payloads.len();
                     if tool_calls_total as u32 > options.policy.limits.max_tool_calls {
-                        return done(
+                        return (
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::MaxToolCalls {
                                     limit: options.policy.limits.max_tool_calls,
@@ -516,7 +482,6 @@ impl TurnRunner {
                             },
                             trace,
                             tool_calls_total,
-                            start,
                         );
                     }
                     // same-batch dedup by (tool_name + arguments); original
@@ -619,7 +584,7 @@ impl TurnRunner {
                     if let Err(e) = active
                         .append_tool_results(results.iter().map(|o| o.result.clone()).collect())
                     {
-                        return done(
+                        return (
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::RunnerInvariantViolation {
                                     reason: e.to_string(),
@@ -627,7 +592,6 @@ impl TurnRunner {
                             },
                             trace,
                             tool_calls_total,
-                            start,
                         );
                     }
                     // UnknownOutcome policy: Stop interrupts, Continue proceeds;
@@ -636,7 +600,7 @@ impl TurnRunner {
                         r.result.status == ToolResultStatus::UnknownOutcome
                             && r.policy == UnknownOutcomePolicy::Stop
                     }) {
-                        return done(
+                        return (
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::UnsafeUnknownOutcome {
                                     call_id: uu.result.call_id.clone(),
@@ -644,7 +608,6 @@ impl TurnRunner {
                             },
                             trace,
                             tool_calls_total,
-                            start,
                         );
                     }
                     round += 1;

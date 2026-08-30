@@ -4,13 +4,12 @@
 
 mod common;
 
-use common::{ctx, endturn_output, turn_id};
+use common::{DropAllCompaction, ctx, endturn_output, turn_id};
 use reimagine_context_kernel::{
-    BlockContent, BlockId, BlockMeta, BlockSequence, Compaction, CompactionError, CompactionInput,
-    CompactionOutput, ContextBlock, ContextError, ContextVersion, FrameId, FramePolicy, FrameScope,
-    InvocationId, ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload,
-    RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload, ToolOutput,
-    ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
+    BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextError, ContextVersion,
+    FrameId, FramePolicy, FrameScope, InvocationId, ModelOutput, ModelResponse, ModelStopReason,
+    ModelUsage, ReasoningPayload, RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
 };
 use serde_json::json;
 
@@ -410,18 +409,6 @@ fn fidelity_fields_are_serde_additive() {
 }
 
 // ---- Phase D boundary: compaction projection identity ----
-
-struct DropAllCompaction;
-#[async_trait::async_trait]
-impl Compaction for DropAllCompaction {
-    async fn compact(&self, _input: CompactionInput) -> Result<CompactionOutput, CompactionError> {
-        Ok(CompactionOutput {
-            blocks: vec![],
-            summary: None,
-            truncated: true,
-        })
-    }
-}
 
 #[tokio::test]
 async fn compaction_projection_identity() {

@@ -182,7 +182,10 @@ impl TurnContext {
                 BlockMeta::default(),
             ));
         }
-        let mut seen: HashSet<ToolCallId> = HashSet::new();
+        // No intra-batch seen-set: ids embed the draft position, so two
+        // drafts at distinct positions cannot collide. The committed-block
+        // scan below defends the real collision surface — the 32-bit
+        // hash-prefix on the cross-round recovery path.
         for (pos, draft) in response.tool_calls.iter().enumerate() {
             if draft.tool_name.trim().is_empty() {
                 return Err(ContextError::InvalidModelOutput("tool_name empty".into()));
@@ -194,9 +197,6 @@ impl TurnContext {
             }
             let call_id =
                 ToolCallId::generate(invocation.round_id, &draft.tool_name, &draft.arguments, pos);
-            if !seen.insert(call_id.clone()) {
-                return Err(ContextError::DuplicateToolCallId(call_id));
-            }
             for b in &self.blocks.0 {
                 if let BlockContent::ToolCall(tc) = &b.content
                     && tc.call_id == call_id
@@ -204,19 +204,16 @@ impl TurnContext {
                     return Err(ContextError::DuplicateToolCallId(call_id));
                 }
             }
-            tool_calls.push(ToolCallPayload {
+            let payload = ToolCallPayload {
                 call_id: call_id.clone(),
                 tool_name: draft.tool_name.clone(),
                 arguments: draft.arguments.clone(),
-            });
+            };
+            tool_calls.push(payload.clone());
             // `provider_call_id` rides on the envelope `BlockMeta`; pairing
             // stays on the kernel-generated `call_id`.
             prepared.push((
-                BlockContent::ToolCall(ToolCallPayload {
-                    call_id: call_id.clone(),
-                    tool_name: draft.tool_name.clone(),
-                    arguments: draft.arguments.clone(),
-                }),
+                BlockContent::ToolCall(payload),
                 BlockMeta {
                     provider_call_id: draft.provider_call_id.clone(),
                     ..BlockMeta::default()
@@ -303,6 +300,13 @@ impl TurnContext {
     /// behavior; drivers materialize policy-shaped frames through
     /// `FramePolicy::materialize` in `ports`.
     pub fn frame(&self, round_id: RoundId) -> ContextFrame {
+        self.frame_with(round_id, self.blocks.0.clone())
+    }
+
+    /// Crate-internal: the same Turn-scope projection over an explicit block
+    /// list — the single home of the frame-identity construction, used by
+    /// the policy layer to wrap compaction output.
+    pub(crate) fn frame_with(&self, round_id: RoundId, blocks: Vec<ContextBlock>) -> ContextFrame {
         let frame_id =
             crate::context::ids::FrameId::deterministic(&self.turn_id, self.version, round_id);
         ContextFrame {
@@ -312,9 +316,7 @@ impl TurnContext {
                 source_version: self.version,
             },
             round_id,
-            model_context: ModelContext {
-                blocks: self.blocks.0.clone(),
-            },
+            model_context: ModelContext { blocks },
         }
     }
 
@@ -372,9 +374,27 @@ impl TurnContext {
         blocks: Vec<ContextBlock>,
         version: ContextVersion,
     ) -> Result<Self, ContextError> {
+        Self::validate_blocks(&turn_id, &blocks)?;
+        let next_seq = blocks.len() as u64;
+        Ok(Self {
+            turn_id,
+            blocks: OrderedBlocks(blocks),
+            version,
+            lifecycle: TurnLifecycle::Open,
+            next_seq,
+        })
+    }
+
+    /// The structural validation behind `from_validated_blocks`, callable
+    /// without constructing a throwaway machine — replay paths validate
+    /// snapshots in place.
+    pub(crate) fn validate_blocks(
+        turn_id: &TurnId,
+        blocks: &[ContextBlock],
+    ) -> Result<(), ContextError> {
         // validate monotonic sequence and turn_id matching
         for (idx, b) in blocks.iter().enumerate() {
-            if b.id.turn_id != turn_id {
+            if b.id.turn_id != *turn_id {
                 return Err(ContextError::InvalidSequence(format!(
                     "block turn_id mismatch at {}",
                     idx
@@ -396,7 +416,7 @@ impl TurnContext {
         // validate tool pairing: no duplicate call ids, every result paired
         let mut call_set = HashSet::new();
         let mut seen_results = HashSet::new();
-        for b in &blocks {
+        for b in blocks {
             match &b.content {
                 BlockContent::ToolCall(tc) => {
                     if !call_set.insert(tc.call_id.clone()) {
@@ -417,14 +437,7 @@ impl TurnContext {
                 _ => {}
             }
         }
-        let next_seq = blocks.len() as u64;
-        Ok(Self {
-            turn_id,
-            blocks: OrderedBlocks(blocks),
-            version,
-            lifecycle: TurnLifecycle::Open,
-            next_seq,
-        })
+        Ok(())
     }
 
     pub fn snapshot(&self) -> TurnSnapshot {

@@ -4,8 +4,8 @@
 //! projection and never awaits behavior.
 
 use crate::context::block::ContextBlock;
-use crate::context::ids::{FrameId, FrameScope, RoundId};
-use crate::context::turn::{ContextFrame, ModelContext, TurnContext};
+use crate::context::ids::RoundId;
+use crate::context::turn::{ContextFrame, TurnContext};
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowBudget {
@@ -64,6 +64,26 @@ pub enum FrameError {
     CompactionFailed(String),
 }
 
+/// The placeholder token heuristic shared by the noop counter, the frame
+/// policy fallback, and the executor: serialized JSON length divided by four.
+/// Slice 5 replaces it with a real tokenizer.
+pub fn placeholder_token_estimate_value(value: &serde_json::Value) -> usize {
+    serde_json::to_string(value)
+        .map(|s| s.len() / 4)
+        .unwrap_or(0)
+}
+
+pub fn placeholder_token_estimate(blocks: &[ContextBlock]) -> usize {
+    blocks
+        .iter()
+        .map(|b| {
+            serde_json::to_string(&b.content)
+                .map(|s| s.len() / 4)
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
 /// Carrier of the frame-materialization policy: trigger budget, optional
 /// compaction, optional token counter. A canonical value assembled from port
 /// instances — drivers (staged) build and own it, and it orchestrates
@@ -92,14 +112,7 @@ impl FramePolicy {
         if let Some(counter) = &self.token_counter {
             counter.estimate(blocks)
         } else {
-            blocks
-                .iter()
-                .map(|b| {
-                    serde_json::to_string(&b.content)
-                        .map(|s| s.len() / 4)
-                        .unwrap_or(0)
-                })
-                .sum()
+            placeholder_token_estimate(blocks)
         }
     }
 
@@ -126,16 +139,7 @@ impl FramePolicy {
                 .compact(input)
                 .await
                 .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
-            let frame_id = FrameId::deterministic(&ctx.turn_id(), ctx.version(), round_id);
-            return Ok(ContextFrame {
-                frame_id,
-                scope: FrameScope::Turn {
-                    turn_id: ctx.turn_id(),
-                    source_version: ctx.version(),
-                },
-                round_id,
-                model_context: ModelContext { blocks: out.blocks },
-            });
+            return Ok(ctx.frame_with(round_id, out.blocks));
         }
         Ok(ctx.frame(round_id))
     }
