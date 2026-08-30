@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 reimagine-ai-protocol = { path = "../ai-protocol" }
 reimagine-agent-harness = { path = "../agent-harness" }
+reimagine-context-kernel = { path = "../context-kernel" }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }

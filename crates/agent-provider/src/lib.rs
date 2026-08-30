@@ -1,24 +1,29 @@
-//! Concrete provider adapters for `reimagine_agent_harness::AgentProvider`.
+//! Concrete provider adapters for two consumer seams:
 //!
-//! V1 supports reqwest-backed OpenAI-compatible, OpenAI Responses, and
-//! Anthropic providers behind the `CompletionBackend` seam owned by
-//! `reimagine-ai-protocol`.
+//! - `reimagine_agent_harness::AgentProvider` (frozen harness stack) behind
+//!   the `CompletionBackend` seam owned by `reimagine-ai-protocol`;
+//! - `reimagine_context_kernel::ModelGateway` (context kernel, Slice 3) —
+//!   `AnthropicMessagesGateway` composes the kernel-native translation in
+//!   `ai-protocol::translation::anthropic` with reqwest transport, the
+//!   Slice 3 error mapping table, and read-only `AttemptControl` wiring.
 //!
 //! This crate is the transport + adapter layer: it owns reqwest HTTP
-//! plumbing and the `AgentProvider` implementations. Wire-protocol
-//! translation, the `Protocol` discriminator, adapter construction
-//! parameters, and the backend seam live in `reimagine-ai-protocol`.
-//! Provider configuration documents and adapter wiring belong to
-//! `reimagine-app-host` (the application layer), mirroring the provider /
-//! protocol / harness / app separation of the Pi agent toolkit.
+//! plumbing and the adapter implementations. Wire-protocol translation,
+//! the `Protocol` discriminator, adapter construction parameters, and the
+//! backend seam live in `reimagine-ai-protocol`. Provider configuration
+//! documents and adapter wiring belong to `reimagine-app-host` (the
+//! application layer), mirroring the provider / protocol / harness / app
+//! separation of the Pi agent toolkit.
 //!
 //! See `docs/architecture/modules/agent-provider.md` for the design source.
 
 #![deny(unsafe_code)]
 
+mod anthropic_gateway;
 mod backend_provider;
 pub mod reqwest_backend;
 
+pub use anthropic_gateway::AnthropicMessagesGateway;
 pub use backend_provider::{BackendProvider, ProviderConfig};
 pub use reqwest_backend::ReqwestBackend;
 
