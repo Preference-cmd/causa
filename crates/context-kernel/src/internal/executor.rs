@@ -121,10 +121,7 @@ impl ToolExecutor {
                     call_id: payload.call_id.clone(),
                     kind: ArtifactKind::FullOutput,
                 };
-                match store_arc.persist(&data_bytes, hint).await {
-                    Ok(r) => Some(r),
-                    Err(_) => None,
-                }
+                store_arc.persist(&data_bytes, hint).await.ok()
             } else {
                 None
             };

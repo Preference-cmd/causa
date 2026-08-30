@@ -114,28 +114,28 @@ impl FramePolicy {
         round_id: RoundId,
     ) -> Result<ContextFrame, FrameError> {
         let estimated = self.estimate(ctx.blocks());
-        if self.window_budget.should_compact(estimated) {
-            if let Some(comp) = &self.compaction {
-                let input = CompactionInput {
-                    blocks: ctx.blocks().to_vec(),
-                    budget: self.window_budget,
-                    estimated_tokens: estimated,
-                };
-                let out = comp
-                    .compact(input)
-                    .await
-                    .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
-                let frame_id = FrameId::deterministic(&ctx.turn_id(), ctx.version(), round_id);
-                return Ok(ContextFrame {
-                    frame_id,
-                    scope: FrameScope::Turn {
-                        turn_id: ctx.turn_id(),
-                        source_version: ctx.version(),
-                    },
-                    round_id,
-                    model_context: ModelContext { blocks: out.blocks },
-                });
-            }
+        if self.window_budget.should_compact(estimated)
+            && let Some(comp) = &self.compaction
+        {
+            let input = CompactionInput {
+                blocks: ctx.blocks().to_vec(),
+                budget: self.window_budget,
+                estimated_tokens: estimated,
+            };
+            let out = comp
+                .compact(input)
+                .await
+                .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
+            let frame_id = FrameId::deterministic(&ctx.turn_id(), ctx.version(), round_id);
+            return Ok(ContextFrame {
+                frame_id,
+                scope: FrameScope::Turn {
+                    turn_id: ctx.turn_id(),
+                    source_version: ctx.version(),
+                },
+                round_id,
+                model_context: ModelContext { blocks: out.blocks },
+            });
         }
         Ok(ctx.frame(round_id))
     }

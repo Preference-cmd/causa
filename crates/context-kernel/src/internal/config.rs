@@ -12,7 +12,7 @@ use crate::ports::tool::{ArtifactStore, ToolOutputLimits};
 
 /// Retry policy — driver-side scheduling, not a kernel fact. The retryability
 /// judgment lives here because interpreting error kinds is loop policy.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RetryPolicy {
     pub max_retries: u32,
     pub retry_timeouts: bool,
@@ -24,14 +24,6 @@ impl RetryPolicy {
             ModelInvokeErrorKind::Transient => true,
             ModelInvokeErrorKind::TimedOut => self.retry_timeouts,
             _ => false,
-        }
-    }
-}
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries: 0,
-            retry_timeouts: false,
         }
     }
 }

@@ -206,10 +206,10 @@ impl TurnContext {
                 return Err(ContextError::DuplicateToolCallId(call_id));
             }
             for b in &self.blocks.0 {
-                if let BlockContent::ToolCall(tc) = &b.content {
-                    if tc.call_id == call_id {
-                        return Err(ContextError::DuplicateToolCallId(call_id));
-                    }
+                if let BlockContent::ToolCall(tc) = &b.content
+                    && tc.call_id == call_id
+                {
+                    return Err(ContextError::DuplicateToolCallId(call_id));
                 }
             }
             tool_calls.push(ToolCallPayload {
