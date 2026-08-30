@@ -9,10 +9,11 @@ mod common;
 use common::endturn_output;
 use reimagine_context_kernel::{
     AttemptControl, CancellationToken, Compaction, CompactionError, CompactionInput,
-    CompactionOutput, ContextFrame, ConversationError, ConversationId, ConversationState,
-    FakeGateway, FramePolicy, FrameScope, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRequest, RoundId, RunControl, SealedResult, TextPayload, ToolExecutor,
-    TurnContext, TurnId, TurnOutcome, TurnResult, TurnRunOptions, TurnRunner, WindowBudget,
+    CompactionOutput, ContextFrame, ContextVersion, ConversationError, ConversationId,
+    ConversationState, FakeGateway, FramePolicy, FrameScope, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelOutput, ModelRequest, OrderedBlocks, RoundId, RunControl,
+    SealedResult, TextPayload, ToolExecutor, TurnContext, TurnId, TurnOutcome, TurnResult,
+    TurnRunOptions, TurnRunner, TurnSequence, TurnSnapshot, WindowBudget,
 };
 use std::sync::{Arc, Mutex};
 
@@ -473,4 +474,104 @@ async fn interrupted_conversation_turn_is_stamped_and_aborted() {
     ));
     out.state.abort_turn(TurnId::new("t1")).unwrap();
     assert_eq!(out.state.snapshot_count(), 0);
+}
+
+// ---- Phase D: validated replay ----------------------------------------------
+
+/// Acceptance #14: out-of-order and duplicate turn sequences are rejected.
+#[test]
+fn from_snapshots_rejects_non_monotonic_sequences() {
+    let live = build_two_turn_history();
+    // Out of order: [seq 1, seq 0].
+    let swapped: Vec<_> = live.completed_turns().iter().rev().cloned().collect();
+    assert!(matches!(
+        ConversationState::from_snapshots(ConversationId("conv-1".into()), swapped),
+        Err(ConversationError::InvalidSequence(_))
+    ));
+    // Duplicate: the last snapshot appears twice.
+    let mut dup: Vec<_> = live.completed_turns().to_vec();
+    dup.push(dup[1].clone());
+    assert!(matches!(
+        ConversationState::from_snapshots(ConversationId("conv-1".into()), dup),
+        Err(ConversationError::InvalidSequence(_))
+    ));
+}
+
+/// Acceptance #14: a snapshot whose blocks fail pairing validation is
+/// rejected. The corrupt snapshot is fabricated through serde — exactly the
+/// path corrupt external data would take.
+#[test]
+fn from_snapshots_rejects_unpaired_tool_results() {
+    let live = build_two_turn_history();
+    let blocks_json = r#"[
+        {"id": {"turn_id": "bad", "sequence": 0}, "sequence": 0,
+         "content": {"shape": "tool_result",
+                     "value": {"call_id": "ghost", "status": "Succeeded",
+                               "output": {"content": {}, "truncation": "none",
+                                          "meta": null, "artifact": null}}},
+         "meta": {}}
+    ]"#;
+    let blocks: OrderedBlocks = serde_json::from_str(blocks_json).unwrap();
+    let corrupt = TurnSnapshot {
+        turn_id: TurnId::new("bad"),
+        turn_sequence: TurnSequence(9),
+        blocks,
+        source_version: ContextVersion(1),
+    };
+    let mut snapshots: Vec<_> = live.completed_turns().to_vec();
+    snapshots.push(corrupt);
+    assert!(matches!(
+        ConversationState::from_snapshots(ConversationId("conv-1".into()), snapshots),
+        Err(ConversationError::InvalidSequence(_))
+    ));
+}
+
+/// Acceptance #14/#15: a valid replay rebuilds block-for-block identical
+/// merged frames, continues sequence assignment at max+1, and resets the
+/// conversation version.
+#[test]
+fn replayed_conversation_matches_live_and_continues() {
+    let mut live = build_two_turn_history();
+    let snapshots: Vec<_> = live.completed_turns().to_vec();
+    let mut replayed =
+        ConversationState::from_snapshots(ConversationId("conv-1".into()), snapshots.clone())
+            .unwrap();
+    assert_eq!(replayed.snapshot_count(), 2);
+    assert_eq!(replayed.version().0, 0); // replay is a fresh load
+
+    // Both continue with the same new turn; the merged frames agree.
+    for state in [&mut live, &mut replayed] {
+        state.begin_turn(TurnId::new("t3")).unwrap();
+        state
+            .active_turn_mut()
+            .unwrap()
+            .append_input(TextPayload::new("in-t3"), "user")
+            .unwrap();
+    }
+    let f_live = live.frame(RoundId(0)).unwrap();
+    let f_replayed = replayed.frame(RoundId(0)).unwrap();
+    assert_eq!(f_live.frame_id, f_replayed.frame_id);
+    assert_eq!(
+        serde_json::to_string(&f_live.model_context.blocks).unwrap(),
+        serde_json::to_string(&f_replayed.model_context.blocks).unwrap()
+    );
+
+    // Sequence assignment continues at max+1 after replay.
+    replayed
+        .seal_turn(TurnId::new("t3"), SealedResult::Completed)
+        .unwrap();
+    let snap = replayed.commit(TurnId::new("t3")).unwrap();
+    assert_eq!(snap.turn_sequence, TurnSequence(2));
+    assert_eq!(replayed.snapshot_count(), 3);
+}
+
+/// Empty replay is a valid fresh conversation.
+#[test]
+fn from_snapshots_accepts_empty_history() {
+    let mut replayed =
+        ConversationState::from_snapshots(ConversationId("conv-1".into()), vec![]).unwrap();
+    assert_eq!(replayed.snapshot_count(), 0);
+    assert_eq!(replayed.version().0, 0);
+    commit_completed(&mut replayed, "t1");
+    assert_eq!(replayed.completed_turns()[0].turn_sequence, TurnSequence(0));
 }

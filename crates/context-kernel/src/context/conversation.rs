@@ -228,6 +228,46 @@ impl ConversationState {
         )
     }
 
+    /// Validated replay path: rebuild a conversation from committed
+    /// snapshots. The active slot starts empty (live paths never enter
+    /// here); `ConversationVersion` resets to zero (replay is a fresh load —
+    /// cross-persistence version semantics are Slice 5). Validation closed
+    /// set: `turn_sequence` strictly increasing and distinct (gaps allowed —
+    /// future trimming territory), and every snapshot's blocks pass the same
+    /// `TurnContext::from_validated_blocks` checks; any violation maps to
+    /// `ConversationError::InvalidSequence` so callers never touch
+    /// `ContextError`. `source_version` is accepted as a recorded fact — it
+    /// counts fact commits and is not derivable from the blocks.
+    pub fn from_snapshots(
+        conversation_id: ConversationId,
+        snapshots: Vec<TurnSnapshot>,
+    ) -> Result<Self, ConversationError> {
+        let mut next_turn_sequence = TurnSequence(0);
+        for snapshot in &snapshots {
+            if snapshot.turn_sequence < next_turn_sequence {
+                return Err(ConversationError::InvalidSequence(format!(
+                    "turn_sequence not strictly increasing: {:?}",
+                    snapshot.turn_sequence
+                )));
+            }
+            TurnContext::from_validated_blocks(
+                snapshot.turn_id.clone(),
+                snapshot.blocks.as_slice().to_vec(),
+                snapshot.source_version,
+            )
+            .map_err(|e| ConversationError::InvalidSequence(e.to_string()))?;
+            next_turn_sequence = TurnSequence(snapshot.turn_sequence.0 + 1);
+        }
+        Ok(Self {
+            conversation_id,
+            completed_turns: OrderedTurns(snapshots),
+            active_turn: None,
+            sealed_result: None,
+            next_turn_sequence,
+            version: ConversationVersion(0),
+        })
+    }
+
     pub fn completed_turns(&self) -> &[TurnSnapshot] {
         self.completed_turns.ordered()
     }
