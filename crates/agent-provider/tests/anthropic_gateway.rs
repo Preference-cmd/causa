@@ -179,6 +179,36 @@ async fn http_error_rows_map_to_their_kinds() {
 }
 
 #[tokio::test]
+async fn oversized_response_body_is_permanent_not_oom() {
+    // A response over the transport cap must abort before buffering the
+    // whole payload (P1-2). Content-Length is present here, so the header
+    // path rejects without reading.
+    let server = MockServer::start().await;
+    let body = "x".repeat(33 * 1024 * 1024);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let started = std::time::Instant::now();
+    let e = gateway(&server)
+        .invoke(&request(user_frame()), &ctrl(None))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(e.kind(), ModelInvokeErrorKind::Permanent),
+        "got {e}"
+    );
+    assert!(e.message.contains("too large"), "message: {}", e.message);
+    // far below the old unbounded-read cost; the reject happens early
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn unparseable_2xx_body_is_permanent() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
