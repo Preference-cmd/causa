@@ -8,13 +8,15 @@
 //! Two faces share this layer: the frozen harness-shaped translation
 //! (`request` / `response` / `tools` / `listing` / `usage` / `streaming`,
 //! operating on `reimagine_agent_harness` DTOs), and the kernel-native face
-//! (`anthropic`, Slice 3): `ContextFrame → provider wire body` rendering and
+//! (Slice 3): `ContextFrame → provider wire body` rendering and
 //! `wire response → ModelOutput` parsing for the context kernel's
-//! `ModelGateway` seam.
+//! `ModelGateway` seam (`anthropic`, `openai_chat`, `openai_responses`).
 
 pub mod anthropic;
 pub mod files;
 pub mod listing;
+pub mod openai_chat;
+pub mod openai_responses;
 pub mod params;
 pub mod request;
 pub mod response;
