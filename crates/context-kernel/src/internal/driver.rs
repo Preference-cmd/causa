@@ -3,6 +3,7 @@
 //! perimeter. One runner during the transition; the canonical kernel never
 //! references this module.
 use super::config::TurnRunOptions;
+use super::control::RunControl;
 use super::executor::ToolExecutor;
 use crate::context::block::ToolCallPayload;
 use crate::context::ids::{BlockId, InvocationId, RoundId};
@@ -11,7 +12,6 @@ use crate::context::tool_data::{
     ArtifactRef, ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
 };
 use crate::context::turn::{FrameScope, TurnContext};
-use crate::ports::control::RunControl;
 use crate::ports::gateway::AttemptNumber;
 use crate::ports::gateway::ModelGateway;
 use crate::ports::gateway::ModelRequest;

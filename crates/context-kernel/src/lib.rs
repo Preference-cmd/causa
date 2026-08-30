@@ -44,7 +44,7 @@ pub use ports::budget::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, FrameError, FramePolicy,
     TokenCounter, WindowBudget,
 };
-pub use ports::control::{AttemptControl, CallControl, ControlError, RunControl};
+pub use ports::control::{AttemptControl, CallControl, ControlError};
 pub use ports::gateway::{
     AttemptNumber, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
     ModelOutput, ModelRef, ModelRequest, ModelUsage, ReasoningPayload, ToolSurface,
@@ -62,6 +62,7 @@ pub use tokio_util::sync::CancellationToken;
 pub use internal::config::{
     ExecutionOptions, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy, TurnRunOptions,
 };
+pub use internal::control::RunControl;
 pub use internal::defaults::{NoopCompaction, NoopTokenCounter};
 pub use internal::driver::{
     AttemptTrace, ModelRoundTrace, OutputSummary, ToolBatchTrace, ToolCallTrace, TurnInterruption,

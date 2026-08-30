@@ -10,15 +10,11 @@ use serde::{Deserialize, Serialize};
 use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolCallId};
 use crate::ports::control::CallControl;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum IsolationLevel {
+    #[default]
     Task,
     Subprocess,
-}
-impl Default for IsolationLevel {
-    fn default() -> Self {
-        Self::Task
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

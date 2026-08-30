@@ -4,6 +4,7 @@
 //! never reference items in this subtree (Slice 1.5 proposal, Phase C/D).
 
 pub mod config;
+pub mod control;
 pub mod defaults;
 pub mod driver;
 pub mod executor;
