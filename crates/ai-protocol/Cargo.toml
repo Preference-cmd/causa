@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 reimagine-agent-harness = { path = "../agent-harness" }
+reimagine-context-kernel = { path = "../context-kernel" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

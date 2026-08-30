@@ -2,13 +2,16 @@
 //!
 //! `ai-protocol` owns the *protocol* layer of the Pi-style provider
 //! stack: the `Protocol` discriminator, typed adapter construction
-//! parameters, the `CompletionBackend` seam, and the pure DTO
-//! translation between Reimagine-owned shapes
-//! (`reimagine_agent_harness`) and provider-native wire payloads. It is
-//! transport-free — no reqwest, no SDKs — so the same translation logic
-//! serves any concrete adapter. Streaming delta translation lives here
-//! too (`translation::streaming`): transports keep HTTP + SSE byte
-//! parsing and route parsed events through the accumulators.
+//! parameters, the `CompletionBackend` seam, and two translation faces —
+//! the frozen harness-shaped DTO translation
+//! (`reimagine_agent_harness` ↔ provider wire payloads) and the
+//! kernel-native face (Slice 3: `ContextFrame` → wire body rendering and
+//! wire response → kernel `ModelOutput` parsing, see
+//! `translation::anthropic`). It is transport-free — no reqwest, no
+//! SDKs — so the same translation logic serves any concrete adapter.
+//! Streaming delta translation lives here too
+//! (`translation::streaming`): transports keep HTTP + SSE byte parsing
+//! and route parsed events through the accumulators.
 //!
 //! Layering (mirrors the Pi agent toolkit):
 //!
