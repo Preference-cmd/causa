@@ -7,8 +7,6 @@ use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::context::tool_data::{ToolCallId, ToolResultPayload};
 use std::collections::{HashMap, HashSet};
 
-use crate::ports::budget::{CompactionInput, FramePolicy};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnLifecycle {
     Open,
@@ -52,12 +50,6 @@ pub enum ContextError {
     UnpairedToolResult(crate::context::tool_data::ToolCallId),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum FrameError {
-    #[error("compaction failed: {0}")]
-    CompactionFailed(String),
-}
-
 /// Receipt of the model door: the committed fact block ids plus the prepared
 /// tool calls in model draft order. The tool calls are the execution handoff —
 /// call ids are generated exactly once, here, so the driver dispatches the
@@ -82,9 +74,10 @@ impl OrderedBlocks {
 /// Current turn's ordered fact state. All mutation goes through the three
 /// controlled doors (`append_input` / `append_model_output` /
 /// `append_tool_results`) plus `seal`; there is no second `&mut` seam —
-/// fields are private by design.
-/// Frame-materialization policy (budget/compaction/counter) is NOT stored
-/// here — facts stay facts; drivers pass a `FramePolicy` into `frame()`.
+/// fields are private by design. The only projection the fact machine offers
+/// is the lossless `frame()`; policy-shaped materialization lives in
+/// `FramePolicy::materialize` (`ports`), so context never depends on ports
+/// and never awaits behavior.
 pub struct TurnContext {
     turn_id: TurnId,
     blocks: OrderedBlocks,
@@ -312,10 +305,15 @@ impl TurnContext {
         Ok(self.commit_blocks(prepared))
     }
 
-    pub fn frame_sync(&self, round_id: RoundId) -> Result<ContextFrame, FrameError> {
+    /// Lossless canonical projection: the committed facts, ordered, with the
+    /// deterministic frame identity. Frame-materialization policy (budget,
+    /// compaction) is NOT applied here — the fact machine never awaits
+    /// behavior; drivers materialize policy-shaped frames through
+    /// `FramePolicy::materialize` in `ports`.
+    pub fn frame(&self, round_id: RoundId) -> ContextFrame {
         let frame_id =
             crate::context::ids::FrameId::deterministic(&self.turn_id, self.version, round_id);
-        Ok(ContextFrame {
+        ContextFrame {
             frame_id,
             scope: FrameScope::Turn {
                 turn_id: self.turn_id.clone(),
@@ -325,48 +323,7 @@ impl TurnContext {
             model_context: ModelContext {
                 blocks: self.blocks.0.clone(),
             },
-        })
-    }
-
-    /// Materialize the model context for `round_id`. Trigger *evaluation*
-    /// stays canonical: the frame policy is a carrier of port instances —
-    /// this method never references staged modules. Compaction output is
-    /// frame-local and never written back into the fact state.
-    pub async fn frame(
-        &self,
-        round_id: RoundId,
-        policy: &FramePolicy,
-    ) -> Result<ContextFrame, FrameError> {
-        let estimated = policy.estimate(&self.blocks.0);
-        if policy.window_budget.should_compact(estimated) {
-            if let Some(comp) = &policy.compaction {
-                let input = CompactionInput {
-                    blocks: self.blocks.0.clone(),
-                    budget: policy.window_budget,
-                    estimated_tokens: estimated,
-                };
-                let out = comp
-                    .compact(input)
-                    .await
-                    .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
-                let frame_id = crate::context::ids::FrameId::deterministic(
-                    &self.turn_id,
-                    self.version,
-                    round_id,
-                );
-                let blocks = out.blocks;
-                return Ok(ContextFrame {
-                    frame_id,
-                    scope: FrameScope::Turn {
-                        turn_id: self.turn_id.clone(),
-                        source_version: self.version,
-                    },
-                    round_id,
-                    model_context: ModelContext { blocks },
-                });
-            }
         }
-        self.frame_sync(round_id)
     }
 
     /// Terminal lifecycle transition, owned by the driver: seal when the turn

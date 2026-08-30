@@ -5,16 +5,18 @@
 use super::config::TurnRunOptions;
 use super::executor::ToolExecutor;
 use crate::context::block::ToolCallPayload;
-use crate::context::ids::{AttemptNumber, BlockId, InvocationId, RoundId};
-use crate::context::model::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelStopReason};
+use crate::context::ids::{BlockId, InvocationId, RoundId};
+use crate::context::model::ModelStopReason;
 use crate::context::tool_data::{
-    ArtifactRef, ToolCallId, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
-    Truncation, UnknownOutcomePolicy,
+    ArtifactRef, ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
 };
 use crate::context::turn::{FrameScope, TurnContext};
 use crate::ports::control::RunControl;
+use crate::ports::gateway::AttemptNumber;
 use crate::ports::gateway::ModelGateway;
 use crate::ports::gateway::ModelRequest;
+use crate::ports::gateway::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
+use crate::ports::tool::{ToolExecutionOutcome, UnknownOutcomePolicy};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -81,8 +83,8 @@ pub struct AttemptTrace {
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutputSummary {
-    pub stop_reason: crate::context::model::ModelStopReason,
-    pub usage: Option<crate::context::model::ModelUsage>,
+    pub stop_reason: ModelStopReason,
+    pub usage: Option<crate::ports::gateway::ModelUsage>,
     pub tool_call_count: usize,
     pub response_text_bytes: usize,
 }
@@ -213,9 +215,10 @@ impl TurnRunner {
                     start,
                 );
             }
-            // materialize frame — canonical trigger evaluation consumes the
-            // assembled frame policy (staged ownership, port-typed input)
-            let frame = match context.frame(RoundId(round), &options.frame).await {
+            // materialize frame — the assembled policy orchestrates the
+            // projection (staged ownership); the fact machine only ever
+            // offers the lossless projection
+            let frame = match options.frame.materialize(&context, RoundId(round)).await {
                 Ok(f) => f,
                 Err(e) => {
                     return finish(

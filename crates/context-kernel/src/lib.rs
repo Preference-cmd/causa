@@ -3,10 +3,13 @@
 //!
 //! # Layering (Slice 1.5)
 //!
-//! - **`context`** — the external rule interface: block taxonomy, turn fact
-//!   machine and deterministic projections, model/tool value shapes, ids.
-//! - **`ports`** — the behavior seams external implementors fill in:
-//!   `ModelGateway`, `Tool` + `ArtifactStore`, control planes, budget seams.
+//! - **`context`** — the external rule interface: exactly what the fact
+//!   machine stores and validates — block content shapes, the turn state
+//!   machine and its deterministic projections, and ids.
+//! - **`ports`** — the behavior seams external implementors fill in, each
+//!   self-contained: `ModelGateway` (request params, result envelope,
+//!   transport error), `Tool` + `ArtifactStore` (definitions, execution
+//!   context, outcome policy, limits), control planes, budget seams.
 //! - **`internal`** — staged reference implementation (driver, config axes,
 //!   executor, fakes, noop defaults), root-exported deliberately but holding
 //!   no claim on the kernel contract.
@@ -23,31 +26,33 @@ mod ports;
 // --- context: the external rule interface ------------------------------------
 pub use context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
 pub use context::ids::{
-    AttemptNumber, BlockId, BlockSequence, ContextVersion, ConversationId, ConversationVersion,
-    FrameId, InvocationId, RoundId, TurnId, TurnSequence,
+    BlockId, BlockSequence, ContextVersion, ConversationId, ConversationVersion, FrameId,
+    InvocationId, RoundId, TurnId, TurnSequence,
 };
-pub use context::model::{
-    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
-    ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, ToolCallDraft, ToolSurface,
-};
+pub use context::model::{ModelResponse, ModelStopReason, ToolCallDraft};
 pub use context::tool_data::{
-    ArtifactKind, ArtifactRef, ToolCallContext, ToolCallId, ToolDefinition, ToolExecutionOutcome,
-    ToolOutput, ToolOutputLimits, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation,
-    UnknownOutcomePolicy,
+    ArtifactKind, ArtifactRef, ToolCallId, ToolOutput, ToolOutputMeta, ToolResultPayload,
+    ToolResultStatus, Truncation,
 };
 pub use context::turn::{
-    AppliedModelOutput, ContextError, ContextFrame, FrameError, FrameScope, ModelContext,
-    OrderedBlocks, TurnContext, TurnLifecycle, TurnSnapshot,
+    AppliedModelOutput, ContextError, ContextFrame, FrameScope, ModelContext, OrderedBlocks,
+    TurnContext, TurnLifecycle, TurnSnapshot,
 };
 
 // --- ports: behavior seams for external implementors ------------------------
 pub use ports::budget::{
-    Compaction, CompactionError, CompactionInput, CompactionOutput, FramePolicy, TokenCounter,
-    WindowBudget,
+    Compaction, CompactionError, CompactionInput, CompactionOutput, FrameError, FramePolicy,
+    TokenCounter, WindowBudget,
 };
 pub use ports::control::{AttemptControl, CallControl, ControlError, RunControl};
-pub use ports::gateway::{ModelGateway, ModelRequest};
-pub use ports::tool::{ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool};
+pub use ports::gateway::{
+    AttemptNumber, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRef, ModelRequest, ModelUsage, ReasoningPayload, ToolSurface,
+};
+pub use ports::tool::{
+    ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,
+    ToolExecutionOutcome, ToolOutputLimits, UnknownOutcomePolicy,
+};
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.
 pub use tokio_util::sync::CancellationToken;

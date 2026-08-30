@@ -6,10 +6,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::model::{GenerationOptions, ModelInvokeErrorKind, ModelRef, ToolSurface};
-use crate::context::tool_data::ToolOutputLimits;
 use crate::ports::budget::{FramePolicy, TokenCounter};
-use crate::ports::tool::ArtifactStore;
+use crate::ports::gateway::{GenerationOptions, ModelInvokeErrorKind, ModelRef, ToolSurface};
+use crate::ports::tool::{ArtifactStore, ToolOutputLimits};
 
 /// Retry policy — driver-side scheduling, not a kernel fact. The retryability
 /// judgment lives here because interpreting error kinds is loop policy.

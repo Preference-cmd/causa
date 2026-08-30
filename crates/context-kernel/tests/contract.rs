@@ -17,8 +17,8 @@ use serde_json::json;
 #[tokio::test]
 async fn empty_frame_deterministic() {
     let c = ctx("t1");
-    let f0 = c.frame_sync(RoundId(0)).unwrap();
-    let f1 = c.frame_sync(RoundId(0)).unwrap();
+    let f0 = c.frame(RoundId(0));
+    let f1 = c.frame(RoundId(0));
     assert_eq!(f0.frame_id, f1.frame_id);
     assert!(f0.model_context.blocks.is_empty());
 }
@@ -28,7 +28,7 @@ async fn append_input_and_frame_order() {
     let mut c = ctx("t1");
     c.append_input(TextPayload::new("hello"), "user").unwrap();
     c.append_input(TextPayload::new("sys"), "user").unwrap();
-    let f = c.frame_sync(RoundId(0)).unwrap();
+    let f = c.frame(RoundId(0));
     assert_eq!(f.model_context.blocks.len(), 2);
     // Order preserved.
     assert!(matches!(
@@ -436,8 +436,8 @@ async fn compaction_projection_identity() {
         compaction: Some(std::sync::Arc::new(DropAllCompaction)),
         token_counter: None,
     };
-    let sync_frame = c.frame_sync(RoundId(0)).unwrap();
-    let lossless_frame = c.frame(RoundId(0), &lossless).await.unwrap();
+    let sync_frame = c.frame(RoundId(0));
+    let lossless_frame = lossless.materialize(&c, RoundId(0)).await.unwrap();
     assert_eq!(sync_frame.frame_id, lossless_frame.frame_id);
     assert_eq!(
         serde_json::to_string(&sync_frame.model_context.blocks).unwrap(),
@@ -447,7 +447,7 @@ async fn compaction_projection_identity() {
         serde_json::to_string(&lossless_frame.model_context.blocks).unwrap(),
         serde_json::to_string(&c.snapshot_blocks()).unwrap()
     );
-    let projected = c.frame(RoundId(0), &compacting).await.unwrap();
+    let projected = compacting.materialize(&c, RoundId(0)).await.unwrap();
     assert_eq!(projected.frame_id, sync_frame.frame_id);
     assert!(projected.model_context.blocks.is_empty());
     assert_eq!(c.snapshot_blocks().len(), 1);

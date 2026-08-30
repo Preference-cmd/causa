@@ -63,8 +63,8 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
     // The external loop: materialize a frame through the canonical policy
     // port, invoke the model through the gateway port, apply the output as
     // facts, and seal the turn — no reference driver involved.
-    let frame = context
-        .frame(RoundId(0), &FramePolicy::default())
+    let frame = FramePolicy::default()
+        .materialize(&context, RoundId(0))
         .await
         .unwrap();
     let invocation = InvocationId {

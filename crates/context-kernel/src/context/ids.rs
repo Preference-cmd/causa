@@ -17,18 +17,12 @@ pub struct InvocationId {
     pub round_id: RoundId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AttemptNumber(pub u32);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockSequence(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContextVersion(pub u64);
 impl ContextVersion {
-    pub fn initial() -> Self {
-        Self(0)
-    }
     pub fn next(self) -> Self {
         Self(self.0 + 1)
     }

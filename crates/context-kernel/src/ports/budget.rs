@@ -1,7 +1,11 @@
 //! Frame-materialization ports — window budget, compaction seam, token
-//! counter, and the canonical `FramePolicy` carrier.
+//! counter, and the canonical `FramePolicy` carrier. The policy orchestrates
+//! materialization itself: the fact machine offers only the lossless
+//! projection and never awaits behavior.
 
 use crate::context::block::ContextBlock;
+use crate::context::ids::{FrameId, RoundId};
+use crate::context::turn::{ContextFrame, FrameScope, ModelContext, TurnContext};
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowBudget {
@@ -52,11 +56,20 @@ pub trait TokenCounter: Send + Sync {
     fn estimate_value(&self, value: &serde_json::Value) -> usize;
 }
 
+/// Error of policy-driven frame materialization: the only fallible step is
+/// the compaction port.
+#[derive(Debug, thiserror::Error)]
+pub enum FrameError {
+    #[error("compaction failed: {0}")]
+    CompactionFailed(String),
+}
+
 /// Carrier of the frame-materialization policy: trigger budget, optional
 /// compaction, optional token counter. A canonical value assembled from port
-/// instances — drivers (staged) build and own it, `TurnContext::frame()`
-/// (canonical) evaluates it. Placeholder semantics stay frame-local and
-/// non-persisting; real conversation-level policy is Slice 5 territory.
+/// instances — drivers (staged) build and own it, and it orchestrates
+/// materialization itself, using only the fact machine's public accessors.
+/// Placeholder semantics stay frame-local and non-persisting; real
+/// conversation-level policy is Slice 5 territory.
 #[derive(Clone, Default)]
 pub struct FramePolicy {
     pub window_budget: WindowBudget,
@@ -88,5 +101,42 @@ impl FramePolicy {
                 })
                 .sum()
         }
+    }
+
+    /// Materialize the model context for `round_id` under this policy.
+    /// Trigger evaluation stays canonical — the same state and the same
+    /// policy always yield the same frame. Compaction output is frame-local
+    /// and never written back into the fact state; the fact machine itself
+    /// only ever offers the lossless projection and never awaits behavior.
+    pub async fn materialize(
+        &self,
+        ctx: &TurnContext,
+        round_id: RoundId,
+    ) -> Result<ContextFrame, FrameError> {
+        let estimated = self.estimate(ctx.blocks());
+        if self.window_budget.should_compact(estimated) {
+            if let Some(comp) = &self.compaction {
+                let input = CompactionInput {
+                    blocks: ctx.blocks().to_vec(),
+                    budget: self.window_budget,
+                    estimated_tokens: estimated,
+                };
+                let out = comp
+                    .compact(input)
+                    .await
+                    .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
+                let frame_id = FrameId::deterministic(&ctx.turn_id(), ctx.version(), round_id);
+                return Ok(ContextFrame {
+                    frame_id,
+                    scope: FrameScope::Turn {
+                        turn_id: ctx.turn_id(),
+                        source_version: ctx.version(),
+                    },
+                    round_id,
+                    model_context: ModelContext { blocks: out.blocks },
+                });
+            }
+        }
+        Ok(ctx.frame(round_id))
     }
 }

@@ -1,19 +1,13 @@
-//! Tool-domain value types — call ids, definitions, outputs, results, artifacts.
+//! Tool-domain fact vocabulary — call ids, results, outputs, artifacts.
 //!
-//! This module holds only data: observable tool facts that the fact machine
-//! persists and projects. Behavior (the `Tool` trait, the `ArtifactStore`
-//! port, panic/deadline/truncation dispatch) lives in `crate::ports::tool`, and
-//! canonical modules must depend on `tool_data`, never on the executor-sized
-//! behavior module.
+//! This module holds only recorded facts: what the tool door persists and
+//! what the pairing invariant validates. Behavior and execution vocabulary
+//! (the `Tool` trait, the `ArtifactStore` port, definitions, limits, outcome
+//! policies, dispatch context) live in `crate::ports::tool`; canonical
+//! modules must depend on this module, never on the executor-sized behavior
+//! module.
 
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ToolCallId(pub String);
@@ -38,13 +32,6 @@ impl ToolCallId {
         let hex = hash.to_hex();
         Self(format!("{}:{}:{}", tool_name, &hex[..8], position))
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolCallContext {
-    pub call_id: ToolCallId,
-    pub tool_name: String,
-    pub arguments: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,30 +86,6 @@ pub struct ToolResultPayload {
     pub output: ToolOutput,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UnknownOutcomePolicy {
-    Stop,
-    Continue,
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolExecutionOutcome {
-    pub result: ToolResultPayload,
-    pub policy: UnknownOutcomePolicy,
-}
-impl ToolExecutionOutcome {
-    pub fn new(result: ToolResultPayload) -> Self {
-        Self {
-            result,
-            policy: UnknownOutcomePolicy::Stop,
-        }
-    }
-    pub fn with_policy(mut self, policy: UnknownOutcomePolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub id: String,
@@ -136,14 +99,4 @@ pub enum ArtifactKind {
     FullOutput,
     PipeCache,
     Binary,
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolOutputLimits {
-    pub max_tokens: usize,
-}
-impl Default for ToolOutputLimits {
-    fn default() -> Self {
-        Self { max_tokens: 7_500 }
-    }
 }

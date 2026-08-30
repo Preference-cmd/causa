@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::context::ids::{BlockId, BlockSequence};
-use crate::context::tool_data::ToolResultPayload;
+use crate::context::tool_data::{ToolCallId, ToolResultPayload};
 
 /// Envelope provenance. Fields are serde-additive so legacy snapshots
 /// without them still deserialize.
@@ -37,7 +37,7 @@ impl TextPayload {
 /// any provider-issued identifier rides on BlockMeta::provider_call_id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallPayload {
-    pub call_id: crate::context::tool_data::ToolCallId,
+    pub call_id: ToolCallId,
     pub tool_name: String,
     pub arguments: serde_json::Value,
 }
