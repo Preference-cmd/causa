@@ -2,10 +2,19 @@
 //! No runner involved: the test plays the driver's stamping role via
 //! `seal_turn` (the same seam the runner uses from Phase C on).
 
+use async_trait::async_trait;
+
+mod common;
+
+use common::endturn_output;
 use reimagine_context_kernel::{
-    ConversationError, ConversationId, ConversationState, FrameScope, RoundId, SealedResult,
-    TextPayload, TurnId,
+    AttemptControl, CancellationToken, Compaction, CompactionError, CompactionInput,
+    CompactionOutput, ContextFrame, ConversationError, ConversationId, ConversationState,
+    FakeGateway, FramePolicy, FrameScope, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRequest, RoundId, RunControl, SealedResult, TextPayload, ToolExecutor,
+    TurnContext, TurnId, TurnOutcome, TurnResult, TurnRunOptions, TurnRunner, WindowBudget,
 };
+use std::sync::{Arc, Mutex};
 
 fn conv() -> ConversationState {
     ConversationState::new(ConversationId("conv-1".into()))
@@ -280,4 +289,188 @@ fn frame_without_active_turn_is_rejected() {
         c.frame(RoundId(0)),
         Err(ConversationError::NoActiveTurn)
     ));
+}
+
+// ---- Phase C: runner seam ----------------------------------------------------
+
+/// Minimal recording gateway: replays canned outcomes in order (last one
+/// repeats) and captures every request frame for inspection.
+struct RecordingGateway {
+    outputs: Mutex<Vec<Result<ModelOutput, ModelInvokeErrorKind>>>,
+    frames: Mutex<Vec<ContextFrame>>,
+}
+impl RecordingGateway {
+    fn completing(text: &str) -> Self {
+        Self {
+            outputs: Mutex::new(vec![Ok(endturn_output(text))]),
+            frames: Mutex::new(vec![]),
+        }
+    }
+}
+#[async_trait]
+impl ModelGateway for RecordingGateway {
+    async fn invoke(
+        &self,
+        request: &ModelRequest,
+        _control: &AttemptControl,
+    ) -> Result<ModelOutput, ModelInvokeError> {
+        self.frames.lock().unwrap().push(request.frame.clone());
+        let mut g = self.outputs.lock().unwrap();
+        let out = if g.len() > 1 {
+            g.remove(0)
+        } else {
+            g[0].clone()
+        };
+        out.map_err(|kind| ModelInvokeError::new(kind, "scripted failure"))
+    }
+}
+
+fn runner_with(gateway: Arc<dyn ModelGateway>) -> TurnRunner {
+    TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(vec![])))
+}
+
+fn ctrl() -> RunControl {
+    RunControl::new(CancellationToken::new(), None)
+}
+
+struct DropEverything;
+#[async_trait]
+impl Compaction for DropEverything {
+    async fn compact(&self, _input: CompactionInput) -> Result<CompactionOutput, CompactionError> {
+        Ok(CompactionOutput {
+            blocks: vec![],
+            summary: None,
+            truncated: true,
+        })
+    }
+}
+
+/// Acceptance #1: both entries run the same state machine — same input
+/// sequence yields the same terminal result, round count, and facts.
+#[tokio::test]
+async fn dual_entries_share_one_state_machine() {
+    let runner = runner_with(Arc::new(RecordingGateway::completing("done")));
+    // Single-turn entry — same turn id as the conversation path, so the
+    // accumulated facts must be byte-identical.
+    let mut ctx = TurnContext::new(TurnId::new("t1"));
+    ctx.append_input(TextPayload::new("hi"), "user").unwrap();
+    let single: TurnOutcome = runner.run(ctx, TurnRunOptions::default(), ctrl()).await;
+    // Conversation entry with empty history.
+    let mut state = ConversationState::new(ConversationId("conv-1".into()));
+    state.begin_turn(TurnId::new("t1")).unwrap();
+    state
+        .active_turn_mut()
+        .unwrap()
+        .append_input(TextPayload::new("hi"), "user")
+        .unwrap();
+    let mut conv = runner
+        .run_in_conversation(state, TurnRunOptions::default(), ctrl())
+        .await
+        .unwrap();
+    assert!(matches!(single.result, TurnResult::Completed { .. }));
+    assert!(matches!(conv.result, TurnResult::Completed { .. }));
+    assert_eq!(single.trace.rounds.len(), conv.trace.rounds.len());
+    // Same facts accumulated in the active turn.
+    assert_eq!(
+        serde_json::to_string(single.context.blocks()).unwrap(),
+        serde_json::to_string(conv.state.active_turn().unwrap().blocks()).unwrap()
+    );
+    // The conversation state comes back sealed and stamped, not yet committed.
+    assert!(conv.state.active_turn().unwrap().is_sealed());
+    assert_eq!(conv.state.snapshot_count(), 0);
+    // The host loop completes: commit receives the turn into history.
+    let snap = conv.state.commit(TurnId::new("t1")).unwrap();
+    assert_eq!(snap.turn_sequence.0, 0);
+    assert_eq!(conv.state.version().0, 2);
+}
+
+/// Acceptance #13: caller bugs fail fast at the entry, before the machine.
+#[tokio::test]
+async fn conversation_entry_rejects_missing_or_sealed_active() {
+    let runner = runner_with(Arc::new(RecordingGateway::completing("x")));
+    let state = ConversationState::new(ConversationId("conv-1".into()));
+    assert!(matches!(
+        runner
+            .run_in_conversation(state, TurnRunOptions::default(), ctrl())
+            .await,
+        Err(ConversationError::NoActiveTurn)
+    ));
+    let mut state = ConversationState::new(ConversationId("conv-1".into()));
+    state.begin_turn(TurnId::new("t1")).unwrap();
+    state
+        .seal_turn(TurnId::new("t1"), SealedResult::Completed)
+        .unwrap();
+    assert!(matches!(
+        runner
+            .run_in_conversation(state, TurnRunOptions::default(), ctrl())
+            .await,
+        Err(ConversationError::TurnAlreadySealed)
+    ));
+}
+
+/// Acceptance #16: the conversation entry is inert to `options.frame` — a
+/// compacting policy that would empty a single-turn frame leaves the merged
+/// frame lossless (the model still sees every block).
+#[tokio::test]
+async fn conversation_entry_is_inert_to_frame_policy() {
+    let gateway = Arc::new(RecordingGateway::completing("done"));
+    let runner = runner_with(gateway.clone());
+    let inert = FramePolicy {
+        window_budget: WindowBudget {
+            model_window_limit: 100,
+            compaction_trigger: 1,
+        },
+        compaction: Some(Arc::new(DropEverything)),
+        token_counter: None,
+    };
+    let options = TurnRunOptions {
+        frame: inert,
+        ..Default::default()
+    };
+    let mut state = ConversationState::new(ConversationId("conv-1".into()));
+    state.begin_turn(TurnId::new("t1")).unwrap();
+    state
+        .active_turn_mut()
+        .unwrap()
+        .append_input(TextPayload::new("hi"), "user")
+        .unwrap();
+    let out = runner
+        .run_in_conversation(state, options, ctrl())
+        .await
+        .unwrap();
+    assert!(matches!(out.result, TurnResult::Completed { .. }));
+    // The model's frame contained the full history + active blocks — the
+    // compacting policy never touched the merged view.
+    let frames = gateway.frames.lock().unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].model_context.blocks.len(), 1);
+    // History and active facts are untouched either way.
+    assert_eq!(out.state.snapshot_count(), 0);
+}
+
+/// The Interrupted flow end to end: the runner seals and stamps Interrupted,
+/// commit refuses, abort discards, history stays empty.
+#[tokio::test]
+async fn interrupted_conversation_turn_is_stamped_and_aborted() {
+    let gw = Arc::new(FakeGateway::new(vec![Err(ModelInvokeErrorKind::Permanent)]));
+    let runner = runner_with(gw);
+    let mut state = ConversationState::new(ConversationId("conv-1".into()));
+    state.begin_turn(TurnId::new("t1")).unwrap();
+    state
+        .active_turn_mut()
+        .unwrap()
+        .append_input(TextPayload::new("hi"), "user")
+        .unwrap();
+    let mut out = runner
+        .run_in_conversation(state, TurnRunOptions::default(), ctrl())
+        .await
+        .unwrap();
+    assert!(matches!(out.result, TurnResult::Interrupted { .. }));
+    assert!(out.state.active_turn().unwrap().is_sealed());
+    assert!(matches!(
+        out.state.commit(TurnId::new("t1")),
+        Err(ConversationError::TurnNotCompleted(_))
+    ));
+    out.state.abort_turn(TurnId::new("t1")).unwrap();
+    assert_eq!(out.state.snapshot_count(), 0);
 }

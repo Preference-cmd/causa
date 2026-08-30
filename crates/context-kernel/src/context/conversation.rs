@@ -213,6 +213,21 @@ impl ConversationState {
         ))
     }
 
+    /// Disjoint borrow-split for the staged runner's consume/return flow:
+    /// the conversation id and committed history are read while the active
+    /// turn is driven mutably. Crate-internal only — the runner stamps via
+    /// the public `seal_turn` afterwards, so no second &mut seam reaches
+    /// external callers.
+    pub(crate) fn runner_parts(
+        &mut self,
+    ) -> (&ConversationId, &[TurnSnapshot], Option<&mut TurnContext>) {
+        (
+            &self.conversation_id,
+            self.completed_turns.ordered(),
+            self.active_turn.as_mut(),
+        )
+    }
+
     pub fn completed_turns(&self) -> &[TurnSnapshot] {
         self.completed_turns.ordered()
     }

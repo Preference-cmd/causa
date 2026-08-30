@@ -6,12 +6,16 @@ use super::config::TurnRunOptions;
 use super::control::RunControl;
 use super::executor::ToolExecutor;
 use crate::context::block::ToolCallPayload;
-use crate::context::ids::{BlockId, FrameScope, InvocationId, RoundId};
+use crate::context::conversation::{
+    ConversationError, ConversationState, SealedResult, merged_frame,
+};
+use crate::context::ids::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
 use crate::context::model::ModelStopReason;
 use crate::context::tool_data::{
     ArtifactRef, ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
 };
-use crate::context::turn::TurnContext;
+use crate::context::turn::{TurnContext, TurnSnapshot};
+use crate::ports::budget::FramePolicy;
 use crate::ports::gateway::AttemptNumber;
 use crate::ports::gateway::ModelGateway;
 use crate::ports::gateway::ModelRequest;
@@ -149,6 +153,30 @@ pub struct TurnOutcome {
     pub trace: TurnTrace,
 }
 
+/// The conversation entry's counterpart to [`TurnOutcome`]: consume/return —
+/// the state comes back with the active turn sealed inside and its outcome
+/// stamped; the host then calls `commit` (Completed) or `abort_turn`
+/// (Interrupted).
+#[derive(Debug)]
+pub struct ConversationOutcome {
+    pub state: ConversationState,
+    pub result: TurnResult,
+    pub trace: TurnTrace,
+}
+
+/// The frame source — the single fork point between the two runner entries.
+#[derive(Clone, Copy)]
+enum FrameSource<'a> {
+    /// Policy-shaped materialization over the active turn (Turn scope).
+    Turn(&'a FramePolicy),
+    /// Lossless merged view (Conversation scope) — policy-inert in Slice 2;
+    /// conversation-level budget/compaction is Slice 5.
+    Conversation {
+        conversation_id: &'a ConversationId,
+        history: &'a [TurnSnapshot],
+    },
+}
+
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
@@ -157,33 +185,105 @@ impl TurnRunner {
     pub fn new(gateway: Arc<dyn ModelGateway>, executor: Arc<ToolExecutor>) -> Self {
         Self { gateway, executor }
     }
+    /// Slice 1 entry, unchanged in shape: frames materialize from the active
+    /// turn alone (Turn scope, policy-shaped).
     pub async fn run(
         &self,
         mut context: TurnContext,
         options: TurnRunOptions,
         ctrl: RunControl,
     ) -> TurnOutcome {
+        let (result, trace) = self
+            .drive(
+                &mut context,
+                FrameSource::Turn(&options.frame),
+                &options,
+                &ctrl,
+            )
+            .await;
+        // Every drive exit is terminal; the entry owns sealing.
+        context.seal();
+        TurnOutcome {
+            context,
+            result,
+            trace,
+        }
+    }
+
+    /// Slice 2 entry: frames materialize as the lossless merged view over
+    /// committed history plus the active turn (Conversation scope — the
+    /// `options.frame` policy is deliberately inert here; conversation-level
+    /// budget/compaction is Slice 5). Consume/return: the state comes back
+    /// with the active turn sealed and outcome-stamped; the host then calls
+    /// `commit` (Completed) or `abort_turn` (Interrupted).
+    pub async fn run_in_conversation(
+        &self,
+        mut state: ConversationState,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> Result<ConversationOutcome, ConversationError> {
+        // Entry gates — caller bugs fail fast, before the state machine.
+        let active_id = match state.active_turn() {
+            Some(t) => t.turn_id(),
+            None => return Err(ConversationError::NoActiveTurn),
+        };
+        if state.active_turn().expect("checked above").is_sealed() {
+            return Err(ConversationError::TurnAlreadySealed);
+        }
+        // Field-split borrow: read conversation id and history while driving
+        // the active turn mutably; stamping happens after the loop through
+        // the public `seal_turn`, so no second &mut seam is exposed.
+        let (conversation_id, history, active) = state.runner_parts();
+        let active = active.expect("NoActiveTurn checked above");
+        let (result, trace) = self
+            .drive(
+                active,
+                FrameSource::Conversation {
+                    conversation_id,
+                    history,
+                },
+                &options,
+                &ctrl,
+            )
+            .await;
+        let stamp = match &result {
+            TurnResult::Completed { .. } => SealedResult::Completed,
+            TurnResult::Interrupted { .. } => SealedResult::Interrupted,
+        };
+        state
+            .seal_turn(active_id, stamp)
+            .expect("active turn still present");
+        Ok(ConversationOutcome {
+            state,
+            result,
+            trace,
+        })
+    }
+
+    /// The shared state machine — both entries run this loop; the frame
+    /// source is the only fork. Every exit is terminal; the entries own
+    /// sealing.
+    async fn drive(
+        &self,
+        active: &mut TurnContext,
+        frames: FrameSource<'_>,
+        options: &TurnRunOptions,
+        ctrl: &RunControl,
+    ) -> (TurnResult, TurnTrace) {
         let start = Instant::now();
         let mut round: u32 = 0;
         let mut tool_calls_total: usize = 0;
         let mut trace = TurnTrace::new();
 
-        // Any terminal outcome seals the returned context and fills trace totals.
-        fn finish(
-            mut ctx: TurnContext,
+        fn done(
             result: TurnResult,
             mut trace: TurnTrace,
             tool_calls_total: usize,
             start: Instant,
-        ) -> TurnOutcome {
-            ctx.seal();
+        ) -> (TurnResult, TurnTrace) {
             trace.tool_calls_total = tool_calls_total;
             trace.total_duration_ms = millis_since(start);
-            TurnOutcome {
-                context: ctx,
-                result,
-                trace,
-            }
+            (result, trace)
         }
 
         loop {
@@ -194,8 +294,7 @@ impl TurnRunner {
                 } else {
                     TurnInterruption::TurnDeadlineExceeded
                 };
-                return finish(
-                    context,
+                return done(
                     TurnResult::Interrupted { cause },
                     trace,
                     tool_calls_total,
@@ -203,8 +302,7 @@ impl TurnRunner {
                 );
             }
             if round >= options.policy.limits.max_model_rounds {
-                return finish(
-                    context,
+                return done(
                     TurnResult::Interrupted {
                         cause: TurnInterruption::MaxModelRounds {
                             limit: options.policy.limits.max_model_rounds,
@@ -215,35 +313,38 @@ impl TurnRunner {
                     start,
                 );
             }
-            // materialize frame — the assembled policy orchestrates the
-            // projection (staged ownership); the fact machine only ever
-            // offers the lossless projection
-            let frame = match options.frame.materialize(&context, RoundId(round)).await {
-                Ok(f) => f,
-                Err(e) => {
-                    return finish(
-                        context,
-                        TurnResult::Interrupted {
-                            cause: TurnInterruption::CompactionFailed {
-                                reason: e.to_string(),
-                            },
-                        },
-                        trace,
-                        tool_calls_total,
-                        start,
-                    );
+            // materialize the round's frame — the single fork point between
+            // the entries; the fact machine only ever offers the lossless
+            // projection, the policy orchestrates anything beyond it
+            let frame = match frames {
+                FrameSource::Turn(policy) => {
+                    match policy.materialize(active, RoundId(round)).await {
+                        Ok(f) => f,
+                        Err(e) => {
+                            return done(
+                                TurnResult::Interrupted {
+                                    cause: TurnInterruption::CompactionFailed {
+                                        reason: e.to_string(),
+                                    },
+                                },
+                                trace,
+                                tool_calls_total,
+                                start,
+                            );
+                        }
+                    }
                 }
+                FrameSource::Conversation {
+                    conversation_id,
+                    history,
+                } => merged_frame(conversation_id, history, active, RoundId(round)),
             };
             let frame_version = match &frame.scope {
-                FrameScope::Turn { source_version, .. } => *source_version,
-                // The single-turn runner only materializes Turn scopes; the
-                // conversation entry (Phase C) drives merged frames itself.
-                FrameScope::Conversation { .. } => {
-                    unreachable!("conversation scope never reaches the single-turn runner")
-                }
+                FrameScope::Turn { source_version, .. }
+                | FrameScope::Conversation { source_version, .. } => *source_version,
             };
             let invocation = InvocationId {
-                turn_id: context.turn_id(),
+                turn_id: active.turn_id(),
                 round_id: RoundId(round),
             };
             // bounded logical retry: same InvocationId / ContextFrame, attempt+1
@@ -308,8 +409,7 @@ impl TurnRunner {
                         applied_block_ids: vec![],
                         tool_batch: None,
                     });
-                    return finish(
-                        context,
+                    return done(
                         TurnResult::Interrupted { cause },
                         trace,
                         tool_calls_total,
@@ -345,15 +445,14 @@ impl TurnRunner {
                     applied_block_ids: vec![],
                     tool_batch: None,
                 });
-                return finish(
-                    context,
+                return done(
                     TurnResult::Interrupted { cause },
                     trace,
                     tool_calls_total,
                     start,
                 );
             }
-            let applied = match context.append_model_output(
+            let applied = match active.append_model_output(
                 invocation.clone(),
                 &output.response,
                 output.stop_reason,
@@ -369,8 +468,7 @@ impl TurnRunner {
                         applied_block_ids: vec![],
                         tool_batch: None,
                     });
-                    return finish(
-                        context,
+                    return done(
                         TurnResult::Interrupted {
                             cause: TurnInterruption::InvalidModelOutput {
                                 reason: e.to_string(),
@@ -398,8 +496,7 @@ impl TurnRunner {
             match output.stop_reason {
                 ModelStopReason::EndTurn => {
                     // append_model_output guarantees EndTurn has empty tool_calls
-                    return finish(
-                        context,
+                    return done(
                         TurnResult::Completed {
                             final_output: output,
                         },
@@ -411,8 +508,7 @@ impl TurnRunner {
                 ModelStopReason::ToolUse => {
                     tool_calls_total += call_payloads.len();
                     if tool_calls_total as u32 > options.policy.limits.max_tool_calls {
-                        return finish(
-                            context,
+                        return done(
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::MaxToolCalls {
                                     limit: options.policy.limits.max_tool_calls,
@@ -520,11 +616,10 @@ impl TurnRunner {
                             completion_order,
                         });
                     }
-                    if let Err(e) = context
+                    if let Err(e) = active
                         .append_tool_results(results.iter().map(|o| o.result.clone()).collect())
                     {
-                        return finish(
-                            context,
+                        return done(
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::RunnerInvariantViolation {
                                     reason: e.to_string(),
@@ -541,8 +636,7 @@ impl TurnRunner {
                         r.result.status == ToolResultStatus::UnknownOutcome
                             && r.policy == UnknownOutcomePolicy::Stop
                     }) {
-                        return finish(
-                            context,
+                        return done(
                             TurnResult::Interrupted {
                                 cause: TurnInterruption::UnsafeUnknownOutcome {
                                     call_id: uu.result.call_id.clone(),

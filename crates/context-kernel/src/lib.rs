@@ -66,8 +66,8 @@ pub use internal::config::{
 pub use internal::control::RunControl;
 pub use internal::defaults::{NoopCompaction, NoopTokenCounter};
 pub use internal::driver::{
-    AttemptTrace, ModelRoundTrace, OutputSummary, ToolBatchTrace, ToolCallTrace, TurnInterruption,
-    TurnOutcome, TurnResult, TurnRunner, TurnTrace,
+    AttemptTrace, ConversationOutcome, ModelRoundTrace, OutputSummary, ToolBatchTrace,
+    ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult, TurnRunner, TurnTrace,
 };
 pub use internal::executor::ToolExecutor;
 pub use internal::fakes::FakeGateway;
