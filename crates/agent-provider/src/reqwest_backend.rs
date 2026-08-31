@@ -1,15 +1,12 @@
-//! Reqwest-backed completion backend.
-//!
-//! `ReqwestBackend` is the production `CompletionBackend` used by the
-//! two concrete adapters. It makes direct HTTP calls via `reqwest::Client`
-//! to the OpenAI-compatible and Anthropic APIs. We deliberately do NOT
-//! use any agent loop or tool execution framework — Reimagine owns the
-//! agent loop, tool execution, and tool policy.
-//!
-//! The backend is not used in V1 unit tests (which always substitute
-//! `FakeCompletionBackend`). It is provided so app-host can construct
-//! the production provider with `build_provider(config)` and the
-//! adapters will route to a working real backend.
+//! ⚠️ FROZEN — Slice 3 起冻结；本文件实现 `agent-provider::CompletionBackend`
+//!（frozen V1 harness 栈 `AgentProvider`，对外由 `BackendProvider` 包装）的
+//! production backend。
+//! Slice 3 新路径（`gateway_transport.rs` + `KernelHttpGateway<C>`）接管的是
+//! `ModelGateway` 的 non-streaming `complete` 链路；`stream` /
+//! `list_models` / `FileSource::Url` → base64 / `AgentRequest`→wire 翻译等
+//! 能力仍在冻层，短链路上再迁移前需保留。本文件随 `BackendProvider` /
+//! `ReqwestBackend` 在 Slice 5+ 的 harness 迁移后一并删除
+//!（`ai-protocol/translation::{request,streaming,files}` 同理）。
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};

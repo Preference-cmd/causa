@@ -20,15 +20,17 @@
 
 #![deny(unsafe_code)]
 
-mod anthropic_gateway;
 mod backend_provider;
 mod gateway_transport;
-mod openai_gateway;
+mod kernel_gateway;
 pub mod reqwest_backend;
 
-pub use anthropic_gateway::AnthropicMessagesGateway;
 pub use backend_provider::{BackendProvider, ProviderConfig};
-pub use openai_gateway::{OpenAiChatCompletionsGateway, OpenAiResponsesGateway};
+pub use kernel_gateway::{
+    AnthropicGatewayConfig, AnthropicMessagesGateway, KernelGatewayConfig, KernelHttpGateway,
+    OpenAiChatCompletionsGateway, OpenAiChatGatewayConfig, OpenAiResponsesGateway,
+    OpenAiResponsesGatewayConfig,
+};
 pub use reqwest_backend::ReqwestBackend;
 
 /// V1 adapter for OpenAI-compatible chat completion APIs

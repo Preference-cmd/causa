@@ -233,23 +233,10 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         ModelStopReason::EndTurn
     };
 
-    let usage = value.get("usage").and_then(Value::as_object).map(|u| {
-        reimagine_context_kernel::ModelUsage {
-            input_tokens: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as usize,
-            output_tokens: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as usize,
-            cache_read_tokens: u
-                .get("input_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(Value::as_u64)
-                .map(|v| v as usize),
-            cache_write_tokens: None,
-            reasoning_tokens: u
-                .get("output_tokens_details")
-                .and_then(|d| d.get("reasoning_tokens"))
-                .and_then(Value::as_u64)
-                .map(|v| v as usize),
-        }
-    });
+    let usage = value
+        .get("usage")
+        .filter(|v| v.is_object())
+        .map(crate::translation::usage::model_usage_from_openai_responses);
 
     Ok(ModelOutput {
         response: ModelResponse {
