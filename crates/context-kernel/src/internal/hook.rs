@@ -21,15 +21,26 @@
 //! them as type aliases (`pub use reimagine_context_kernel::HookCtx as
 //! FilterContext`) so consumers see one type even though two crates
 //! reference it.
+//!
+//! ## Minimum invariant, not a policy
+//!
+//! The kernel ships **no opinion** about what a hook should do. The only
+//! built-in impl is `PassthroughHook` — a zero-sized type that admits every
+//! call unchanged. That is the literal absence of behavior, the
+//! minimum the trait requires to be callable.
+//!
+//! Specific filter policies (dedup by `(tool_name, arguments)`,
+//! approval-rewrites-amount, kill-switch denial, etc.) are *not*
+//! kernel concerns — they belong to `agent-runtime` or to the host. The
+//! driver applies whatever hook the caller plugged via
+//! `TurnRunner::with_hook(_, _, your_hook)`; `TurnRunner::new()` defaults
+//! to `PassthroughHook`.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
 
 use crate::context::block::ToolCallPayload;
 use crate::context::ids::{ConversationId, RoundId, TurnId};
-use crate::context::tool_data::{ToolOutput, ToolResultPayload, ToolResultStatus};
 use crate::ports::control::CallControl;
-use crate::ports::tool::ToolExecutionOutcome;
 
 /// Context supplied to every hook invocation.
 ///
@@ -51,7 +62,7 @@ pub struct HookCtx<'a> {
 /// `arguments` (open `FilterResult` — approval can rewrite, defer, split).
 pub struct HookOutcome {
     pub to_execute: Vec<ToolCallPayload>,
-    pub rejected: Vec<ToolExecutionOutcome>,
+    pub rejected: Vec<crate::ports::tool::ToolExecutionOutcome>,
 }
 
 impl HookOutcome {
@@ -73,38 +84,19 @@ pub trait ToolUseHook: Send + Sync {
     async fn apply(&self, calls: Vec<ToolCallPayload>, ctx: &HookCtx<'_>) -> HookOutcome;
 }
 
-/// Default kernel-side dedup hook — preserves the historical
-/// `TurnRunner::new()` behavior of rejecting same-batch duplicates with
-/// identical `(tool_name, arguments)`. agent-runtime's
-/// `FilterChain::default() == [DedupFilter]` provides the framework-level
-/// equivalent.
+/// Zero-sized hook that admits every call unchanged — the literal
+/// absence of behavior, not a policy.
 ///
-/// This is the kernel-side adapter for "Slice 1.x — `driver.rs:489`
-/// inline `DedupKey` logic". The dedup policy itself is preserved; only
-/// its routing changed (private hook struct, not inline logic).
-pub struct KernelDedupHook;
+/// `TurnRunner::new()` defaults to this hook: callers who want a filter
+/// chain opt in via `TurnRunner::with_hook(_, _, filter_chain)`.
+/// Concrete filter policies (dedup, approval, kill-switch) are host
+/// concerns and live in `agent-runtime::filter` or beyond.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PassthroughHook;
 
 #[async_trait]
-impl ToolUseHook for KernelDedupHook {
+impl ToolUseHook for PassthroughHook {
     async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
-        let mut seen: HashMap<(String, serde_json::Value), ()> = HashMap::new();
-        let mut to_execute = Vec::new();
-        let mut rejected = Vec::new();
-        for payload in calls {
-            let key = (payload.tool_name.clone(), payload.arguments.clone());
-            if seen.insert(key, ()).is_some() {
-                rejected.push(ToolExecutionOutcome::new(ToolResultPayload {
-                    call_id: payload.call_id.clone(),
-                    status: ToolResultStatus::Rejected,
-                    output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
-                }));
-            } else {
-                to_execute.push(payload);
-            }
-        }
-        HookOutcome {
-            to_execute,
-            rejected,
-        }
+        HookOutcome::passthrough(calls)
     }
 }

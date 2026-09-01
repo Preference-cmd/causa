@@ -62,8 +62,16 @@ pub struct ToolOutputLimits {
     pub max_tokens: usize,
 }
 impl Default for ToolOutputLimits {
+    /// No limit by default — callers opt in to truncation.
+    ///
+    /// Specific limits are set by the caller (e.g. per-tool
+    /// `Tool::output_limits()` or host configuration). The kernel
+    /// defaults to `usize::MAX` so truncation is an *explicit*
+    /// effect, never the absence of configuration.
     fn default() -> Self {
-        Self { max_tokens: 7_500 }
+        Self {
+            max_tokens: usize::MAX,
+        }
     }
 }
 

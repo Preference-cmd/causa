@@ -29,9 +29,10 @@
 //!
 //! ## Defaults
 //!
-//! `FilterChain::default() == [DedupFilter]`, matching the proposal
-//! §3 "`FilterChain::default() == [DedupFilter]`". A `FilterChain::new()`
-//! with explicit filters is allowed (dedup is non-mandatory, see §3 B2).
+//! `FilterChain::default()` is empty — no opinion. Callers who want
+//! dedup opt in with `FilterChain::new(vec![Arc::new(DedupFilter)])`
+//! or `FilterChain::dedup_only()`. See "Minimum invariant, not a policy"
+//! in `crate::internal::hook`.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -162,7 +163,8 @@ impl ToolUseFilter for DenyAllFilter {
 ///
 /// `FilterChain::filter` walks `filters` in order, feeding each
 /// filter's `to_execute` into the next. `rejected` accumulates across
-/// the chain. `FilterChain::default() == [DedupFilter]`.
+/// the chain. `FilterChain::default()` is empty (no opinion — callers opt
+/// in via `DedupFilter` or `dedup_only()`).
 ///
 /// ## Bridge to the kernel
 ///
@@ -212,9 +214,17 @@ impl FilterChain {
 }
 
 impl Default for FilterChain {
+    /// Empty by default — the framework carries no opinion.
+    ///
+    /// Callers who want dedup opt in with
+    /// `FilterChain::new(vec![Arc::new(DedupFilter)])` or
+    /// `FilterChain::dedup_only()`. `TurnRunner::new()` defaults
+    /// to the same passthrough via `PassthroughHook`, so an
+    /// `AgentRuntime` built from `FilterChain::default()` also
+    /// does nothing until wired with an explicit chain.
     fn default() -> Self {
         Self {
-            filters: vec![Arc::new(DedupFilter)],
+            filters: Vec::new(),
         }
     }
 }
@@ -388,10 +398,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filter_chain_default_is_dedup_only() {
+    async fn filter_chain_default_is_empty() {
         let chain = FilterChain::default();
-        assert_eq!(chain.len(), 1);
-        assert!(!chain.is_empty());
+        assert_eq!(chain.len(), 0);
+        assert!(chain.is_empty());
     }
 
     #[tokio::test]
@@ -469,7 +479,7 @@ mod tests {
         // FilterChain implements both ToolUseFilter and ToolUseHook.
         // This is the bridge that lets AgentRuntime plug a chain into
         // TurnRunner::with_hook. Verifying via direct call:
-        let chain = FilterChain::default();
+        let chain = FilterChain::dedup_only();
         let turn_id = dummy_turn_id();
         let ctx = make_ctx(&turn_id, RoundId(0));
         let calls = vec![

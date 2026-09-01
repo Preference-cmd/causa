@@ -75,4 +75,4 @@ pub use internal::fakes::FakeGateway;
 // agent-runtime's `FilterChain` implements `ToolUseHook` to plug in.
 // See `internal::hook` for the rationale; ports stay zero new
 // user-facing extension types.
-pub use internal::hook::{HookCtx, HookOutcome, KernelDedupHook, ToolUseHook};
+pub use internal::hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};

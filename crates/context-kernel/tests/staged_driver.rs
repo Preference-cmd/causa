@@ -6,7 +6,8 @@ mod common;
 
 use common::{
     DropAllCompaction, EchoTool, FailTool, RecordingGateway, UnknownStopTool, ctrl, ctx, draft,
-    endturn_output, options_with_limits, runner_with, tooluse_calls_output, tooluse_output,
+    endturn_output, options_with_limits, runner_with, runner_with_dedup, tooluse_calls_output,
+    tooluse_output,
 };
 use reimagine_context_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
@@ -127,8 +128,10 @@ async fn tool_failure_is_observation_not_terminal_and_next_round() {
 #[tokio::test]
 async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
     let c = ctx("t1");
-    // Two identical echo calls in same batch => one rejected
-    let runner = runner_with(
+    // Two identical echo calls in same batch => one rejected. This is a
+    // test-only dedup hook — TurnRunner::new defaults to passthrough
+    // (no opinion); the host composes filters via the framework layer.
+    let runner = runner_with_dedup(
         RecordingGateway::scripted(vec![
             Ok(tooluse_calls_output(
                 "dup",

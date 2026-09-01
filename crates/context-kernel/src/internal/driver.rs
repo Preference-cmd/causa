@@ -23,17 +23,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::hook::{HookCtx, KernelDedupHook, ToolUseHook};
+use super::hook::{HookCtx, PassthroughHook, ToolUseHook};
 
 fn millis_since(t: Instant) -> u64 {
     t.elapsed().as_millis() as u64
 }
 
-// Dedup lives in `super::hook::KernelDedupHook` (the kernel-side adapter
-// for `ToolUseHook`). agent-runtime's `FilterChain::default() ==
-// [DedupFilter]` provides the framework-level equivalent for `AgentRuntime`.
-// See Slice 4 §3 (选项 B): the user-facing `ToolUseFilter` and concrete
-// filter types live in `reimagine-agent-runtime`.
+// Tool-use filtering lives behind `super::hook::ToolUseHook`.
+// `TurnRunner` defaults to `PassthroughHook` (no opinion); concrete
+// filter policies belong to `agent-runtime` / host, not to the kernel.
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail")]
@@ -173,10 +171,9 @@ pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
     /// Kernel-side adapter for tool-use filtering. `TurnRunner::new()`
-    /// defaults to `KernelDedupHook` (preserves the historical
-    /// same-batch `(tool_name, arguments)` dedup). Custom hooks (e.g.
-    /// `agent_runtime::FilterChain`, which implements `ToolUseHook`)
-    /// plug in via `TurnRunner::with_hook`.
+    /// defaults to `PassthroughHook` (no filter applied — the kernel
+    /// carries no opinion). Custom hooks (e.g. `agent_runtime::FilterChain`,
+    /// which implements `ToolUseHook`) plug in via `TurnRunner::with_hook`.
     hook: Arc<dyn ToolUseHook>,
 }
 impl TurnRunner {
@@ -184,7 +181,7 @@ impl TurnRunner {
         Self {
             gateway,
             executor,
-            hook: Arc::new(KernelDedupHook),
+            hook: Arc::new(PassthroughHook),
         }
     }
 
@@ -500,9 +497,9 @@ impl TurnRunner {
                     }
                     // ToolUse hook: the kernel-side adapter for tool-use
                     // filtering. `TurnRunner::new()` defaults to
-                    // `KernelDedupHook` (same-batch `(tool_name, arguments)`
-                    // dedup). agent-runtime's `FilterChain` plugs in via
-                    // `TurnRunner::with_hook` and implements the same trait.
+                    // `PassthroughHook` (no filter applied — opt in via
+                    // `with_hook`). agent-runtime's `FilterChain` plugs in via
+                    // `with_hook` and implements the same trait.
                     let (to_exec, rejected): (Vec<ToolCallPayload>, Vec<ToolExecutionOutcome>) = {
                         let call_control = ctrl
                             .for_attempt(options.policy.attempt_timeout)

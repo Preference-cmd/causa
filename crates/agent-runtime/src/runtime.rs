@@ -34,14 +34,13 @@ use crate::filter::FilterChain;
 ///
 /// ## Defaults
 ///
-/// - `FilterChain::default()` is `[DedupFilter]`.
-/// - An empty `FilterChain` is allowed and acts as pure passthrough
-///   (use `FilterChain::passthrough()` to opt out).
-/// - `KernelDedupHook` is the historical default for `TurnRunner::new`;
-///   when constructing via `from_parts` with `FilterChain::default()`,
-///   the kernel-side default is replaced by `[DedupFilter]` (same
-///   effective behavior — the framework's `DedupFilter` is the
-///   user-facing twin of the kernel's private `KernelDedupHook`).
+/// - `FilterChain::default()` is empty (no filter — the framework
+///   carries no opinion). Callers who want dedup wire
+///   `FilterChain::dedup_only()` or `FilterChain::new(vec![Arc::new(DedupFilter)])`.
+/// - `TurnRunner::new()` defaults to `PassthroughHook` (no filter in
+///   the kernel either). Together that means a default-constructed
+///   `AgentRuntime` is a pure passthrough — behavior is opt-in.
+/// - `FilterChain::passthrough()` is the explicit alias for the empty chain.
 pub struct AgentRuntime {
     runner: TurnRunner,
     filters: FilterChain,
@@ -65,29 +64,6 @@ impl AgentRuntime {
         let hook: Arc<dyn ToolUseHook> = Arc::new(filters.clone());
         let runner = TurnRunner::with_hook(gateway, executor, hook);
         Self { runner, filters }
-    }
-
-    /// Build from an existing `TurnRunner` plus a filter chain. The
-    /// runner is consumed and rebuilt internally so the chain takes
-    /// over as the hook. To avoid re-exposing the runner's internal
-    /// `gateway` / `executor` fields, prefer `from_parts` when you
-    /// already have gateway + executor on hand.
-    pub fn from_runner(runner: TurnRunner, filters: FilterChain) -> Self {
-        // We replace the hook by re-binding through the kernel's
-        // internal hook slot. Since `TurnRunner` does not expose
-        // `gateway` / `executor`, we cannot re-bind in place without
-        // an accessor. As a transitional pattern, we ask callers to
-        // use `from_parts` (the documented canonical entry point).
-        //
-        // For now, this method is reserved for future use once the
-        // kernel exposes accessor methods on `TurnRunner`. See
-        // `from_parts` for the supported entry.
-        let _ = runner;
-        let _ = filters;
-        unimplemented!(
-            "TurnRunner does not yet expose gateway/executor accessors; \
-             use AgentRuntime::from_parts(gateway, executor, filters)"
-        )
     }
 
     /// Borrow the inner `TurnRunner`. Useful for tests / debug

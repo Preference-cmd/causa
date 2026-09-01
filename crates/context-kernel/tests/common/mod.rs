@@ -89,6 +89,60 @@ pub fn runner_with(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) ->
     TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(tools)))
 }
 
+// ---- test-only dedup hook -----------------------------------------------------
+//
+// The framework's `DedupFilter` lives in `agent-runtime`, but kernel tests
+// must not depend on the layer above. This is a test-only local copy for
+// the single `dedup_same_batch_rejected*` coverage.
+
+pub struct TestDedupHook;
+
+#[async_trait]
+impl reimagine_context_kernel::ToolUseHook for TestDedupHook {
+    async fn apply(
+        &self,
+        calls: Vec<reimagine_context_kernel::ToolCallPayload>,
+        _ctx: &reimagine_context_kernel::HookCtx<'_>,
+    ) -> reimagine_context_kernel::HookOutcome {
+        use reimagine_context_kernel::{ToolOutput, ToolResultPayload, ToolResultStatus};
+        use std::collections::HashMap;
+        let mut seen: HashMap<(String, serde_json::Value), ()> = HashMap::new();
+        let mut to_execute = Vec::new();
+        let mut rejected = Vec::new();
+        for payload in calls {
+            let key = (payload.tool_name.clone(), payload.arguments.clone());
+            if seen.insert(key, ()).is_some() {
+                rejected.push(reimagine_context_kernel::ToolExecutionOutcome::new(
+                    ToolResultPayload {
+                        call_id: payload.call_id.clone(),
+                        status: ToolResultStatus::Rejected,
+                        output: ToolOutput::new(
+                            serde_json::json!({"error": "duplicate tool call"}),
+                        ),
+                    },
+                ));
+            } else {
+                to_execute.push(payload);
+            }
+        }
+        reimagine_context_kernel::HookOutcome {
+            to_execute,
+            rejected,
+        }
+    }
+}
+
+/// Like `runner_with`, but with the test dedup hook installed.
+/// Only for tests that want the historical dedup behavior;
+/// normal callers compose filters explicitly via the framework layer.
+pub fn runner_with_dedup(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) -> TurnRunner {
+    TurnRunner::with_hook(
+        gateway,
+        Arc::new(ToolExecutor::from_vec(tools)),
+        Arc::new(TestDedupHook),
+    )
+}
+
 // ---- scripted gateway --------------------------------------------------------
 
 /// A gateway that replays canned outcomes and records every request.
