@@ -5,7 +5,68 @@ use crate::context::ids::{
 };
 use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::context::tool_data::{ToolCallId, ToolResultPayload};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
+
+// --- TurnContext <-> TurnSnapshot serde bridge -----------------------------
+//
+// `TurnContext` is the in-memory mutable fact machine; it does not derive
+// `Serialize` because a live active turn is not a stable wire payload
+// (Slice 1.5 §5.6). But once a turn is sealed, `TurnContext::snapshot()`
+// returns an immutable `TurnSnapshot` projection that IS `Serialize`.
+//
+// These helpers let `TurnOutcome` and `ConversationState` derive
+// `Serialize, Deserialize` directly, while routing only the
+// `TurnContext` fields through this projection via
+// `#[serde(with = "turn_context_as_snapshot")]`. On the wire the
+// field looks like a `TurnSnapshot`; on reload it rebuilds a sealed
+// `TurnContext` via `from_validated_blocks`.
+
+pub(crate) mod turn_context_as_snapshot {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &TurnContext, s: S) -> Result<S::Ok, S::Error> {
+        TurnSnapshot::serialize(&value.snapshot(), s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<TurnContext, D::Error> {
+        let snap = TurnSnapshot::deserialize(d)?;
+        let mut ctx = TurnContext::from_validated_blocks(
+            snap.turn_id,
+            snap.blocks.into_inner(),
+            snap.source_version,
+        )
+        .map_err(serde::de::Error::custom)?;
+        ctx.seal();
+        Ok(ctx)
+    }
+}
+
+pub(crate) mod option_turn_context_as_snapshot {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &Option<TurnContext>, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(ctx) => turn_context_as_snapshot::serialize(ctx, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TurnContext>, D::Error> {
+        let opt: Option<TurnSnapshot> = Option::deserialize(d)?;
+        opt.map(|snap| {
+            let mut ctx = TurnContext::from_validated_blocks(
+                snap.turn_id,
+                snap.blocks.into_inner(),
+                snap.source_version,
+            )
+            .map_err(serde::de::Error::custom)?;
+            ctx.seal();
+            Ok(ctx)
+        })
+        .transpose()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnLifecycle {
@@ -60,6 +121,9 @@ impl OrderedBlocks {
     }
     pub fn as_slice(&self) -> &[ContextBlock] {
         &self.0
+    }
+    pub fn into_inner(self) -> Vec<ContextBlock> {
+        self.0
     }
 }
 
@@ -456,4 +520,15 @@ pub struct TurnSnapshot {
     pub turn_sequence: TurnSequence,
     pub blocks: OrderedBlocks,
     pub source_version: ContextVersion,
+}
+
+impl TurnSnapshot {
+    /// Set the `turn_sequence` on a snapshot. `TurnContext::snapshot()`
+    /// returns `TurnSequence(0)` as a placeholder (the conversation
+    /// owns the sequence, not the turn); callers that need a real
+    /// sequence use this to set it after construction.
+    pub fn with_turn_sequence(mut self, turn_sequence: TurnSequence) -> Self {
+        self.turn_sequence = turn_sequence;
+        self
+    }
 }

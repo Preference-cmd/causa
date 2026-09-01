@@ -68,12 +68,19 @@ pub enum ConversationError {
 /// - `abort_turn` discards the active turn in any state (open,
 ///   sealed-completed, sealed-interrupted); history is untouched either way,
 ///   and an aborted turn's id may be reused.
+#[derive(Serialize, Deserialize)]
 pub struct ConversationState {
     conversation_id: ConversationId,
     completed_turns: OrderedTurns,
+    /// The sealed active turn at handoff. Serialized through the
+    /// `option_turn_context_as_snapshot` adapter (see
+    /// `crate::context::turn`): the in-memory `TurnContext` is the
+    /// mutable fact machine; once sealed its snapshot projection is the
+    /// canonical wire shape. On reload we rebuild a sealed
+    /// `TurnContext` via `from_validated_blocks` + `seal()`.
+    #[serde(with = "crate::context::turn::option_turn_context_as_snapshot")]
     active_turn: Option<TurnContext>,
     sealed_result: Option<SealedResult>,
-    next_turn_sequence: TurnSequence,
     version: ConversationVersion,
 }
 
@@ -83,7 +90,7 @@ impl std::fmt::Debug for ConversationState {
             .field("conversation_id", &self.conversation_id)
             .field("version", &self.version)
             .field("snapshot_count", &self.completed_turns.0.len())
-            .field("next_turn_sequence", &self.next_turn_sequence)
+            .field("next_turn_sequence", &self.next_turn_sequence())
             .field("active_turn", &self.active_turn)
             .field("sealed_result", &self.sealed_result)
             .finish()
@@ -97,9 +104,19 @@ impl ConversationState {
             completed_turns: OrderedTurns::empty(),
             active_turn: None,
             sealed_result: None,
-            next_turn_sequence: TurnSequence(0),
             version: ConversationVersion(0),
         }
+    }
+
+    /// The next `TurnSequence` the kernel will assign on `commit`. Derived
+    /// from `completed_turns.last() + 1` so the source of truth is history;
+    /// there is no in-memory field to drift. `TurnSequence(0)` if empty.
+    pub fn next_turn_sequence(&self) -> TurnSequence {
+        self.completed_turns
+            .0
+            .last()
+            .map(|s| TurnSequence(s.turn_sequence.0 + 1))
+            .unwrap_or(TurnSequence(0))
     }
 
     /// Admit a fresh active turn. Rejects while any active exists (sealed
@@ -168,8 +185,7 @@ impl ConversationState {
         }
         let active = self.active_turn.take().expect("matched above");
         self.sealed_result = None;
-        let turn_sequence = self.next_turn_sequence;
-        self.next_turn_sequence = TurnSequence(turn_sequence.0 + 1);
+        let turn_sequence = self.next_turn_sequence();
         let snapshot = TurnSnapshot {
             turn_sequence,
             ..active.snapshot()
@@ -243,9 +259,9 @@ impl ConversationState {
         conversation_id: ConversationId,
         snapshots: Vec<TurnSnapshot>,
     ) -> Result<Self, ConversationError> {
-        let mut next_turn_sequence = TurnSequence(0);
+        let mut last_seq = TurnSequence(0);
         for snapshot in &snapshots {
-            if snapshot.turn_sequence < next_turn_sequence {
+            if snapshot.turn_sequence < last_seq {
                 return Err(ConversationError::InvalidSequence(format!(
                     "turn_sequence not strictly increasing: {:?}",
                     snapshot.turn_sequence
@@ -253,14 +269,13 @@ impl ConversationState {
             }
             TurnContext::validate_blocks(&snapshot.turn_id, snapshot.blocks.as_slice())
                 .map_err(|e| ConversationError::InvalidSequence(e.to_string()))?;
-            next_turn_sequence = TurnSequence(snapshot.turn_sequence.0 + 1);
+            last_seq = TurnSequence(snapshot.turn_sequence.0 + 1);
         }
         Ok(Self {
             conversation_id,
             completed_turns: OrderedTurns(snapshots),
             active_turn: None,
             sealed_result: None,
-            next_turn_sequence,
             version: ConversationVersion(0),
         })
     }
@@ -290,69 +305,6 @@ impl ConversationState {
             self.sealed_result.is_none()
                 || self.active_turn.as_ref().is_some_and(|t| t.is_sealed())
         );
-    }
-}
-
-/// Wire shape of `ConversationState`. Differs from the in-memory struct by
-/// projecting the sealed active turn through its snapshot (the canonical
-/// history projection); `TurnContext` itself is in-memory mutable state and
-/// does not derive `Serialize`/`Deserialize`. On reload, the caller is
-/// expected to drive the active slot to a terminal transition
-/// (`commit` if `sealed_result == Completed`, else `abort_turn`).
-#[derive(Serialize, Deserialize)]
-struct ConversationStateWire {
-    conversation_id: ConversationId,
-    completed_turns: Vec<TurnSnapshot>,
-    active_turn: Option<TurnSnapshot>,
-    sealed_result: Option<SealedResult>,
-    next_turn_sequence: TurnSequence,
-    version: ConversationVersion,
-}
-
-impl Serialize for ConversationState {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let wire = ConversationStateWire {
-            conversation_id: self.conversation_id.clone(),
-            completed_turns: self.completed_turns.ordered().to_vec(),
-            active_turn: self.active_turn.as_ref().map(|t| t.snapshot()),
-            sealed_result: self.sealed_result,
-            next_turn_sequence: self.next_turn_sequence,
-            version: self.version,
-        };
-        wire.serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for ConversationState {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let wire = ConversationStateWire::deserialize(d)?;
-        let active_turn = match wire.active_turn {
-            Some(snap) => {
-                let mut ctx = TurnContext::from_validated_blocks(
-                    snap.turn_id.clone(),
-                    snap.blocks.as_slice().to_vec(),
-                    snap.source_version,
-                )
-                .map_err(serde::de::Error::custom)?;
-                if wire.sealed_result.is_some() {
-                    ctx.seal();
-                }
-                Some(ctx)
-            }
-            None => None,
-        };
-        Ok(Self {
-            conversation_id: wire.conversation_id,
-            completed_turns: if wire.completed_turns.is_empty() {
-                OrderedTurns::empty()
-            } else {
-                OrderedTurns(wire.completed_turns)
-            },
-            active_turn,
-            sealed_result: wire.sealed_result,
-            next_turn_sequence: wire.next_turn_sequence,
-            version: wire.version,
-        })
     }
 }
 
