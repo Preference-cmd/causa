@@ -74,6 +74,8 @@ async fn retry_same_frame_only_attempt_increments_and_no_block_on_failure() {
     cfg.policy.retry = RetryPolicy {
         max_retries: 1,
         retry_timeouts: false,
+        backoff_base_ms: 0,
+        backoff_max_ms: 0,
     };
     let out = runner.run(c, cfg, ctrl()).await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
@@ -100,6 +102,8 @@ async fn retry_exhaustion_interrupted_and_counts() {
     cfg.policy.retry = RetryPolicy {
         max_retries: 1,
         retry_timeouts: false,
+        backoff_base_ms: 0,
+        backoff_max_ms: 0,
     };
     let out = runner.run(c, cfg, ctrl()).await;
     assert!(matches!(
@@ -304,6 +308,8 @@ async fn max_retries_zero_does_single_attempt() {
     cfg.policy.retry = RetryPolicy {
         max_retries: 0,
         retry_timeouts: false,
+        backoff_base_ms: 0,
+        backoff_max_ms: 0,
     };
     let out = runner.run(c, cfg, ctrl()).await;
     assert!(matches!(

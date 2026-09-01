@@ -13,6 +13,7 @@ use reimagine_context_kernel::ModelRequest;
 use reimagine_context_kernel::ModelStopReason;
 use reimagine_context_kernel::ToolCallPayload;
 use reimagine_context_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
+use reimagine_context_kernel::{AttemptControl, ModelUsage, StreamDelta};
 use reimagine_context_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
 use reimagine_context_kernel::{ConversationError, ConversationState, SealedResult, merged_frame};
 use reimagine_context_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
@@ -183,6 +184,15 @@ enum FrameSource<'a> {
     },
 }
 
+/// The model-phase fork point: a batch `invoke`, or a delta `stream` whose
+/// items are forwarded to the interaction seam. Everything downstream of
+/// the assembled `ModelOutput` is shared state machine.
+#[derive(Clone, Copy)]
+enum ModelPhase {
+    Batch,
+    Stream,
+}
+
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
@@ -227,10 +237,44 @@ impl TurnRunner {
                 FrameSource::Turn(&options.frame),
                 &options,
                 &ctrl,
+                ModelPhase::Batch,
             )
             .await;
         // Every drive exit is terminal; the entry owns all terminal
         // bookkeeping (totals, duration, sealing).
+        trace.tool_calls_total = tool_calls_total;
+        trace.total_duration_ms = millis_since(start);
+        context.seal();
+        TurnOutcome {
+            context,
+            result,
+            trace,
+        }
+    }
+
+    /// Slice 6 entry: the streaming twin of [`TurnRunner::run`]. The model
+    /// phase consumes provider deltas — each one forwarded to
+    /// `options.interaction.on_delta` — instead of a single batch result;
+    /// retry bookkeeping, tool dispatch, traces, and sealing are the same
+    /// shared state machine. A retried attempt re-streams the same frame;
+    /// deltas already observed are advisory history, and the host decides
+    /// how to present the partial-then-reset flow.
+    pub async fn run_streaming(
+        &self,
+        mut context: TurnContext,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> TurnOutcome {
+        let start = Instant::now();
+        let (result, mut trace, tool_calls_total) = self
+            .drive(
+                &mut context,
+                FrameSource::Turn(&options.frame),
+                &options,
+                &ctrl,
+                ModelPhase::Stream,
+            )
+            .await;
         trace.tool_calls_total = tool_calls_total;
         trace.total_duration_ms = millis_since(start);
         context.seal();
@@ -276,6 +320,7 @@ impl TurnRunner {
                 },
                 &options,
                 &ctrl,
+                ModelPhase::Batch,
             )
             .await;
         trace.tool_calls_total = tool_calls_total;
@@ -294,15 +339,118 @@ impl TurnRunner {
         })
     }
 
-    /// The shared state machine — both entries run this loop; the frame
-    /// source is the only fork. Every exit is terminal; the entries own
-    /// sealing.
+    /// Slice 6 entry: the streaming twin of [`TurnRunner::run_in_conversation`]
+    /// — same consume/return contract and entry gates, delta-driven model
+    /// phase. `options.frame` stays deliberately inert here.
+    pub async fn run_in_conversation_streaming(
+        &self,
+        mut state: ConversationState,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> Result<ConversationOutcome, ConversationError> {
+        let active_id = match state.active_turn() {
+            Some(t) => t.turn_id(),
+            None => return Err(ConversationError::NoActiveTurn),
+        };
+        if state.active_turn().expect("checked above").is_sealed() {
+            return Err(ConversationError::TurnAlreadySealed);
+        }
+        let (conversation_id, history, active) = state.runner_parts();
+        let active = active.expect("NoActiveTurn checked above");
+        let start = Instant::now();
+        let (result, mut trace, tool_calls_total) = self
+            .drive(
+                active,
+                FrameSource::Conversation {
+                    conversation_id,
+                    history,
+                },
+                &options,
+                &ctrl,
+                ModelPhase::Stream,
+            )
+            .await;
+        trace.tool_calls_total = tool_calls_total;
+        trace.total_duration_ms = millis_since(start);
+        let stamp = match &result {
+            TurnResult::Completed { .. } => SealedResult::Completed,
+            TurnResult::Interrupted { .. } => SealedResult::Interrupted,
+        };
+        state
+            .seal_turn(active_id, stamp)
+            .expect("active turn still present");
+        Ok(ConversationOutcome {
+            state,
+            result,
+            trace,
+        })
+    }
+
+    /// One streaming model attempt: forward every delta to the interaction
+    /// seam, then return the `Done` output (falling back to a stream-phase
+    /// `Usage` delta when `Done` carries none). An `Error` delta maps to the
+    /// same error shape the `invoke` path produces, so the shared retry
+    /// loop and trace machinery apply unchanged; a stream that ends
+    /// without `Done` is `UnknownOutcome`.
+    async fn stream_attempt(
+        &self,
+        req: &ModelRequest,
+        attempt_ctrl: &AttemptControl,
+        options: &TurnRunOptions,
+        round_id: RoundId,
+    ) -> Result<ModelOutput, ModelInvokeError> {
+        use futures_util::StreamExt;
+        let mut stream = self.gateway.stream(req, attempt_ctrl).await?;
+        let mut usage_seen: Option<ModelUsage> = None;
+        loop {
+            let item = tokio::select! {
+                biased;
+                _ = attempt_ctrl.cancellation_token().cancelled() => {
+                    return Err(ModelInvokeError::new(
+                        ModelInvokeErrorKind::Cancelled,
+                        "cancelled during stream",
+                    ));
+                }
+                next = stream.next() => match next {
+                    Some(item) => item,
+                    None => {
+                        return Err(ModelInvokeError::new(
+                            ModelInvokeErrorKind::UnknownOutcome,
+                            "stream ended without Done",
+                    ));
+                    }
+                },
+            };
+            options.interaction.on_delta(round_id, &item).await;
+            match item {
+                StreamDelta::Done { final_output, .. } => {
+                    let mut out = final_output;
+                    if out.usage.is_none() {
+                        out.usage = usage_seen;
+                    }
+                    return Ok(out);
+                }
+                StreamDelta::Usage(u) => usage_seen = Some(u),
+                StreamDelta::Error { kind, message } => {
+                    return Err(ModelInvokeError::new(kind, message));
+                }
+                StreamDelta::TextDelta { .. }
+                | StreamDelta::ReasoningDelta { .. }
+                | StreamDelta::ToolCallDelta { .. } => {}
+            }
+        }
+    }
+
+    /// The shared state machine — every entry runs this loop; the frame
+    /// source and the model phase are the only forks. Every exit is
+    /// terminal; the entries own sealing.
     async fn drive(
         &self,
         active: &mut TurnContext,
         frames: FrameSource<'_>,
         options: &TurnRunOptions,
         ctrl: &RunControl,
+        phase: ModelPhase,
     ) -> (TurnResult, TurnTrace, usize) {
         let mut round: u32 = 0;
         let mut tool_calls_total: usize = 0;
@@ -376,7 +524,14 @@ impl TurnRunner {
                     tool_surface: options.invocation.tool_surface.clone(),
                     generation: options.invocation.generation.clone(),
                 };
-                match self.gateway.invoke(&req, &attempt_ctrl).await {
+                let result = match phase {
+                    ModelPhase::Batch => self.gateway.invoke(&req, &attempt_ctrl).await,
+                    ModelPhase::Stream => {
+                        self.stream_attempt(&req, &attempt_ctrl, options, RoundId(round))
+                            .await
+                    }
+                };
+                match result {
                     Ok(out) => {
                         attempts.push(AttemptTrace {
                             attempt: AttemptNumber(attempt),
@@ -395,6 +550,22 @@ impl TurnRunner {
                             duration_ms: millis_since(attempt_started),
                         });
                         if retryable && attempt <= options.policy.retry.max_retries {
+                            // Cancellation-aware backoff: sleep between
+                            // attempts, racing the shared token so a cancel
+                            // lands immediately instead of after the wait.
+                            let delay = options.policy.retry.backoff_delay(attempt + 1);
+                            if !delay.is_zero() {
+                                tokio::select! {
+                                    biased;
+                                    _ = attempt_ctrl.cancellation_token().cancelled() => {
+                                        break Err(ModelInvokeError::new(
+                                            ModelInvokeErrorKind::Cancelled,
+                                            "cancelled during retry backoff",
+                                        ));
+                                    }
+                                    _ = tokio::time::sleep(delay) => {}
+                                }
+                            }
                             attempt += 1;
                             continue;
                         }

@@ -52,7 +52,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::driver::{ModelRoundTrace, TurnResult, TurnTrace};
 use reimagine_context_kernel::{
-    BlockContent, ConversationId, RoundId, ToolCallPayload, TurnContext, TurnId,
+    BlockContent, ConversationId, RoundId, StreamDelta, ToolCallPayload, TurnContext, TurnId,
+    TurnInteraction,
 };
 
 /// Framework-side event projected from a turn's facts.
@@ -100,6 +101,22 @@ pub enum ContextEventKind {
     TurnOutcome {
         result: TurnResult,
         trace: TurnTrace,
+    },
+    // — Slice 6: streaming-delta variants (the `project_streaming_turn`
+    // path; mutually exclusive with the batch `project_turn` sequence for
+    // the same turn). `conversation_id` / `turn_id` ride the envelope.
+    /// One model text increment in round `round_id`.
+    TextDelta { round_id: RoundId, delta: String },
+    /// One reasoning increment in round `round_id`.
+    ReasoningDelta { round_id: RoundId, delta: String },
+    /// One tool-call increment in round `round_id`: the provider is
+    /// appending the name and/or the JSON arguments of the call at
+    /// `call_index` in draft order.
+    ToolCallDelta {
+        round_id: RoundId,
+        call_index: usize,
+        name_delta: Option<String>,
+        arguments_delta: Option<String>,
     },
 }
 
@@ -150,19 +167,12 @@ pub fn project_turn(
     });
     // tool.call blocks indexed by block id — one pass over the facts,
     // then O(1) resolution per round.
-    let call_index: HashMap<reimagine_context_kernel::BlockId, ToolCallPayload> = context
-        .blocks()
-        .iter()
-        .filter_map(|b| match &b.content {
-            BlockContent::ToolCall(call) => Some((b.id.clone(), call.clone())),
-            _ => None,
-        })
-        .collect();
+    let calls_by_block = call_index(context);
     for round in &trace.rounds {
         if round.tool_batch.is_none() {
             continue;
         }
-        let calls = committed_calls(&call_index, round);
+        let calls = committed_calls(&calls_by_block, round);
         events.push(ContextEvent {
             conversation_id: conversation_id.clone(),
             turn_id: turn_id.clone(),
@@ -195,6 +205,174 @@ fn committed_calls(
         .applied_block_ids
         .iter()
         .filter_map(|id| call_index.get(id).cloned())
+        .collect()
+}
+
+// --- Slice 6: streaming projection -------------------------------------------
+
+/// A collecting [`TurnInteraction`] — the bridge between a live streaming
+/// turn and the `ContextEvent` sequence. Wire it through
+/// `TurnRunOptions.interaction`; when the turn finishes, feed
+/// [`StreamEventCollector::into_events`] into
+/// [`project_streaming_turn`] to produce the canonical full sequence.
+///
+/// `Usage` / `Done` / `Error` deltas collect nothing: usage and the
+/// terminal state ride the final `TurnOutcome` event's `trace`/`result`.
+pub struct StreamEventCollector {
+    turn_id: TurnId,
+    conversation_id: Option<ConversationId>,
+    events: std::sync::Mutex<Vec<ContextEvent>>,
+}
+
+impl StreamEventCollector {
+    pub fn new(turn_id: TurnId, conversation_id: Option<ConversationId>) -> Self {
+        Self {
+            turn_id,
+            conversation_id,
+            events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The delta events collected while the turn ran, in arrival order.
+    /// Borrowed form — convenient behind an `Arc` wiring.
+    pub fn events(&self) -> Vec<ContextEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    /// The delta events collected while the turn ran, in arrival order.
+    pub fn into_events(self) -> Vec<ContextEvent> {
+        self.events.into_inner().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnInteraction for StreamEventCollector {
+    async fn on_delta(&self, round_id: RoundId, delta: &StreamDelta) {
+        let kind = match delta {
+            StreamDelta::TextDelta { delta } => ContextEventKind::TextDelta {
+                round_id,
+                delta: delta.clone(),
+            },
+            StreamDelta::ReasoningDelta { delta } => ContextEventKind::ReasoningDelta {
+                round_id,
+                delta: delta.clone(),
+            },
+            StreamDelta::ToolCallDelta {
+                call_index,
+                name_delta,
+                arguments_delta,
+                ..
+            } => ContextEventKind::ToolCallDelta {
+                round_id,
+                call_index: *call_index,
+                name_delta: name_delta.clone(),
+                arguments_delta: arguments_delta.clone(),
+            },
+            // Usage / Done / Error ride the terminal TurnOutcome event.
+            StreamDelta::Usage(_) | StreamDelta::Done { .. } | StreamDelta::Error { .. } => {
+                return;
+            }
+        };
+        self.events.lock().unwrap().push(ContextEvent {
+            conversation_id: self.conversation_id.clone(),
+            turn_id: self.turn_id.clone(),
+            kind,
+        });
+    }
+}
+
+/// Project a **streaming** turn into its canonical `ContextEvent` sequence
+/// — the streaming counterpart of [`project_turn`]. The two are mutually
+/// exclusive for the same turn: a turn driven through
+/// `run_streaming` / `run_in_conversation_streaming` projects here, a
+/// batch-driven one through `project_turn`.
+///
+/// ## Inputs
+///
+/// - `context` / `result` / `trace` / `conversation_id` — exactly as in
+///   [`project_turn`].
+/// - `deltas` — the output of the [`StreamEventCollector`] wired into
+///   `TurnRunOptions.interaction` while the turn ran.
+///
+/// ## Output order
+///
+/// 1. `TurnStarted` — exactly once.
+/// 2. Per round, ascending by `round_id` (the union of trace rounds and
+///    delta rounds): that round's delta events in arrival order, then its
+///    `ToolBatchDispatched` if the trace carries a `tool_batch`.
+/// 3. `TurnOutcome` — exactly once, with the full trace.
+///
+/// Events are re-enveloped with this turn's ids, so the projector — not
+/// the collector — owns canonical identity.
+pub fn project_streaming_turn(
+    context: &TurnContext,
+    result: &TurnResult,
+    trace: &TurnTrace,
+    conversation_id: Option<ConversationId>,
+    deltas: Vec<ContextEvent>,
+) -> Vec<ContextEvent> {
+    let turn_id = context.turn_id();
+    let envelope = |kind: ContextEventKind| ContextEvent {
+        conversation_id: conversation_id.clone(),
+        turn_id: turn_id.clone(),
+        kind,
+    };
+    let mut delta_by_round: HashMap<u32, Vec<ContextEvent>> = HashMap::new();
+    for event in deltas {
+        let round = match &event.kind {
+            ContextEventKind::TextDelta { round_id, .. }
+            | ContextEventKind::ReasoningDelta { round_id, .. }
+            | ContextEventKind::ToolCallDelta { round_id, .. } => round_id.0,
+            _ => continue,
+        };
+        delta_by_round.entry(round).or_default().push(event);
+    }
+    let mut rounds: Vec<u32> = trace
+        .rounds
+        .iter()
+        .map(|r| r.round_id.0)
+        .chain(delta_by_round.keys().copied())
+        .collect();
+    rounds.sort_unstable();
+    rounds.dedup();
+
+    let mut events = Vec::with_capacity(2 + rounds.len());
+    events.push(envelope(ContextEventKind::TurnStarted));
+    for round in rounds {
+        if let Some(round_deltas) = delta_by_round.remove(&round) {
+            events.extend(round_deltas);
+        }
+        if let Some(trace_round) = trace
+            .rounds
+            .iter()
+            .find(|r| r.round_id.0 == round)
+            .filter(|r| r.tool_batch.is_some())
+        {
+            let calls = committed_calls(&call_index(context), trace_round);
+            events.push(envelope(ContextEventKind::ToolBatchDispatched {
+                round_id: RoundId(round),
+                calls,
+            }));
+        }
+    }
+    events.push(envelope(ContextEventKind::TurnOutcome {
+        result: result.clone(),
+        trace: trace.clone(),
+    }));
+    events
+}
+
+/// One pass over the facts: committed tool-call blocks indexed by block id.
+fn call_index(
+    context: &TurnContext,
+) -> HashMap<reimagine_context_kernel::BlockId, ToolCallPayload> {
+    context
+        .blocks()
+        .iter()
+        .filter_map(|b| match &b.content {
+            BlockContent::ToolCall(call) => Some((b.id.clone(), call.clone())),
+            _ => None,
+        })
         .collect()
 }
 
@@ -553,6 +731,156 @@ mod tests {
                 assert_eq!(calls.len(), 1);
             }
             other => panic!("expected ToolBatchDispatched, got {other:?}"),
+        }
+    }
+
+    // -- Slice 6: streaming-variant serialization pins ----------------------
+
+    #[test]
+    fn round_trip_streaming_delta_variants() {
+        let variants = vec![
+            ContextEvent {
+                conversation_id: Some(ConversationId("conv-s".into())),
+                turn_id: turn_id(21),
+                kind: ContextEventKind::TextDelta {
+                    round_id: RoundId(1),
+                    delta: "he".into(),
+                },
+            },
+            ContextEvent {
+                conversation_id: None,
+                turn_id: turn_id(22),
+                kind: ContextEventKind::ReasoningDelta {
+                    round_id: RoundId(0),
+                    delta: "pondering".into(),
+                },
+            },
+            ContextEvent {
+                conversation_id: None,
+                turn_id: turn_id(23),
+                kind: ContextEventKind::ToolCallDelta {
+                    round_id: RoundId(2),
+                    call_index: 1,
+                    name_delta: Some("echo".into()),
+                    arguments_delta: Some("{\"a\":1}".into()),
+                },
+            },
+        ];
+        for original in variants {
+            let json = serde_json::to_string(&original).expect("serialize");
+            let restored: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(
+                serde_json::to_string(&restored).expect("re-serialize"),
+                json,
+                "round-trip must be stable"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_delta_wire_discriminators_are_pinned() {
+        let event = ContextEvent {
+            conversation_id: None,
+            turn_id: turn_id(1),
+            kind: ContextEventKind::TextDelta {
+                round_id: RoundId(0),
+                delta: "x".into(),
+            },
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"type\":\"text_delta\""), "{json}");
+        assert!(json.contains("\"round_id\":0"), "{json}");
+
+        let call = ContextEvent {
+            conversation_id: None,
+            turn_id: turn_id(1),
+            kind: ContextEventKind::ToolCallDelta {
+                round_id: RoundId(0),
+                call_index: 0,
+                name_delta: Some("echo".into()),
+                arguments_delta: None,
+            },
+        };
+        let json = serde_json::to_string(&call).expect("serialize");
+        assert!(json.contains("\"type\":\"tool_call_delta\""), "{json}");
+        // A None delta field is skipped on the wire (Option serialization
+        // without skip flags keeps nulls — pin whatever the derive does).
+        let reasoning = ContextEvent {
+            conversation_id: None,
+            turn_id: turn_id(1),
+            kind: ContextEventKind::ReasoningDelta {
+                round_id: RoundId(0),
+                delta: "r".into(),
+            },
+        };
+        let json = serde_json::to_string(&reasoning).expect("serialize");
+        assert!(json.contains("\"type\":\"reasoning_delta\""), "{json}");
+    }
+
+    #[test]
+    fn collector_maps_deltas_and_skips_terminal_ones() {
+        let collector = StreamEventCollector::new(turn_id(9), None);
+        let deltas = vec![
+            StreamDelta::TextDelta { delta: "he".into() },
+            StreamDelta::ReasoningDelta { delta: "th".into() },
+            StreamDelta::ToolCallDelta {
+                call_index: 0,
+                provider_call_id: Some("p1".into()),
+                name_delta: Some("echo".into()),
+                arguments_delta: None,
+            },
+            StreamDelta::Usage(reimagine_context_kernel::ModelUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            }),
+            StreamDelta::Done {
+                stop_reason: ModelStopReason::EndTurn,
+                final_output: reimagine_context_kernel::ModelOutput {
+                    response: ModelResponse {
+                        text: TextPayload::new("he"),
+                        tool_calls: vec![],
+                    },
+                    usage: None,
+                    stop_reason: ModelStopReason::EndTurn,
+                    reasoning: None,
+                },
+            },
+            StreamDelta::Error {
+                kind: reimagine_context_kernel::ModelInvokeErrorKind::Transient,
+                message: "x".into(),
+            },
+        ];
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for d in &deltas {
+            rt.block_on(collector.on_delta(RoundId(4), d));
+        }
+        let events = collector.into_events();
+        // Usage / Done / Error ride the terminal TurnOutcome event only.
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events[0].kind,
+            ContextEventKind::TextDelta {
+                round_id: RoundId(4),
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1].kind,
+            ContextEventKind::ReasoningDelta { .. }
+        ));
+        match &events[2].kind {
+            ContextEventKind::ToolCallDelta {
+                call_index,
+                name_delta,
+                ..
+            } => {
+                assert_eq!(*call_index, 0);
+                assert_eq!(name_delta.as_deref(), Some("echo"));
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
         }
     }
 }

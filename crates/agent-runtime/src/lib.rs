@@ -34,7 +34,8 @@ pub mod hook;
 
 // --- driver stack (graduated from context-kernel internal/, Slice 12) --------
 pub use config::{
-    ExecutionOptions, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy, TurnRunOptions,
+    ExecutionOptions, NoopInteraction, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy,
+    TurnRunOptions,
 };
 pub use control::RunControl;
 pub use defaults::{NoopCompaction, NoopTokenCounter};
@@ -46,5 +47,7 @@ pub use executor::ToolExecutor;
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
 
 // --- framework policies and projections --------------------------------------
-pub use event::{ContextEvent, ContextEventKind, project_turn};
+pub use event::{
+    ContextEvent, ContextEventKind, StreamEventCollector, project_streaming_turn, project_turn,
+};
 pub use filter::{AllowAllFilter, DedupFilter, DenyAllFilter, FilterChain};

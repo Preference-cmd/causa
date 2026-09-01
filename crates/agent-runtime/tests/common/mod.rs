@@ -17,9 +17,10 @@ use reimagine_agent_runtime::{
 use reimagine_context_kernel::{
     AttemptControl, CallControl, Compaction, CompactionError, CompactionInput, CompactionOutput,
     ContextFrame, ConversationState, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRequest, ModelResponse, ModelStopReason, SealedResult, TextPayload, Tool,
-    ToolCallContext, ToolCallDraft, ToolDefinition, ToolExecutionOutcome, ToolOutput,
-    ToolResultPayload, ToolResultStatus, Truncation, TurnContext, TurnId, UnknownOutcomePolicy,
+    ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream, SealedResult,
+    StreamDelta, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition,
+    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation, TurnContext,
+    TurnId, UnknownOutcomePolicy,
 };
 use std::sync::{Arc, Mutex};
 
@@ -343,4 +344,104 @@ impl Compaction for DropAllCompaction {
             truncated: true,
         })
     }
+}
+
+// ---- streaming fixtures (Slice 6) ----------------------------------------------
+
+/// One scripted `stream()` call: either the call itself fails
+/// (transport-level, mapped like `invoke` errors) or it yields a delta
+/// sequence.
+pub type StreamScript = Result<Vec<StreamDelta>, ModelInvokeErrorKind>;
+
+/// A gateway whose `stream()` pops one script per attempt and records
+/// every request — the streaming counterpart of `RecordingGateway`.
+/// `invoke` is never wired here: streaming tests drive `stream()` only.
+pub struct RecordingStreamingGateway {
+    scripts: Mutex<Vec<StreamScript>>,
+    recorded: Mutex<Vec<ModelRequest>>,
+}
+
+impl RecordingStreamingGateway {
+    pub fn scripted(scripts: Vec<StreamScript>) -> Arc<Self> {
+        Arc::new(Self {
+            scripts: Mutex::new(scripts),
+            recorded: Mutex::new(vec![]),
+        })
+    }
+
+    /// Number of `stream()` calls made so far — one per attempt.
+    pub fn attempts(&self) -> usize {
+        self.recorded.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl ModelGateway for RecordingStreamingGateway {
+    async fn invoke(
+        &self,
+        _req: &ModelRequest,
+        _ctrl: &AttemptControl,
+    ) -> Result<ModelOutput, ModelInvokeError> {
+        Err(ModelInvokeError::new(
+            ModelInvokeErrorKind::Permanent,
+            "streaming fixture has no invoke script",
+        ))
+    }
+
+    async fn stream(
+        &self,
+        req: &ModelRequest,
+        _ctrl: &AttemptControl,
+    ) -> Result<ModelStream, ModelInvokeError> {
+        self.recorded.lock().unwrap().push(req.clone());
+        let mut scripts = self.scripts.lock().unwrap();
+        match (!scripts.is_empty()).then(|| scripts.remove(0)) {
+            None => Err(ModelInvokeError::new(
+                ModelInvokeErrorKind::Permanent,
+                "no more streaming scripts",
+            )),
+            Some(Err(kind)) => Err(ModelInvokeError::new(kind, "scripted")),
+            Some(Ok(deltas)) => Ok(Box::pin(futures_util::stream::iter(deltas))),
+        }
+    }
+}
+
+/// `[TextDelta(..text..), Done(endturn_output(text))]` — the minimal
+/// text-only completion script.
+pub fn text_script(text: &str) -> StreamScript {
+    Ok(vec![
+        StreamDelta::TextDelta {
+            delta: text.to_string(),
+        },
+        StreamDelta::Done {
+            stop_reason: ModelStopReason::EndTurn,
+            final_output: endturn_output(text),
+        },
+    ])
+}
+
+/// A tool-use round script: text, one tool call split across a name delta
+/// and two argument deltas, then `Done` carrying the assembled drafts.
+pub fn tooluse_script(text: &str, tool: &str, args: serde_json::Value) -> StreamScript {
+    Ok(vec![
+        StreamDelta::TextDelta {
+            delta: text.to_string(),
+        },
+        StreamDelta::ToolCallDelta {
+            call_index: 0,
+            provider_call_id: Some("prov-1".into()),
+            name_delta: Some(tool.to_string()),
+            arguments_delta: None,
+        },
+        StreamDelta::ToolCallDelta {
+            call_index: 0,
+            provider_call_id: None,
+            name_delta: None,
+            arguments_delta: Some(args.to_string()),
+        },
+        StreamDelta::Done {
+            stop_reason: ModelStopReason::ToolUse,
+            final_output: tooluse_output(text, tool, args),
+        },
+    ])
 }

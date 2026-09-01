@@ -133,4 +133,67 @@ pub trait ModelGateway: Send + Sync {
         request: &ModelRequest,
         control: &AttemptControl,
     ) -> Result<ModelOutput, ModelInvokeError>;
+
+    /// Streaming completion. Default implementation: degenerates to a
+    /// single [`StreamDelta::Done`] after `invoke` — providers that never
+    /// implemented streaming keep working through the same port; streaming
+    /// providers override to expose real token increments.
+    async fn stream(
+        &self,
+        request: &ModelRequest,
+        control: &AttemptControl,
+    ) -> Result<ModelStream, ModelInvokeError> {
+        let output = self.invoke(request, control).await?;
+        Ok(completed_model_stream(output))
+    }
+}
+
+/// Bounded stream of provider deltas. Cancellation is observable through
+/// the same `AttemptControl` the `invoke` path uses — drivers race
+/// `next()` against the cancellation token, never poll.
+pub type ModelStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = StreamDelta> + Send>>;
+
+/// Wrap an already-complete output as a single-`Done` stream — the
+/// degenerate form the default `stream` implementation and tests use.
+pub fn completed_model_stream(output: ModelOutput) -> ModelStream {
+    let stop_reason = output.stop_reason;
+    Box::pin(futures_util::stream::once(async move {
+        StreamDelta::Done {
+            stop_reason,
+            final_output: output,
+        }
+    }))
+}
+
+/// One incremental observation from a streaming provider.
+///
+/// Contract: `Done` MUST carry the fully-assembled [`ModelOutput`] (text,
+/// tool-call drafts with stable ids, usage) — deltas are advisory
+/// observations for hosts, never the source of truth. A stream that ends
+/// without `Done` is an `UnknownOutcome`-shaped failure at the driver.
+#[derive(Debug, Clone)]
+pub enum StreamDelta {
+    TextDelta {
+        delta: String,
+    },
+    ReasoningDelta {
+        delta: String,
+    },
+    ToolCallDelta {
+        call_index: usize,
+        /// Provider-issued id, bound to the stable kernel `ToolCallId` at
+        /// first sight by the gateway assembling `Done`.
+        provider_call_id: Option<String>,
+        name_delta: Option<String>,
+        arguments_delta: Option<String>,
+    },
+    Usage(ModelUsage),
+    Done {
+        stop_reason: ModelStopReason,
+        final_output: ModelOutput,
+    },
+    Error {
+        kind: ModelInvokeErrorKind,
+        message: String,
+    },
 }

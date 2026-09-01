@@ -54,8 +54,10 @@ pub use ports::budget::{
 pub use ports::control::{AttemptControl, CallControl, ControlError, effective_deadline};
 pub use ports::gateway::{
     AttemptNumber, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelRequest, ModelUsage, ReasoningPayload, ToolSurface,
+    ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage, ReasoningPayload, StreamDelta,
+    ToolSurface, completed_model_stream,
 };
+pub use ports::interaction::TurnInteraction;
 pub use ports::store::{ConversationStore, ConversationStoreError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,
