@@ -44,7 +44,16 @@ pub trait ConversationStore: Send + Sync {
     /// harness, invoked inside or after `ConversationState::commit`.
     /// Idempotent on `(conversation_id, turn_sequence)` — repeated
     /// writes of the same snapshot are valid (host may retry).
-    async fn save_snapshot(&self, snapshot: &TurnSnapshot) -> Result<(), ConversationStoreError>;
+    ///
+    /// `TurnSnapshot` does not carry its `ConversationId` (the id is
+    /// implicit in the host's commit flow), so the trait takes it
+    /// explicitly. The host's harness passes both, sourced from the
+    /// `ConversationState` it just committed.
+    async fn save_snapshot(
+        &self,
+        conversation_id: &ConversationId,
+        snapshot: &TurnSnapshot,
+    ) -> Result<(), ConversationStoreError>;
 
     /// Load committed history for `conversation_id`. Returned snapshots
     /// are in the snapshot's own `TurnSequence` ascending order; the
