@@ -10,11 +10,9 @@
 //! TurnInterruption variant or a new ConversationState field must keep
 //! the derive (Serialize, Deserialize) honest.
 
-#![allow(clippy::redundant_clone)]
-
 mod common;
 
-use common::{endturn_output, turn_id};
+use common::{commit_sealed, endturn_output, turn_id};
 use reimagine_context_kernel::{
     ConversationId, ConversationState, ModelInvokeErrorKind, ModelStopReason, SealedResult,
     TextPayload, TurnContext, TurnId, TurnInterruption, TurnOutcome, TurnResult,
@@ -103,16 +101,7 @@ fn turn_outcome_round_trip_preserves_snapshot() {
 #[test]
 fn conversation_outcome_round_trip_preserves_history() {
     let mut state = ConversationState::new(ConversationId("conv-rt".into()));
-    state.begin_turn(TurnId::new("t1")).expect("begin turn 1");
-    state
-        .active_turn_mut()
-        .expect("active")
-        .append_input(TextPayload::new("one"), "user")
-        .expect("append");
-    state
-        .seal_turn(TurnId::new("t1"), SealedResult::Completed)
-        .expect("seal 1");
-    state.commit(TurnId::new("t1")).expect("commit 1");
+    commit_sealed(&mut state, "t1", SealedResult::Completed);
 
     let outcome = reimagine_context_kernel::ConversationOutcome {
         state,

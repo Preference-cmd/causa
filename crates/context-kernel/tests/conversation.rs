@@ -4,7 +4,9 @@
 
 mod common;
 
-use common::{DropAllCompaction, RecordingGateway, ctrl, endturn_output, runner_with};
+use common::{
+    DropAllCompaction, RecordingGateway, commit_sealed, ctrl, endturn_output, runner_with,
+};
 use std::sync::Arc;
 
 use reimagine_context_kernel::{
@@ -17,19 +19,9 @@ fn conv() -> ConversationState {
     ConversationState::new(ConversationId("conv-1".into()))
 }
 
-/// Canonical driver flow: begin, admit facts through the door, seal with the
-/// outcome stamp, commit into history.
+/// Backward-compat shim: keep the historical test call sites readable.
 fn commit_completed(state: &mut ConversationState, turn_id: &str) {
-    state.begin_turn(TurnId::new(turn_id)).unwrap();
-    state
-        .active_turn_mut()
-        .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
-        .unwrap();
-    state
-        .seal_turn(TurnId::new(turn_id), SealedResult::Completed)
-        .unwrap();
-    state.commit(TurnId::new(turn_id)).unwrap();
+    commit_sealed(state, turn_id, SealedResult::Completed);
 }
 
 #[test]
