@@ -2,9 +2,10 @@
 //!
 //! Each trait here is transport-free and runtime-agnostic except for the
 //! control planes' `CancellationToken` (re-exported at the crate root so the
-//! port set is self-contained). The context model lives in `crate::context`; the staged
-//! reference implementation that consumes these ports lives in
-//! `crate::internal` and holds no claim on this contract.
+//! port set is self-contained). The context model lives in `crate::context`.
+//! A type belongs here iff it is the contract surface third parties
+//! implement or call against; the kernel itself consumes none of it — the
+//! canonical consumer (driver, executor) lives in `reimagine-agent-runtime`.
 
 pub mod budget;
 pub mod control;

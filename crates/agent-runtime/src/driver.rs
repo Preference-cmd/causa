@@ -1,38 +1,37 @@
 //! The reference driver — retry scheduling, tool batch dispatch, artifact
-//! spill, control plumbing, and trace construction behind the staged
-//! perimeter. One runner during the transition; the canonical kernel never
-//! references this module.
-use super::config::TurnRunOptions;
-use super::control::RunControl;
-use super::executor::ToolExecutor;
-use crate::context::block::ToolCallPayload;
-use crate::context::conversation::{
-    ConversationError, ConversationState, SealedResult, merged_frame,
-};
-use crate::context::ids::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
-use crate::context::model::ModelStopReason;
-use crate::context::tool_data::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
-use crate::context::turn::{TurnContext, TurnSnapshot};
-use crate::ports::budget::FramePolicy;
-use crate::ports::gateway::AttemptNumber;
-use crate::ports::gateway::ModelGateway;
-use crate::ports::gateway::ModelRequest;
-use crate::ports::gateway::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
-use crate::ports::tool::{ToolExecutionOutcome, UnknownOutcomePolicy};
+//! spill, control plumbing, and trace construction. Graduated from the
+//! kernel's staged `internal/` perimeter by Slice 12: the kernel is facts
+//! and contracts only; the canonical consumer of those contracts lives
+//! here, one layer up.
+use crate::config::TurnRunOptions;
+use crate::control::RunControl;
+use crate::executor::ToolExecutor;
+use reimagine_context_kernel::AttemptNumber;
+use reimagine_context_kernel::FramePolicy;
+use reimagine_context_kernel::ModelGateway;
+use reimagine_context_kernel::ModelRequest;
+use reimagine_context_kernel::ModelStopReason;
+use reimagine_context_kernel::ToolCallPayload;
+use reimagine_context_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
+use reimagine_context_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
+use reimagine_context_kernel::{ConversationError, ConversationState, SealedResult, merged_frame};
+use reimagine_context_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
+use reimagine_context_kernel::{ToolExecutionOutcome, UnknownOutcomePolicy};
+use reimagine_context_kernel::{TurnContext, TurnSnapshot};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::hook::{HookCtx, PassthroughHook, ToolUseHook};
+use crate::hook::{HookCtx, PassthroughHook, ToolUseHook};
 use futures_util::StreamExt;
 
 fn millis_since(t: Instant) -> u64 {
     t.elapsed().as_millis() as u64
 }
 
-// Tool-use filtering lives behind `super::hook::ToolUseHook`.
+// Tool-use filtering lives behind `crate::hook::ToolUseHook`.
 // `TurnRunner` defaults to `PassthroughHook` (no opinion); concrete
-// filter policies belong to `agent-runtime` / host, not to the kernel.
+// filter policies live in `crate::filter` or the host layer.
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail")]
@@ -79,7 +78,7 @@ pub struct AttemptTrace {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutputSummary {
     pub stop_reason: ModelStopReason,
-    pub usage: Option<crate::ports::gateway::ModelUsage>,
+    pub usage: Option<reimagine_context_kernel::ModelUsage>,
     pub tool_call_count: usize,
     pub response_text_bytes: usize,
 }
@@ -104,7 +103,7 @@ pub struct ModelRoundTrace {
     pub round_id: RoundId,
     pub invocation_id: InvocationId,
     /// frame 物化时的 `source_version`（apply 之前的版本）。
-    pub frame_version: crate::context::ids::ContextVersion,
+    pub frame_version: reimagine_context_kernel::ContextVersion,
     pub attempts: Vec<AttemptTrace>,
     pub output_summary: Option<OutputSummary>,
     pub applied_block_ids: Vec<BlockId>,
@@ -140,12 +139,12 @@ pub enum TurnResult {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TurnOutcome {
     /// The sealed active turn at handoff. Serialized through the
-    /// `turn_context_as_snapshot` adapter (see `crate::context::turn`):
+    /// `turn_context_as_snapshot` adapter (see `reimagine_context_kernel::turn_context_as_snapshot`):
     /// the in-memory `TurnContext` is the mutable fact machine, but
     /// once sealed its snapshot projection is the canonical wire shape.
     /// On reload we rebuild a sealed `TurnContext` via
     /// `from_validated_blocks` + `seal()`.
-    #[serde(with = "crate::context::turn::turn_context_as_snapshot")]
+    #[serde(with = "reimagine_context_kernel::turn_context_as_snapshot")]
     pub context: TurnContext,
     pub result: TurnResult,
     pub trace: TurnTrace,
@@ -154,8 +153,9 @@ pub struct TurnOutcome {
 // Wire-contract note (Slice 5A, 2026-09-02 review): `TurnResult`,
 // `TurnOutcome`, `ConversationOutcome` and the `TurnTrace` family are
 // embedded in `agent_runtime::event::ContextEvent` and delivered over
-// IPC. Their Rust item paths stay inside this staged perimeter and may
-// move without notice — but their serde shapes are a load-bearing
+// IPC. Since Slice 12 their Rust item paths live in `agent-runtime`
+// (graduated from the kernel's staged perimeter) and may move between
+// layers without notice — but their serde shapes are a load-bearing
 // external contract and must not change without a breaking migration of
 // the event wire format. `tests/serialization.rs` pins the shapes.
 
@@ -186,10 +186,10 @@ enum FrameSource<'a> {
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
-    /// Kernel-side seam for tool-use filtering. `TurnRunner::new()`
-    /// defaults to `PassthroughHook` (no filter applied — the kernel
-    /// carries no opinion). Custom hooks (e.g. `agent_runtime::FilterChain`,
-    /// which implements `ToolUseHook`) plug in via `TurnRunner::with_hook`.
+    /// Seam for tool-use filtering. `TurnRunner::new()` defaults to
+    /// `PassthroughHook` (no filter applied — the driver carries no
+    /// opinion). Custom hooks (e.g. `FilterChain`, which implements
+    /// `ToolUseHook`) plug in via `TurnRunner::with_hook`.
     hook: Arc<dyn ToolUseHook>,
 }
 impl TurnRunner {
@@ -511,11 +511,10 @@ impl TurnRunner {
                             tool_calls_total,
                         );
                     }
-                    // ToolUse hook: the kernel-side seam for tool-use
-                    // filtering. `TurnRunner::new()` defaults to
-                    // `PassthroughHook` (no filter applied — opt in via
-                    // `with_hook`). agent-runtime's `FilterChain` plugs in
-                    // via `with_hook`, implementing `ToolUseHook` directly.
+                    // ToolUse hook: the tool-use filter seam. `TurnRunner::new()`
+                    // defaults to `PassthroughHook` (no filter applied — opt in
+                    // via `with_hook`). `FilterChain` plugs in via `with_hook`,
+                    // implementing `ToolUseHook` directly.
                     let (to_exec, rejected): (Vec<ToolCallPayload>, Vec<ToolExecutionOutcome>) = {
                         let call_control = ctrl
                             .for_attempt(options.policy.attempt_timeout)

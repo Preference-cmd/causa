@@ -8,11 +8,12 @@
 use std::time::{Duration, Instant};
 
 use reimagine_agent_provider::AnthropicMessagesGateway;
+use reimagine_agent_runtime::RunControl;
 use reimagine_context_kernel::{
     AttemptControl, AttemptNumber, BlockContent, BlockId, BlockMeta, BlockSequence,
     CancellationToken, ContextBlock, ContextFrame, ContextVersion, FrameId, FrameScope,
     GenerationOptions, InvocationId, ModelContext, ModelGateway, ModelInvokeErrorKind, ModelRef,
-    ModelRequest, ModelStopReason, RoundId, RunControl, TextPayload, ToolSurface, TurnId,
+    ModelRequest, ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};

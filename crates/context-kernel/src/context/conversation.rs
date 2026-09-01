@@ -230,14 +230,14 @@ impl ConversationState {
         ))
     }
 
-    /// Disjoint borrow-split for the staged runner's consume/return flow:
-    /// the conversation id and committed history are read while the active
-    /// turn is driven mutably. Crate-internal only — the runner stamps via
-    /// the public `seal_turn` afterwards, so no second &mut seam reaches
-    /// external callers.
-    pub(crate) fn runner_parts(
-        &mut self,
-    ) -> (&ConversationId, &[TurnSnapshot], Option<&mut TurnContext>) {
+    /// Borrow-split for a conversation driver's consume/return flow: the
+    /// conversation id and committed history are read while the active
+    /// turn is driven mutably. Public since Slice 12 — the canonical
+    /// driver lives outside the kernel (agent-runtime), and this is the
+    /// exact seam any external conversation driver needs. Stamping still
+    /// goes through the public `seal_turn` afterwards, so no second `&mut`
+    /// seam exists.
+    pub fn runner_parts(&mut self) -> (&ConversationId, &[TurnSnapshot], Option<&mut TurnContext>) {
         (
             &self.conversation_id,
             self.completed_turns.ordered(),
@@ -310,9 +310,11 @@ impl ConversationState {
 
 /// Shared lossless merged materialization over committed history plus the
 /// active turn — the single semantics both `ConversationState::frame()` and
-/// the staged runner's conversation entry use. No reordering, no dedup, no
-/// trimming; nothing is written back.
-pub(crate) fn merged_frame(
+/// a conversation driver's merged-view entry use. Public since Slice 12:
+/// the canonical driver lives outside the kernel and materializes frames
+/// through this projection. No reordering, no dedup, no trimming; nothing
+/// is written back.
+pub fn merged_frame(
     conversation_id: &ConversationId,
     history: &[TurnSnapshot],
     active: &TurnContext,

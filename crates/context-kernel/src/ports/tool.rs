@@ -1,8 +1,8 @@
 //! Tool behavior — the `Tool` trait and the `ArtifactStore` port, plus the
-//! execution vocabulary that only they and the staged executor consume:
-//! definitions, call context, outcome policies, output limits. Recorded
-//! facts (results, outputs, artifacts) live in `crate::context::tool_data`;
-//! batch dispatch lives in the staged `internal::executor`.
+//! execution vocabulary that drivers and they consume: definitions, call
+//! context, outcome policies, output limits. Recorded facts (results,
+//! outputs, artifacts) live in `crate::context::tool_data`; batch dispatch
+//! lives in `reimagine-agent-runtime`'s executor.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

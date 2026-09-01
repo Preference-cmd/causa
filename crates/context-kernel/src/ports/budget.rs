@@ -69,11 +69,11 @@ pub enum FrameError {
 // inside `ports/`, violating "invariants only". `FramePolicy::estimate`
 // now returns 0 when no `TokenCounter` is wired, so `should_compact`
 // computes as "no trigger". Hosts that need the heuristic can wire
-// `internal::defaults::NoopTokenCounter` or their own `TokenCounter`.
+// `agent_runtime::defaults::NoopTokenCounter` or their own `TokenCounter`.
 
 /// Carrier of the frame-materialization policy: trigger budget, optional
 /// compaction, optional token counter. A canonical value assembled from port
-/// instances — drivers (staged) build and own it, and it orchestrates
+/// instances — drivers build and own it, and it orchestrates
 /// materialization itself, using only the fact machine's public accessors.
 /// Placeholder semantics stay frame-local and non-persisting; real
 /// conversation-level policy is Slice 5 territory.

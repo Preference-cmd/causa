@@ -22,7 +22,10 @@ use std::collections::{HashMap, HashSet};
 // field looks like a `TurnSnapshot`; on reload it rebuilds a sealed
 // `TurnContext` via `from_validated_blocks`.
 
-pub(crate) mod turn_context_as_snapshot {
+// Public since Slice 12: the canonical driver lives outside the kernel
+// (agent-runtime), so the serde bridge it serializes `TurnOutcome` with
+// is part of the external-driver contract surface.
+pub mod turn_context_as_snapshot {
     use super::*;
 
     pub fn serialize<S: Serializer>(value: &TurnContext, s: S) -> Result<S::Ok, S::Error> {
@@ -367,7 +370,7 @@ impl TurnContext {
         self.frame_with(round_id, self.blocks.0.clone())
     }
 
-    /// Crate-internal: the same Turn-scope projection over an explicit block
+    /// Crate-only: the same Turn-scope projection over an explicit block
     /// list — the single home of the frame-identity construction, used by
     /// the policy layer to wrap compaction output.
     pub(crate) fn frame_with(&self, round_id: RoundId, blocks: Vec<ContextBlock>) -> ContextFrame {

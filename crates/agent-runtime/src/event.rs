@@ -1,7 +1,7 @@
 //! `ContextEvent` projection — Slice 4 §6 Phase C (框架事件), reworked by
 //! the 2026-09-02 thermo-nuclear review.
 //!
-//! Events are a **projection** of the kernel's facts (`TurnContext` +
+//! Events are a **projection** of a turn's facts (`TurnContext` +
 //! `TurnResult` + `TurnTrace`) into a sequence that consumers (UI,
 //! observability, audit) can subscribe to. They are not facts themselves:
 //! they are derived, not persisted, and never written back into a
@@ -11,12 +11,13 @@
 //!
 //! ```text
 //! reimagine-context-kernel
-//!   └─ TurnContext / TurnResult / TurnTrace / ModelRoundTrace   ← facts
+//!   └─ TurnContext / facts vocabulary                          ← facts + contracts
 //!             ^
 //!             │ project_turn(...)
 //!             |
 //! reimagine-agent-runtime
-//!   └─ ContextEvent / project_turn                              ← projection
+//!   └─ driver (TurnResult / TurnTrace / ModelRoundTrace)       ← outcome vocabulary
+//!   └─ ContextEvent / project_turn                             ← projection
 //!             ^
 //!             |
 //! app-host / external consumer   ← observers (UI, audit, metrics)
@@ -38,19 +39,20 @@
 //! ## Serialization
 //!
 //! `ContextEvent` is serde-derived for IPC delivery to host UIs and
-//! audit pipelines (Slice 5A Phase C). The embedded kernel types
+//! audit pipelines (Slice 5A Phase C). The embedded driver outcome types
 //! (`TurnResult`, `TurnTrace`) carry their own serde derives; their
 //! serde **shapes** are a load-bearing wire contract for this module —
-//! see the note on `reimagine_context_kernel::TurnOutcome` — even
-//! though the Rust item paths live in the kernel's staged perimeter.
+//! see the wire-contract note on `crate::driver::TurnOutcome` — even
+//! though the Rust item paths moved layers (kernel internal/ → this
+//! crate) in Slice 12.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::driver::{ModelRoundTrace, TurnResult, TurnTrace};
 use reimagine_context_kernel::{
-    BlockContent, ConversationId, ModelRoundTrace, RoundId, ToolCallPayload, TurnContext, TurnId,
-    TurnResult, TurnTrace,
+    BlockContent, ConversationId, RoundId, ToolCallPayload, TurnContext, TurnId,
 };
 
 /// Framework-side event projected from a turn's facts.
@@ -205,9 +207,10 @@ fn committed_calls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::{OutputSummary, ToolBatchTrace, TurnInterruption};
     use reimagine_context_kernel::{
         BlockId, BlockSequence, ContextVersion, InvocationId, ModelResponse, ModelStopReason,
-        OutputSummary, TextPayload, ToolBatchTrace, ToolCallId, TurnContext, TurnInterruption,
+        TextPayload, ToolCallId, TurnContext,
     };
     use serde_json::json;
 

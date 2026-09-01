@@ -3,20 +3,20 @@
 //!
 //! ## One trait, one seam
 //!
-//! The kernel exposes `ToolUseHook` (the seam `TurnRunner::with_hook`
-//! consumes) and this crate re-exports it. Filters implement that trait
-//! directly — there is no second extension trait and no alias layer. The
-//! kernel itself ships only `PassthroughHook` (no opinion); the concrete
-//! policies below live here because dedup / kill-switch / approval are
+//! This crate defines `ToolUseHook` (the seam `TurnRunner::with_hook`
+//! consumes, since Slice 12 alongside the driver itself) and the concrete
+//! policies below. Filters implement that trait directly — there is no
+//! second extension trait and no alias layer. The default is
+//! `PassthroughHook` (no opinion); dedup / kill-switch / approval are
 //! framework or host concerns, never kernel facts.
 
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::hook::{HookCtx, HookOutcome, ToolUseHook};
 use reimagine_context_kernel::{
-    HookCtx, HookOutcome, ToolCallPayload, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
-    ToolResultStatus, ToolUseHook,
+    ToolCallPayload, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 
 /// Default deduplication policy — same-batch `(tool_name, arguments)` dedup.
@@ -121,7 +121,7 @@ impl ToolUseHook for DenyAllFilter {
 /// the chain. `FilterChain::default()` is empty (no opinion — callers opt
 /// in via `DedupFilter` or `dedup_only()`).
 ///
-/// A chain plugs into the kernel through the same trait it is made of:
+/// A chain plugs into the driver through the same trait it is made of:
 /// `TurnRunner::with_hook(gateway, executor, Arc::new(chain))`.
 #[derive(Clone)]
 pub struct FilterChain {

@@ -2,10 +2,10 @@
 //! placeholder wiring. The port traits stay canonical in `budget`; only these
 //! default instances are staged.
 
-use crate::ports::budget::{
+use async_trait::async_trait;
+use reimagine_context_kernel::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, TokenCounter,
 };
-use async_trait::async_trait;
 
 pub struct NoopCompaction;
 #[async_trait]
@@ -21,7 +21,7 @@ impl Compaction for NoopCompaction {
 
 pub struct NoopTokenCounter;
 impl TokenCounter for NoopTokenCounter {
-    fn estimate(&self, _blocks: &[crate::context::block::ContextBlock]) -> usize {
+    fn estimate(&self, _blocks: &[reimagine_context_kernel::ContextBlock]) -> usize {
         0
     }
     fn estimate_value(&self, _value: &serde_json::Value) -> usize {
@@ -41,7 +41,7 @@ pub fn placeholder_token_estimate_value(value: &serde_json::Value) -> usize {
         .unwrap_or(0)
 }
 #[allow(dead_code)]
-pub fn placeholder_token_estimate(blocks: &[crate::context::block::ContextBlock]) -> usize {
+pub fn placeholder_token_estimate(blocks: &[reimagine_context_kernel::ContextBlock]) -> usize {
     blocks
         .iter()
         .map(|b| {

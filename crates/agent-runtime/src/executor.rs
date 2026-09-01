@@ -1,15 +1,15 @@
 //! Tool batch dispatch — dedup-then-parallel execution with panic isolation,
 //! call-deadline backstop, and token-limit truncation with artifact spill.
 
-use crate::context::block::ToolCallPayload;
-use crate::context::tool_data::{
+use reimagine_context_kernel::CallControl;
+use reimagine_context_kernel::TokenCounter;
+use reimagine_context_kernel::ToolCallPayload;
+use reimagine_context_kernel::{
+    ArtifactHint, ArtifactStore, Tool, ToolCallContext, ToolExecutionOutcome, ToolOutputLimits,
+};
+use reimagine_context_kernel::{
     ArtifactKind, ArtifactRef, ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus,
     Truncation,
-};
-use crate::ports::budget::TokenCounter;
-use crate::ports::control::CallControl;
-use crate::ports::tool::{
-    ArtifactHint, ArtifactStore, Tool, ToolCallContext, ToolExecutionOutcome, ToolOutputLimits,
 };
 use std::collections::HashMap;
 use std::sync::Arc;

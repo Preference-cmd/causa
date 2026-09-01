@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::ports::control::{AttemptControl, effective_deadline};
+use reimagine_context_kernel::{AttemptControl, effective_deadline};
 
 #[derive(Debug, Clone)]
 pub struct RunControl {

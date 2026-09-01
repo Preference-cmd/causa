@@ -1,44 +1,35 @@
-//! Kernel-side tool-use filter seam — Slice 4 Phase A (选项 B).
+//! The tool-use filter seam (Slice 4 Phase A, graduated from the kernel's
+//! staged perimeter by Slice 12).
 //!
 //! `ToolUseHook` is THE extension point for the tool-use batch between
-//! model output and tool dispatch: the driver calls it here, and
+//! model output and tool dispatch: `TurnRunner` calls it here, and the
 //! concrete filter policies (`DedupFilter`, `DenyAllFilter`,
-//! `FilterChain`) in `reimagine-agent-runtime` implement it directly.
-//! There is exactly one trait for this concept across both crates.
-//!
-//! ## Why the seam lives in the kernel
-//!
-//! `context-kernel` is a lower layer than `agent-runtime`; depending on
-//! `agent-runtime` from the kernel would invert the layering and create a
-//! cycle. The kernel owns the trait, agent-runtime owns the policies and
-//! re-exports the trait so a custom filter can be written against either
-//! path.
+//! `FilterChain`) in this crate implement it directly. Defining the trait
+//! next to both its consumer (the driver) and its policies (the filters)
+//! closes the Phase E split where `agent-runtime` re-exported a kernel
+//! type it was the sole real consumer of.
 //!
 //! ## Minimum invariant, not a policy
 //!
-//! The kernel ships **no opinion** about what a hook should do. The only
-//! built-in impl is `PassthroughHook` — a zero-sized type that admits every
-//! call unchanged. That is the literal absence of behavior, the
-//! minimum the trait requires to be callable.
+//! This crate ships **no opinion** in the trait: the only built-in impl is
+//! `PassthroughHook` — a zero-sized type that admits every call unchanged.
+//! That is the literal absence of behavior, the minimum the trait requires
+//! to be callable.
 //!
 //! Specific filter policies (dedup by `(tool_name, arguments)`,
-//! approval-rewrites-amount, kill-switch denial, etc.) are *not*
-//! kernel concerns — they belong to `agent-runtime` or to the host. The
-//! driver applies whatever hook the caller plugged via
+//! approval-rewrites-amount, kill-switch denial, etc.) are host concerns;
+//! the driver applies whatever hook the caller plugged via
 //! `TurnRunner::with_hook(_, _, your_hook)`; `TurnRunner::new()` defaults
 //! to `PassthroughHook`.
 
 use async_trait::async_trait;
 
-use crate::context::block::ToolCallPayload;
+use reimagine_context_kernel::{CallControl, ConversationId, RoundId, ToolCallPayload, TurnId};
 
-// This trait is the tool-use extension seam between the kernel and the
-// framework layer. It is not a `crate::ports::` item — a port is a
-// host-facing contract with stable API obligations; this seam currently
-// serves one adjacent crate and can still move without a port-level
-// stability promise.
-use crate::context::ids::{ConversationId, RoundId, TurnId};
-use crate::ports::control::CallControl;
+// This trait is deliberately NOT a `reimagine_context_kernel::ports` item:
+// a port there is a host-facing contract third parties implement against
+// the facts crate alone. The hook's sole consumer is this crate's driver,
+// so the contract lives with the driver.
 
 /// Context supplied to every hook invocation.
 ///
@@ -60,7 +51,7 @@ pub struct HookCtx<'a> {
 /// `arguments` (open `FilterResult` — approval can rewrite, defer, split).
 pub struct HookOutcome {
     pub to_execute: Vec<ToolCallPayload>,
-    pub rejected: Vec<crate::ports::tool::ToolExecutionOutcome>,
+    pub rejected: Vec<reimagine_context_kernel::ToolExecutionOutcome>,
 }
 
 impl HookOutcome {

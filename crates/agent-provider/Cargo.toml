@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["macros", "rt", "fs", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+reimagine-agent-runtime = { path = "../agent-runtime" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -13,9 +13,12 @@
 mod common;
 
 use common::{commit_sealed, endturn_output, turn_id};
+use reimagine_agent_runtime::{
+    ConversationOutcome, TurnInterruption, TurnOutcome, TurnResult, TurnTrace,
+};
 use reimagine_context_kernel::{
     ConversationId, ConversationState, ModelInvokeErrorKind, ModelStopReason, SealedResult,
-    TextPayload, TurnContext, TurnId, TurnInterruption, TurnOutcome, TurnResult,
+    TextPayload, TurnContext, TurnId,
 };
 use serde_json::json;
 
@@ -87,7 +90,7 @@ fn turn_outcome_round_trip_preserves_snapshot() {
                 reason: "test reason".into(),
             },
         },
-        trace: reimagine_context_kernel::TurnTrace::new(),
+        trace: TurnTrace::new(),
     };
     let json = serde_json::to_string(&outcome).expect("serialize");
     let restored: TurnOutcome = serde_json::from_str(&json).expect("deserialize");
@@ -103,16 +106,15 @@ fn conversation_outcome_round_trip_preserves_history() {
     let mut state = ConversationState::new(ConversationId("conv-rt".into()));
     commit_sealed(&mut state, "t1", SealedResult::Completed);
 
-    let outcome = reimagine_context_kernel::ConversationOutcome {
+    let outcome = ConversationOutcome {
         state,
         result: TurnResult::Completed {
             final_output: endturn_output("done"),
         },
-        trace: reimagine_context_kernel::TurnTrace::new(),
+        trace: TurnTrace::new(),
     };
     let json = serde_json::to_string(&outcome).expect("serialize");
-    let restored: reimagine_context_kernel::ConversationOutcome =
-        serde_json::from_str(&json).expect("deserialize");
+    let restored: ConversationOutcome = serde_json::from_str(&json).expect("deserialize");
     let restored_json = serde_json::to_string(&restored).expect("re-serialize");
     assert_eq!(json, restored_json);
     assert_eq!(restored.state.snapshot_count(), 1);

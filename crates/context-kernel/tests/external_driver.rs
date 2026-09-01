@@ -1,14 +1,15 @@
 //! Second-driver existence proof (Slice 1.5 gates 8 and 11): a minimal
 //! single-shot agent loop — one model invocation, no tools — assembled ONLY
 //! from the public root facade. The kernel exposes facts and ports; this
-//! file must compile and run without the staged reference driver
-//! (`TurnRunner`) and without any private module path.
+//! file must compile and run without the framework layer
+//! (`reimagine-agent-runtime`'s `TurnRunner`) and without any private
+//! module path.
 
 use reimagine_context_kernel::{
     AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion, FramePolicy,
     GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef,
     ModelRequest, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
-    RunControl, TextPayload, ToolSurface, TurnContext, TurnId, TurnSnapshot,
+    TextPayload, ToolSurface, TurnContext, TurnId, TurnSnapshot,
 };
 
 /// A gateway that returns one canned output and asserts the invocation
@@ -79,11 +80,8 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
         tool_surface: ToolSurface::empty(),
         generation: GenerationOptions::default(),
     };
-    let ctrl = RunControl::new(CancellationToken::new(), None);
-    let output = gateway
-        .invoke(&request, &ctrl.for_attempt(None))
-        .await
-        .unwrap();
+    let ctrl = AttemptControl::new(CancellationToken::new(), None);
+    let output = gateway.invoke(&request, &ctrl).await.unwrap();
     let applied = context
         .append_model_output(invocation, &output.response, output.stop_reason)
         .unwrap();

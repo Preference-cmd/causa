@@ -1,6 +1,7 @@
-//! Staged runtime tests — the reference driver, config axes, executor
-//! dispatch, cancellation, and traces. These exercise `internal/` wiring
-//! through the root facade and change with the perimeter, not the contract.
+//! Driver-stack tests — the reference driver, config axes, executor
+//! dispatch, cancellation, and traces. Graduated from context-kernel's
+//! staged suite with the driver itself (Slice 12); they exercise the
+//! runtime wiring, not the kernel contract.
 
 mod common;
 
@@ -9,13 +10,15 @@ use common::{
     endturn_output, options_with_limits, runner_with, runner_with_dedup, tooluse_calls_output,
     tooluse_output,
 };
+use reimagine_agent_runtime::{
+    ExecutionOptions, RetryPolicy, RunControl, TurnInterruption, TurnResult, TurnRunOptions,
+};
 use reimagine_context_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
-    CallControl, ContextBlock, ExecutionOptions, FramePolicy, ModelInvokeErrorKind, ModelOutput,
-    ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RetryPolicy, RunControl,
-    StoreError, TextPayload, Tool, ToolCallContext, ToolDefinition, ToolExecutionOutcome,
-    ToolOutput, ToolOutputLimits, ToolResultPayload, ToolResultStatus, Truncation,
-    TurnInterruption, TurnResult, TurnRunOptions, UnknownOutcomePolicy, WindowBudget,
+    CallControl, ContextBlock, FramePolicy, ModelInvokeErrorKind, ModelOutput, ModelResponse,
+    ModelStopReason, ModelUsage, ReasoningPayload, StoreError, TextPayload, Tool, ToolCallContext,
+    ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload,
+    ToolResultStatus, Truncation, UnknownOutcomePolicy, WindowBudget,
 };
 use serde_json::json;
 use std::sync::Arc;

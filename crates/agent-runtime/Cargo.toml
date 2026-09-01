@@ -18,5 +18,8 @@ futures-util = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+reimagine-agent-extension = { path = "../agent-extension" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 tempfile = { workspace = true }
+# driver tests hash fixture payloads; blake3 stays out of the lib itself
+blake3 = "1"
