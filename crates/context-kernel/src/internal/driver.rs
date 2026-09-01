@@ -130,7 +130,7 @@ impl Default for TurnTrace {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum TurnResult {
     Completed { final_output: ModelOutput },
     Interrupted { cause: TurnInterruption },
@@ -143,11 +143,55 @@ pub struct TurnOutcome {
     pub trace: TurnTrace,
 }
 
+/// Wire shape of `TurnOutcome` — projects the in-memory `TurnContext`
+/// (mutable active-state machine) through its snapshot (immutable
+/// history projection). On reload, the caller treats the snapshot as the
+/// terminal handoff; the live `TurnContext` is reconstructed only via
+/// `from_validated_blocks` if the host explicitly wants to continue
+/// the sealed turn.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TurnOutcomeWire {
+    sealed_context: Option<crate::context::turn::TurnSnapshot>,
+    result: TurnResult,
+    trace: TurnTrace,
+}
+
+impl serde::Serialize for TurnOutcome {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        TurnOutcomeWire {
+            sealed_context: Some(self.context.snapshot()),
+            result: self.result.clone(),
+            trace: self.trace.clone(),
+        }
+        .serialize(s)
+    }
+}
+impl<'de> serde::Deserialize<'de> for TurnOutcome {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let wire = TurnOutcomeWire::deserialize(d)?;
+        let snap = wire
+            .sealed_context
+            .ok_or_else(|| serde::de::Error::missing_field("sealed_context"))?;
+        let mut context = TurnContext::from_validated_blocks(
+            snap.turn_id.clone(),
+            snap.blocks.as_slice().to_vec(),
+            snap.source_version,
+        )
+        .map_err(serde::de::Error::custom)?;
+        context.seal();
+        Ok(Self {
+            context,
+            result: wire.result,
+            trace: wire.trace,
+        })
+    }
+}
+
 /// The conversation entry's counterpart to [`TurnOutcome`]: consume/return —
 /// the state comes back with the active turn sealed inside and its outcome
 /// stamped; the host then calls `commit` (Completed) or `abort_turn`
 /// (Interrupted).
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConversationOutcome {
     pub state: ConversationState,
     pub result: TurnResult,

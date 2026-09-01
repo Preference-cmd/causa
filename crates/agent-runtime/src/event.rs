@@ -35,6 +35,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use reimagine_context_kernel::{
     ConversationId, ModelRoundTrace, RoundId, ToolCallPayload, TurnId, TurnResult, TurnTrace,
 };
@@ -54,16 +56,22 @@ use reimagine_context_kernel::{
 ///
 /// ## Serialization
 ///
-/// `ContextEvent` does not (yet) implement `Serialize` /
-/// `Deserialize` — that requires `TurnResult` to derive the same
-/// (currently only `Debug`), which is a kernel-level addition
-/// outside Phase C scope. Events are pure in-memory projections;
-/// IPC serialization is a follow-up slice.
-#[derive(Debug)]
+/// `ContextEvent` implements `Serialize` / `Deserialize` for IPC
+/// delivery to host UIs and audit pipelines (resolved in Slice 5A
+/// Phase C, 2026-09-01 — previously a documented TODO). The
+/// underlying kernel types (`TurnResult`, `TurnTrace`) carry their
+/// own serde derives; see `crates/agent-stack/context-kernel`.
+///
+/// `Option<ConversationId>` uses `skip_serializing_if = "Option::is_none"`
+/// so the bare `TurnRunner::run` path emits compact events (no
+/// conversation routing key) while the `run_in_conversation` path
+/// emits the explicit id.
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ContextEvent {
     /// The turn has begun. Emitted once per `project_turn` call, as
     /// the first event in the sequence.
     TurnStarted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation_id: Option<ConversationId>,
         turn_id: TurnId,
     },
@@ -76,6 +84,7 @@ pub enum ContextEvent {
     /// in `round_id` order. Rounds with `tool_batch == None`
     /// (EndTurn, MaxTokens, Refusal, etc.) produce no event.
     ToolBatchDispatched {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation_id: Option<ConversationId>,
         turn_id: TurnId,
         round_id: RoundId,
@@ -89,6 +98,7 @@ pub enum ContextEvent {
     /// Emitted exactly once per `project_turn` call, as the last
     /// event in the sequence.
     TurnOutcome {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation_id: Option<ConversationId>,
         turn_id: TurnId,
         result: TurnResult,
@@ -516,6 +526,157 @@ mod tests {
                     tool_calls: Vec::new(),
                 },
             },
+        }
+    }
+
+    // -- Slice 5A Phase C: ContextEvent JSON round-trip --
+
+    #[test]
+    fn round_trip_turn_started_no_conversation() {
+        let original = ContextEvent::TurnStarted {
+            conversation_id: None,
+            turn_id: turn_id(7),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        // conversation_id is skipped on None — compact wire format.
+        assert!(!json.contains("conversation_id"));
+        let restored: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.turn_id(), &turn_id(7));
+        assert_eq!(restored.conversation_id(), None);
+    }
+
+    #[test]
+    fn round_trip_turn_started_with_conversation() {
+        let original = ContextEvent::TurnStarted {
+            conversation_id: Some(ConversationId("conv-42".into())),
+            turn_id: turn_id(3),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            restored.conversation_id(),
+            Some(ConversationId("conv-42".into()))
+        );
+        assert_eq!(restored.turn_id(), &turn_id(3));
+    }
+
+    #[test]
+    fn round_trip_tool_batch_dispatched() {
+        let original = ContextEvent::ToolBatchDispatched {
+            conversation_id: Some(ConversationId("conv-batch".into())),
+            turn_id: turn_id(11),
+            round_id: RoundId(3),
+            calls: vec![payload("call-a", "echo"), payload("call-b", "echo")],
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+        match restored {
+            ContextEvent::ToolBatchDispatched {
+                conversation_id,
+                turn_id: tid,
+                round_id,
+                calls,
+            } => {
+                assert_eq!(conversation_id, Some(ConversationId("conv-batch".into())));
+                assert_eq!(tid, turn_id(11));
+                assert_eq!(round_id, RoundId(3));
+                assert_eq!(calls.len(), 2);
+            }
+            other => panic!("expected ToolBatchDispatched, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trip_turn_outcome_completed() {
+        let trace = empty_trace();
+        // Empty trace is sufficient — `Completed` does not require any
+        // round trace content for serialization.
+        let original = ContextEvent::TurnOutcome {
+            conversation_id: Some(ConversationId("conv-out".into())),
+            turn_id: turn_id(99),
+            result: dummy_completed(),
+            trace,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+        match restored {
+            ContextEvent::TurnOutcome {
+                conversation_id,
+                turn_id: tid,
+                result: TurnResult::Completed { .. },
+                ..
+            } => {
+                assert_eq!(conversation_id, Some(ConversationId("conv-out".into())));
+                assert_eq!(tid, turn_id(99));
+            }
+            other => panic!("expected TurnOutcome Completed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trip_turn_outcome_interrupted() {
+        let trace = empty_trace();
+        let original = ContextEvent::TurnOutcome {
+            conversation_id: None,
+            turn_id: turn_id(13),
+            result: TurnResult::Interrupted {
+                cause: reimagine_context_kernel::TurnInterruption::CompactionFailed {
+                    reason: "budget exceeded".into(),
+                },
+            },
+            trace,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+        match restored {
+            ContextEvent::TurnOutcome {
+                conversation_id,
+                turn_id: tid,
+                result:
+                    TurnResult::Interrupted {
+                        cause: TurnInterruption::CompactionFailed { reason },
+                    },
+                ..
+            } => {
+                assert_eq!(conversation_id, None);
+                assert_eq!(tid, turn_id(13));
+                assert_eq!(reason, "budget exceeded");
+            }
+            other => panic!("expected TurnOutcome Interrupted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_turn_output_survives_serialization_round_trip() {
+        // End-to-end: project a full event sequence, serialize, restore,
+        // assert equality of the structural contents.
+        let rid = RoundId(0);
+        let mut trace = empty_trace();
+        trace.rounds.push(round_with_tool_batch(rid));
+        let mut payloads = HashMap::new();
+        payloads.insert(rid, vec![payload("c1", "echo")]);
+
+        let events = project_turn(
+            turn_id(21),
+            Some(ConversationId("conv-e2e".into())),
+            &payloads,
+            dummy_completed(),
+            trace,
+        );
+        let json = serde_json::to_string(&events).expect("serialize");
+        let restored: Vec<ContextEvent> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.len(), events.len());
+        // All events carry the same conversation id and turn id.
+        for e in &restored {
+            assert_eq!(e.conversation_id(), Some(ConversationId("conv-e2e".into())));
+            assert_eq!(e.turn_id(), &turn_id(21));
+        }
+        // The middle event is a ToolBatchDispatched with the one payload.
+        match &restored[1] {
+            ContextEvent::ToolBatchDispatched { calls, .. } => {
+                assert_eq!(calls.len(), 1);
+            }
+            other => panic!("expected ToolBatchDispatched, got {other:?}"),
         }
     }
 }

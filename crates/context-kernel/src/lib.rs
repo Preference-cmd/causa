@@ -50,6 +50,7 @@ pub use ports::gateway::{
     AttemptNumber, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
     ModelOutput, ModelRef, ModelRequest, ModelUsage, ReasoningPayload, ToolSurface,
 };
+pub use ports::store::{ConversationStore, ConversationStoreError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,
     ToolExecutionOutcome, ToolOutputLimits, UnknownOutcomePolicy,

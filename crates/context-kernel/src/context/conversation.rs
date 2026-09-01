@@ -17,7 +17,8 @@ use crate::context::turn::{ContextFrame, ModelContext, TurnContext, TurnSnapshot
 /// Kernel-side eligibility stamp recorded when the driver finalizes the
 /// active turn. Marker only — the rich cause stays with the caller via the
 /// runner's `TurnResult`（`TurnInterruption` 是 staged 词汇，不得进入事实层）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SealedResult {
     Completed,
     Interrupted,
@@ -289,6 +290,69 @@ impl ConversationState {
             self.sealed_result.is_none()
                 || self.active_turn.as_ref().is_some_and(|t| t.is_sealed())
         );
+    }
+}
+
+/// Wire shape of `ConversationState`. Differs from the in-memory struct by
+/// projecting the sealed active turn through its snapshot (the canonical
+/// history projection); `TurnContext` itself is in-memory mutable state and
+/// does not derive `Serialize`/`Deserialize`. On reload, the caller is
+/// expected to drive the active slot to a terminal transition
+/// (`commit` if `sealed_result == Completed`, else `abort_turn`).
+#[derive(Serialize, Deserialize)]
+struct ConversationStateWire {
+    conversation_id: ConversationId,
+    completed_turns: Vec<TurnSnapshot>,
+    active_turn: Option<TurnSnapshot>,
+    sealed_result: Option<SealedResult>,
+    next_turn_sequence: TurnSequence,
+    version: ConversationVersion,
+}
+
+impl Serialize for ConversationState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let wire = ConversationStateWire {
+            conversation_id: self.conversation_id.clone(),
+            completed_turns: self.completed_turns.ordered().to_vec(),
+            active_turn: self.active_turn.as_ref().map(|t| t.snapshot()),
+            sealed_result: self.sealed_result,
+            next_turn_sequence: self.next_turn_sequence,
+            version: self.version,
+        };
+        wire.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ConversationState {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let wire = ConversationStateWire::deserialize(d)?;
+        let active_turn = match wire.active_turn {
+            Some(snap) => {
+                let mut ctx = TurnContext::from_validated_blocks(
+                    snap.turn_id.clone(),
+                    snap.blocks.as_slice().to_vec(),
+                    snap.source_version,
+                )
+                .map_err(serde::de::Error::custom)?;
+                if wire.sealed_result.is_some() {
+                    ctx.seal();
+                }
+                Some(ctx)
+            }
+            None => None,
+        };
+        Ok(Self {
+            conversation_id: wire.conversation_id,
+            completed_turns: if wire.completed_turns.is_empty() {
+                OrderedTurns::empty()
+            } else {
+                OrderedTurns(wire.completed_turns)
+            },
+            active_turn,
+            sealed_result: wire.sealed_result,
+            next_turn_sequence: wire.next_turn_sequence,
+            version: wire.version,
+        })
     }
 }
 
