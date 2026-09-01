@@ -64,25 +64,12 @@ pub enum FrameError {
     CompactionFailed(String),
 }
 
-/// The placeholder token heuristic shared by the noop counter, the frame
-/// policy fallback, and the executor: serialized JSON length divided by four.
-/// Slice 5 replaces it with a real tokenizer.
-pub fn placeholder_token_estimate_value(value: &serde_json::Value) -> usize {
-    serde_json::to_string(value)
-        .map(|s| s.len() / 4)
-        .unwrap_or(0)
-}
-
-pub fn placeholder_token_estimate(blocks: &[ContextBlock]) -> usize {
-    blocks
-        .iter()
-        .map(|b| {
-            serde_json::to_string(&b.content)
-                .map(|s| s.len() / 4)
-                .unwrap_or(0)
-        })
-        .sum()
-}
+// Note: prior revisions shipped a `placeholder_token_estimate`
+// helper ("JSON length / 4"). It was a specific heuristic carried
+// inside `ports/`, violating "invariants only". `FramePolicy::estimate`
+// now returns 0 when no `TokenCounter` is wired, so `should_compact`
+// computes as "no trigger". Hosts that need the heuristic can wire
+// `internal::defaults::NoopTokenCounter` or their own `TokenCounter`.
 
 /// Carrier of the frame-materialization policy: trigger budget, optional
 /// compaction, optional token counter. A canonical value assembled from port
@@ -106,13 +93,15 @@ impl std::fmt::Debug for FramePolicy {
     }
 }
 impl FramePolicy {
-    /// Token estimate for a block list: the supplied counter if any, else the
-    /// placeholder JSON-length/4 heuristic.
+    /// Token estimate for a block list: the supplied counter if any,
+    /// else 0. A zero estimate never trips `should_compact` (default
+    /// `WindowBudget` thresholds are `usize::MAX`), so compaction is
+    /// genuinely opt-in via a wired `TokenCounter`.
     pub fn estimate(&self, blocks: &[ContextBlock]) -> usize {
         if let Some(counter) = &self.token_counter {
             counter.estimate(blocks)
         } else {
-            placeholder_token_estimate(blocks)
+            0
         }
     }
 

@@ -39,6 +39,12 @@
 use async_trait::async_trait;
 
 use crate::context::block::ToolCallPayload;
+
+// This trait is a kernel-side *adapter* — the minimum needed to
+// route a tool batch through the driver. It is not a port (do not
+// promote it to `crate::ports::`): a port is a host-facing contract
+// with stable API obligations; this adapter is an iteration seam
+// between two adjacent crates.
 use crate::context::ids::{ConversationId, RoundId, TurnId};
 use crate::ports::control::CallControl;
 

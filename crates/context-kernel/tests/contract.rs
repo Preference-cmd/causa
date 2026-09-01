@@ -415,13 +415,25 @@ async fn compaction_projection_identity() {
     let mut c = ctx("t1");
     c.append_input(TextPayload::new("hello"), "user").unwrap();
     let lossless = FramePolicy::default();
+    // The token estimate itself is a behavior -- host chooses the
+    // heuristic. `NoopTokenCounter` returns 0 and never trips the
+    // budget; wire a real counter here to exercise compaction.
+    struct CountPlusOne;
+    impl reimagine_context_kernel::TokenCounter for CountPlusOne {
+        fn estimate(&self, blocks: &[ContextBlock]) -> usize {
+            blocks.len() + 100
+        }
+        fn estimate_value(&self, _value: &serde_json::Value) -> usize {
+            1
+        }
+    }
     let compacting = FramePolicy {
         window_budget: WindowBudget {
             model_window_limit: 100,
             compaction_trigger: 1,
         },
         compaction: Some(std::sync::Arc::new(DropAllCompaction)),
-        token_counter: None,
+        token_counter: Some(std::sync::Arc::new(CountPlusOne)),
     };
     let sync_frame = c.frame(RoundId(0));
     let lossless_frame = lossless.materialize(&c, RoundId(0)).await.unwrap();

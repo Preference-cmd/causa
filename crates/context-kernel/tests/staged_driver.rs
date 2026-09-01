@@ -665,14 +665,25 @@ async fn max_tool_calls_interrupt_records_total() {
 async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     let mut c = ctx("t1");
     c.append_input(TextPayload::new("hello"), "user").unwrap();
-    // any non-empty content trips the placeholder trigger
+    // any non-empty content trips the trigger when the host
+    // wires a real `TokenCounter` -- `NoopTokenCounter` returns 0
+    // and never trips the budget.
+    struct CountPlusOne;
+    impl reimagine_context_kernel::TokenCounter for CountPlusOne {
+        fn estimate(&self, blocks: &[ContextBlock]) -> usize {
+            blocks.len() + 100
+        }
+        fn estimate_value(&self, _value: &serde_json::Value) -> usize {
+            1
+        }
+    }
     let frame_policy = FramePolicy {
         window_budget: WindowBudget {
             model_window_limit: 100,
             compaction_trigger: 1,
         },
         compaction: Some(Arc::new(DropAllCompaction)),
-        token_counter: None,
+        token_counter: Some(Arc::new(CountPlusOne)),
     };
     let gw = RecordingGateway::scripted(vec![Ok(endturn_output("done"))]);
     let runner = runner_with(gw.clone(), vec![]);

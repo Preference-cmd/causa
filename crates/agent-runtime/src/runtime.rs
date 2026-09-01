@@ -12,6 +12,12 @@
 
 use std::sync::Arc;
 
+// This wrapper is a convenience for callers that already hold a
+// `TurnRunner` or want a ready-wired `FilterChain`. It is not the
+// single entry — callers can compose a `TurnRunner` directly via
+// `TurnRunner::with_hook(_, _, hook)` without going through
+// `AgentRuntime`.
+
 use reimagine_context_kernel::{
     ConversationError, ConversationOutcome, ConversationState, ModelGateway, RunControl,
     ToolExecutor, ToolUseHook, TurnContext, TurnOutcome, TurnRunner,

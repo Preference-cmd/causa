@@ -103,6 +103,9 @@ impl ToolUseFilter for DedupFilter {
 ///
 /// Useful for tests, opt-out scenarios, and as a baseline for chains
 /// that only add policy filters.
+///
+/// This filter is a default-testing helper. Production code should
+/// compose explicit chains; wire real policy filters instead.
 #[derive(Debug, Default, Clone)]
 pub struct AllowAllFilter;
 
