@@ -1,0 +1,21 @@
+[package]
+name = "reimagine-agent-runtime"
+version.workspace = true
+description = "Reimagine agent runtime — framework primitives (FilterChain, isolation)"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+reimagine-context-kernel = { path = "../context-kernel" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

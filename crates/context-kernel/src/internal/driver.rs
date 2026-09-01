@@ -11,9 +11,7 @@ use crate::context::conversation::{
 };
 use crate::context::ids::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
 use crate::context::model::ModelStopReason;
-use crate::context::tool_data::{
-    ArtifactRef, ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
-};
+use crate::context::tool_data::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
 use crate::context::turn::{TurnContext, TurnSnapshot};
 use crate::ports::budget::FramePolicy;
 use crate::ports::gateway::AttemptNumber;
@@ -25,23 +23,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use super::hook::{HookCtx, KernelDedupHook, ToolUseHook};
+
 fn millis_since(t: Instant) -> u64 {
     t.elapsed().as_millis() as u64
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct DedupKey {
-    tool_name: String,
-    arguments: serde_json::Value,
-}
-impl DedupKey {
-    fn new(tool_name: String, arguments: serde_json::Value) -> Self {
-        Self {
-            tool_name,
-            arguments,
-        }
-    }
-}
+// Dedup lives in `super::hook::KernelDedupHook` (the kernel-side adapter
+// for `ToolUseHook`). agent-runtime's `FilterChain::default() ==
+// [DedupFilter]` provides the framework-level equivalent for `AgentRuntime`.
+// See Slice 4 §3 (选项 B): the user-facing `ToolUseFilter` and concrete
+// filter types live in `reimagine-agent-runtime`.
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail")]
@@ -180,10 +172,32 @@ enum FrameSource<'a> {
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
+    /// Kernel-side adapter for tool-use filtering. `TurnRunner::new()`
+    /// defaults to `KernelDedupHook` (preserves the historical
+    /// same-batch `(tool_name, arguments)` dedup). Custom hooks (e.g.
+    /// `agent_runtime::FilterChain`, which implements `ToolUseHook`)
+    /// plug in via `TurnRunner::with_hook`.
+    hook: Arc<dyn ToolUseHook>,
 }
 impl TurnRunner {
     pub fn new(gateway: Arc<dyn ModelGateway>, executor: Arc<ToolExecutor>) -> Self {
-        Self { gateway, executor }
+        Self {
+            gateway,
+            executor,
+            hook: Arc::new(KernelDedupHook),
+        }
+    }
+
+    pub fn with_hook(
+        gateway: Arc<dyn ModelGateway>,
+        executor: Arc<ToolExecutor>,
+        hook: Arc<dyn ToolUseHook>,
+    ) -> Self {
+        Self {
+            gateway,
+            executor,
+            hook,
+        }
     }
     /// Slice 1 entry, unchanged in shape: frames materialize from the active
     /// turn alone (Turn scope, policy-shaped).
@@ -484,26 +498,30 @@ impl TurnRunner {
                             tool_calls_total,
                         );
                     }
-                    // same-batch dedup by (tool_name + arguments); original
-                    // order and positions preserved
-                    let mut seen: HashMap<DedupKey, ()> = HashMap::new();
-                    let mut to_exec: Vec<ToolCallPayload> = Vec::new();
-                    let mut rejected: Vec<ToolExecutionOutcome> = Vec::new();
-                    for payload in &call_payloads {
-                        let key =
-                            DedupKey::new(payload.tool_name.clone(), payload.arguments.clone());
-                        if seen.insert(key, ()).is_some() {
-                            rejected.push(ToolExecutionOutcome::new(ToolResultPayload {
-                                call_id: payload.call_id.clone(),
-                                status: ToolResultStatus::Rejected,
-                                output: ToolOutput::new(
-                                    serde_json::json!({"error": "duplicate tool call"}),
-                                ),
-                            }));
-                        } else {
-                            to_exec.push(payload.clone());
-                        }
-                    }
+                    // ToolUse hook: the kernel-side adapter for tool-use
+                    // filtering. `TurnRunner::new()` defaults to
+                    // `KernelDedupHook` (same-batch `(tool_name, arguments)`
+                    // dedup). agent-runtime's `FilterChain` plugs in via
+                    // `TurnRunner::with_hook` and implements the same trait.
+                    let (to_exec, rejected): (Vec<ToolCallPayload>, Vec<ToolExecutionOutcome>) = {
+                        let call_control = ctrl
+                            .for_attempt(options.policy.attempt_timeout)
+                            .for_call(options.execution.call_timeout);
+                        let conversation_id = match &frames {
+                            FrameSource::Conversation {
+                                conversation_id, ..
+                            } => Some(*conversation_id),
+                            FrameSource::Turn(_) => None,
+                        };
+                        let hook_ctx = HookCtx {
+                            turn_id: &active.turn_id(),
+                            conversation_id,
+                            round_id: RoundId(round),
+                            control: &call_control,
+                        };
+                        let outcome = self.hook.apply(call_payloads.clone(), &hook_ctx).await;
+                        (outcome.to_execute, outcome.rejected)
+                    };
                     // parallel dispatch; record real completion order + duration
                     let completion_log: Arc<Mutex<Vec<(ToolCallId, u64)>>> =
                         Arc::new(Mutex::new(Vec::new()));

@@ -72,6 +72,22 @@ pub enum ControlError {
     TimedOut,
 }
 impl CallControl {
+    /// Build a `CallControl` from a cancellation token and an optional
+    /// duration-based deadline. Useful for tests and for external
+    /// callers that need to construct the type without going through
+    /// `AttemptControl::for_call`.
+    ///
+    /// Production call sites in the staged driver continue to use
+    /// `AttemptControl::for_call`, which folds the parent attempt
+    /// deadline in.
+    pub fn new(cancellation: CancellationToken, call_timeout: Option<Duration>) -> Self {
+        let deadline = call_timeout.map(|d| Instant::now() + d);
+        Self {
+            cancellation,
+            deadline,
+        }
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
     }

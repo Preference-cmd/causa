@@ -9,3 +9,4 @@ pub mod defaults;
 pub mod driver;
 pub mod executor;
 pub mod fakes;
+pub mod hook;
