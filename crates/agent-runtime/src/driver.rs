@@ -7,10 +7,12 @@ use crate::config::TurnRunOptions;
 use crate::control::RunControl;
 use crate::executor::ToolExecutor;
 use reimagine_context_kernel::AttemptNumber;
+use reimagine_context_kernel::BatchDecision;
 use reimagine_context_kernel::FramePolicy;
 use reimagine_context_kernel::ModelGateway;
 use reimagine_context_kernel::ModelRequest;
 use reimagine_context_kernel::ModelStopReason;
+use reimagine_context_kernel::TextPayload;
 use reimagine_context_kernel::ToolCallPayload;
 use reimagine_context_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
 use reimagine_context_kernel::{AttemptControl, ModelUsage, StreamDelta};
@@ -21,9 +23,9 @@ use reimagine_context_kernel::{ToolExecutionOutcome, UnknownOutcomePolicy};
 use reimagine_context_kernel::{TurnContext, TurnSnapshot};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::hook::{HookCtx, PassthroughHook, ToolUseHook};
+use crate::hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
 use futures_util::StreamExt;
 
 fn millis_since(t: Instant) -> u64 {
@@ -133,8 +135,38 @@ impl Default for TurnTrace {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum TurnResult {
-    Completed { final_output: ModelOutput },
-    Interrupted { cause: TurnInterruption },
+    Completed {
+        final_output: ModelOutput,
+    },
+    Interrupted {
+        cause: TurnInterruption,
+    },
+    /// Resumable suspension (Slice 7) — not a terminal state: the turn's
+    /// context stays open (this variant carries its snapshot), the batch
+    /// that triggered the pause is neither executed nor rejected, and
+    /// `resume_turn` (agent-runtime) continues the same turn.
+    Paused {
+        snapshot: TurnSnapshot,
+        reason: PausedReason,
+    },
+}
+
+/// Why a turn paused (Slice 7). `deadline` is the advisory decision
+/// budget the host granted itself, expressed as *remaining* time so the
+/// variant stays serde-friendly (a host anchors `Instant::now() + d`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum PausedReason {
+    AwaitingApproval {
+        /// The model-emitted batch, in draft order — the same payloads
+        /// whose tool-call blocks are already committed facts.
+        pending_calls: Vec<ToolCallPayload>,
+        deadline: Option<Duration>,
+    },
+    PausedForSteering {
+        queued_inputs: Vec<TextPayload>,
+        pending_round_id: RoundId,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -188,9 +220,36 @@ enum FrameSource<'a> {
 /// items are forwarded to the interaction seam. Everything downstream of
 /// the assembled `ModelOutput` is shared state machine.
 #[derive(Clone, Copy)]
-enum ModelPhase {
+pub(crate) enum ModelPhase {
     Batch,
     Stream,
+}
+
+/// Continuation payload for a resumed turn (Slice 7). Built by
+/// `resume_turn` (agent-runtime::resume), consumed once by
+/// `drive_from`'s prologue.
+pub(crate) struct ResumeState {
+    /// The round the continuation starts at: for an approval resume, the
+    /// paused round whose batch executes first (the model loop then
+    /// continues at round+1); for a steering resume, the first round whose
+    /// model phase has not run yet.
+    pub(crate) continue_round: u32,
+    /// The paused phase's trace — rounds append to it, totals are not
+    /// reset.
+    pub(crate) trace: TurnTrace,
+    pub(crate) tool_calls_total: usize,
+    /// The withheld approval decision plus the model-emitted draft order:
+    /// `Some` = approval resume (batch executes in the prologue).
+    pub(crate) batch: Option<(HookOutcome, Vec<ToolCallPayload>)>,
+    /// Steering inputs appended before the next model round.
+    pub(crate) inject: Vec<TextPayload>,
+}
+
+/// What a batch dispatch feeds the executor: live payloads, or
+/// pre-computed outcomes (the host's `BatchDecision::Reject` copy).
+enum BatchWork {
+    Execute(Vec<ToolCallPayload>),
+    Precomputed(Vec<ToolExecutionOutcome>),
 }
 
 pub struct TurnRunner {
@@ -240,11 +299,13 @@ impl TurnRunner {
                 ModelPhase::Batch,
             )
             .await;
-        // Every drive exit is terminal; the entry owns all terminal
-        // bookkeeping (totals, duration, sealing).
+        // Every drive exit is terminal or paused; the entry owns all
+        // bookkeeping (totals, duration, sealing — withheld on pause).
         trace.tool_calls_total = tool_calls_total;
         trace.total_duration_ms = millis_since(start);
-        context.seal();
+        if !matches!(result, TurnResult::Paused { .. }) {
+            context.seal();
+        }
         TurnOutcome {
             context,
             result,
@@ -277,7 +338,9 @@ impl TurnRunner {
             .await;
         trace.tool_calls_total = tool_calls_total;
         trace.total_duration_ms = millis_since(start);
-        context.seal();
+        if !matches!(result, TurnResult::Paused { .. }) {
+            context.seal();
+        }
         TurnOutcome {
             context,
             result,
@@ -293,9 +356,135 @@ impl TurnRunner {
     /// `commit` (Completed) or `abort_turn` (Interrupted).
     pub async fn run_in_conversation(
         &self,
+        state: ConversationState,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> Result<ConversationOutcome, ConversationError> {
+        self.drive_conversation(state, options, ctrl, ModelPhase::Batch, None)
+            .await
+    }
+
+    /// Slice 6 entry: the streaming twin of [`TurnRunner::run_in_conversation`]
+    /// — same consume/return contract and entry gates, delta-driven model
+    /// phase. `options.frame` stays deliberately inert here.
+    pub async fn run_in_conversation_streaming(
+        &self,
+        state: ConversationState,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> Result<ConversationOutcome, ConversationError> {
+        self.drive_conversation(state, options, ctrl, ModelPhase::Stream, None)
+            .await
+    }
+
+    /// Slice 7: continue a paused conversation turn. The continuation
+    /// half of `run_in_conversation` — same consume/return contract and
+    /// gates (a paused target is open, so they pass); `resume` carries
+    /// the withheld decision / steering injection and the paused trace
+    /// so rounds append and totals persist. The free function
+    /// `agent_runtime::resume::resume_turn` is the public face; it
+    /// validates the paused stamp and builds the `ResumeState`.
+    pub(crate) async fn resume_conversation(
+        &self,
+        state: ConversationState,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+        resume: ResumeState,
+    ) -> Result<ConversationOutcome, ConversationError> {
+        // Resumes continue in batch phase: the facts are complete, and a
+        // streaming continuation is future work (see the Slice 7 note).
+        self.drive_conversation(state, options, ctrl, ModelPhase::Batch, Some(resume))
+            .await
+    }
+
+    /// Slice 7: continue a paused bare turn — the continuation half of
+    /// [`TurnRunner::run`]/[`TurnRunner::run_streaming`]. Same shape:
+    /// consume the open paused `TurnContext` plus the [`ResumeRequest`]
+    /// (paused reason, trace, withheld decision, steering injection) and
+    /// return a `TurnOutcome` whose context is open on a fresh pause and
+    /// sealed on a terminal result.
+    pub async fn resume(
+        &self,
+        mut context: TurnContext,
+        request: crate::resume::ResumeRequest,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> TurnOutcome {
+        let crate::resume::ResumeRequest {
+            pending,
+            trace,
+            withheld,
+            inject,
+        } = request;
+        let tool_calls_total = trace.tool_calls_total;
+        let resume = match pending {
+            PausedReason::AwaitingApproval {
+                pending_calls,
+                deadline: _,
+            } => match trace.rounds.last().map(|r| r.round_id.0) {
+                Some(batch_round) => Some(ResumeState {
+                    continue_round: batch_round,
+                    trace,
+                    tool_calls_total,
+                    batch: Some((withheld, pending_calls)),
+                    inject,
+                }),
+                None => {
+                    return TurnOutcome {
+                        context,
+                        result: TurnResult::Interrupted {
+                            cause: TurnInterruption::RunnerInvariantViolation {
+                                reason: "approval resume requires the paused turn's trace".into(),
+                            },
+                        },
+                        trace,
+                    };
+                }
+            },
+            PausedReason::PausedForSteering {
+                pending_round_id,
+                queued_inputs: _,
+            } => Some(ResumeState {
+                continue_round: pending_round_id.0,
+                trace,
+                tool_calls_total,
+                batch: None,
+                inject,
+            }),
+        };
+        let start = Instant::now();
+        let (result, mut trace, tool_calls_total) = self
+            .drive_from(
+                &mut context,
+                FrameSource::Turn(&options.frame),
+                &options,
+                &ctrl,
+                ModelPhase::Batch,
+                resume,
+            )
+            .await;
+        trace.tool_calls_total = tool_calls_total;
+        trace.total_duration_ms = millis_since(start);
+        if !matches!(result, TurnResult::Paused { .. }) {
+            context.seal();
+        }
+        TurnOutcome {
+            context,
+            result,
+            trace,
+        }
+    }
+
+    /// The conversation entry body — entry gates, merged-frame source,
+    /// terminal bookkeeping, and outcome-stamped sealing shared by both
+    /// conversation entries and the resume path.
+    async fn drive_conversation(
+        &self,
         mut state: ConversationState,
         options: TurnRunOptions,
         ctrl: RunControl,
+        phase: ModelPhase,
+        resume: Option<ResumeState>,
     ) -> Result<ConversationOutcome, ConversationError> {
         // Entry gates — caller bugs fail fast, before the state machine.
         let active_id = match state.active_turn() {
@@ -305,6 +494,11 @@ impl TurnRunner {
         if state.active_turn().expect("checked above").is_sealed() {
             return Err(ConversationError::TurnAlreadySealed);
         }
+        // A paused turn occupies the slot; fresh-driving it would run the
+        // same turn twice. Resume (resume_turn) or abort instead.
+        if resume.is_none() && state.sealed_result() == Some(SealedResult::Paused) {
+            return Err(ConversationError::TurnAlreadyActive);
+        }
         // Field-split borrow: read conversation id and history while driving
         // the active turn mutably; stamping happens after the loop through
         // the public `seal_turn`, so no second &mut seam is exposed.
@@ -312,7 +506,7 @@ impl TurnRunner {
         let active = active.expect("NoActiveTurn checked above");
         let start = Instant::now();
         let (result, mut trace, tool_calls_total) = self
-            .drive(
+            .drive_from(
                 active,
                 FrameSource::Conversation {
                     conversation_id,
@@ -320,7 +514,8 @@ impl TurnRunner {
                 },
                 &options,
                 &ctrl,
-                ModelPhase::Batch,
+                phase,
+                resume,
             )
             .await;
         trace.tool_calls_total = tool_calls_total;
@@ -328,53 +523,7 @@ impl TurnRunner {
         let stamp = match &result {
             TurnResult::Completed { .. } => SealedResult::Completed,
             TurnResult::Interrupted { .. } => SealedResult::Interrupted,
-        };
-        state
-            .seal_turn(active_id, stamp)
-            .expect("active turn still present");
-        Ok(ConversationOutcome {
-            state,
-            result,
-            trace,
-        })
-    }
-
-    /// Slice 6 entry: the streaming twin of [`TurnRunner::run_in_conversation`]
-    /// — same consume/return contract and entry gates, delta-driven model
-    /// phase. `options.frame` stays deliberately inert here.
-    pub async fn run_in_conversation_streaming(
-        &self,
-        mut state: ConversationState,
-        options: TurnRunOptions,
-        ctrl: RunControl,
-    ) -> Result<ConversationOutcome, ConversationError> {
-        let active_id = match state.active_turn() {
-            Some(t) => t.turn_id(),
-            None => return Err(ConversationError::NoActiveTurn),
-        };
-        if state.active_turn().expect("checked above").is_sealed() {
-            return Err(ConversationError::TurnAlreadySealed);
-        }
-        let (conversation_id, history, active) = state.runner_parts();
-        let active = active.expect("NoActiveTurn checked above");
-        let start = Instant::now();
-        let (result, mut trace, tool_calls_total) = self
-            .drive(
-                active,
-                FrameSource::Conversation {
-                    conversation_id,
-                    history,
-                },
-                &options,
-                &ctrl,
-                ModelPhase::Stream,
-            )
-            .await;
-        trace.tool_calls_total = tool_calls_total;
-        trace.total_duration_ms = millis_since(start);
-        let stamp = match &result {
-            TurnResult::Completed { .. } => SealedResult::Completed,
-            TurnResult::Interrupted { .. } => SealedResult::Interrupted,
+            TurnResult::Paused { .. } => SealedResult::Paused,
         };
         state
             .seal_turn(active_id, stamp)
@@ -442,8 +591,9 @@ impl TurnRunner {
     }
 
     /// The shared state machine — every entry runs this loop; the frame
-    /// source and the model phase are the only forks. Every exit is
-    /// terminal; the entries own sealing.
+    /// source, the model phase, and the resume prologue are the only
+    /// forks. Every exit is terminal or paused; the entries own
+    /// sealing/stamping.
     async fn drive(
         &self,
         active: &mut TurnContext,
@@ -452,11 +602,104 @@ impl TurnRunner {
         ctrl: &RunControl,
         phase: ModelPhase,
     ) -> (TurnResult, TurnTrace, usize) {
-        let mut round: u32 = 0;
-        let mut tool_calls_total: usize = 0;
-        let mut trace = TurnTrace::new();
+        self.drive_from(active, frames, options, ctrl, phase, None)
+            .await
+    }
+
+    async fn drive_from(
+        &self,
+        active: &mut TurnContext,
+        frames: FrameSource<'_>,
+        options: &TurnRunOptions,
+        ctrl: &RunControl,
+        phase: ModelPhase,
+        resume: Option<ResumeState>,
+    ) -> (TurnResult, TurnTrace, usize) {
+        let mut round: u32;
+        let mut tool_calls_total: usize;
+        let mut trace: TurnTrace;
+        let mut pending_inject: Vec<TextPayload>;
+        match resume {
+            None => {
+                round = 0;
+                tool_calls_total = 0;
+                trace = TurnTrace::new();
+                pending_inject = Vec::new();
+            }
+            Some(r) => {
+                round = r.continue_round;
+                tool_calls_total = r.tool_calls_total;
+                trace = r.trace;
+                pending_inject = r.inject;
+                // A resumed turn whose control is already spent exits
+                // before touching facts.
+                if ctrl.should_stop() {
+                    let cause = if ctrl.is_cancelled() {
+                        TurnInterruption::ExplicitCancellation
+                    } else {
+                        TurnInterruption::TurnDeadlineExceeded
+                    };
+                    return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
+                }
+                // Approval-resume prologue: execute the withheld batch —
+                // it belongs to the paused round, so its results land
+                // between the committed calls and the next model round.
+                if let Some((withheld, draft)) = r.batch {
+                    // Note: the batch was already counted into
+                    // `tool_calls_total` when it was emitted (the pause
+                    // carries the count), so the prologue must not re-add.
+                    if let Err(cause) = self
+                        .run_batch(
+                            active,
+                            &draft,
+                            BatchWork::Execute(withheld.to_execute),
+                            withheld.rejected,
+                            options,
+                            ctrl,
+                            round,
+                            &mut trace,
+                        )
+                        .await
+                    {
+                        return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
+                    }
+                    round += 1;
+                }
+            }
+        }
 
         loop {
+            // Steering (Slice 7): resume-time injections first, then the
+            // round-boundary pull. Both append with the `user.steering`
+            // source label; the next model round sees them.
+            if !pending_inject.is_empty() {
+                for text in std::mem::take(&mut pending_inject) {
+                    if let Err(e) = active.append_input(text, "user.steering") {
+                        return (
+                            TurnResult::Interrupted {
+                                cause: TurnInterruption::RunnerInvariantViolation {
+                                    reason: e.to_string(),
+                                },
+                            },
+                            trace,
+                            tool_calls_total,
+                        );
+                    }
+                }
+            }
+            for text in options.interaction.pending_inputs().await {
+                if let Err(e) = active.append_input(text, "user.steering") {
+                    return (
+                        TurnResult::Interrupted {
+                            cause: TurnInterruption::RunnerInvariantViolation {
+                                reason: e.to_string(),
+                            },
+                        },
+                        trace,
+                        tool_calls_total,
+                    );
+                }
+            }
             // boundary checks
             if ctrl.should_stop() {
                 let cause = if ctrl.is_cancelled() {
@@ -670,6 +913,9 @@ impl TurnRunner {
                     );
                 }
                 ModelStopReason::ToolUse => {
+                    // Emitted calls count at dispatch time — including the
+                    // batch still pending behind a pause (the resume
+                    // therefore must not re-count it).
                     tool_calls_total += call_payloads.len();
                     if tool_calls_total as u32 > options.policy.limits.max_tool_calls {
                         return (
@@ -686,7 +932,10 @@ impl TurnRunner {
                     // defaults to `PassthroughHook` (no filter applied — opt in
                     // via `with_hook`). `FilterChain` plugs in via `with_hook`,
                     // implementing `ToolUseHook` directly.
-                    let (to_exec, rejected): (Vec<ToolCallPayload>, Vec<ToolExecutionOutcome>) = {
+                    let (hook_to_exec, hook_rejected): (
+                        Vec<ToolCallPayload>,
+                        Vec<ToolExecutionOutcome>,
+                    ) = {
                         let call_control = ctrl
                             .for_attempt(options.policy.attempt_timeout)
                             .for_call(options.execution.call_timeout);
@@ -705,105 +954,88 @@ impl TurnRunner {
                         let outcome = self.hook.apply(call_payloads.clone(), &hook_ctx).await;
                         (outcome.to_execute, outcome.rejected)
                     };
-                    // parallel dispatch; completion order comes from the
-                    // stream (each future is yielded as it finishes), so no
-                    // shared log is needed
-                    let futs = to_exec.into_iter().map(|payload| {
-                        let cc = ctrl
-                            .for_attempt(options.policy.attempt_timeout)
-                            .for_call(options.execution.call_timeout);
-                        let store = options.execution.artifact_store.clone();
-                        let tc = options.execution.token_counter.clone();
-                        let limits = options.execution.tool_output_limits.clone();
-                        let exec = self.executor.clone();
-                        async move {
-                            let t0 = Instant::now();
-                            let out = exec
-                                .execute_with_limits(payload, cc, store, tc, limits)
-                                .await;
-                            (out, millis_since(t0))
+                    // Slice 7: the second gate — the host's batch decision.
+                    // Default `Proceed`; `Pause` suspends the turn with the
+                    // model-emitted batch as `pending_calls`, before any
+                    // execution or rejection lands in the facts.
+                    let decision = options.interaction.decide_batch(&hook_to_exec).await;
+                    match decision {
+                        BatchDecision::Pause { deadline } => {
+                            return (
+                                TurnResult::Paused {
+                                    snapshot: active.snapshot(),
+                                    reason: PausedReason::AwaitingApproval {
+                                        pending_calls: call_payloads,
+                                        deadline,
+                                    },
+                                },
+                                trace,
+                                tool_calls_total,
+                            );
                         }
-                    });
-                    let mut stream = futures_util::stream::FuturesUnordered::from_iter(futs);
-                    let mut results: Vec<ToolExecutionOutcome> = Vec::with_capacity(stream.len());
-                    let mut completion_order: Vec<ToolCallId> = Vec::with_capacity(stream.len());
-                    let mut call_durations: HashMap<ToolCallId, u64> = HashMap::new();
-                    while let Some((out, duration_ms)) = stream.next().await {
-                        completion_order.push(out.result.call_id.clone());
-                        call_durations.insert(out.result.call_id.clone(), duration_ms);
-                        results.push(out);
-                    }
-                    results.extend(rejected);
-                    // Canonical order = model draft order, taken from the
-                    // receipt's position — not from ToolCallId encoding. The
-                    // kernel re-derives the same order from call block
-                    // sequences when committing.
-                    let order_index: HashMap<ToolCallId, usize> = call_payloads
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| (p.call_id.clone(), i))
-                        .collect();
-                    results.sort_by_key(|r| order_index.get(&r.result.call_id).copied());
-                    let tool_names: HashMap<ToolCallId, String> = call_payloads
-                        .iter()
-                        .map(|p| (p.call_id.clone(), p.tool_name.clone()))
-                        .collect();
-                    // attach batch trace before committing so even a
-                    // RunnerInvariantViolation keeps the observations
-                    if let Some(rt) = trace.rounds.last_mut() {
-                        rt.tool_batch = Some(ToolBatchTrace {
-                            calls: results
-                                .iter()
-                                .map(|r| ToolCallTrace {
-                                    call_id: r.result.call_id.clone(),
-                                    tool_name: tool_names
-                                        .get(&r.result.call_id)
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                    position: order_index
-                                        .get(&r.result.call_id)
-                                        .copied()
-                                        .unwrap_or_default(),
-                                    status: r.result.status.clone(),
-                                    truncation: r.result.output.truncation,
-                                    artifact: r.result.output.artifact.clone(),
-                                    duration_ms: call_durations
-                                        .get(&r.result.call_id)
-                                        .copied()
-                                        .unwrap_or(0),
-                                })
-                                .collect(),
-                            completion_order,
-                        });
-                    }
-                    if let Err(e) = active
-                        .append_tool_results(results.iter().map(|o| o.result.clone()).collect())
-                    {
-                        return (
-                            TurnResult::Interrupted {
-                                cause: TurnInterruption::RunnerInvariantViolation {
-                                    reason: e.to_string(),
-                                },
-                            },
-                            trace,
-                            tool_calls_total,
-                        );
-                    }
-                    // UnknownOutcome policy: Stop interrupts, Continue proceeds;
-                    // parent should_stop is checked at the next loop top.
-                    if let Some(uu) = results.iter().find(|r| {
-                        r.result.status == ToolResultStatus::UnknownOutcome
-                            && r.policy == UnknownOutcomePolicy::Stop
-                    }) {
-                        return (
-                            TurnResult::Interrupted {
-                                cause: TurnInterruption::UnsafeUnknownOutcome {
-                                    call_id: uu.result.call_id.clone(),
-                                },
-                            },
-                            trace,
-                            tool_calls_total,
-                        );
+                        BatchDecision::Proceed => {
+                            if let Err(cause) = self
+                                .run_batch(
+                                    active,
+                                    &call_payloads,
+                                    BatchWork::Execute(hook_to_exec),
+                                    hook_rejected,
+                                    options,
+                                    ctrl,
+                                    round,
+                                    &mut trace,
+                                )
+                                .await
+                            {
+                                return (
+                                    TurnResult::Interrupted { cause },
+                                    trace,
+                                    tool_calls_total,
+                                );
+                            }
+                        }
+                        BatchDecision::Rewrite(rewritten) => {
+                            if let Err(cause) = self
+                                .run_batch(
+                                    active,
+                                    &call_payloads,
+                                    BatchWork::Execute(rewritten),
+                                    hook_rejected,
+                                    options,
+                                    ctrl,
+                                    round,
+                                    &mut trace,
+                                )
+                                .await
+                            {
+                                return (
+                                    TurnResult::Interrupted { cause },
+                                    trace,
+                                    tool_calls_total,
+                                );
+                            }
+                        }
+                        BatchDecision::Reject { results } => {
+                            if let Err(cause) = self
+                                .run_batch(
+                                    active,
+                                    &call_payloads,
+                                    BatchWork::Precomputed(results),
+                                    hook_rejected,
+                                    options,
+                                    ctrl,
+                                    round,
+                                    &mut trace,
+                                )
+                                .await
+                            {
+                                return (
+                                    TurnResult::Interrupted { cause },
+                                    trace,
+                                    tool_calls_total,
+                                );
+                            }
+                        }
                     }
                     round += 1;
                 }
@@ -812,5 +1044,133 @@ impl TurnRunner {
                 }
             }
         }
+    }
+
+    /// Execute a tool batch and commit its results — the shared core of
+    /// the normal ToolUse dispatch and the approval-resume prologue.
+    // Private shared core; every parameter is a distinct axis (facts,
+    // order, work, policy, control, round, trace) — grouping would only
+    // obscure it.
+    #[allow(clippy::too_many_arguments)]
+    /// `draft_order` is the model-emitted payload order; the canonical
+    /// result order follows it (host rewrites and pre-computed rejects
+    /// still pair by `call_id`). The batch trace attaches to the round's
+    /// trace entry before committing, so even a
+    /// `RunnerInvariantViolation` keeps the observations.
+    async fn run_batch(
+        &self,
+        active: &mut TurnContext,
+        draft_order: &[ToolCallPayload],
+        work: BatchWork,
+        mut rejected: Vec<ToolExecutionOutcome>,
+        options: &TurnRunOptions,
+        ctrl: &RunControl,
+        round: u32,
+        trace: &mut TurnTrace,
+    ) -> Result<(), TurnInterruption> {
+        // parallel dispatch; completion order comes from the
+        // stream (each future is yielded as it finishes), so no
+        // shared log is needed
+        let (mut results, completion_order, call_durations): (
+            Vec<ToolExecutionOutcome>,
+            Vec<ToolCallId>,
+            HashMap<ToolCallId, u64>,
+        ) = match work {
+            BatchWork::Execute(to_exec) => {
+                let futs = to_exec.into_iter().map(|payload| {
+                    let cc = ctrl
+                        .for_attempt(options.policy.attempt_timeout)
+                        .for_call(options.execution.call_timeout);
+                    let store = options.execution.artifact_store.clone();
+                    let tc = options.execution.token_counter.clone();
+                    let limits = options.execution.tool_output_limits.clone();
+                    let exec = self.executor.clone();
+                    async move {
+                        let t0 = Instant::now();
+                        let out = exec
+                            .execute_with_limits(payload, cc, store, tc, limits)
+                            .await;
+                        (out, millis_since(t0))
+                    }
+                });
+                let mut stream = futures_util::stream::FuturesUnordered::from_iter(futs);
+                let mut results = Vec::with_capacity(stream.len());
+                let mut completion_order = Vec::with_capacity(stream.len());
+                let mut call_durations: HashMap<ToolCallId, u64> = HashMap::new();
+                while let Some((out, duration_ms)) = stream.next().await {
+                    completion_order.push(out.result.call_id.clone());
+                    call_durations.insert(out.result.call_id.clone(), duration_ms);
+                    results.push(out);
+                }
+                (results, completion_order, call_durations)
+            }
+            BatchWork::Precomputed(precomputed) => (
+                precomputed,
+                Vec::new(), // host-supplied: no executor completion order
+                HashMap::new(),
+            ),
+        };
+        results.append(&mut rejected);
+        // Canonical order = model draft order, taken from the
+        // receipt's position — not from ToolCallId encoding. The
+        // kernel re-derives the same order from call block
+        // sequences when committing.
+        let order_index: HashMap<ToolCallId, usize> = draft_order
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.call_id.clone(), i))
+            .collect();
+        results.sort_by_key(|r| order_index.get(&r.result.call_id).copied());
+        let tool_names: HashMap<ToolCallId, String> = draft_order
+            .iter()
+            .map(|p| (p.call_id.clone(), p.tool_name.clone()))
+            .collect();
+        // attach batch trace before committing so even a
+        // RunnerInvariantViolation keeps the observations
+        if let Some(rt) = trace
+            .rounds
+            .last_mut()
+            .filter(|rt| rt.round_id == RoundId(round))
+        {
+            rt.tool_batch = Some(ToolBatchTrace {
+                calls: results
+                    .iter()
+                    .map(|r| ToolCallTrace {
+                        call_id: r.result.call_id.clone(),
+                        tool_name: tool_names
+                            .get(&r.result.call_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        position: order_index
+                            .get(&r.result.call_id)
+                            .copied()
+                            .unwrap_or_default(),
+                        status: r.result.status.clone(),
+                        truncation: r.result.output.truncation,
+                        artifact: r.result.output.artifact.clone(),
+                        duration_ms: call_durations.get(&r.result.call_id).copied().unwrap_or(0),
+                    })
+                    .collect(),
+                completion_order,
+            });
+        }
+        if let Err(e) =
+            active.append_tool_results(results.iter().map(|o| o.result.clone()).collect())
+        {
+            return Err(TurnInterruption::RunnerInvariantViolation {
+                reason: e.to_string(),
+            });
+        }
+        // UnknownOutcome policy: Stop interrupts, Continue proceeds;
+        // parent should_stop is checked at the next loop top.
+        if let Some(uu) = results.iter().find(|r| {
+            r.result.status == ToolResultStatus::UnknownOutcome
+                && r.policy == UnknownOutcomePolicy::Stop
+        }) {
+            return Err(TurnInterruption::UnsafeUnknownOutcome {
+                call_id: uu.result.call_id.clone(),
+            });
+        }
+        Ok(())
     }
 }

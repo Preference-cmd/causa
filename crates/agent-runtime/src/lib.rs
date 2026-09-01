@@ -31,6 +31,7 @@ pub mod event;
 pub mod executor;
 pub mod filter;
 pub mod hook;
+pub mod resume;
 
 // --- driver stack (graduated from context-kernel internal/, Slice 12) --------
 pub use config::{
@@ -40,11 +41,13 @@ pub use config::{
 pub use control::RunControl;
 pub use defaults::{NoopCompaction, NoopTokenCounter};
 pub use driver::{
-    AttemptTrace, ConversationOutcome, ModelRoundTrace, OutputSummary, ToolBatchTrace,
-    ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult, TurnRunner, TurnTrace,
+    AttemptTrace, ConversationOutcome, ModelRoundTrace, OutputSummary, PausedReason,
+    ToolBatchTrace, ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult, TurnRunner,
+    TurnTrace,
 };
 pub use executor::ToolExecutor;
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
+pub use resume::{ResumeRequest, resume_turn};
 
 // --- framework policies and projections --------------------------------------
 pub use event::{

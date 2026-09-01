@@ -16,12 +16,18 @@ use crate::context::turn::{ContextFrame, ModelContext, TurnContext, TurnSnapshot
 
 /// Kernel-side eligibility stamp recorded when the driver finalizes the
 /// active turn. Marker only — the rich cause stays with the caller via the
-/// runner's `TurnResult`（`TurnInterruption` 是 staged 词汇，不得进入事实层）。
+/// runner's `TurnResult`（`TurnInterruption` 是 driver 词汇，不得进入事实层）。
+///
+/// `Paused` (Slice 7) stamps a turn that is *not* sealed: the active
+/// `TurnContext` stays open so `resume_turn` can continue it. `commit`
+/// rejects a Paused stamp (`TurnPaused`) — only `abort_turn` (host gives
+/// up) or a resumed completion/commit may close the slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SealedResult {
     Completed,
     Interrupted,
+    Paused,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -49,6 +55,10 @@ pub enum ConversationError {
     DuplicateTurnId(TurnId),
     #[error("turn not completed, cannot commit: {0:?}")]
     TurnNotCompleted(TurnId),
+    #[error("turn is paused, cannot commit until resumed: {0:?}")]
+    TurnPaused(TurnId),
+    #[error("turn is not paused, cannot resume: {0:?}")]
+    NotPaused(TurnId),
     #[error("invalid conversation state: {0}")]
     InvalidSequence(String),
 }
@@ -57,17 +67,20 @@ pub enum ConversationError {
 ///
 /// - `begin_turn` admits a fresh active turn (rejects concurrent active and
 ///   turn-id collisions with committed history);
-/// - `seal_turn` is the only stamping path — it seals the active
-///   `TurnContext` and records the outcome in one step, so the invariant
-///   `sealed_result.is_some() ⇒ active.is_sealed()` holds by construction;
+/// - `seal_turn` is the only stamping path — for `Completed`/`Interrupted`
+///   it seals the active `TurnContext` and records the outcome in one step
+///   (invariant `sealed_result ∈ {Completed, Interrupted} ⇒ active.is_sealed()`);
+///   for `Paused` (Slice 7) it records the stamp while the active
+///   `TurnContext` stays open, so a later `resume_turn` can continue it
+///   (invariant `sealed_result == Paused ⇒ active` is open);
 /// - `commit` is the exactly-once transition into history: it alone assigns
 ///   the `TurnSequence` (struct-update on the turn's snapshot), rejects
-///   anything not sealed-and-`Completed`, and clears the active slot — a
-///   repeated commit therefore lands on `UnknownTurn` (rejection, not
-///   idempotence);
-/// - `abort_turn` discards the active turn in any state (open,
-///   sealed-completed, sealed-interrupted); history is untouched either way,
-///   and an aborted turn's id may be reused.
+///   anything not sealed-and-`Completed` (`Paused` gets the dedicated
+///   `TurnPaused` rejection), and clears the active slot — a repeated
+///   commit therefore lands on `UnknownTurn` (rejection, not idempotence);
+/// - `abort_turn` discards the active turn in any state (open, paused,
+///   sealed); history is untouched either way, and an aborted turn's id
+///   may be reused.
 #[derive(Serialize, Deserialize)]
 pub struct ConversationState {
     conversation_id: ConversationId,
@@ -139,8 +152,11 @@ impl ConversationState {
         Ok(self.active_turn.as_mut().expect("just inserted"))
     }
 
-    /// The only stamping path: seal the active `TurnContext` and record its
-    /// outcome atomically. Driver-owned, like `TurnContext::seal` itself.
+    /// The only stamping path. `Completed`/`Interrupted` seal the active
+    /// `TurnContext` and record the outcome atomically; `Paused` records
+    /// the stamp while the turn stays open (Slice 7 — the driver-owned
+    /// counterpart of `TurnContext::seal`, deliberately withheld for
+    /// resumable pauses).
     pub fn seal_turn(
         &mut self,
         turn_id: TurnId,
@@ -149,7 +165,9 @@ impl ConversationState {
         self.assert_stamp_invariant();
         match self.active_turn.as_mut() {
             Some(active) if active.turn_id() == turn_id => {
-                active.seal();
+                if result != SealedResult::Paused {
+                    active.seal();
+                }
                 self.sealed_result = Some(result);
                 Ok(())
             }
@@ -160,6 +178,12 @@ impl ConversationState {
     /// Read-only view of the active turn.
     pub fn active_turn(&self) -> Option<&TurnContext> {
         self.active_turn.as_ref()
+    }
+
+    /// The eligibility stamp, if any (`Some(Paused)` marks a resumable
+    /// turn).
+    pub fn sealed_result(&self) -> Option<SealedResult> {
+        self.sealed_result
     }
 
     /// Mutable view of the active turn — the host's door access for
@@ -178,6 +202,11 @@ impl ConversationState {
         match self.active_turn.as_ref() {
             Some(active) if active.turn_id() == turn_id => {}
             _ => return Err(ConversationError::UnknownTurn(turn_id)),
+        }
+        if self.sealed_result == Some(SealedResult::Paused) {
+            // Facts of a paused turn are still open; resume it (or abort)
+            // instead of committing.
+            return Err(ConversationError::TurnPaused(turn_id));
         }
         let active = self.active_turn.as_ref().expect("matched above");
         if !active.is_sealed() || self.sealed_result != Some(SealedResult::Completed) {
@@ -296,15 +325,20 @@ impl ConversationState {
         &self.conversation_id
     }
 
-    /// Canonical-path invariant: a stamp exists only while the active turn
-    /// is sealed. Enforced by construction (`seal_turn` seals first; every
-    /// other path only clears). Commit does not rely on this — it checks
-    /// both facts defensively.
+    /// Canonical-path invariant: a `Completed`/`Interrupted` stamp exists
+    /// only while the active turn is sealed; a `Paused` stamp exists only
+    /// while it is open (Slice 7). Enforced by construction (`seal_turn`
+    /// seals exactly when it does not stamp `Paused`; every other path
+    /// only clears). Commit does not rely on this — it checks both facts
+    /// defensively.
     fn assert_stamp_invariant(&self) {
-        debug_assert!(
-            self.sealed_result.is_none()
-                || self.active_turn.as_ref().is_some_and(|t| t.is_sealed())
-        );
+        debug_assert!(match self.sealed_result {
+            None => true,
+            Some(SealedResult::Paused) => {
+                self.active_turn.as_ref().is_some_and(|t| !t.is_sealed())
+            }
+            Some(_) => self.active_turn.as_ref().is_some_and(|t| t.is_sealed()),
+        });
     }
 }
 

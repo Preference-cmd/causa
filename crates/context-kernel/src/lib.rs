@@ -57,7 +57,7 @@ pub use ports::gateway::{
     ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage, ReasoningPayload, StreamDelta,
     ToolSurface, completed_model_stream,
 };
-pub use ports::interaction::TurnInteraction;
+pub use ports::interaction::{BatchDecision, TurnInteraction};
 pub use ports::store::{ConversationStore, ConversationStoreError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,

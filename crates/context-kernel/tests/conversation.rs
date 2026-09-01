@@ -319,6 +319,7 @@ fn from_snapshots_rejects_unpaired_tool_results() {
         turn_sequence: TurnSequence(9),
         blocks,
         source_version: ContextVersion(1),
+        sealed: true,
     };
     let mut snapshots: Vec<_> = live.completed_turns().to_vec();
     snapshots.push(corrupt);
@@ -376,4 +377,35 @@ fn from_snapshots_accepts_empty_history() {
     assert_eq!(replayed.version().0, 0);
     commit_completed(&mut replayed, "t1");
     assert_eq!(replayed.completed_turns()[0].turn_sequence, TurnSequence(0));
+}
+
+// ---- Slice 7: paused-state persistence ---------------------------------------
+
+/// A paused conversation serializes with its active turn OPEN (snapshot
+/// `sealed: false`) and the Paused stamp; the round-trip restores exactly
+/// that resumable shape.
+#[test]
+fn paused_state_round_trip_preserves_open_active_and_stamp() {
+    let mut c = conv();
+    c.begin_turn(TurnId::new("t1")).unwrap();
+    c.active_turn_mut()
+        .unwrap()
+        .append_input(TextPayload::new("hi"), "user")
+        .unwrap();
+    c.seal_turn(TurnId::new("t1"), SealedResult::Paused)
+        .unwrap();
+    assert!(!c.active_turn().unwrap().is_sealed());
+
+    let json = serde_json::to_string(&c).expect("serialize");
+    let mut restored: ConversationState = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(restored.sealed_result(), Some(SealedResult::Paused));
+    let active = restored.active_turn().expect("active preserved");
+    assert!(!active.is_sealed(), "paused active must reload open");
+    assert_eq!(active.turn_id(), TurnId::new("t1"));
+    assert_eq!(active.blocks().len(), 1);
+    // The restored pause still rejects commit.
+    assert!(matches!(
+        restored.commit(TurnId::new("t1")),
+        Err(ConversationError::TurnPaused(_))
+    ));
 }

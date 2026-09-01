@@ -14,7 +14,7 @@ mod common;
 
 use common::{commit_sealed, endturn_output, turn_id};
 use reimagine_agent_runtime::{
-    ConversationOutcome, TurnInterruption, TurnOutcome, TurnResult, TurnTrace,
+    ConversationOutcome, PausedReason, TurnInterruption, TurnOutcome, TurnResult, TurnTrace,
 };
 use reimagine_context_kernel::{
     ConversationId, ConversationState, ModelInvokeErrorKind, ModelStopReason, SealedResult,
@@ -83,6 +83,9 @@ fn turn_outcome_round_trip_preserves_snapshot() {
     context
         .append_input(TextPayload::new("user said hi"), "user")
         .expect("append input");
+    // Slice 7: the wire preserves sealedness. Terminal outcomes carry a
+    // sealed context; the round-trip must restore it as sealed.
+    context.seal();
     let outcome = TurnOutcome {
         context,
         result: TurnResult::Interrupted {
@@ -99,6 +102,71 @@ fn turn_outcome_round_trip_preserves_snapshot() {
     assert!(restored.context.is_sealed());
     assert_eq!(restored.context.turn_id(), turn_id("t-out"));
     assert_eq!(restored.context.blocks().len(), 1);
+}
+
+/// Slice 7: a paused outcome carries the open context plus the reason —
+/// the round-trip must restore both so a persisted pause reloads
+/// resumable.
+#[test]
+fn turn_outcome_paused_round_trip_preserves_open_context_and_reason() {
+    let mut context = TurnContext::new(turn_id("t-paused"));
+    context
+        .append_input(TextPayload::new("user said hi"), "user")
+        .expect("append input");
+    assert!(!context.is_sealed(), "paused turns stay open");
+    let snapshot = context.snapshot();
+    let reason = PausedReason::AwaitingApproval {
+        pending_calls: vec![reimagine_context_kernel::ToolCallPayload {
+            call_id: reimagine_context_kernel::ToolCallId("call-1".into()),
+            tool_name: "echo".into(),
+            arguments: json!({"a": 1}),
+        }],
+        deadline: Some(std::time::Duration::from_secs(30)),
+    };
+    let outcome = TurnOutcome {
+        context,
+        result: TurnResult::Paused { snapshot, reason },
+        trace: TurnTrace::new(),
+    };
+    let json = serde_json::to_string(&outcome).expect("serialize");
+    let restored: TurnOutcome = serde_json::from_str(&json).expect("deserialize");
+    let restored_json = serde_json::to_string(&restored).expect("re-serialize");
+    assert_eq!(json, restored_json);
+    assert!(!restored.context.is_sealed());
+    match restored.result {
+        TurnResult::Paused { snapshot, reason } => {
+            assert!(!snapshot.sealed);
+            assert!(
+                matches!(&reason, PausedReason::AwaitingApproval { pending_calls, .. }
+                    if pending_calls.len() == 1
+                        && pending_calls[0].call_id.0 == "call-1"),
+                "reason must round-trip: {reason:?}"
+            );
+        }
+        other => panic!("expected Paused, got {other:?}"),
+    }
+}
+
+#[test]
+fn paused_reason_tags_are_pinned() {
+    let reason = PausedReason::PausedForSteering {
+        queued_inputs: vec![TextPayload::new("wait")],
+        pending_round_id: reimagine_context_kernel::RoundId(2),
+    };
+    let value = serde_json::to_value(&reason).expect("serialize");
+    assert_eq!(
+        value.get("kind").and_then(|v| v.as_str()),
+        Some("paused_for_steering")
+    );
+    let approval = PausedReason::AwaitingApproval {
+        pending_calls: vec![],
+        deadline: None,
+    };
+    let value = serde_json::to_value(&approval).expect("serialize");
+    assert_eq!(
+        value.get("kind").and_then(|v| v.as_str()),
+        Some("awaiting_approval")
+    );
 }
 
 #[test]
@@ -147,7 +215,11 @@ fn conversation_state_round_trip_with_sealed_active() {
 
 #[test]
 fn sealed_result_round_trip_variants() {
-    for variant in [SealedResult::Completed, SealedResult::Interrupted] {
+    for variant in [
+        SealedResult::Completed,
+        SealedResult::Interrupted,
+        SealedResult::Paused,
+    ] {
         let v = serde_json::to_value(variant).expect("serialize");
         let r: SealedResult = serde_json::from_value(v.clone()).expect("deserialize");
         assert_eq!(serde_json::to_value(r).expect("re-serialize"), v);

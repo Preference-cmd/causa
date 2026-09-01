@@ -40,7 +40,9 @@ pub mod turn_context_as_snapshot {
             snap.source_version,
         )
         .map_err(serde::de::Error::custom)?;
-        ctx.seal();
+        if snap.sealed {
+            ctx.seal();
+        }
         Ok(ctx)
     }
 }
@@ -64,7 +66,9 @@ pub(crate) mod option_turn_context_as_snapshot {
                 snap.source_version,
             )
             .map_err(serde::de::Error::custom)?;
-            ctx.seal();
+            if snap.sealed {
+                ctx.seal();
+            }
             Ok(ctx)
         })
         .transpose()
@@ -513,8 +517,13 @@ impl TurnContext {
             turn_sequence: TurnSequence(0),
             blocks: self.blocks.clone(),
             source_version: self.version,
+            sealed: self.is_sealed(),
         }
     }
+}
+
+fn default_sealed() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -523,6 +532,14 @@ pub struct TurnSnapshot {
     pub turn_sequence: TurnSequence,
     pub blocks: OrderedBlocks,
     pub source_version: ContextVersion,
+    /// Whether the turn was sealed when snapshotted. Slice 7: a *paused*
+    /// turn snapshots as `false` so a persisted conversation reloads with
+    /// the active turn still open and resumable. Serde-additive: payloads
+    /// from before Slice 7 lack the field and default to `true`, which is
+    /// exactly the old invariant (only sealed turns were ever snapshotted
+    /// through a wire path).
+    #[serde(default = "default_sealed")]
+    pub sealed: bool,
 }
 
 impl TurnSnapshot {
