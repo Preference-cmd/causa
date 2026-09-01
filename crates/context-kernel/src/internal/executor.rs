@@ -98,7 +98,12 @@ impl ToolExecutor {
             outcome.policy = tool.unknown_outcome_policy();
         }
 
-        // Token-limit truncation (middle truncation + artifact spill)
+        // Token-limit truncation (middle truncation + artifact spill).
+        // Shape note: on truncation `content` is REPLACED by a JSON string
+        // (head + notice + tail) regardless of the original `Value` shape —
+        // an object or array observation becomes a string on the wire. The
+        // `truncation: Middle` marker and the artifact ref are how consumers
+        // detect this.
         let effective_limit = tool.output_limits().unwrap_or(global_limits).max_tokens;
 
         let estimated = if let Some(counter) = &token_counter {

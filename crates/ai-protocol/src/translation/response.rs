@@ -1,3 +1,8 @@
+// ⚠️ FROZEN — harness face (frozen legacy). Serves reimagine_agent_harness DTO
+// translation only; no new production semantics. Dies with agent-harness
+// dissolution (Slice 9). The kernel-native face lives in
+// translation::{context_frame, anthropic, openai_chat, openai_responses}.
+
 use serde_json::Value;
 
 use reimagine_agent_harness::{AgentResponse, Message, ToolCall, ToolCallId, Usage};

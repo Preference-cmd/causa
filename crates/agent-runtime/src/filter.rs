@@ -1,72 +1,27 @@
-//! Tool-use filter primitives — Slice 4 Phase A (选项 B).
+//! Tool-use filter policies — the framework's concrete behavior for the
+//! tool-use batch between model output and tool dispatch.
 //!
-//! `ToolUseFilter` is the framework's user-facing extension point for the
-//! tool-use batch between model output and tool dispatch. The kernel
-//! exposes only the minimum adapter (`ToolUseHook` in
-//! `reimagine_context_kernel`); all filter types live here.
+//! ## One trait, one seam
 //!
-//! ## Layering
-//!
-//! ```text
-//! reimagine-context-kernel   ← ports stay zero new user-facing types
-//!   └─ internal::hook::ToolUseHook   ← kernel-side adapter (the seam)
-//!            ▲
-//!            │ impl ToolUseHook for FilterChain
-//!            │
-//! reimagine-agent-runtime
-//!   ├─ ToolUseFilter trait   ← user-facing extension point
-//!   ├─ FilterContext / FilterResult   ← type aliases to kernel types
-//!   ├─ DedupFilter, AllowAllFilter, DenyAllFilter
-//!   └─ FilterChain
-//! ```
-//!
-//! ## Why aliases
-//!
-//! `FilterContext` and `FilterResult` are exposed as `pub use` aliases of
-//! the kernel's `HookCtx` and `HookOutcome` so consumers see one type name
-//! (`FilterContext` / `FilterResult`) while the underlying struct lives
-//! in the kernel adapter crate. Field sets are identical.
-//!
-//! ## Defaults
-//!
-//! `FilterChain::default()` is empty — no opinion. Callers who want
-//! dedup opt in with `FilterChain::new(vec![Arc::new(DedupFilter)])`
-//! or `FilterChain::dedup_only()`. See "Minimum invariant, not a policy"
-//! in `crate::internal::hook`.
+//! The kernel exposes `ToolUseHook` (the seam `TurnRunner::with_hook`
+//! consumes) and this crate re-exports it. Filters implement that trait
+//! directly — there is no second extension trait and no alias layer. The
+//! kernel itself ships only `PassthroughHook` (no opinion); the concrete
+//! policies below live here because dedup / kill-switch / approval are
+//! framework or host concerns, never kernel facts.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use reimagine_context_kernel::{
-    ToolCallPayload, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
-    ToolUseHook,
+    HookCtx, HookOutcome, ToolCallPayload, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
+    ToolResultStatus, ToolUseHook,
 };
 
-// Type aliases for the user-facing extension surface. They re-export
-// the kernel-side adapter types under framework names so consumers
-// see `FilterContext` / `FilterResult` regardless of underlying crate.
-pub use reimagine_context_kernel::HookCtx as FilterContext;
-pub use reimagine_context_kernel::HookOutcome as FilterResult;
-
-/// User-facing extension point for the tool-use batch.
-///
-/// Filters compose sequentially: the next filter's `to_execute` is the
-/// previous filter's `to_execute`. `rejected` accumulates across the
-/// chain. Open `FilterResult` semantics (Slice 4 §4): filters may
-/// rewrite `arguments` on `to_execute`, defer by pushing to `rejected`,
-/// or split / merge calls — provided `rejected` always reuses the
-/// original `payload.call_id` (forging a new id would make
-/// `append_tool_results` reject the entry with `UnpairedToolResult`).
-#[async_trait]
-pub trait ToolUseFilter: Send + Sync {
-    async fn filter(&self, calls: Vec<ToolCallPayload>, ctx: &FilterContext<'_>) -> FilterResult;
-}
-
-/// Default deduplication filter — same-batch `(tool_name, arguments)`
-/// dedup. Subsequent occurrences of an identical `(tool_name, arguments)`
-/// pair are pushed to `rejected` with the original `call_id` and a
-/// `{"error": "duplicate tool call"}` payload.
+/// Default deduplication policy — same-batch `(tool_name, arguments)` dedup.
+/// Subsequent occurrences of an identical pair are pushed to `rejected` with
+/// the original `call_id` and a `{"error": "duplicate tool call"}` payload.
 ///
 /// This is a *business policy*, not a fact-layer invariant. The kernel
 /// pair-validation rules (ToolCallId pairing, `append_tool_results`
@@ -75,24 +30,24 @@ pub trait ToolUseFilter: Send + Sync {
 pub struct DedupFilter;
 
 #[async_trait]
-impl ToolUseFilter for DedupFilter {
-    async fn filter(&self, calls: Vec<ToolCallPayload>, _ctx: &FilterContext<'_>) -> FilterResult {
-        let mut seen: HashMap<(String, serde_json::Value), ()> = HashMap::new();
+impl ToolUseHook for DedupFilter {
+    async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
+        let mut seen: HashSet<(String, serde_json::Value)> = HashSet::new();
         let mut to_execute = Vec::new();
         let mut rejected = Vec::new();
         for payload in calls {
             let key = (payload.tool_name.clone(), payload.arguments.clone());
-            if seen.insert(key, ()).is_some() {
+            if seen.insert(key) {
+                to_execute.push(payload);
+            } else {
                 rejected.push(ToolExecutionOutcome::new(ToolResultPayload {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
                 }));
-            } else {
-                to_execute.push(payload);
             }
         }
-        FilterResult {
+        HookOutcome {
             to_execute,
             rejected,
         }
@@ -103,16 +58,13 @@ impl ToolUseFilter for DedupFilter {
 ///
 /// Useful for tests, opt-out scenarios, and as a baseline for chains
 /// that only add policy filters.
-///
-/// This filter is a default-testing helper. Production code should
-/// compose explicit chains; wire real policy filters instead.
 #[derive(Debug, Default, Clone)]
 pub struct AllowAllFilter;
 
 #[async_trait]
-impl ToolUseFilter for AllowAllFilter {
-    async fn filter(&self, calls: Vec<ToolCallPayload>, _ctx: &FilterContext<'_>) -> FilterResult {
-        FilterResult::passthrough(calls)
+impl ToolUseHook for AllowAllFilter {
+    async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
+        HookOutcome::passthrough(calls)
     }
 }
 
@@ -143,8 +95,8 @@ impl Default for DenyAllFilter {
 }
 
 #[async_trait]
-impl ToolUseFilter for DenyAllFilter {
-    async fn filter(&self, calls: Vec<ToolCallPayload>, _ctx: &FilterContext<'_>) -> FilterResult {
+impl ToolUseHook for DenyAllFilter {
+    async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
         let rejected = calls
             .into_iter()
             .map(|payload| {
@@ -155,7 +107,7 @@ impl ToolUseFilter for DenyAllFilter {
                 })
             })
             .collect();
-        FilterResult {
+        HookOutcome {
             to_execute: Vec::new(),
             rejected,
         }
@@ -164,33 +116,28 @@ impl ToolUseFilter for DenyAllFilter {
 
 /// Composes multiple filters sequentially.
 ///
-/// `FilterChain::filter` walks `filters` in order, feeding each
+/// `FilterChain::apply` walks `filters` in order, feeding each
 /// filter's `to_execute` into the next. `rejected` accumulates across
 /// the chain. `FilterChain::default()` is empty (no opinion — callers opt
 /// in via `DedupFilter` or `dedup_only()`).
 ///
-/// ## Bridge to the kernel
-///
-/// `FilterChain` also implements the kernel-side `ToolUseHook` trait,
-/// so it can plug into `TurnRunner::with_hook` directly. This is the
-/// bridge that lets the framework own the user-facing types without
-/// the kernel depending on `agent-runtime`.
+/// A chain plugs into the kernel through the same trait it is made of:
+/// `TurnRunner::with_hook(gateway, executor, Arc::new(chain))`.
 #[derive(Clone)]
 pub struct FilterChain {
-    filters: Vec<Arc<dyn ToolUseFilter>>,
+    filters: Vec<Arc<dyn ToolUseHook>>,
 }
 
 impl FilterChain {
     /// Build a chain from an explicit filter list. Order matters: the
     /// first filter sees the raw batch, the next sees the previous
     /// filter's `to_execute`, etc.
-    pub fn new(filters: Vec<Arc<dyn ToolUseFilter>>) -> Self {
+    pub fn new(filters: Vec<Arc<dyn ToolUseHook>>) -> Self {
         Self { filters }
     }
 
-    /// True if the chain has no filters — in that case `filter` is a
-    /// pure passthrough. `AgentRuntime` checks this to avoid plugging
-    /// in a no-op `FilterChain` if the consumer opted out of filtering.
+    /// True if the chain has no filters — in that case `apply` is a
+    /// pure passthrough.
     pub fn is_empty(&self) -> bool {
         self.filters.is_empty()
     }
@@ -218,13 +165,6 @@ impl FilterChain {
 
 impl Default for FilterChain {
     /// Empty by default — the framework carries no opinion.
-    ///
-    /// Callers who want dedup opt in with
-    /// `FilterChain::new(vec![Arc::new(DedupFilter)])` or
-    /// `FilterChain::dedup_only()`. `TurnRunner::new()` defaults
-    /// to the same passthrough via `PassthroughHook`, so an
-    /// `AgentRuntime` built from `FilterChain::default()` also
-    /// does nothing until wired with an explicit chain.
     fn default() -> Self {
         Self {
             filters: Vec::new(),
@@ -241,53 +181,30 @@ impl std::fmt::Debug for FilterChain {
 }
 
 #[async_trait]
-impl ToolUseFilter for FilterChain {
-    async fn filter(
-        &self,
-        mut calls: Vec<ToolCallPayload>,
-        ctx: &FilterContext<'_>,
-    ) -> FilterResult {
+impl ToolUseHook for FilterChain {
+    async fn apply(&self, mut calls: Vec<ToolCallPayload>, ctx: &HookCtx<'_>) -> HookOutcome {
         let mut all_rejected = Vec::new();
         for filter in &self.filters {
-            let outcome = filter.filter(std::mem::take(&mut calls), ctx).await;
+            let outcome = filter.apply(std::mem::take(&mut calls), ctx).await;
             all_rejected.extend(outcome.rejected);
             calls = outcome.to_execute;
         }
-        FilterResult {
+        HookOutcome {
             to_execute: calls,
             rejected: all_rejected,
         }
     }
 }
 
-/// Bridge: `FilterChain` is a `ToolUseHook`. This lets
-/// `AgentRuntime::run_turn` call `TurnRunner::with_hook(filter_chain)`
-/// directly without the kernel needing to know about agent-runtime.
-#[async_trait]
-impl ToolUseHook for FilterChain {
-    async fn apply(
-        &self,
-        calls: Vec<ToolCallPayload>,
-        ctx: &reimagine_context_kernel::HookCtx<'_>,
-    ) -> reimagine_context_kernel::HookOutcome {
-        // `FilterContext = HookCtx` and `FilterResult = HookOutcome`
-        // (type aliases), so we can pass through directly.
-        <Self as ToolUseFilter>::filter(self, calls, ctx).await
-    }
-}
-
 // --- tests ----------------------------------------------------------------
 //
-// Unit tests for the filter primitives. They live in the same file to keep
+// Unit tests for the filter policies. They live in the same file to keep
 // the test surface local; they do not require a full driver stack.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reimagine_context_kernel::{
-        HookCtx, RoundId, ToolCallId, ToolExecutionOutcome, ToolResultPayload, ToolResultStatus,
-        TurnId,
-    };
+    use reimagine_context_kernel::{RoundId, ToolCallId, TurnId};
     use serde_json::json;
     use tokio_util::sync::CancellationToken;
 
@@ -330,7 +247,7 @@ mod tests {
             call("c", "echo", json!({"x": 2})),
             call("d", "other", json!({"x": 1})), // different tool name
         ];
-        let outcome = DedupFilter.filter(calls, &ctx).await;
+        let outcome = DedupFilter.apply(calls, &ctx).await;
         assert_eq!(outcome.to_execute.len(), 3);
         assert_eq!(outcome.rejected.len(), 1);
         let ids: Vec<&str> = outcome
@@ -359,7 +276,7 @@ mod tests {
             call("id-2", "echo", json!({"k": "v"})),
             call("id-3", "echo", json!({"k": "v"})),
         ];
-        let outcome = DedupFilter.filter(calls, &ctx).await;
+        let outcome = DedupFilter.apply(calls, &ctx).await;
         let rejected_ids: Vec<String> = outcome
             .rejected
             .iter()
@@ -376,7 +293,7 @@ mod tests {
             call("a", "echo", json!({"x": 1})),
             call("b", "echo", json!({"x": 1})), // would be deduped, but AllowAll lets it through
         ];
-        let outcome = AllowAllFilter.filter(calls, &ctx).await;
+        let outcome = AllowAllFilter.apply(calls, &ctx).await;
         assert_eq!(outcome.to_execute.len(), 2);
         assert!(outcome.rejected.is_empty());
     }
@@ -386,7 +303,7 @@ mod tests {
         let turn_id = dummy_turn_id();
         let ctx = make_ctx(&turn_id, RoundId(0));
         let calls = vec![call("a", "echo", json!({})), call("b", "other", json!({}))];
-        let outcome = DenyAllFilter::new("test deny").filter(calls, &ctx).await;
+        let outcome = DenyAllFilter::new("test deny").apply(calls, &ctx).await;
         assert!(outcome.to_execute.is_empty());
         assert_eq!(outcome.rejected.len(), 2);
         assert_eq!(outcome.rejected[0].result.call_id.0, "a");
@@ -417,7 +334,7 @@ mod tests {
             call("a", "echo", json!({"x": 1})),
             call("b", "echo", json!({"x": 1})),
         ];
-        let outcome = chain.filter(calls, &ctx).await;
+        let outcome = chain.apply(calls, &ctx).await;
         assert_eq!(outcome.to_execute.len(), 2);
         assert!(outcome.rejected.is_empty());
     }
@@ -436,7 +353,7 @@ mod tests {
             call("a", "echo", json!({"x": 1})),
             call("b", "echo", json!({"x": 2})),
         ];
-        let outcome = chain.filter(calls, &ctx).await;
+        let outcome = chain.apply(calls, &ctx).await;
         assert!(outcome.to_execute.is_empty());
         assert_eq!(outcome.rejected.len(), 2);
         let ids: Vec<String> = outcome
@@ -464,7 +381,7 @@ mod tests {
             call("a", "echo", json!({"x": 1})),
             call("b", "echo", json!({"x": 1})),
         ];
-        let outcome = chain.filter(calls, &ctx).await;
+        let outcome = chain.apply(calls, &ctx).await;
         assert!(outcome.to_execute.is_empty());
         // Both rejected at the first filter; DedupFilter never sees them.
         assert_eq!(outcome.rejected.len(), 2);
@@ -476,27 +393,4 @@ mod tests {
         let cloned = chain.clone();
         assert_eq!(cloned.len(), 1);
     }
-
-    #[tokio::test]
-    async fn filter_chain_implements_tool_use_hook_bridge() {
-        // FilterChain implements both ToolUseFilter and ToolUseHook.
-        // This is the bridge that lets AgentRuntime plug a chain into
-        // TurnRunner::with_hook. Verifying via direct call:
-        let chain = FilterChain::dedup_only();
-        let turn_id = dummy_turn_id();
-        let ctx = make_ctx(&turn_id, RoundId(0));
-        let calls = vec![
-            call("a", "echo", json!({"x": 1})),
-            call("b", "echo", json!({"x": 1})),
-        ];
-        let outcome: reimagine_context_kernel::HookOutcome =
-            <FilterChain as ToolUseHook>::apply(&chain, calls, &ctx).await;
-        assert_eq!(outcome.to_execute.len(), 1);
-        assert_eq!(outcome.rejected.len(), 1);
-        // Same as direct ToolUseFilter::filter call would produce.
-    }
-
-    // Suppress unused-import warnings if a test is disabled.
-    #[allow(dead_code)]
-    fn _ensure_tool_payload_types_used(_o: &ToolExecutionOutcome, _p: &ToolResultPayload) {}
 }

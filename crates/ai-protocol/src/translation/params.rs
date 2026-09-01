@@ -1,3 +1,8 @@
+// ⚠️ FROZEN — harness face (frozen legacy). Serves reimagine_agent_harness DTO
+// translation only; no new production semantics. Dies with agent-harness
+// dissolution (Slice 9). The kernel-native face lives in
+// translation::{context_frame, anthropic, openai_chat, openai_responses}.
+
 //! Normalized sampling-parameter consumption from `AgentRequest::options()`.
 //!
 //! The options blob is provider-specific and opaque at the agent boundary;
@@ -367,10 +372,17 @@ fn remaining(map: Option<&Map<String, Value>>) -> Value {
     Value::Object(out)
 }
 
+/// Inject the `remaining` passthrough into `body`. Keys the request builder
+/// already wrote (`model`, `messages`, `tools`, `max_tokens`, `stream`, …)
+/// always win: the passthrough is a gap-filler for provider-specific extras,
+/// never an override for canonical request fields. First-writer-wins matters
+/// because every builder inserts its canonical keys before this runs — a
+/// plain `insert` here would let a careless or hostile `options` blob
+/// silently replace the conversation payload.
 fn apply_remaining(body: &mut Map<String, Value>, remaining: &Value) {
     if let Some(extra) = remaining.as_object() {
         for (k, v) in extra {
-            body.insert(k.clone(), v.clone());
+            body.entry(k.clone()).or_insert(v.clone());
         }
     }
 }
@@ -539,6 +551,41 @@ mod tests {
             p.remaining,
             json!({"frequency_penalty": 0.2, "presence_penalty": -1.0})
         );
+    }
+
+    /// The passthrough is a gap-filler: canonical request fields the builder
+    /// wrote before `apply_*` must survive an options blob that names them.
+    #[test]
+    fn remaining_passthrough_never_overrides_builder_keys() {
+        for apply in [
+            |p: &SamplingParams, body: &mut Map<String, Value>| p.apply_openai(body),
+            |p: &SamplingParams, body: &mut Map<String, Value>| p.apply_anthropic(body),
+            |p: &SamplingParams, body: &mut Map<String, Value>| p.apply_responses(body),
+        ] {
+            let p = SamplingParams::from_options(&options(&[
+                ("model", json!("evil-model")),
+                ("messages", json!([{"role": "user", "content": "evil"}])),
+                ("input", json!("evil")),
+                ("instructions", json!("evil")),
+                ("tools", json!([{"type": "evil"}])),
+                ("system", json!("evil")),
+                ("stream", json!(false)),
+                ("frequency_penalty", json!(0.2)),
+            ]));
+            let mut body = Map::new();
+            body.insert("model".to_string(), json!("real-model"));
+            body.insert("messages".to_string(), json!([{"role": "user"}]));
+            body.insert("tools".to_string(), json!([{"type": "real"}]));
+            body.insert("stream".to_string(), json!(true));
+            apply(&p, &mut body);
+
+            assert_eq!(body["model"], json!("real-model"));
+            assert_eq!(body["messages"], json!([{"role": "user"}]));
+            assert_eq!(body["tools"], json!([{"type": "real"}]));
+            assert_eq!(body["stream"], json!(true));
+            // Legitimate extras still flow through.
+            assert_eq!(body["frequency_penalty"], json!(0.2));
+        }
     }
 
     #[test]

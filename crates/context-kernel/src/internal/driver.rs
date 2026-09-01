@@ -20,10 +20,11 @@ use crate::ports::gateway::ModelRequest;
 use crate::ports::gateway::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
 use crate::ports::tool::{ToolExecutionOutcome, UnknownOutcomePolicy};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::hook::{HookCtx, PassthroughHook, ToolUseHook};
+use futures_util::StreamExt;
 
 fn millis_since(t: Instant) -> u64 {
     t.elapsed().as_millis() as u64
@@ -130,7 +131,7 @@ impl Default for TurnTrace {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum TurnResult {
     Completed { final_output: ModelOutput },
     Interrupted { cause: TurnInterruption },
@@ -149,6 +150,14 @@ pub struct TurnOutcome {
     pub result: TurnResult,
     pub trace: TurnTrace,
 }
+
+// Wire-contract note (Slice 5A, 2026-09-02 review): `TurnResult`,
+// `TurnOutcome`, `ConversationOutcome` and the `TurnTrace` family are
+// embedded in `agent_runtime::event::ContextEvent` and delivered over
+// IPC. Their Rust item paths stay inside this staged perimeter and may
+// move without notice — but their serde shapes are a load-bearing
+// external contract and must not change without a breaking migration of
+// the event wire format. `tests/serialization.rs` pins the shapes.
 
 /// The conversation entry's counterpart to [`TurnOutcome`]: consume/return —
 /// the state comes back with the active turn sealed inside and its outcome
@@ -177,7 +186,7 @@ enum FrameSource<'a> {
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
-    /// Kernel-side adapter for tool-use filtering. `TurnRunner::new()`
+    /// Kernel-side seam for tool-use filtering. `TurnRunner::new()`
     /// defaults to `PassthroughHook` (no filter applied — the kernel
     /// carries no opinion). Custom hooks (e.g. `agent_runtime::FilterChain`,
     /// which implements `ToolUseHook`) plug in via `TurnRunner::with_hook`.
@@ -502,11 +511,11 @@ impl TurnRunner {
                             tool_calls_total,
                         );
                     }
-                    // ToolUse hook: the kernel-side adapter for tool-use
+                    // ToolUse hook: the kernel-side seam for tool-use
                     // filtering. `TurnRunner::new()` defaults to
                     // `PassthroughHook` (no filter applied — opt in via
-                    // `with_hook`). agent-runtime's `FilterChain` plugs in via
-                    // `with_hook` and implements the same trait.
+                    // `with_hook`). agent-runtime's `FilterChain` plugs in
+                    // via `with_hook`, implementing `ToolUseHook` directly.
                     let (to_exec, rejected): (Vec<ToolCallPayload>, Vec<ToolExecutionOutcome>) = {
                         let call_control = ctrl
                             .for_attempt(options.policy.attempt_timeout)
@@ -526,9 +535,9 @@ impl TurnRunner {
                         let outcome = self.hook.apply(call_payloads.clone(), &hook_ctx).await;
                         (outcome.to_execute, outcome.rejected)
                     };
-                    // parallel dispatch; record real completion order + duration
-                    let completion_log: Arc<Mutex<Vec<(ToolCallId, u64)>>> =
-                        Arc::new(Mutex::new(Vec::new()));
+                    // parallel dispatch; completion order comes from the
+                    // stream (each future is yielded as it finishes), so no
+                    // shared log is needed
                     let futs = to_exec.into_iter().map(|payload| {
                         let cc = ctrl
                             .for_attempt(options.policy.attempt_timeout)
@@ -537,19 +546,23 @@ impl TurnRunner {
                         let tc = options.execution.token_counter.clone();
                         let limits = options.execution.tool_output_limits.clone();
                         let exec = self.executor.clone();
-                        let log = completion_log.clone();
                         async move {
                             let t0 = Instant::now();
                             let out = exec
                                 .execute_with_limits(payload, cc, store, tc, limits)
                                 .await;
-                            log.lock()
-                                .unwrap()
-                                .push((out.result.call_id.clone(), millis_since(t0)));
-                            out
+                            (out, millis_since(t0))
                         }
                     });
-                    let mut results = futures_util::future::join_all(futs).await;
+                    let mut stream = futures_util::stream::FuturesUnordered::from_iter(futs);
+                    let mut results: Vec<ToolExecutionOutcome> = Vec::with_capacity(stream.len());
+                    let mut completion_order: Vec<ToolCallId> = Vec::with_capacity(stream.len());
+                    let mut call_durations: HashMap<ToolCallId, u64> = HashMap::new();
+                    while let Some((out, duration_ms)) = stream.next().await {
+                        completion_order.push(out.result.call_id.clone());
+                        call_durations.insert(out.result.call_id.clone(), duration_ms);
+                        results.push(out);
+                    }
                     results.extend(rejected);
                     // Canonical order = model draft order, taken from the
                     // receipt's position — not from ToolCallId encoding. The
@@ -561,16 +574,6 @@ impl TurnRunner {
                         .map(|(i, p)| (p.call_id.clone(), i))
                         .collect();
                     results.sort_by_key(|r| order_index.get(&r.result.call_id).copied());
-                    let (completion_order, call_durations): (
-                        Vec<ToolCallId>,
-                        HashMap<ToolCallId, u64>,
-                    ) = {
-                        let log = completion_log.lock().unwrap();
-                        (
-                            log.iter().map(|(id, _)| id.clone()).collect(),
-                            log.iter().cloned().collect(),
-                        )
-                    };
                     let tool_names: HashMap<ToolCallId, String> = call_payloads
                         .iter()
                         .map(|p| (p.call_id.clone(), p.tool_name.clone()))

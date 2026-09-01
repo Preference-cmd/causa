@@ -1,24 +1,32 @@
 //! Wire-protocol translation for LLM providers.
 //!
-//! `ai-protocol` owns the *protocol* layer of the Pi-style provider
-//! stack: the `Protocol` discriminator, typed adapter construction
-//! parameters, the `CompletionBackend` seam, and two translation faces —
-//! the frozen harness-shaped DTO translation
-//! (`reimagine_agent_harness` ↔ provider wire payloads) and the
-//! kernel-native face (Slice 3: `ContextFrame` → wire body rendering and
-//! wire response → kernel `ModelOutput` parsing, see
-//! `translation::anthropic`). It is transport-free — no reqwest, no
-//! SDKs — so the same translation logic serves any concrete adapter.
-//! Streaming delta translation lives here too
-//! (`translation::streaming`): transports keep HTTP + SSE byte parsing
-//! and route parsed events through the accumulators.
+//! `ai-protocol` carries **two translation faces** over the same three
+//! provider wires:
 //!
-//! Layering (mirrors the Pi agent toolkit):
+//! - **Kernel-native face** (canonical, Slice 3): `ContextFrame` → wire
+//!   body rendering and wire response → kernel `ModelOutput` parsing.
+//!   `translation::context_frame` is the shared policy walk; the three
+//!   renderers (`translation::anthropic`, `openai_chat`,
+//!   `openai_responses`) are thin emitters over it. Serves the
+//!   `reimagine_context_kernel::ModelGateway` seam.
+//! - **Frozen harness-shaped face** (legacy): `reimagine_agent_harness`
+//!   DTOs ↔ provider wire payloads (`translation::{request, response,
+//!   streaming, params, tools, listing, files}`, `backend`, `error`,
+//!   `adapter_config`). Each of these modules carries a `⚠️ FROZEN`
+//!   header: no new production semantics; the face dies with
+//!   `reimagine-agent-harness` (Slice 9, harness dissolution). The only
+//!   shared module between the faces is `translation::usage` (both
+//!   faces read the same provider usage JSON into their own types).
+//!
+//! Layering:
 //!
 //! ```text
-//! agent-harness (loop, tools, policy, model catalog)
-//!   <- ai-protocol (Protocol, translation, CompletionBackend seam)
-//!   <- agent-provider (reqwest transport + concrete adapters)
+//! reimagine-context-kernel (facts, ModelGateway seam)
+//!   <- ai-protocol (kernel-native render/parse)   <- agent-provider
+//!
+//! agent-harness (frozen legacy: loop, tools, policy, catalog)
+//!   <- ai-protocol (frozen harness-shaped DTO translation)
+//!   <- agent-provider (BackendProvider, legacy reqwest backend)
 //!   <- app-host (provider config documents, adapter wiring)
 //! ```
 //!

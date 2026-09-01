@@ -1,37 +1,23 @@
-//! reimagine-agent-runtime — framework primitives for the agent stack.
+//! reimagine-agent-runtime — framework policies over the context kernel.
 //!
-//! Slice 4 (选项 B):
+//! - Tool-use filters (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`,
+//!   `FilterChain`) implement the kernel's `ToolUseHook` directly — the
+//!   one seam `TurnRunner::with_hook` consumes. The kernel ships only
+//!   `PassthroughHook` (no opinion); composition and policy are opt-in.
+//! - `ContextEvent` / `project_turn` project a finished turn's facts
+//!   (`TurnContext` + `TurnResult` + `TurnTrace`) into an IPC-ready
+//!   event sequence for UI / observability / audit consumers.
 //!
-//! - User-facing tool-use filters live here: `ToolUseFilter` trait,
-//!   `DedupFilter`, `AllowAllFilter`, `DenyAllFilter`, `FilterChain`,
-//!   `FilterContext`, `FilterResult` (the last two are type aliases
-//!   over the kernel-side adapter types).
-//! - `AgentRuntime` is the consumer-side wrapper that wires a
-//!   `TurnRunner` together with a `FilterChain`. It is what callers
-//!   construct in place of `TurnRunner::new(...)` when they want
-//!   framework-level filter composition.
-//!
-//! The kernel stays zero new user-facing types; the bridge
-//! `impl ToolUseHook for FilterChain` is the only seam.
+//! The kernel stays zero new user-facing extension types beyond its own
+//! `ToolUseHook` adapter; this crate adds policies, not seams.
 
 #![deny(unsafe_code)]
 
 pub mod event;
 pub mod filter;
-pub mod runtime;
 
-pub use event::{ContextEvent, project_turn};
-pub use filter::{
-    AllowAllFilter, DedupFilter, DenyAllFilter, FilterChain, FilterContext, FilterResult,
-    ToolUseFilter,
-};
-// Re-export the kernel-side adapter trait so consumers can name it
-// from a single crate path without reaching into context-kernel.
-pub use reimagine_context_kernel::ToolUseHook;
-pub use runtime::AgentRuntime;
-
-// Re-export `ToolExecutor` as `ToolRegistry` (B1):
-// `ToolRegistry` is the management surface; `ToolExecutor` already
-// implements it via `from_vec / from_map / execute_with_limits`.
-pub use reimagine_context_kernel::ToolExecutor;
-pub type ToolRegistry = ToolExecutor;
+pub use event::{ContextEvent, ContextEventKind, project_turn};
+pub use filter::{AllowAllFilter, DedupFilter, DenyAllFilter, FilterChain};
+// Re-exported so a custom filter's `impl ToolUseHook` signature can be
+// written entirely against this crate.
+pub use reimagine_context_kernel::{HookCtx, HookOutcome, ToolExecutor, ToolUseHook};

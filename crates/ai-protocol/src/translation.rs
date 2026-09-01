@@ -50,5 +50,7 @@ pub mod request;
 pub mod response;
 pub mod sse_parser;
 pub mod streaming;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod tools;
 pub mod usage;

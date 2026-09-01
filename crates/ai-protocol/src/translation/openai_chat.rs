@@ -150,20 +150,10 @@ pub fn render_openai_chat_messages(
         body["max_tokens"] = json!(max_tokens);
     }
     if !tool_surface.definitions.is_empty() {
-        body["tools"] = json!(
-            tool_surface
-                .definitions
-                .iter()
-                .map(|d| json!({
-                    "type": "function",
-                    "function": {
-                        "name": d.name,
-                        "description": d.description,
-                        "parameters": d.parameters,
-                    },
-                }))
-                .collect::<Vec<_>>()
-        );
+        body["tools"] = json!(context_frame::tool_definitions(
+            tool_surface,
+            context_frame::ToolShape::OpenAiChat
+        ));
     }
     Ok(body)
 }
@@ -273,85 +263,9 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reimagine_context_kernel::{
-        BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion, FrameId,
-        FrameScope, ModelContext, ModelUsage, RoundId, ToolCallId, ToolCallPayload, ToolDefinition,
-        ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
-    };
+    use reimagine_context_kernel::{ModelUsage, ToolDefinition, ToolResultStatus};
 
-    fn block(
-        seq: u64,
-        content: BlockContent,
-        source: Option<&str>,
-        provider_call_id: Option<&str>,
-    ) -> ContextBlock {
-        ContextBlock {
-            id: BlockId {
-                turn_id: TurnId::new("t1"),
-                sequence: BlockSequence(seq),
-            },
-            sequence: BlockSequence(seq),
-            content,
-            meta: BlockMeta {
-                provider_call_id: provider_call_id.map(String::from),
-                source: source.map(String::from),
-            },
-        }
-    }
-
-    fn text(seq: u64, text: &str, source: Option<&str>) -> ContextBlock {
-        block(
-            seq,
-            BlockContent::Text(TextPayload::new(text)),
-            source,
-            None,
-        )
-    }
-
-    fn call(
-        seq: u64,
-        call_id: &str,
-        provider: Option<&str>,
-        name: &str,
-        arguments: Value,
-    ) -> ContextBlock {
-        block(
-            seq,
-            BlockContent::ToolCall(ToolCallPayload {
-                call_id: ToolCallId::new(call_id),
-                tool_name: name.into(),
-                arguments,
-            }),
-            None,
-            provider,
-        )
-    }
-
-    fn result(seq: u64, call_id: &str, status: ToolResultStatus, content: Value) -> ContextBlock {
-        block(
-            seq,
-            BlockContent::ToolResult(ToolResultPayload {
-                call_id: ToolCallId::new(call_id),
-                status,
-                output: ToolOutput::new(content),
-            }),
-            None,
-            None,
-        )
-    }
-
-    fn frame(blocks: Vec<ContextBlock>) -> ContextFrame {
-        let scope = FrameScope::Turn {
-            turn_id: TurnId::new("t1"),
-            source_version: ContextVersion(3),
-        };
-        ContextFrame {
-            frame_id: FrameId::from_scope(&scope, RoundId(0)),
-            scope,
-            round_id: RoundId(0),
-            model_context: ModelContext { blocks },
-        }
-    }
+    use crate::translation::test_support::{call, frame, result, text};
 
     fn render(frame: &ContextFrame) -> Value {
         render_openai_chat_messages(

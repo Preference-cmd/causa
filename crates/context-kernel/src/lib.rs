@@ -60,7 +60,10 @@ pub use ports::tool::{
 pub use tokio_util::sync::CancellationToken;
 
 // --- staged perimeter (deliberately root-exported reference wiring; holds no
-//     claim on the kernel contract and may move or decompose without notice) --
+//     claim on the kernel contract and may move or decompose without notice;
+//     EXCEPTION: the serde shapes of TurnResult/TurnOutcome/ConversationOutcome
+//     and the TurnTrace family are a frozen external wire contract — see
+//     `internal::driver`'s wire-contract note) --
 pub use internal::config::{
     ExecutionOptions, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy, TurnRunOptions,
 };

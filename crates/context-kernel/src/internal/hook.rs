@@ -1,26 +1,18 @@
-//! Kernel-side tool-use filter adapter — Slice 4 Phase A (选项 B).
+//! Kernel-side tool-use filter seam — Slice 4 Phase A (选项 B).
 //!
-//! The user-facing extension trait `ToolUseFilter` and the concrete
-//! filters (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`, `FilterChain`)
-//! live in `reimagine-agent-runtime`. This hook is the minimal adapter the
-//! driver calls inside the kernel: the kernel ports stay zero new
-//! user-facing extension types, but the driver still needs *something* to
-//! dispatch a filter on a tool-use batch.
+//! `ToolUseHook` is THE extension point for the tool-use batch between
+//! model output and tool dispatch: the driver calls it here, and
+//! concrete filter policies (`DedupFilter`, `DenyAllFilter`,
+//! `FilterChain`) in `reimagine-agent-runtime` implement it directly.
+//! There is exactly one trait for this concept across both crates.
 //!
-//! ## Why not just import the agent-runtime trait?
+//! ## Why the seam lives in the kernel
 //!
 //! `context-kernel` is a lower layer than `agent-runtime`; depending on
 //! `agent-runtime` from the kernel would invert the layering and create a
-//! cycle. The hook is the kernel's own seam; agent-runtime bridges it via
-//! `impl ToolUseHook for FilterChain`.
-//!
-//! ## Field shapes
-//!
-//! `HookCtx` and `HookOutcome` are structurally identical to
-//! agent-runtime's `FilterContext` / `FilterResult`. agent-runtime exposes
-//! them as type aliases (`pub use reimagine_context_kernel::HookCtx as
-//! FilterContext`) so consumers see one type even though two crates
-//! reference it.
+//! cycle. The kernel owns the trait, agent-runtime owns the policies and
+//! re-exports the trait so a custom filter can be written against either
+//! path.
 //!
 //! ## Minimum invariant, not a policy
 //!
@@ -40,11 +32,11 @@ use async_trait::async_trait;
 
 use crate::context::block::ToolCallPayload;
 
-// This trait is a kernel-side *adapter* — the minimum needed to
-// route a tool batch through the driver. It is not a port (do not
-// promote it to `crate::ports::`): a port is a host-facing contract
-// with stable API obligations; this adapter is an iteration seam
-// between two adjacent crates.
+// This trait is the tool-use extension seam between the kernel and the
+// framework layer. It is not a `crate::ports::` item — a port is a
+// host-facing contract with stable API obligations; this seam currently
+// serves one adjacent crate and can still move without a port-level
+// stability promise.
 use crate::context::ids::{ConversationId, RoundId, TurnId};
 use crate::ports::control::CallControl;
 
@@ -80,11 +72,12 @@ impl HookOutcome {
     }
 }
 
-/// Kernel-side tool-use filter adapter.
+/// Kernel-side tool-use filter seam.
 ///
-/// `agent-runtime`'s `FilterChain` implements this trait. The driver
-/// calls `hook.apply(calls, ctx).await` between receiving the model's
-/// `ToolCallPayload` batch and dispatching it to `ToolExecutor`.
+/// Filters in `agent-runtime::filter` (`FilterChain` and friends)
+/// implement this trait. The driver calls `hook.apply(calls, ctx).await`
+/// between receiving the model's `ToolCallPayload` batch and dispatching
+/// it to `ToolExecutor`.
 #[async_trait]
 pub trait ToolUseHook: Send + Sync {
     async fn apply(&self, calls: Vec<ToolCallPayload>, ctx: &HookCtx<'_>) -> HookOutcome;

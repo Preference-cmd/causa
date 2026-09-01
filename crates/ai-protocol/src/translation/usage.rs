@@ -1,5 +1,10 @@
 //! Shared usage-field parsing helpers.
 //!
+//! This is the one module both translation faces consume: the
+//! kernel-native renderers read wire usage into `ModelUsage` here, and
+//! the frozen harness face reuses the wire-key readers for its own
+//! `reimagine_agent_harness::Usage`.
+//!
 //! Cache and reasoning token counts appear in different wire namespaces:
 //! Chat Completions reports prompt-cache hits under
 //! `prompt_tokens_details.cached_tokens`, while the Responses API uses

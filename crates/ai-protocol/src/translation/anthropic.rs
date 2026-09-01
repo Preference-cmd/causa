@@ -134,17 +134,10 @@ pub fn render_anthropic_messages(
         body["system"] = json!(system_parts.join("\n"));
     }
     if !tool_surface.definitions.is_empty() {
-        body["tools"] = json!(
-            tool_surface
-                .definitions
-                .iter()
-                .map(|d| json!({
-                    "name": d.name,
-                    "description": d.description,
-                    "input_schema": d.parameters,
-                }))
-                .collect::<Vec<_>>()
-        );
+        body["tools"] = json!(context_frame::tool_definitions(
+            tool_surface,
+            context_frame::ToolShape::Anthropic
+        ));
     }
     Ok(body)
 }
@@ -264,84 +257,11 @@ fn append_message(
 mod tests {
     use super::*;
     use reimagine_context_kernel::{
-        BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextVersion,
-        ConversationId, FrameId, FrameScope, ModelContext, ModelUsage, RoundId, ToolCallId,
-        ToolCallPayload, ToolDefinition, ToolOutput, ToolResultPayload, TurnId,
+        ContextVersion, ConversationId, FrameId, FrameScope, ModelContext, ModelUsage, RoundId,
+        ToolDefinition, TurnId,
     };
 
-    fn block(
-        seq: u64,
-        content: BlockContent,
-        source: Option<&str>,
-        provider_call_id: Option<&str>,
-    ) -> ContextBlock {
-        ContextBlock {
-            id: BlockId {
-                turn_id: TurnId::new("t1"),
-                sequence: BlockSequence(seq),
-            },
-            sequence: BlockSequence(seq),
-            content,
-            meta: BlockMeta {
-                provider_call_id: provider_call_id.map(String::from),
-                source: source.map(String::from),
-            },
-        }
-    }
-
-    fn text(seq: u64, text: &str, source: Option<&str>) -> ContextBlock {
-        block(
-            seq,
-            BlockContent::Text(TextPayload::new(text)),
-            source,
-            None,
-        )
-    }
-
-    fn call(
-        seq: u64,
-        call_id: &str,
-        provider: Option<&str>,
-        name: &str,
-        arguments: Value,
-    ) -> ContextBlock {
-        block(
-            seq,
-            BlockContent::ToolCall(ToolCallPayload {
-                call_id: ToolCallId::new(call_id),
-                tool_name: name.into(),
-                arguments,
-            }),
-            None,
-            provider,
-        )
-    }
-
-    fn result(seq: u64, call_id: &str, status: ToolResultStatus, content: Value) -> ContextBlock {
-        block(
-            seq,
-            BlockContent::ToolResult(ToolResultPayload {
-                call_id: ToolCallId::new(call_id),
-                status,
-                output: ToolOutput::new(content),
-            }),
-            None,
-            None,
-        )
-    }
-
-    fn turn_frame(blocks: Vec<ContextBlock>) -> ContextFrame {
-        let scope = FrameScope::Turn {
-            turn_id: TurnId::new("t1"),
-            source_version: ContextVersion(3),
-        };
-        ContextFrame {
-            frame_id: FrameId::from_scope(&scope, RoundId(0)),
-            scope,
-            round_id: RoundId(0),
-            model_context: ModelContext { blocks },
-        }
-    }
+    use crate::translation::test_support::{call, frame, result, text};
 
     fn render(frame: &ContextFrame) -> Value {
         render_anthropic_messages(
@@ -357,7 +277,7 @@ mod tests {
 
     #[test]
     fn source_vocabulary_full_branch_coverage() {
-        let f = turn_frame(vec![
+        let f = frame(vec![
             text(0, "be terse", Some("system")),
             text(1, "model said", None),
             text(2, "user said", Some("user")),
@@ -391,7 +311,7 @@ mod tests {
     fn empty_text_blocks_are_skipped() {
         // The host door can commit empty texts; the renderer mirrors the
         // model door and skips them.
-        let f = turn_frame(vec![
+        let f = frame(vec![
             text(0, "", Some("user")),
             text(1, "real", Some("user")),
             text(2, "", Some("system")),
@@ -410,7 +330,7 @@ mod tests {
 
     #[test]
     fn tool_round_trip_pairing_and_consecutive_merge() {
-        let f = turn_frame(vec![
+        let f = frame(vec![
             text(0, "reading now", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
             call(2, "kc2", None, "list", json!({})),
@@ -455,7 +375,7 @@ mod tests {
 
     #[test]
     fn unpaired_tool_result_falls_back_to_kernel_call_id() {
-        let f = turn_frame(vec![result(
+        let f = frame(vec![result(
             0,
             "orphan",
             ToolResultStatus::Succeeded,
@@ -475,7 +395,7 @@ mod tests {
             description: "read a file".into(),
             parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
         }]);
-        let f = turn_frame(vec![text(0, "hi", Some("user"))]);
+        let f = frame(vec![text(0, "hi", Some("user"))]);
 
         let generation = GenerationOptions {
             temperature: Some(0.5),
@@ -545,7 +465,7 @@ mod tests {
 
     #[test]
     fn empty_frame_is_invalid_request() {
-        let f = turn_frame(vec![]);
+        let f = frame(vec![]);
         let e = render_anthropic_messages(
             &f,
             &ToolSurface::empty(),

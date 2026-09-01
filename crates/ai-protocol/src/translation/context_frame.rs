@@ -32,6 +32,7 @@ use serde_json::Value;
 
 use reimagine_context_kernel::{
     BlockContent, ContextFrame, ModelInvokeError, ModelInvokeErrorKind, ToolResultStatus,
+    ToolSurface,
 };
 
 /// The wire role a text block renders as.
@@ -168,4 +169,49 @@ pub(crate) fn decode_wire_arguments(raw: Option<&Value>) -> Result<Value, ModelI
         }),
         Some(other) => Ok(other.clone()),
     }
+}
+
+/// The per-wire envelope for a tool definition. The field mapping is
+/// identical across all three protocols; only nesting and the schema key
+/// differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolShape {
+    /// Anthropic Messages: flat entry, schema under `input_schema`.
+    Anthropic,
+    /// Chat Completions: schema under `parameters`, wrapped in a
+    /// `function` object.
+    OpenAiChat,
+    /// Responses API: flat entry, schema under `parameters`.
+    OpenAiResponses,
+}
+
+/// Render a [`ToolSurface`] into a protocol's `tools` array entries —
+/// the single home of the name/description/parameters mapping, so the
+/// three renderers cannot drift.
+pub(crate) fn tool_definitions(tool_surface: &ToolSurface, shape: ToolShape) -> Vec<Value> {
+    tool_surface
+        .definitions
+        .iter()
+        .map(|d| match shape {
+            ToolShape::Anthropic => serde_json::json!({
+                "name": d.name,
+                "description": d.description,
+                "input_schema": d.parameters,
+            }),
+            ToolShape::OpenAiChat => serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": d.name,
+                    "description": d.description,
+                    "parameters": d.parameters,
+                },
+            }),
+            ToolShape::OpenAiResponses => serde_json::json!({
+                "type": "function",
+                "name": d.name,
+                "description": d.description,
+                "parameters": d.parameters,
+            }),
+        })
+        .collect()
 }
