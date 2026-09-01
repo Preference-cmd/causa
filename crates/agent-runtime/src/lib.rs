@@ -16,9 +16,11 @@
 
 #![deny(unsafe_code)]
 
+pub mod event;
 pub mod filter;
 pub mod runtime;
 
+pub use event::{ContextEvent, project_turn};
 pub use filter::{
     AllowAllFilter, DedupFilter, DenyAllFilter, FilterChain, FilterContext, FilterResult,
     ToolUseFilter,
