@@ -1,41 +1,46 @@
 //! `FsConversationStore` -- filesystem-backed [`ConversationStore`].
-//!
+
 //! Reference implementation of the Slice 5A `ConversationStore` port.
-//! Lives in `examples/` because (a) it pulls in `tokio::fs` and
-//! `tempfile`, and (b) the kernel ships no storage implementations --
-//! hosts pick their own store (FS / Sled / Sqlite / ...).
+//! Lives in `examples/` because (a) it pulls in `tokio::fs`, and (b)
+//! the kernel ships no storage implementations -- hosts pick their
+//! own store (FS / Sled / Sqlite / ...).
+
 //!
 //! ## Layout
 //!
 //! ```text
 //! <root>/
 //!   <conversation_id>/
-//!     <turn_sequence_0>.json
-//!     <turn_sequence_1>.json
+//!     <turn_sequence>.json
 //!     ...
 //! ```
 //!
 //! One directory per conversation, one file per completed turn
-//! snapshot. Filenames are the zero-padded `turn_sequence` so lex order
-//! matches commit order without needing a directory listing sort.
+//! snapshot. Filenames are the zero-padded `turn_sequence` at width
+//! 20 -- lex order matches commit order without an explicit sort.
+//! Width 20 covers `u64::MAX` (20 digits). Hosts adopting this
+//! layout must keep the same width to preserve the lex-order
+//! invariant.
 //!
 //! ## Atomicity
 //!
-//! `save_snapshot` writes to a `tempfile::NamedTempFile` inside the
-//! conversation's directory and uses `persist` to atomically rename it
-//! into place. Concurrent writers land on distinct filenames (one per
-//! `turn_sequence`), so two hosts racing on the same conversation will
-//! each win their own file rather than corrupt a sibling.
+//! `save_snapshot` writes to `<conversation_id>/<seq>.json.tmp` and
+//! `tokio::fs::rename`s the temp file into place. `rename` is atomic
+//! on POSIX (and replaces existing files on Windows via
+//! `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`). Concurrent writers
+//! land on distinct filenames (one per `turn_sequence`), so two
+//! hosts racing on the same conversation each win their own file
+//! rather than corrupt a sibling.
 //!
 //! No file-level lock is held -- the host's harness serializes
 //! `commit` per `ConversationId` via its own channel.
 //!
 //! ## Why not in `agent-runtime` lib?
 //!
-//! Keeping it out of `lib.rs` honors the framework's "minimum invariant
-//! not a policy" rule: `FsConversationStore` is one of many possible
-//! stores. Promoting it into the lib would advertise it as canonical.
-//! The example demonstrates the port is sufficient.
+//! Keeping it out of `lib.rs` honors the framework's "minimum
+//! invariant not a policy" rule: `FsConversationStore` is one of many
+//! possible stores. Promoting it into the lib would advertise it as
+//! canonical. The example demonstrates the port is sufficient.
 
 use std::path::{Path, PathBuf};
 
@@ -43,11 +48,10 @@ use async_trait::async_trait;
 use reimagine_context_kernel::{
     ConversationId, ConversationStore, ConversationStoreError, TurnSequence, TurnSnapshot,
 };
-use tempfile::NamedTempFile;
 use tokio::fs;
 
 /// Filesystem-backed [`ConversationStore`]. Layout:
-/// `<root>/<conversation_id>/<turn_sequence>.json`.
+/// `<root>/<conversation_id>/<turn_sequence_zero_padded>.json`.
 pub struct FsConversationStore {
     root: PathBuf,
 }
@@ -83,29 +87,23 @@ impl ConversationStore for FsConversationStore {
         conversation_id: &ConversationId,
         snapshot: &TurnSnapshot,
     ) -> Result<(), ConversationStoreError> {
-        let path = self.snapshot_path(conversation_id, snapshot.turn_sequence);
-        let dir = path.parent().expect("path has parent").to_path_buf();
+        let final_path = self.snapshot_path(conversation_id, snapshot.turn_sequence);
+        let dir = final_path.parent().expect("path has parent").to_path_buf();
+        let tmp_path = dir.join(format!("{:020}.json.tmp", snapshot.turn_sequence.0));
 
         let json = serde_json::to_vec_pretty(snapshot)
             .map_err(|e| ConversationStoreError::Serialization(e.to_string()))?;
 
-        // Off the async runtime for the file-system syscalls:
-        // `NamedTempFile::new_in` and `persist` are sync. They are
-        // quick (one open + write + rename) but blocking them is the
-        // polite move on a tokio worker thread.
-        let path_for_task = path.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), ConversationStoreError> {
-            std::fs::create_dir_all(&dir).map_err(|e| ConversationStoreError::Io(e.to_string()))?;
-            let tmp = NamedTempFile::new_in(&dir)
-                .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
-            std::fs::write(tmp.path(), &json)
-                .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
-            tmp.persist(&path_for_task)
-                .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| ConversationStoreError::Io(format!("join error: {e}")))?
+        fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
+        fs::write(&tmp_path, &json)
+            .await
+            .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
+        fs::rename(&tmp_path, &final_path)
+            .await
+            .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
+        Ok(())
     }
 
     async fn load_snapshots(
@@ -113,16 +111,13 @@ impl ConversationStore for FsConversationStore {
         conversation_id: &ConversationId,
     ) -> Result<Vec<TurnSnapshot>, ConversationStoreError> {
         let dir = self.conv_dir(conversation_id);
-        if !fs::try_exists(&dir)
-            .await
-            .map_err(|e| ConversationStoreError::Io(e.to_string()))?
-        {
-            return Err(ConversationStoreError::NotFound(conversation_id.0.clone()));
-        }
-
-        let mut entries = fs::read_dir(&dir)
-            .await
-            .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
+        let mut entries = match fs::read_dir(&dir).await {
+            Ok(it) => it,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ConversationStoreError::NotFound(conversation_id.0.clone()));
+            }
+            Err(e) => return Err(ConversationStoreError::Io(e.to_string())),
+        };
         let mut paths: Vec<PathBuf> = Vec::new();
         while let Some(entry) = entries
             .next_entry()
@@ -193,29 +188,44 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reimagine_context_kernel::{BlockContent, TextPayload, TurnContext, TurnId, TurnSequence};
+    use reimagine_context_kernel::{BlockContent, TextPayload, TurnContext, TurnId};
+
+    /// `(tempdir, store, conversation_id)` ready for a single test.
+    /// The tempdir cleans up on drop. Each test gets a distinct
+    /// conversation id (system-time nanos suffix) so filesystem
+    /// state cannot leak between tests.
+    fn new_store() -> (tempfile::TempDir, FsConversationStore, ConversationId) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = FsConversationStore::new(tmp.path());
+        let conv = ConversationId(format!("conv-{}", rand_suffix()));
+        (tmp, store, conv)
+    }
+
+    fn rand_suffix() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    }
 
     fn snapshot(turn_seq: u64, turn_label: &str, text: &str) -> TurnSnapshot {
         // Build via the canonical `TurnContext` snapshot path so the
         // example does not depend on `OrderedBlocks`'s private inner
-        // constructor. `TurnSnapshot.turn_sequence` is overridden
-        // afterwards because `TurnContext::snapshot` uses the
-        // placeholder `TurnSequence(0)` (per Slice 1.5 contract).
-        let mut ctx = reimagine_context_kernel::TurnContext::new(TurnId::new(turn_label));
+        // constructor. `TurnSnapshot::with_turn_sequence` sets the
+        // sequence that `TurnContext::snapshot` leaves as a
+        // placeholder (Slice 1.5: the conversation owns the sequence,
+        // not the turn).
+        let mut ctx = TurnContext::new(TurnId::new(turn_label));
         ctx.append_input(TextPayload::new(text), "user")
             .expect("append_input");
-        let mut snap = ctx.snapshot();
-        snap.turn_sequence = TurnSequence(turn_seq);
-        snap
+        ctx.snapshot().with_turn_sequence(TurnSequence(turn_seq))
     }
 
     #[tokio::test]
     async fn save_then_load_returns_same_snapshots_in_order() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = FsConversationStore::new(tmp.path());
-        let conv = ConversationId("conv-1".into());
+        let (_tmp, store, conv) = new_store();
 
-        // Build three snapshots for the same conversation.
         let s1 = snapshot(0, "t-1", "first");
         let s2 = snapshot(1, "t-2", "second");
         let s3 = snapshot(2, "t-3", "third");
@@ -239,17 +249,14 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_overwrites_same_sequence_idempotently() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = FsConversationStore::new(tmp.path());
-        let conv = ConversationId("conv-2".into());
+        let (_tmp, store, conv) = new_store();
 
         let s = snapshot(5, "t-5", "original");
         store.save_snapshot(&conv, &s).await.expect("save original");
         // Overwrite: same turn_sequence, fresh empty context -> same
         // filename, atomic rename replaces the prior file.
         let ctx = TurnContext::new(TurnId::new("t-5"));
-        let mut overwrite = ctx.snapshot();
-        overwrite.turn_sequence = TurnSequence(5);
+        let overwrite = ctx.snapshot().with_turn_sequence(TurnSequence(5));
         store
             .save_snapshot(&conv, &overwrite)
             .await
@@ -262,9 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_then_more_save_then_load_returns_all_in_order() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = FsConversationStore::new(tmp.path());
-        let conv = ConversationId("conv-3".into());
+        let (_tmp, store, conv) = new_store();
 
         store
             .save_snapshot(&conv, &snapshot(0, "t-a", "a"))
@@ -290,10 +295,9 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_conversation_returns_not_found() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = FsConversationStore::new(tmp.path());
-        let conv = ConversationId("nope".into());
-        let err = store.load_snapshots(&conv).await.expect_err("NotFound");
+        let (_tmp, store, _conv) = new_store();
+        let other = ConversationId("nope".into());
+        let err = store.load_snapshots(&other).await.expect_err("NotFound");
         assert!(matches!(err, ConversationStoreError::NotFound(_)));
     }
 }
