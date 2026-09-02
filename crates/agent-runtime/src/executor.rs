@@ -1,11 +1,17 @@
 //! Tool batch dispatch — dedup-then-parallel execution with panic isolation,
 //! call-deadline backstop, and token-limit truncation with artifact spill.
+//! Also the tool-catalog composition point (Slice 10): static Rust tools
+//! and dynamic sources (`DynamicToolSource`, e.g. MCP servers) merge into
+//! one dispatch path; the driver only consumes the assembled surface.
 
+use crate::composition::ToolBridge;
+use futures_util::FutureExt;
 use reimagine_context_kernel::CallControl;
 use reimagine_context_kernel::TokenCounter;
 use reimagine_context_kernel::ToolCallPayload;
 use reimagine_context_kernel::{
-    ArtifactHint, ArtifactStore, Tool, ToolCallContext, ToolExecutionOutcome, ToolOutputLimits,
+    ArtifactHint, ArtifactStore, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
+    ToolExecutionOutcome, ToolOutputLimits, ToolSurface,
 };
 use reimagine_context_kernel::{
     ArtifactKind, ArtifactRef, ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus,
@@ -14,14 +20,45 @@ use reimagine_context_kernel::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// One registered dynamic source plus its executor-side listing cache.
+/// The cache is keyed by the source's own change signal
+/// ([`DynamicToolSource::version`]) so a stable catalog costs no
+/// round-trip on surface assembly.
+struct DynamicEntry {
+    source: Arc<dyn DynamicToolSource>,
+    cache: std::sync::Mutex<(u64, Vec<ToolDefinition>)>,
+}
+
+/// Dynamic-source registry failures (Slice 10).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ToolRegistryError {
+    #[error("dynamic source already registered: {0}")]
+    DuplicateSource(String),
+    #[error("no dynamic source registered: {0}")]
+    UnknownSource(String),
+}
+
 pub struct ToolExecutor {
     tools: HashMap<String, Arc<dyn Tool>>,
+    /// Registered dynamic sources; interior-mutable because the executor
+    /// lives in an `Arc` shared with the driver.
+    dynamic: std::sync::RwLock<Vec<DynamicEntry>>,
 }
 
 impl std::fmt::Debug for ToolExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolExecutor")
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field(
+                "dynamic",
+                &self
+                    .dynamic
+                    .read()
+                    .expect("dynamic lock")
+                    .iter()
+                    .map(|e| e.source.id().to_string())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -32,11 +69,153 @@ impl ToolExecutor {
         for t in tools {
             map.insert(t.definition().name.clone(), t);
         }
-        Self { tools: map }
+        Self {
+            tools: map,
+            dynamic: std::sync::RwLock::new(Vec::new()),
+        }
     }
 
     pub fn from_map(map: HashMap<String, Arc<dyn Tool>>) -> Self {
-        Self { tools: map }
+        Self {
+            tools: map,
+            dynamic: std::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Register a dynamic tool source (Slice 10). Its current listing
+    /// enters [`ToolExecutor::tool_surface`], and dispatch routes exactly
+    /// the names that listing advertised (listing membership — naming is
+    /// the source's own business); a name already present in the static
+    /// map keeps winning.
+    pub fn register_dynamic(
+        &self,
+        source: Arc<dyn DynamicToolSource>,
+    ) -> Result<(), ToolRegistryError> {
+        let mut dynamic = self.dynamic.write().expect("dynamic lock");
+        if dynamic.iter().any(|e| e.source.id() == source.id()) {
+            return Err(ToolRegistryError::DuplicateSource(source.id().to_string()));
+        }
+        dynamic.push(DynamicEntry {
+            source,
+            cache: std::sync::Mutex::new((u64::MAX, Vec::new())),
+        });
+        Ok(())
+    }
+
+    /// Remove a dynamic source; returns it for reconnect-and-reregister
+    /// flows.
+    pub fn unregister_dynamic(
+        &self,
+        id: &str,
+    ) -> Result<Arc<dyn DynamicToolSource>, ToolRegistryError> {
+        let mut dynamic = self.dynamic.write().expect("dynamic lock");
+        let pos = dynamic
+            .iter()
+            .position(|e| e.source.id() == id)
+            .ok_or_else(|| ToolRegistryError::UnknownSource(id.to_string()))?;
+        Ok(dynamic.remove(pos).source)
+    }
+
+    /// Ids of the registered dynamic sources.
+    pub fn dynamic_ids(&self) -> Vec<String> {
+        self.dynamic
+            .read()
+            .expect("dynamic lock")
+            .iter()
+            .map(|e| e.source.id().to_string())
+            .collect()
+    }
+
+    /// Assemble the model-facing tool surface: every static tool plus the
+    /// current listing of every reachable dynamic source. A source that
+    /// fails to list keeps serving its last good listing (with a warning);
+    /// a source with no cached listing yet is skipped — either way the
+    /// turn proceeds and the host can unregister/reconnect. Static names
+    /// win collisions, exactly as dispatch does.
+    ///
+    /// Lock discipline: registry and cache guards are never held across
+    /// an `await` — each source is snapshot before the `list()` call and
+    /// re-locked to publish the result (clippy `await_holding_lock`).
+    pub async fn tool_surface(&self) -> ToolSurface {
+        let mut definitions: Vec<ToolDefinition> =
+            self.tools.values().map(|t| t.definition()).collect();
+
+        // Snapshot the dynamic registry so no `RwLockReadGuard` crosses an
+        // await. Each entry is cloned as `(source, cached_version, cached_defs)`.
+        let snapshot: Vec<(Arc<dyn DynamicToolSource>, u64, Vec<ToolDefinition>)> = {
+            let dynamic = self.dynamic.read().expect("dynamic lock");
+            dynamic
+                .iter()
+                .map(|entry| {
+                    let cache = entry.cache.lock().expect("source cache lock");
+                    (entry.source.clone(), cache.0, cache.1.clone())
+                })
+                .collect()
+        };
+
+        for (source, cached_version, cached_defs) in snapshot {
+            let observed = source.version();
+            let listing = if observed == cached_version && cached_version != u64::MAX {
+                Some(cached_defs)
+            } else {
+                match source.list().await {
+                    Ok(fresh) => {
+                        // Publish the refreshed listing back into the cache
+                        // (re-lock by id — the source is still registered).
+                        let dynamic = self.dynamic.read().expect("dynamic lock");
+                        if let Some(entry) = dynamic.iter().find(|e| e.source.id() == source.id()) {
+                            let mut cache = entry.cache.lock().expect("source cache lock");
+                            // Another concurrent surface assembly may have
+                            // already refreshed; keep the newest.
+                            if cache.0 != observed {
+                                cache.0 = observed;
+                                cache.1 = fresh.clone();
+                            }
+                        }
+                        Some(fresh)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            source = source.id(),
+                            error = %e,
+                            "dynamic tool source failed to list; serving its last good listing"
+                        );
+                        (!cached_defs.is_empty()).then_some(cached_defs)
+                    }
+                }
+            };
+            if let Some(defs) = listing {
+                // Surface must match dispatch: a dynamic name that collides
+                // with a static tool is not advertised (the static tool
+                // keeps winning there too).
+                definitions.extend(
+                    defs.into_iter()
+                        .filter(|d| !self.tools.contains_key(&d.name)),
+                );
+            }
+        }
+        ToolSurface::from_definitions(definitions)
+    }
+
+    /// Find the dynamic source owning `tool_name` — routing is by listing
+    /// membership: a source is dispatched exactly the names it advertised
+    /// in [`ToolExecutor::tool_surface`] (the same cache), so naming stays
+    /// the implementor's business and the model can only call what the
+    /// surface showed. Returns the source and its advertised definition
+    /// for the bridge. The registry/cache locks never cross an await.
+    fn find_dynamic(
+        &self,
+        tool_name: &str,
+    ) -> Option<(Arc<dyn DynamicToolSource>, ToolDefinition)> {
+        let dynamic = self.dynamic.read().expect("dynamic lock");
+        dynamic.iter().find_map(|entry| {
+            let cache = entry.cache.lock().expect("source cache lock");
+            cache
+                .1
+                .iter()
+                .find(|d| d.name == tool_name)
+                .map(|d| (entry.source.clone(), d.clone()))
+        })
     }
 
     /// Execute a single ToolCallPayload with panic isolation, a call-deadline
@@ -49,8 +228,20 @@ impl ToolExecutor {
         token_counter: Option<Arc<dyn TokenCounter>>,
         global_limits: ToolOutputLimits,
     ) -> ToolExecutionOutcome {
-        let tool_opt = self.tools.get(&payload.tool_name).cloned();
-        let Some(tool) = tool_opt else {
+        // Route: the static map first, then dynamic sources by listing
+        // membership. A dynamic call is wrapped in a [`ToolBridge`] and
+        // runs the exact static path below — panic isolation, call-deadline
+        // backstop, unknown-outcome policy (bridge default: `Stop`),
+        // truncation — one code path, one error mapping (the bridge's).
+        let tool: Option<Arc<dyn Tool>> = match self.tools.get(&payload.tool_name) {
+            Some(tool) => Some(tool.clone()),
+            None => self
+                .find_dynamic(&payload.tool_name)
+                .map(|(source, definition)| {
+                    Arc::new(ToolBridge::new(source, definition)) as Arc<dyn Tool>
+                }),
+        };
+        let Some(tool) = tool else {
             return ToolExecutionOutcome::new(ToolResultPayload {
                 call_id: payload.call_id.clone(),
                 status: ToolResultStatus::Rejected,
@@ -71,7 +262,6 @@ impl ToolExecutor {
         // Panic isolation (Task level) plus call-deadline backstop: a tool that
         // neither returns nor observes CallControl still yields a structured
         // UnknownOutcome instead of hanging the turn.
-        use futures_util::FutureExt;
         let fut = {
             let tool = tool.clone();
             let control = control.clone();

@@ -23,6 +23,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod composition;
 pub mod config;
 pub mod control;
 pub mod defaults;
@@ -34,6 +35,7 @@ pub mod hook;
 pub mod resume;
 
 // --- driver stack (graduated from context-kernel internal/, Slice 12) --------
+pub use composition::ToolBridge;
 pub use config::{
     ExecutionOptions, NoopInteraction, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy,
     TurnRunOptions,
@@ -45,7 +47,7 @@ pub use driver::{
     ToolBatchTrace, ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult, TurnRunner,
     TurnTrace,
 };
-pub use executor::ToolExecutor;
+pub use executor::{ToolExecutor, ToolRegistryError};
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
 pub use resume::{ResumeRequest, resume_turn};
 

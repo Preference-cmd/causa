@@ -58,6 +58,7 @@ pub use ports::gateway::{
     ToolSurface, completed_model_stream,
 };
 pub use ports::interaction::{BatchDecision, TurnInteraction};
+pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::store::{ConversationStore, ConversationStoreError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,

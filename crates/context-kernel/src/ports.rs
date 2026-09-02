@@ -11,5 +11,6 @@ pub mod budget;
 pub mod control;
 pub mod gateway;
 pub mod interaction;
+pub mod source;
 pub mod store;
 pub mod tool;
