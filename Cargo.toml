@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/context-kernel",
+    "crates/ai-protocol",
+    "crates/agent-runtime",
+    "crates/agent-provider",
+    "crates/agent-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+authors = ["Preference"]
+description = "Agent kernel building blocks — context facts, wire protocol, driver, provider adapters, MCP client"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = "1"
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+futures-util = "0.3"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+axum = "0.8"
+thiserror = "2"
+# rmcp — official Model Context Protocol Rust SDK (client role only;
+# server features are used by agent-mcp's dev-dependencies for the
+# in-process test fixture)
+rmcp = { version = "3.2.0", default-features = false, features = [
+    "client",
+    "reqwest",
+    "schemars",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }

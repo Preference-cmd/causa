@@ -1,0 +1,16 @@
+# ----- Build outputs -----
+target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# ----- Local environment / secrets -----
+.env
+.env.local
+.env.*.local
+
+# ----- Editor / OS -----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.sw?
