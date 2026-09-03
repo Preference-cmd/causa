@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! # stdio: any MCP server launch command works; the default below needs `uvx`.
-//! cargo run --example mcp_tools -p causa-mcp
-//! # or: cargo run --example mcp_tools -p causa-mcp -- npx -y @modelcontextprotocol/server-everything
+//! cargo run --example mcp_tools -p causa-extension
+//! # or: cargo run --example mcp_tools -p causa-extension -- npx -y @modelcontextprotocol/server-everything
 //! # http: MCP_HTTP_URL=https://mcp.example.com/mcp [MCP_HTTP_TOKEN=...] cargo run ...
 //! ```
 //!
@@ -15,7 +15,7 @@
 //! routes dispatch by listing membership (see
 //! `causa-runtime/examples/quickstart.rs` for the model-side half).
 
-use causa_mcp::McpToolSource;
+use causa_extension::McpToolSource;
 use causa_runtime::ToolExecutor;
 use std::sync::Arc;
 

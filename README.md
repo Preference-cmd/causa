@@ -9,15 +9,18 @@
 Part of [Project inceptae](https://example.invalid/inceptae) — a wider inquiry
 into whether AI's productivity gains can really reach the people they displace.
 
-The publish set is five crates:
+The publish set is the `causa` facade over five family crates
+(`cargo add causa` is the default entry; the family crates stay
+published for fine-grained use):
 
 | crate | role |
 |---|---|
+| `causa` | facade — `kernel` always on; default features `runtime` + `providers`, `full` adds extensions, `--no-default-features` is kernel-only |
 | `causa-kernel` | the facts layer — ContextBlock conversation kernel + ports (`ModelGateway`, `ConversationStore`, `Tool`, `DynamicToolSource`, `CallControl`, budget) |
 | `causa-protocol` | kernel-native wire-protocol translation (Anthropic / OpenAI Chat / OpenAI Responses) |
 | `causa-runtime` | the reference driver — turn loop, tool dispatch, streaming, approval pause/resume |
 | `causa-provider` | reqwest adapters for the kernel `ModelGateway` seam |
-| `causa-mcp` | first-class MCP client over the `DynamicToolSource` port |
+| `causa-extension` | extension adapters over the `DynamicToolSource` port (`mcp` feature: first-class MCP client) |
 
 Positioning versus rig (provider-generic layer) and swiftide (RAG pipelines):
 **facts / ports / driver layering, a three-entry fact machine, approval
@@ -63,7 +66,7 @@ Five examples, each doubling as docs.rs-runnable documentation:
 | `conversation_persistence` (`-p causa-runtime`) | multi-turn + `FsConversationStore` + reload across restart | ✅ |
 | `streaming_print` (`-p causa-runtime`) | streaming deltas via `TurnInteraction::on_delta` | ✅ |
 | `approval_pause_resume` (`-p causa-runtime`) | `decide_batch` pause + `resume_turn` with the withheld verdict | ✅ |
-| `mcp_tools` (`-p causa-mcp`) | stdio + Streamable HTTP MCP servers into the executor | needs a server |
+| `mcp_tools` (`-p causa-extension`) | stdio + Streamable HTTP MCP servers into the executor | needs a server |
 
 MSRV: **1.96** (pinned by CI; also declared as the workspace `rust-version`).
 
@@ -93,7 +96,7 @@ every push (7.1), not left to review.
 
 Pre-0.1. Crate names finalized as `causa-*`; CI (fmt / clippy / test
 matrix + MSRV 1.96 + dependency-direction guard) and the five examples are
-in place; the first-class MCP client (`causa-mcp`) shipped with Slice 10.
+in place; the first-class MCP client (now `causa-extension`'s `mcp` feature) shipped with Slice 10.
 The 0.1 release gate is functional completeness (multimodal I/O and
 subagents, slices 6.5 / 8), tracked in the slice 11 proposal.
 

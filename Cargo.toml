@@ -1,11 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/causa",
     "crates/causa-kernel",
     "crates/causa-protocol",
     "crates/causa-runtime",
     "crates/causa-provider",
-    "crates/causa-mcp",
+    "crates/causa-extension",
 ]
 
 [workspace.package]
@@ -31,7 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 axum = "0.8"
 thiserror = "2"
 # rmcp — official Model Context Protocol Rust SDK (client role only;
-# server features are used by causa-mcp's dev-dependencies for the
+# server features are used by causa-extension's dev-dependencies for the
 # in-process test fixture)
 rmcp = { version = "3.2.0", default-features = false, features = [
     "client",

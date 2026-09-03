@@ -1,11 +1,10 @@
-//! causa-mcp — first-class MCP client for the agent-stack
-//! (Slice 10).
+//! `mcp` — first-class MCP client for the agent-stack (Slice 10).
 //!
 //! Wraps the official Rust SDK [`rmcp`](https://docs.rs/rmcp) so external
 //! MCP servers' tools enter the kernel's `ToolSurface` next to local Rust
-//! tools. The crate depends on `causa-kernel` alone (plus
+//! tools. The module depends on `causa-kernel` alone (plus
 //! rmcp) and exposes only kernel port vocabulary — the same layering as
-//! `agent-provider` implementing `ModelGateway`.
+//! `causa-provider` implementing `ModelGateway`.
 //!
 //! # Layout
 //!
@@ -15,20 +14,20 @@
 //! - Tools are namespaced `mcp_{server_id}_{tool}` so identically-named
 //!   tools on different servers cannot collide.
 //! - `tools/list_changed` notifications bump the source's version, which
-//!   the executor-side cache in `agent-runtime` keys on.
+//!   the executor-side cache in `causa-runtime` keys on.
 //!
 //! # Connecting
 //!
 //! Local MCP server as a child process (stdio):
 //!
 //! ```ignore
-//! use causa_mcp::McpToolSource;
+//! use causa_extension::McpToolSource;
 //!
 //! let mut command = tokio::process::Command::new("uvx");
 //! command.args(["mcp-server-fetch"]);
 //! let source = McpToolSource::connect_stdio("fetch", command).await?;
 //!
-//! // With the executor (agent-runtime): the tools enter the turn's
+//! // With the executor (causa-runtime): the tools enter the turn's
 //! // ToolSurface under the `mcp_fetch_*` namespace, cached until the
 //! // server notifies `tools/list_changed`.
 //! executor.register_dynamic(std::sync::Arc::new(source))?;
@@ -99,7 +98,7 @@ impl ClientHandler for McpClientHandler {
 /// failures and timeouts are `Unavailable`/`TimedOut` (transient);
 /// protocol violations are `Protocol` (permanent).
 ///
-/// Listing caches live executor-side (in `agent-runtime`, keyed on
+/// Listing caches live executor-side (in `causa-runtime`, keyed on
 /// [`DynamicToolSource::version`]); this source re-lists on every `list()`
 /// call and stays a thin transport adapter.
 pub struct McpToolSource {

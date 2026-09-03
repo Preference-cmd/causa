@@ -178,21 +178,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "causa-kernel"
+name = "causa"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "blake3",
- "futures-util",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
+ "causa-extension",
+ "causa-kernel",
+ "causa-protocol",
+ "causa-provider",
+ "causa-runtime",
 ]
 
 [[package]]
-name = "causa-mcp"
+name = "causa-extension"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -204,6 +201,20 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "causa-kernel"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

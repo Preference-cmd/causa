@@ -1,7 +1,7 @@
 [package]
-name = "causa-mcp"
+name = "causa-extension"
 version.workspace = true
-description = "Causa MCP client — dynamic tool sources over the causa-kernel DynamicToolSource port"
+description = "Causa extensions — DynamicToolSource adapters (MCP, …) over the causa-kernel ports"
 repository.workspace = true
 readme = "../../README.md"
 keywords = ["mcp", "llm", "tools", "agent"]
@@ -17,7 +17,19 @@ async-trait = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
-rmcp = { workspace = true }
+rmcp = { workspace = true, optional = true }
+
+[features]
+default = ["mcp"]
+mcp = ["dep:rmcp"]
+
+[[example]]
+name = "mcp_tools"
+required-features = ["mcp"]
+
+[[test]]
+name = "integration"
+required-features = ["mcp"]
 
 [dev-dependencies]
 causa-runtime = { path = "../causa-runtime", version = "0.1" }

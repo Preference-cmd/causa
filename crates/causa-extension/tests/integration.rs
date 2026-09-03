@@ -3,6 +3,7 @@
 //! dynamic registry, and a full kernel turn (`TurnRunner` untouched).
 
 use async_trait::async_trait;
+use causa_extension::McpToolSource;
 use causa_kernel::{
     AttemptControl, CallControl, CancellationToken, DynamicToolSource, ModelGateway,
     ModelInvokeError, ModelOutput, ModelRef, ModelRequest, ModelResponse, ModelStopReason,
@@ -10,7 +11,6 @@ use causa_kernel::{
     ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload, ToolResultStatus,
     ToolSurface, TurnContext, TurnId,
 };
-use causa_mcp::McpToolSource;
 use causa_runtime::{
     RunControl, ToolExecutor, TurnInvocation, TurnLimits, TurnPolicy, TurnResult, TurnRunOptions,
     TurnRunner,

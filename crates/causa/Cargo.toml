@@ -1,0 +1,36 @@
+[package]
+name = "causa"
+version.workspace = true
+description = "Causa — principled agent kernel for Rust (facade over the causa-* family)"
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["agent", "llm", "conversation", "tools", "streaming"]
+categories = ["asynchronous"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+causa-kernel = { path = "../causa-kernel", version = "0.1" }
+causa-runtime = { path = "../causa-runtime", version = "0.1", optional = true }
+causa-protocol = { path = "../causa-protocol", version = "0.1", optional = true }
+causa-provider = { path = "../causa-provider", version = "0.1", optional = true }
+causa-extension = { path = "../causa-extension", version = "0.1", optional = true }
+
+[features]
+# The default is the runnable stack: facts + driver + wire providers.
+# Extensions (MCP, …) stay opt-in — they pull heavier optional
+# dependencies (rmcp) that offline hosts should not pay for.
+default = ["runtime", "providers"]
+full = ["runtime", "providers", "extensions"]
+runtime = ["causa-runtime"]
+protocol = ["causa-protocol"]
+# A provider renders through the protocol crate, so `providers` implies
+# `protocol` — users never enable a transport without its translation.
+providers = ["protocol", "causa-provider"]
+extensions = ["extension-mcp"]
+extension-mcp = ["causa-extension/mcp"]
+
+[package.metadata.docs.rs]
+all-features = true
