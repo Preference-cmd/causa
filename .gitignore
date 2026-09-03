@@ -8,6 +8,10 @@ Cargo.lock.orig
 .env.local
 .env.*.local
 
+# ----- Machine-local agent workflow (path-imported by Reimagine) -----
+.agents/
+scripts/
+
 # ----- Editor / OS -----
 .vscode/*
 !.vscode/extensions.json
