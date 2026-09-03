@@ -10,7 +10,7 @@ Cargo.lock.orig
 
 # ----- Machine-local agent workflow (path-imported by Reimagine) -----
 .agents/
-scripts/
+/scripts/
 
 # ----- Editor / OS -----
 .vscode/*
