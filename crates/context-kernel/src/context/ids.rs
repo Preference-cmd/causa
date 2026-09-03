@@ -1,36 +1,55 @@
 use serde::{Deserialize, Serialize};
 
+/// Unique identity of a turn. Opaque string; scopes every block, sequence,
+/// and version belonging to that turn, and is checked on every model-door
+/// invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TurnId(pub String);
 impl TurnId {
+    /// Wraps an arbitrary string as a turn id.
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }
 }
 
+/// Ordinal of a model round within a turn (0-based). Enters the frame-identity
+/// and tool-call-id hash preimages, so the same logical call in different
+/// rounds never collides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoundId(pub u32);
 
+/// Identity of one model invocation: which turn, and which round inside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InvocationId {
+    /// The turn the invocation belongs to.
     pub turn_id: TurnId,
+    /// The round within the turn.
     pub round_id: RoundId,
 }
 
+/// Monotonic per-turn block ordinal, assigned once when the fact machine
+/// commits a block; dense and gap-free (validated on replay).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockSequence(pub u64);
 
+/// Counts canonical fact commits of a turn; bumps exactly once per non-empty
+/// commit and pins the frame identity for a round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContextVersion(pub u64);
 impl ContextVersion {
+    /// Returns the successor version.
     pub fn next(self) -> Self {
         Self(self.0 + 1)
     }
 }
 
+/// Unique identity of a fact block: the owning turn plus the block's dense
+/// position within that turn.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockId {
+    /// The turn the block belongs to.
     pub turn_id: TurnId,
+    /// The block's position in the turn's monotonic sequence.
     pub sequence: BlockSequence,
 }
 
@@ -40,12 +59,19 @@ pub struct BlockId {
 /// operation rules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FrameScope {
+    /// Single-turn projection: only one turn's committed facts.
     Turn {
+        /// The turn being projected.
         turn_id: TurnId,
+        /// The turn's `ContextVersion` the frame was built from; part of the
+        /// frame-identity preimage.
         source_version: ContextVersion,
     },
+    /// Lossless merged view: conversation history plus the active turn.
     Conversation {
+        /// The conversation being projected.
         conversation_id: ConversationId,
+        /// The turn currently active in the conversation.
         active_turn_id: TurnId,
         /// The active turn's `ContextVersion`. History snapshots are
         /// immutable and identified by `TurnSequence`; within one round the
@@ -55,6 +81,9 @@ pub enum FrameScope {
     },
 }
 
+/// Deterministic frame identity: a blake3 digest of the scope and round,
+/// truncated to 16 hex chars. Equal `(scope, round)` inputs always yield the
+/// same id; see `from_scope` for the preimage formats.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub String);
 impl FrameId {
@@ -98,15 +127,22 @@ impl FrameId {
     }
 }
 
+/// Unique identity of a conversation aggregate. Opaque string; scopes the
+/// conversation's turns, sequences, and versions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationId(pub String);
 
+/// Position of a committed turn within a conversation's history, assigned
+/// exactly once by the conversation's commit transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TurnSequence(pub u64);
 
+/// Counts controlled transitions of a conversation (`begin_turn` / `commit`
+/// / `abort_turn`); the aggregate-level analogue of `ContextVersion`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationVersion(pub u64);
 impl ConversationVersion {
+    /// Returns the successor version.
     pub fn next(self) -> Self {
         Self(self.0 + 1)
     }

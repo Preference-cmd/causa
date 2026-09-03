@@ -23,6 +23,9 @@ pub fn effective_deadline(parent: Option<Instant>, timeout: Option<Duration>) ->
     }
 }
 
+/// One model attempt's control plane: the turn-shared [`CancellationToken`]
+/// plus the effective attempt deadline (turn deadline folded with the
+/// attempt timeout).
 #[derive(Debug, Clone)]
 pub struct AttemptControl {
     cancellation: CancellationToken,
@@ -38,9 +41,11 @@ impl AttemptControl {
             deadline,
         }
     }
+    /// Whether the turn's cancellation has fired.
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
     }
+    /// The effective attempt deadline, if any.
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
@@ -49,6 +54,8 @@ impl AttemptControl {
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation
     }
+    /// Narrows this attempt control into a [`CallControl`] for one tool
+    /// call, folding `call_timeout` into the deadline chain.
     pub fn for_call(&self, call_timeout: Option<Duration>) -> CallControl {
         CallControl {
             cancellation: self.cancellation.clone(),
@@ -57,16 +64,21 @@ impl AttemptControl {
     }
 }
 
+/// One tool call's control plane: the same turn-shared [`CancellationToken`]
+/// with the deadline narrowed to the call.
 #[derive(Debug, Clone)]
 pub struct CallControl {
     cancellation: CancellationToken,
     deadline: Option<Instant>,
 }
 
+/// Why a control check failed.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ControlError {
+    /// The turn was cancelled.
     #[error("cancelled")]
     Cancelled,
+    /// The effective deadline has passed.
     #[error("deadline exceeded")]
     TimedOut,
 }
@@ -87,9 +99,11 @@ impl CallControl {
         }
     }
 
+    /// Whether the turn's cancellation has fired.
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
     }
+    /// The effective call deadline, if any.
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }

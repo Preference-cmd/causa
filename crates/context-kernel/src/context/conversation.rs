@@ -16,7 +16,7 @@ use crate::context::turn::{ContextFrame, ModelContext, TurnContext, TurnSnapshot
 
 /// Kernel-side eligibility stamp recorded when the driver finalizes the
 /// active turn. Marker only — the rich cause stays with the caller via the
-/// runner's `TurnResult`（`TurnInterruption` 是 driver 词汇，不得进入事实层）。
+/// runner's `TurnResult` (`TurnInterruption` is driver vocabulary and must not enter the facts layer).
 ///
 /// `Paused` (Slice 7) stamps a turn that is *not* sealed: the active
 /// `TurnContext` stays open so `resume_turn` can continue it. `commit`
@@ -25,40 +25,63 @@ use crate::context::turn::{ContextFrame, ModelContext, TurnContext, TurnSnapshot
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SealedResult {
+    /// The turn finished successfully — the only stamp `commit` accepts.
     Completed,
+    /// The turn was cut short. Seals the turn, but `commit` rejects it —
+    /// only `abort_turn` closes the slot.
     Interrupted,
+    /// The turn is suspended but *not* sealed (Slice 7): the active
+    /// `TurnContext` stays open for `resume_turn`; `commit` rejects it
+    /// with `TurnPaused`.
     Paused,
 }
 
+/// Committed history: the turn snapshots in ascending `TurnSequence` order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OrderedTurns(Vec<TurnSnapshot>);
 impl OrderedTurns {
+    /// An empty history.
     pub fn empty() -> Self {
         Self(Vec::new())
     }
+    /// Read-only view of the snapshots in `TurnSequence` order.
     pub fn ordered(&self) -> &[TurnSnapshot] {
         &self.0
     }
 }
 
+/// Rejections of the conversation-level controlled operations. Pure state
+/// guards — every variant is deterministic from the aggregate's facts.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationError {
+    /// An open (unsealed) active turn exists; seal-then-commit or abort it first.
     #[error("a turn is already active in this conversation")]
     TurnAlreadyActive,
+    /// The active turn is already sealed; commit or abort it before
+    /// starting a new one.
     #[error("active turn is already sealed; abort it before starting a new one")]
     TurnAlreadySealed,
+    /// The operation needs an active turn (e.g. `frame`), but the slot is empty.
     #[error("no active turn in this conversation")]
     NoActiveTurn,
+    /// The given turn id is not the active turn — including a repeated
+    /// commit after the slot was cleared.
     #[error("unknown turn: {0:?}")]
     UnknownTurn(TurnId),
+    /// `begin_turn` with an id already present in committed history.
     #[error("duplicate turn id: {0:?}")]
     DuplicateTurnId(TurnId),
+    /// `commit` on a turn that is not sealed-and-`Completed`.
     #[error("turn not completed, cannot commit: {0:?}")]
     TurnNotCompleted(TurnId),
+    /// `commit` on a paused turn; resume it or abort it instead.
     #[error("turn is paused, cannot commit until resumed: {0:?}")]
     TurnPaused(TurnId),
+    /// The turn is not paused (no `Paused` stamp), so it cannot be resumed.
     #[error("turn is not paused, cannot resume: {0:?}")]
     NotPaused(TurnId),
+    /// Replay validation failed in `from_snapshots`; carries the reason
+    /// (non-monotonic `TurnSequence` or a block-level violation).
     #[error("invalid conversation state: {0}")]
     InvalidSequence(String),
 }
@@ -111,6 +134,7 @@ impl std::fmt::Debug for ConversationState {
 }
 
 impl ConversationState {
+    /// A fresh, empty conversation: no history, no active turn, version zero.
     pub fn new(conversation_id: ConversationId) -> Self {
         Self {
             conversation_id,
@@ -309,18 +333,24 @@ impl ConversationState {
         })
     }
 
+    /// Committed history in ascending `TurnSequence` order.
     pub fn completed_turns(&self) -> &[TurnSnapshot] {
         self.completed_turns.ordered()
     }
 
+    /// Number of committed turns in history.
     pub fn snapshot_count(&self) -> usize {
         self.completed_turns.0.len()
     }
 
+    /// The `ConversationVersion`, ticked at every controlled transition
+    /// (`begin_turn` / `commit` / `abort_turn`); zero for a fresh or
+    /// replayed conversation.
     pub fn version(&self) -> ConversationVersion {
         self.version
     }
 
+    /// The conversation's identity.
     pub fn conversation_id(&self) -> &ConversationId {
         &self.conversation_id
     }

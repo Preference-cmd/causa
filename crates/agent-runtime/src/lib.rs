@@ -20,8 +20,29 @@
 //! Implementation-side note: implementing a `ModelGateway` or a `Tool`
 //! requires only `reimagine-context-kernel`; this crate is required to
 //! *drive* turns, not to fill the kernel's ports.
+//!
+//! # Driver policy surface (7.6)
+//!
+//! Every default the driver bakes in is one of two kinds — a swappable
+//! policy object, or a documented opinion. No trait seams exist for
+//! single-implementation policies; a seam is added only when a second real
+//! shape appears.
+//!
+//! | Policy | Kind | Where |
+//! |---|---|---|
+//! | Retry schedule (500 ms base, 8 s ceiling, exponential) | config object [`RetryPolicy`] | `config` |
+//! | Turn limits (rounds, tool calls, deadline) | config object [`TurnPolicy`] | `config` |
+//! | Interaction / approval gate | port object [`NoopInteraction`] default | `config` |
+//! | Tool-use filtering | port object [`HookCtx`] / [`ToolUseHook`], default [`PassthroughHook`] | `hook`, `filter` |
+//! | Token estimation fallback (chars/4) | documented opinion, single home | `defaults::placeholder_token_estimate_value` |
+//! | Output truncation shape (head 60% + tail 40%, artifact spill, content replaced by a JSON string, `Truncation::Middle` marker) | documented opinion | `executor::ToolExecutor::execute_with_limits` |
+//! | Unknown-outcome policy (`Stop` unless the trusted tool declares otherwise) | port vocabulary default | kernel `UnknownOutcomePolicy` |
+//! | Batch semantics (dedup-then-parallel, per-call panic isolation → `Failed`, call-deadline backstop → `UnknownOutcome`) | documented opinion | `executor` |
+//!
+//! Anything not in this table is facts, not policy.
 
 #![deny(unsafe_code)]
+#![deny(missing_docs)]
 
 pub mod composition;
 pub mod config;

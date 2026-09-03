@@ -75,10 +75,13 @@ impl ToolUseHook for AllowAllFilter {
 /// outcome's output payload.
 #[derive(Debug, Clone)]
 pub struct DenyAllFilter {
+    /// The fixed reason recorded in every rejected outcome's output
+    /// payload.
     pub reason: String,
 }
 
 impl DenyAllFilter {
+    /// A filter that rejects every call with `reason`.
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),

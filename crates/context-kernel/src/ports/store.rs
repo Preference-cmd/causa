@@ -73,12 +73,18 @@ pub trait ConversationStore: Send + Sync {
 /// single error type to handle.
 #[derive(Debug, thiserror::Error)]
 pub enum ConversationStoreError {
+    /// No snapshot has ever been written for this conversation; carries the
+    /// conversation id.
     #[error("conversation not found: {0}")]
     NotFound(String),
+    /// The underlying storage failed; carries the human-readable cause.
     #[error("io error: {0}")]
     Io(String),
+    /// A snapshot could not be (de)serialized; carries the human-readable
+    /// cause.
     #[error("serialization error: {0}")]
     Serialization(String),
+    /// Stored data is present but unusable; carries the human-readable cause.
     #[error("corrupted data: {0}")]
     Corrupted(String),
 }

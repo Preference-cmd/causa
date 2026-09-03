@@ -32,12 +32,18 @@ struct DynamicEntry {
 /// Dynamic-source registry failures (Slice 10).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolRegistryError {
+    /// A dynamic source with this id is already registered.
     #[error("dynamic source already registered: {0}")]
     DuplicateSource(String),
+    /// No dynamic source registered under this id.
     #[error("no dynamic source registered: {0}")]
     UnknownSource(String),
 }
 
+/// The tool dispatcher: static tools plus registered dynamic sources
+/// behind one execution path — parallel batch dispatch with per-call
+/// panic isolation, a call-deadline backstop, and token-limit truncation
+/// with artifact spill.
 pub struct ToolExecutor {
     tools: HashMap<String, Arc<dyn Tool>>,
     /// Registered dynamic sources; interior-mutable because the executor
@@ -64,6 +70,7 @@ impl std::fmt::Debug for ToolExecutor {
 }
 
 impl ToolExecutor {
+    /// Build from static tools, keyed by each tool's `definition().name`.
     pub fn from_vec(tools: Vec<Arc<dyn Tool>>) -> Self {
         let mut map = HashMap::new();
         for t in tools {
@@ -75,6 +82,8 @@ impl ToolExecutor {
         }
     }
 
+    /// Build from an explicit name → tool map; the keys are the caller's
+    /// responsibility.
     pub fn from_map(map: HashMap<String, Arc<dyn Tool>>) -> Self {
         Self {
             tools: map,
@@ -299,9 +308,8 @@ impl ToolExecutor {
         let estimated = if let Some(counter) = &token_counter {
             counter.estimate_value(&outcome.result.output.content)
         } else {
-            serde_json::to_string(&outcome.result.output.content)
-                .map(|s| s.len() / 4)
-                .unwrap_or(0)
+            // The driver's fallback opinion — single home in `defaults` (7.4).
+            crate::defaults::placeholder_token_estimate_value(&outcome.result.output.content)
         };
 
         if estimated > effective_limit {

@@ -1,4 +1,4 @@
-//! `ContextEvent` projection — Slice 4 §6 Phase C (框架事件), reworked by
+//! `ContextEvent` projection — Slice 4 §6 Phase C (framework events), reworked by
 //! the 2026-09-02 thermo-nuclear review.
 //!
 //! Events are a **projection** of a turn's facts (`TurnContext` +
@@ -69,9 +69,13 @@ use reimagine_context_kernel::{
 /// about cross-conversation routing key on `Some`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextEvent {
+    /// Routing key for conversation-scoped consumers; skipped on the
+    /// wire when `None` (the bare `run` entry).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<ConversationId>,
+    /// The turn every event of the sequence belongs to.
     pub turn_id: TurnId,
+    /// The variant-specific payload; the wire discriminator is `type`.
     pub kind: ContextEventKind,
 }
 
@@ -90,7 +94,9 @@ pub enum ContextEventKind {
     /// (EndTurn, MaxTokens, Refusal, compaction failure, …) produce no
     /// dispatch event.
     ToolBatchDispatched {
+        /// The round whose batch was dispatched.
         round_id: RoundId,
+        /// The pre-execution committed tool calls, in draft order.
         calls: Vec<ToolCallPayload>,
     },
     /// The turn finished. `result` is the canonical `TurnResult`
@@ -99,23 +105,39 @@ pub enum ContextEventKind {
     /// for finer-grained data. Emitted exactly once, last in the
     /// sequence.
     TurnOutcome {
+        /// The canonical `TurnResult` (`Completed` or `Interrupted`).
         result: TurnResult,
+        /// The full `TurnTrace` (rounds, totals).
         trace: TurnTrace,
     },
     // — Slice 6: streaming-delta variants (the `project_streaming_turn`
     // path; mutually exclusive with the batch `project_turn` sequence for
     // the same turn). `conversation_id` / `turn_id` ride the envelope.
     /// One model text increment in round `round_id`.
-    TextDelta { round_id: RoundId, delta: String },
+    TextDelta {
+        /// The round the increment belongs to.
+        round_id: RoundId,
+        /// The text increment.
+        delta: String,
+    },
     /// One reasoning increment in round `round_id`.
-    ReasoningDelta { round_id: RoundId, delta: String },
+    ReasoningDelta {
+        /// The round the increment belongs to.
+        round_id: RoundId,
+        /// The reasoning increment.
+        delta: String,
+    },
     /// One tool-call increment in round `round_id`: the provider is
     /// appending the name and/or the JSON arguments of the call at
     /// `call_index` in draft order.
     ToolCallDelta {
+        /// The round the increment belongs to.
         round_id: RoundId,
+        /// Index of the call being streamed, in draft order.
         call_index: usize,
+        /// The tool-name increment, when the provider streams one.
         name_delta: Option<String>,
+        /// The JSON-arguments increment, when the provider streams one.
         arguments_delta: Option<String>,
     },
 }
@@ -225,6 +247,8 @@ pub struct StreamEventCollector {
 }
 
 impl StreamEventCollector {
+    /// A collector for the given turn (and optional conversation); wire
+    /// it as `TurnRunOptions.interaction` for a streaming run.
     pub fn new(turn_id: TurnId, conversation_id: Option<ConversationId>) -> Self {
         Self {
             turn_id,

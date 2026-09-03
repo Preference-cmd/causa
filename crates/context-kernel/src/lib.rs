@@ -23,6 +23,7 @@
 //! public contract. Nothing else is a cross-crate commitment.
 
 #![deny(unsafe_code)]
+#![deny(missing_docs)]
 
 mod context;
 mod ports;

@@ -36,89 +36,168 @@ fn millis_since(t: Instant) -> u64 {
 // `TurnRunner` defaults to `PassthroughHook` (no opinion); concrete
 // filter policies live in `crate::filter` or the host layer.
 
+/// Why a turn terminated in `TurnResult::Interrupted`. The serde shape
+/// (`kind` / `detail`) is part of the event wire contract; see the
+/// wire-contract note on [`TurnOutcome`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail")]
 pub enum TurnInterruption {
+    /// The host cancelled the turn through the shared `RunControl` token
+    /// (including cancellation observed mid-call, mid-stream, or during
+    /// retry backoff).
     ExplicitCancellation,
+    /// The turn deadline carried by `RunControl` passed (checked at every
+    /// loop top).
     TurnDeadlineExceeded,
-    /// 终态模型调用失败的统一承载：可重试耗尽与非可重试（Permanent /
-    /// InvalidRequest / UnknownOutcome）都落到这里，由 `last_kind` 区分；
-    /// parent 取消导致的 `Cancelled` 映射为 `ExplicitCancellation`。
+    /// Uniform carrier for terminal model-call failures: retry exhaustion
+    /// and non-retryable kinds (Permanent / InvalidRequest / UnknownOutcome)
+    /// all land here, discriminated by `last_kind`; a parent-caused
+    /// `Cancelled` maps to `ExplicitCancellation` instead.
     RetryExhausted {
+        /// Error kind of the final failed attempt — retry exhaustion and
+        /// non-retryable kinds alike.
         last_kind: ModelInvokeErrorKind,
+        /// Error message of the final failed attempt.
         last_error: String,
     },
+    /// The kernel refused the model response —
+    /// `TurnContext::append_model_output` rejected it.
     InvalidModelOutput {
+        /// The kernel's rejection message.
         reason: String,
     },
+    /// The loop reached `TurnLimits::max_model_rounds` before the model
+    /// ended the turn.
     MaxModelRounds {
+        /// The configured limit that was reached.
         limit: u32,
     },
+    /// The turn emitted more than `TurnLimits::max_tool_calls` tool calls
+    /// (counted at dispatch time, including a batch paused pending
+    /// approval).
     MaxToolCalls {
+        /// The configured limit that was exceeded.
         limit: u32,
     },
+    /// A tool call ended `UnknownOutcome` while its trusted declaration
+    /// demands `Stop` — the call's result is unknowable, so continuing
+    /// is unsafe.
     UnsafeUnknownOutcome {
+        /// The offending call.
         call_id: ToolCallId,
     },
+    /// Turn-scope frame materialization failed — `FramePolicy::materialize`
+    /// returned an error.
     CompactionFailed {
+        /// The materialization error message.
         reason: String,
     },
+    /// A driver invariant broke (e.g. the fact machine refused an append)
+    /// — a caller bug, not a model or tool failure.
     RunnerInvariantViolation {
+        /// The invariant failure message.
         reason: String,
     },
+    /// The model stopped on the token ceiling; the driver dispatches this
+    /// before applying, so no blocks persist (§5.6).
     ModelMaxTokens,
+    /// The model refused; the driver dispatches this before applying, so
+    /// no blocks persist (§5.6).
     ModelRefusal,
 }
 
+/// One model attempt inside a round — an entry of the retry ledger.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AttemptTrace {
+    /// 1-based attempt number within the round's invocation.
     pub attempt: AttemptNumber,
-    /// `None` = 成功 attempt；`Some(kind)` = 失败 attempt 的归类。
+    /// `None` = successful attempt; `Some(kind)` = the failure classification.
     pub kind: Option<ModelInvokeErrorKind>,
+    /// Whether the failure was classified retryable (it may still not have
+    /// been retried once `RetryPolicy::max_retries` was spent).
     pub is_retryable: bool,
+    /// Wall-clock duration of the attempt, in milliseconds.
     pub duration_ms: u64,
 }
+/// Summary of the model output that closed a round, recorded before any
+/// tool dispatch.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OutputSummary {
+    /// The model's stop reason (`EndTurn`, `ToolUse`, `MaxTokens`, `Refusal`).
     pub stop_reason: ModelStopReason,
+    /// Token usage reported by the gateway, when the provider supplied it.
     pub usage: Option<reimagine_context_kernel::ModelUsage>,
+    /// Number of tool calls in the model's response payload.
     pub tool_call_count: usize,
+    /// Byte length of the response text.
     pub response_text_bytes: usize,
 }
+/// One dispatched tool call, as observed by the executor.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallTrace {
+    /// Id pairing this entry with the committed tool-call block.
     pub call_id: ToolCallId,
+    /// Tool name from the draft payload (resolved by `call_id`).
     pub tool_name: String,
+    /// The call's index in the model-emitted draft order.
     pub position: usize,
+    /// Final result status of the call.
     pub status: ToolResultStatus,
+    /// Output truncation marker (`Truncation::None` unless truncated).
     pub truncation: Truncation,
+    /// Reference to the spilled full output, when truncation used an
+    /// `ArtifactStore`.
     pub artifact: Option<ArtifactRef>,
+    /// Executor-measured wall-clock duration in milliseconds (`0` for
+    /// host-precomputed outcomes).
     pub duration_ms: u64,
 }
+/// One dispatched tool batch, as observed by the executor.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolBatchTrace {
+    /// Per-call traces in canonical (model draft) order — executor
+    /// results, hook rejections, and host-precomputed outcomes alike.
     pub calls: Vec<ToolCallTrace>,
-    /// 实际完成顺序（executor 返回即记录），非提交顺序。
+    /// Actual completion order (recorded as the executor returns), not submission order.
     pub completion_order: Vec<ToolCallId>,
 }
+/// One model round: framing, attempts, output, applied blocks, and its
+/// tool batch (when any).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelRoundTrace {
+    /// 0-based round index within the turn.
     pub round_id: RoundId,
+    /// Turn + round identity every attempt of the round shares (a retry
+    /// bumps only the attempt number).
     pub invocation_id: InvocationId,
-    /// frame 物化时的 `source_version`（apply 之前的版本）。
+    /// The `source_version` at frame materialization (the version before apply).
     pub frame_version: reimagine_context_kernel::ContextVersion,
+    /// One entry per model attempt, in order.
     pub attempts: Vec<AttemptTrace>,
+    /// `None` when no output was produced (every attempt failed).
     pub output_summary: Option<OutputSummary>,
+    /// Ids of the blocks the model door committed this round (optional
+    /// text first, then one tool call per draft).
     pub applied_block_ids: Vec<BlockId>,
+    /// The dispatched batch, when the round dispatched tools.
     pub tool_batch: Option<ToolBatchTrace>,
 }
+/// The turn's trace: one record per model round plus totals.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnTrace {
+    /// Rounds in execution order — including rounds whose invocation
+    /// never produced output.
     pub rounds: Vec<ModelRoundTrace>,
+    /// Total tool calls emitted, counted at dispatch time (a paused batch
+    /// counts once, at emission — the resume does not re-count).
     pub tool_calls_total: usize,
+    /// Wall-clock duration of this run in milliseconds (a resumed
+    /// continuation measures only the continuation).
     pub total_duration_ms: u64,
 }
 impl TurnTrace {
+    /// An empty trace — no rounds, zero totals; the fresh-drive starting
+    /// point.
     pub fn new() -> Self {
         Self {
             rounds: vec![],
@@ -133,12 +212,19 @@ impl Default for TurnTrace {
     }
 }
 
+/// How a turn ended: completed, interrupted, or paused mid-turn. The
+/// serde shapes are a load-bearing wire contract (embedded in
+/// `ContextEvent`); `tests/serialization.rs` pins them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum TurnResult {
+    /// The model ended the turn (`EndTurn`) — no pending work remains.
     Completed {
+        /// The final model output.
         final_output: ModelOutput,
     },
+    /// The turn stopped early; `cause` discriminates why.
     Interrupted {
+        /// Why the turn was interrupted.
         cause: TurnInterruption,
     },
     /// Resumable suspension (Slice 7) — not a terminal state: the turn's
@@ -146,7 +232,10 @@ pub enum TurnResult {
     /// that triggered the pause is neither executed nor rejected, and
     /// `resume_turn` (agent-runtime) continues the same turn.
     Paused {
+        /// The turn's facts at the pause point; the context itself stays
+        /// open and resumption continues from it.
         snapshot: TurnSnapshot,
+        /// Why and where the turn paused — see [`PausedReason`].
         reason: PausedReason,
     },
 }
@@ -157,18 +246,32 @@ pub enum TurnResult {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum PausedReason {
+    /// The host's `decide_batch` paused behind a tool batch awaiting an
+    /// approval decision; the batch is neither executed nor rejected, and
+    /// resume executes the withheld decision in the paused round's
+    /// prologue.
     AwaitingApproval {
         /// The model-emitted batch, in draft order — the same payloads
         /// whose tool-call blocks are already committed facts.
         pending_calls: Vec<ToolCallPayload>,
+        /// Advisory decision budget the host granted itself, as *remaining*
+        /// time so the variant stays serde-friendly (a host anchors
+        /// `Instant::now() + d`).
         deadline: Option<Duration>,
     },
+    /// Paused before the next model round so the host can steer; resume
+    /// appends the queued inputs (labeled `user.steering`) and re-enters
+    /// the model loop at `pending_round_id`.
     PausedForSteering {
+        /// Steering texts appended before the next model round.
         queued_inputs: Vec<TextPayload>,
+        /// The first round whose model phase has not run yet.
         pending_round_id: RoundId,
     },
 }
 
+/// A bare-turn entry's result: the turn context (sealed unless the turn
+/// paused), the outcome, and the trace.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TurnOutcome {
     /// The sealed active turn at handoff. Serialized through the
@@ -179,7 +282,9 @@ pub struct TurnOutcome {
     /// `from_validated_blocks` + `seal()`.
     #[serde(with = "reimagine_context_kernel::turn_context_as_snapshot")]
     pub context: TurnContext,
+    /// Terminal result or pause — see [`TurnResult`].
     pub result: TurnResult,
+    /// What happened during the run — see [`TurnTrace`].
     pub trace: TurnTrace,
 }
 
@@ -198,8 +303,14 @@ pub struct TurnOutcome {
 /// (Interrupted).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConversationOutcome {
+    /// The state back from the run, its active turn sealed and
+    /// outcome-stamped; the host then calls `commit` (Completed),
+    /// `abort_turn` (Interrupted), or `resume_turn` (Paused).
     pub state: ConversationState,
+    /// The active turn's outcome.
     pub result: TurnResult,
+    /// The active turn's trace (a resumed continuation appends to the
+    /// paused phase's trace).
     pub trace: TurnTrace,
 }
 
@@ -252,6 +363,9 @@ enum BatchWork {
     Precomputed(Vec<ToolExecutionOutcome>),
 }
 
+/// The reference driver over the kernel's ports: frame materialization,
+/// bounded model retry, tool batch dispatch through the hook and
+/// interaction seams, run control plumbing, and trace construction.
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
@@ -262,6 +376,9 @@ pub struct TurnRunner {
     hook: Arc<dyn ToolUseHook>,
 }
 impl TurnRunner {
+    /// A runner with the default [`PassthroughHook`] — no tool-use
+    /// filtering (the driver carries no opinion; opt in via
+    /// [`TurnRunner::with_hook`]).
     pub fn new(gateway: Arc<dyn ModelGateway>, executor: Arc<ToolExecutor>) -> Self {
         Self {
             gateway,
@@ -270,6 +387,9 @@ impl TurnRunner {
         }
     }
 
+    /// A runner with a custom [`ToolUseHook`] applied between model
+    /// output and tool dispatch (e.g. a
+    /// [`FilterChain`](crate::filter::FilterChain)).
     pub fn with_hook(
         gateway: Arc<dyn ModelGateway>,
         executor: Arc<ToolExecutor>,

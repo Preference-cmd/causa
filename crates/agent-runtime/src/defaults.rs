@@ -1,12 +1,22 @@
-//! Noop port defaults — trivial implementations for hosts that need a
-//! placeholder wiring. The port traits stay canonical in `budget`; only these
-//! default instances are staged.
+//! Noop port defaults and the driver's fallback opinions — trivial
+//! implementations for hosts that need a placeholder wiring. The port traits
+//! stay canonical in `budget`; only these default instances are staged.
+//!
+//! # Driver policy surface (7.6)
+//!
+//! Every default the driver bakes in is either a config/policy object
+//! (`RetryPolicy`, `TurnPolicy`, `HookCtx`, `TokenCounter`,
+//! `UnknownOutcomePolicy`, `ToolOutputLimits`) or documented here / at the
+//! impl site as the driver's opinion. The token-estimate fallback below is
+//! the single home of the chars/4 heuristic — no other copy exists.
 
 use async_trait::async_trait;
 use reimagine_context_kernel::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, TokenCounter,
 };
 
+/// Noop [`Compaction`] default: returns the input blocks unchanged —
+/// no summary, nothing truncated.
 pub struct NoopCompaction;
 #[async_trait]
 impl Compaction for NoopCompaction {
@@ -19,6 +29,8 @@ impl Compaction for NoopCompaction {
     }
 }
 
+/// Noop [`TokenCounter`] default: every estimate is `0`. The driver's real
+/// fallback when no counter is wired is [`placeholder_token_estimate_value`].
 pub struct NoopTokenCounter;
 impl TokenCounter for NoopTokenCounter {
     fn estimate(&self, _blocks: &[reimagine_context_kernel::ContextBlock]) -> usize {
@@ -29,18 +41,20 @@ impl TokenCounter for NoopTokenCounter {
     }
 }
 
-/// Example heuristic: serialized JSON length divided by 4.
+/// The driver's token-estimate fallback opinion: serialized JSON length
+/// divided by 4.
 ///
-/// NOT the kernel's policy. Hosts that don't yet have a real
-/// tokenizer can wire their own `TokenCounter` with this logic;
-/// `FramePolicy::estimate` itself has no fallback beyond 0.
-#[allow(dead_code)]
+/// NOT the kernel's policy. `ToolExecutor` falls back to this when no
+/// `TokenCounter` is wired; hosts that don't yet have a real tokenizer can
+/// wire their own `TokenCounter` with the same logic. This function is the
+/// heuristic's single home (7.4) — do not inline a copy elsewhere.
 pub fn placeholder_token_estimate_value(value: &serde_json::Value) -> usize {
     serde_json::to_string(value)
         .map(|s| s.len() / 4)
         .unwrap_or(0)
 }
-#[allow(dead_code)]
+
+/// Block-level convenience over [`placeholder_token_estimate_value`].
 pub fn placeholder_token_estimate(blocks: &[reimagine_context_kernel::ContextBlock]) -> usize {
     blocks
         .iter()

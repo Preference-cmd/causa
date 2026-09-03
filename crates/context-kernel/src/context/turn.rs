@@ -25,13 +25,19 @@ use std::collections::{HashMap, HashSet};
 // Public since Slice 12: the canonical driver lives outside the kernel
 // (agent-runtime), so the serde bridge it serializes `TurnOutcome` with
 // is part of the external-driver contract surface.
+/// Serde bridge: a `TurnContext` is serialized as its immutable
+/// `TurnSnapshot` projection and rebuilt from that shape on load. The wire
+/// representation of the field is always a `TurnSnapshot`.
 pub mod turn_context_as_snapshot {
     use super::*;
 
+    /// Serializes the context's snapshot projection.
     pub fn serialize<S: Serializer>(value: &TurnContext, s: S) -> Result<S::Ok, S::Error> {
         TurnSnapshot::serialize(&value.snapshot(), s)
     }
 
+    /// Deserializes a `TurnSnapshot` and rebuilds a validated `TurnContext`,
+    /// re-sealing it if the snapshot was sealed.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<TurnContext, D::Error> {
         let snap = TurnSnapshot::deserialize(d)?;
         let mut ctx = TurnContext::from_validated_blocks(
@@ -75,37 +81,64 @@ pub(crate) mod option_turn_context_as_snapshot {
     }
 }
 
+/// Whether a turn still accepts appends or is terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnLifecycle {
+    /// The turn accepts appends through the three doors.
     Open,
+    /// Terminal; every append operation is rejected.
     Sealed,
 }
 
+/// The model-facing context of a frame: the ordered fact blocks a round saw.
 #[derive(Debug, Clone)]
 pub struct ModelContext {
+    /// The ordered fact blocks that make up the model context.
     pub blocks: Vec<ContextBlock>,
 }
 
+/// One deterministic projection of fact state handed to (or from) a model
+/// round: identity, scope, the round it belongs to, and the block content.
 #[derive(Debug, Clone)]
 pub struct ContextFrame {
+    /// Deterministic digest of the scope and round (see `FrameId::from_scope`).
     pub frame_id: FrameId,
+    /// What this frame projects: the single turn or the merged conversation.
     pub scope: FrameScope,
+    /// The model round this frame was built for.
     pub round_id: RoundId,
+    /// The ordered blocks presented to the model.
     pub model_context: ModelContext,
 }
 
+/// Fact-machine rejections: lifecycle, pairing, or structural-validity
+/// violations. None carry transport or execution semantics.
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
+    /// The turn is sealed and rejects appends.
     #[error("sealed turn")]
     SealedTurn,
+    /// A model output was submitted under a different turn id than the
+    /// context's own.
     #[error("foreign invocation: expected turn {expected:?}, got {actual:?}")]
-    ForeignInvocation { expected: TurnId, actual: TurnId },
+    ForeignInvocation {
+        /// The turn id the context was built with.
+        expected: TurnId,
+        /// The turn id carried by the offending invocation.
+        actual: TurnId,
+    },
+    /// The model response is structurally invalid (bad stop-reason/tool-call
+    /// pairing, empty tool name, or non-object arguments).
     #[error("invalid model output: {0}")]
     InvalidModelOutput(String),
+    /// Sequence or pairing state is invalid (monotonicity, duplicate or
+    /// already-paired tool results).
     #[error("invalid sequence: {0}")]
     InvalidSequence(String),
+    /// A tool call id already exists in the fact state.
     #[error("duplicate tool call id: {0:?}")]
     DuplicateToolCallId(crate::context::tool_data::ToolCallId),
+    /// A tool result references a call id no committed call block issued.
     #[error("unpaired tool result: {0:?}")]
     UnpairedToolResult(crate::context::tool_data::ToolCallId),
 }
@@ -116,19 +149,26 @@ pub enum ContextError {
 /// same payloads the kernel committed and never re-reads blocks.
 #[derive(Debug, Clone)]
 pub struct AppliedModelOutput {
+    /// Ids of the fact blocks committed for this output, in commit order.
     pub block_ids: Vec<BlockId>,
+    /// The prepared tool calls with kernel-generated ids, in model draft
+    /// order; the execution handoff.
     pub tool_calls: Vec<ToolCallPayload>,
 }
 
+/// The fact machine's block log: append-only and order-preserving.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrderedBlocks(Vec<ContextBlock>);
 impl OrderedBlocks {
+    /// Creates an empty log.
     pub fn empty() -> Self {
         Self(Vec::new())
     }
+    /// Borrows the ordered blocks.
     pub fn as_slice(&self) -> &[ContextBlock] {
         &self.0
     }
+    /// Consumes the log, returning the ordered blocks.
     pub fn into_inner(self) -> Vec<ContextBlock> {
         self.0
     }
@@ -162,6 +202,7 @@ impl std::fmt::Debug for TurnContext {
 }
 
 impl TurnContext {
+    /// Creates an empty, open turn with version 0.
     pub fn new(turn_id: TurnId) -> Self {
         Self {
             turn_id,
@@ -172,21 +213,27 @@ impl TurnContext {
         }
     }
 
+    /// Returns whether the turn has been sealed.
     pub fn is_sealed(&self) -> bool {
         matches!(self.lifecycle, TurnLifecycle::Sealed)
     }
+    /// Borrows the committed fact blocks in commit order.
     pub fn blocks(&self) -> &[ContextBlock] {
         &self.blocks.0
     }
+    /// Returns the current `ContextVersion` (count of canonical fact commits).
     pub fn version(&self) -> ContextVersion {
         self.version
     }
+    /// Returns the turn's id.
     pub fn turn_id(&self) -> TurnId {
         self.turn_id.clone()
     }
+    /// Returns the current lifecycle state.
     pub fn lifecycle(&self) -> TurnLifecycle {
         self.lifecycle
     }
+    /// Returns an owned copy of the committed blocks in commit order.
     pub fn snapshot_blocks(&self) -> Vec<ContextBlock> {
         self.blocks.0.clone()
     }
@@ -440,6 +487,10 @@ impl TurnContext {
         id
     }
 
+    /// Rebuilds an open turn from a validated block log — the reload path
+    /// behind the serde bridge. Sequence monotonicity, id agreement, and
+    /// tool pairing are validated before construction; the next sequence
+    /// continues densely after the given blocks.
     pub fn from_validated_blocks(
         turn_id: TurnId,
         blocks: Vec<ContextBlock>,
@@ -511,6 +562,9 @@ impl TurnContext {
         Ok(())
     }
 
+    /// Projects the current state into an immutable `TurnSnapshot` — the
+    /// canonical wire shape for persistence. The turn sequence is the
+    /// placeholder zero; the conversation assigns the real one at commit.
     pub fn snapshot(&self) -> TurnSnapshot {
         TurnSnapshot {
             turn_id: self.turn_id.clone(),
@@ -526,11 +580,18 @@ fn default_sealed() -> bool {
     true
 }
 
+/// Immutable, serializable projection of a turn — the canonical wire shape
+/// for a persisted turn (a live `TurnContext` is never serialized directly).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnSnapshot {
+    /// Identity of the snapshotted turn.
     pub turn_id: TurnId,
+    /// Position in conversation history, assigned at commit; placeholder
+    /// zero before the turn is committed.
     pub turn_sequence: TurnSequence,
+    /// The committed blocks, in commit order.
     pub blocks: OrderedBlocks,
+    /// The turn's `ContextVersion` at snapshot time.
     pub source_version: ContextVersion,
     /// Whether the turn was sealed when snapshotted. Slice 7: a *paused*
     /// turn snapshots as `false` so a persisted conversation reloads with

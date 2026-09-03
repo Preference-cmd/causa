@@ -15,7 +15,11 @@ use reimagine_context_kernel::{StreamDelta, TurnInteraction};
 /// judgment lives here because interpreting error kinds is loop policy.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
+    /// Retries allowed per model round after the first failed attempt;
+    /// `0` (the default) disables retrying entirely.
     pub max_retries: u32,
+    /// Whether `TimedOut` model errors are retried (`Transient` errors
+    /// always are). Default `false`.
     pub retry_timeouts: bool,
     /// Backoff base before the first retry, in milliseconds. `0` = no
     /// backoff (the pre-Slice-6 behavior: retry immediately).
@@ -66,9 +70,16 @@ impl RetryPolicy {
     }
 }
 
+/// Per-turn loop bounds: model rounds and dispatched tool calls. Exceeding
+/// either interrupts the turn (see [`crate::driver::TurnInterruption`]).
 #[derive(Debug, Clone)]
 pub struct TurnLimits {
+    /// Ceiling on model rounds — checked as `round >= max_model_rounds`
+    /// at the top of every round. Default: 10.
     pub max_model_rounds: u32,
+    /// Ceiling on tool calls across the whole turn, counted at dispatch
+    /// time (a batch paused pending approval counts when emitted).
+    /// Default: 64.
     pub max_tool_calls: u32,
 }
 impl Default for TurnLimits {
@@ -83,8 +94,12 @@ impl Default for TurnLimits {
 /// Invocation options — what the model is asked this run.
 #[derive(Debug, Clone)]
 pub struct TurnInvocation {
+    /// Which model the gateway invokes. Default: the `"fake"` placeholder.
     pub model: ModelRef,
+    /// The tool surface advertised to the model this run. Default: empty.
     pub tool_surface: ToolSurface,
+    /// Generation (sampling) parameters sent with every attempt. Default:
+    /// `GenerationOptions::default()`.
     pub generation: GenerationOptions,
 }
 impl Default for TurnInvocation {
@@ -100,7 +115,9 @@ impl Default for TurnInvocation {
 /// Turn policy — when the loop retries or gives up.
 #[derive(Debug, Clone, Default)]
 pub struct TurnPolicy {
+    /// Retry schedule for failed model attempts — see [`RetryPolicy`].
     pub retry: RetryPolicy,
+    /// Loop bounds for the turn — see [`TurnLimits`].
     pub limits: TurnLimits,
     /// Per-model-attempt budget; `None` = unbounded attempt.
     pub attempt_timeout: Option<Duration>,
@@ -109,7 +126,11 @@ pub struct TurnPolicy {
 /// Execution options — how tool calls run inside a round.
 #[derive(Clone, Default)]
 pub struct ExecutionOptions {
+    /// Fallback per-output token limit for truncation; a trusted tool's
+    /// own `output_limits` declaration overrides it.
     pub tool_output_limits: ToolOutputLimits,
+    /// Where a truncated output's full bytes are spilled as an artifact;
+    /// `None` = truncate without a retrievable original.
     pub artifact_store: Option<Arc<dyn ArtifactStore>>,
     /// Counter used for tool-output truncation estimation.
     pub token_counter: Option<Arc<dyn TokenCounter>>,
@@ -133,9 +154,14 @@ impl std::fmt::Debug for ExecutionOptions {
 /// independently; `Default` yields the placeholder/noop wiring.
 #[derive(Clone)]
 pub struct TurnRunOptions {
+    /// What the model is asked this run — see [`TurnInvocation`].
     pub invocation: TurnInvocation,
+    /// When the loop retries or gives up — see [`TurnPolicy`].
     pub policy: TurnPolicy,
+    /// How tool calls execute — see [`ExecutionOptions`].
     pub execution: ExecutionOptions,
+    /// Frame materialization policy for the bare-turn entries; inert for
+    /// the conversation entries (lossless merged view).
     pub frame: FramePolicy,
     /// The one host↔driver interaction boundary for the turn. Default:
     /// [`NoopInteraction`] — observes nothing, decides nothing.

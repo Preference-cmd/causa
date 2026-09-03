@@ -37,9 +37,14 @@ use reimagine_context_kernel::{CallControl, ConversationId, RoundId, ToolCallPay
 /// so a filter can `select!` on user-approval responses (Slice 4 §4 B3).
 #[derive(Debug)]
 pub struct HookCtx<'a> {
+    /// The turn whose batch is being filtered.
     pub turn_id: &'a TurnId,
+    /// `Some` on the conversation entries, `None` for bare turns.
     pub conversation_id: Option<&'a ConversationId>,
+    /// The round that emitted the batch.
     pub round_id: RoundId,
+    /// Attempt/call-scoped control for `select!`-ing on approval
+    /// responses or deadlines.
     pub control: &'a CallControl,
 }
 
@@ -50,11 +55,16 @@ pub struct HookCtx<'a> {
 /// reject the entry with `UnpairedToolResult`. `to_execute` may rewrite
 /// `arguments` (open `FilterResult` — approval can rewrite, defer, split).
 pub struct HookOutcome {
+    /// Calls that pass the hook and reach the executor (arguments may
+    /// have been rewritten).
     pub to_execute: Vec<ToolCallPayload>,
+    /// Calls the hook rejected; each outcome must reuse the input's
+    /// `call_id`.
     pub rejected: Vec<reimagine_context_kernel::ToolExecutionOutcome>,
 }
 
 impl HookOutcome {
+    /// Admit every call unchanged — no rejections.
     pub fn passthrough(calls: Vec<ToolCallPayload>) -> Self {
         Self {
             to_execute: calls,
@@ -71,6 +81,8 @@ impl HookOutcome {
 /// it to `ToolExecutor`.
 #[async_trait]
 pub trait ToolUseHook: Send + Sync {
+    /// Filter the model-emitted batch between receipt and dispatch:
+    /// return what to execute and what to reject.
     async fn apply(&self, calls: Vec<ToolCallPayload>, ctx: &HookCtx<'_>) -> HookOutcome;
 }
 

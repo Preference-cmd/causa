@@ -64,7 +64,11 @@ pub enum BatchDecision {
     /// results (the host supplies the error copy). Outcome `call_id`s
     /// must pair with the batch — the fact machine rejects unpaired
     /// results.
-    Reject { results: Vec<ToolExecutionOutcome> },
+    Reject {
+        /// Outcomes standing in for the skipped batch; their `call_id`s must
+        /// pair with the batch.
+        results: Vec<ToolExecutionOutcome>,
+    },
     /// Execute the rewritten payloads instead of the model-emitted ones.
     /// Call ids are expected to be preserved so results pair with the
     /// committed tool-call blocks.
@@ -75,6 +79,8 @@ pub enum BatchDecision {
     /// `pending_calls`. `deadline` is the advisory decision budget the
     /// host grants itself (remaining time; host-side anchoring).
     Pause {
+        /// Advisory remaining decision budget the host grants itself
+        /// (host-side anchoring).
         deadline: Option<std::time::Duration>,
     },
 }

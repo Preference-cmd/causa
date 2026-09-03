@@ -166,7 +166,7 @@ fn oversize_error(len: usize) -> ModelInvokeError {
 /// Turn a raw response into a [`ModelOutput`]: non-2xx through the error
 /// table, 2xx JSON-syntax failures as `Permanent`, then the
 /// protocol-specific body parser (whose own schema failures already
-/// surface as `Permanent` — §4 row "2xx 响应体解析失败 → Permanent").
+/// surface as `Permanent` — §4 row "2xx response body parse failure → Permanent").
 pub(crate) fn finish_response<F>(
     status: StatusCode,
     text: &str,
@@ -203,7 +203,7 @@ fn map_status_error(status: StatusCode, body: &str, provider: &str) -> ModelInvo
     let kind = match status.as_u16() {
         408 | 429 | 500..=599 => ModelInvokeErrorKind::Transient,
         400 | 422 => ModelInvokeErrorKind::InvalidRequest,
-        // 401 / 403 / 404 and everything else (§4 "其余" row).
+        // 401 / 403 / 404 and everything else (§4 "everything else" row).
         _ => ModelInvokeErrorKind::Permanent,
     };
     ModelInvokeError::new(
