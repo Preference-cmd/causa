@@ -2,6 +2,10 @@
 name = "causa-kernel"
 version.workspace = true
 description = "Causa kernel — primitive facts (ContextBlock) and behavior contracts (ports)"
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["agent", "llm", "conversation", "state-machine", "ports"]
+categories = ["data-structures", "rust-patterns"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

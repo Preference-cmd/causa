@@ -2,6 +2,10 @@
 name = "causa-protocol"
 version.workspace = true
 description.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["anthropic", "openai", "llm", "wire-protocol"]
+categories = ["api-bindings", "parser-implementations"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

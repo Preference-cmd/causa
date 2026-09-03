@@ -2,6 +2,10 @@
 name = "causa-mcp"
 version.workspace = true
 description = "Causa MCP client — dynamic tool sources over the causa-kernel DynamicToolSource port"
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["mcp", "llm", "tools", "agent"]
+categories = ["api-bindings", "asynchronous"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

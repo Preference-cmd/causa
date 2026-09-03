@@ -1,0 +1,40 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Slice 11 Phase E release gate (run manually once the functional
+    # gate — slices 6.5 and 8 — has landed and CI is green).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Dry-run the whole family first: packaging fails fast on missing
+      # version fields, undocumented public items, or examples that
+      # escape the publish set (first-principles items 7.1/7.3).
+      - name: publish dry-run (kernel → protocol → runtime / provider → mcp)
+        run: |
+          cargo publish --dry-run -p causa-kernel
+          cargo publish --dry-run -p causa-protocol
+          cargo publish --dry-run -p causa-runtime
+          cargo publish --dry-run -p causa-provider
+          cargo publish --dry-run -p causa-mcp
+
+      # Real publish requires CARGO_REGISTRY_TOKEN in repo secrets.
+      # crates.io needs a freshly published crate to be indexed before a
+      # dependent can name it, so each step waits briefly.
+      - name: publish
+        run: |
+          cargo publish -p causa-kernel
+          sleep 30
+          cargo publish -p causa-protocol
+          sleep 30
+          cargo publish -p causa-runtime
+          sleep 30
+          cargo publish -p causa-provider
+          sleep 30
+          cargo publish -p causa-mcp

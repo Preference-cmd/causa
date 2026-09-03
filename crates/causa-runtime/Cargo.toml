@@ -2,6 +2,10 @@
 name = "causa-runtime"
 version.workspace = true
 description = "Causa runtime — reference driver (turn loop, tool dispatch, streaming, approval pause/resume)"
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["agent", "llm", "tools", "streaming", "driver"]
+categories = ["asynchronous"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,7 +23,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+# `fs` is example-only (FsConversationStore reference store): the lib's
+# normal graph stays fs-free (first-principles item 7.5).
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 tempfile = { workspace = true }
 # driver tests hash fixture payloads; blake3 stays out of the lib itself
 blake3 = "1"
