@@ -4,9 +4,8 @@
 > monorepo. `CLAUDE.md` is a symlink to this file — edit here only.
 
 **Causa** is a small, principled agent kernel for Rust: facts, ports,
-driver. One Cargo workspace, one GitHub repo
-(`git@github.com:Preference-cmd/causa.git`), six crates, lockstep
-versioned at `0.x`. Dual-licensed `MIT OR Apache-2.0`.
+driver. One Cargo workspace, six crates, lockstep versioned at `0.x`.
+Dual-licensed `MIT OR Apache-2.0`.
 
 ## Layout
 
@@ -19,7 +18,7 @@ crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)
 .github/workflows/ci.yml   # fmt / clippy / test / MSRV / dependency-direction guard
 .github/workflows/publish.yml  # manual dispatch ONLY — never `cargo publish` by hand
-.github/scripts/check-dependency-directions.sh  # layering guard (tracked; force-added, see .gitignore note)
+.github/scripts/check-dependency-directions.sh  # layering guard, runs in CI
 CHANGELOG.md               # Keep a Changelog; wire-serde breaks bump minor + flag at top
 ```
 
@@ -56,7 +55,7 @@ in-process fixtures. Examples needing live keys/servers (`quickstart`,
 `mcp_tools`) are documented in `README.md` — do not "fix" them to run in
 CI.
 
-## Layering (machine-enforced, first-principles 7.1)
+## Layering (machine-enforced)
 
 ```text
 kernel <- protocol <- provider
@@ -75,7 +74,7 @@ Rules, asserted by the guard script on every CI push — not by review:
 2. `causa-protocol` stays pure translation: no transport, no driver.
 3. `causa-runtime` drives the kernel and nothing else. No trait seams
    for single-implementation policies — policy is a config object or a
-   documented opinion in `lib.rs`'s policy table (§7.6).
+   documented opinion in the runtime `lib.rs` policy table.
 4. Edge crates are interop adapters (capabilities, not opinions):
    `provider` owns reqwest plumbing, `extension` owns
    `DynamicToolSource` adapters. They never depend on each other or on
@@ -107,24 +106,14 @@ rendering) — bare `causa` false-positives on `causa-*` names.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
 - Commit style: Conventional Commits (`feat:`, `fix:`, `refactor!:`,
-  `chore:`, `docs:`) with slice references where applicable
-  (`feat(slice N …): …`). One logical change per commit.
-- `.gitignore` anchors machine-local ignores to root (`/scripts/`,
-  `.agents/`): `.github/scripts/*` MUST stay tracked. Never broaden an
-  ignore pattern without `git status --short` proving nothing tracked
-  is swallowed.
+  `chore:`, `docs:`). One logical change per commit.
 
 ## Workflow
 
-- Small, single-branch work: commit directly to `main` and push.
-- Non-trivial behavior / architecture / contract change: record it in
-  the local proposal pipeline (`.agents/pipelines/`, machine-local and
-  gitignored — proposals live there, not in this repo). `dispatch.mjs`
-  is retired; `verify-proposals.mjs` validates lifecycle files.
-- `scripts/change-scope.mjs` crate mapping is stale (Reimagine-era
-  names); update it before trusting its output on this repo.
-- Release gate: functional completeness (multimodal I/O + subagents
-  slices) per the slice 11 proposal. Publishing is the manual
-  `Publish` workflow in dependency order, facade last — crates.io
-  state is a human decision, not an agent default. Until release,
-  push to GitHub only.
+- Small work: commit directly to `main` and open a PR.
+- Non-trivial behavior / architecture / contract change: open an issue
+  or discussion first describing the goal and the observable acceptance
+  criteria, then implement.
+- Release gate: functional completeness (multimodal I/O + subagents).
+  Publishing is the manual `Publish` workflow in dependency order,
+  facade last — never `cargo publish` by hand.
