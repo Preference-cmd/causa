@@ -1,0 +1,27 @@
+[package]
+name = "causa-mcp"
+version.workspace = true
+description = "Causa MCP client — dynamic tool sources over the causa-kernel DynamicToolSource port"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+causa-kernel = { path = "../causa-kernel", version = "0.1" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process", "rt", "sync", "time"] }
+tracing = { workspace = true }
+rmcp = { workspace = true }
+
+[dev-dependencies]
+causa-runtime = { path = "../causa-runtime", version = "0.1" }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "macros", "time"] }
+tracing-subscriber = { workspace = true }
+rmcp = { workspace = true, features = [
+    "server",
+    "transport-async-rw",
+    "transport-streamable-http-server",
+] }

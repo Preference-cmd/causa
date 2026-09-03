@@ -178,6 +178,79 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "causa-kernel"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "causa-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "causa-kernel",
+ "causa-runtime",
+ "rmcp",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "causa-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "causa-kernel",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "causa-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "causa-kernel",
+ "causa-protocol",
+ "causa-runtime",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "causa-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "causa-kernel",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1166,79 +1239,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "reimagine-agent-mcp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "reimagine-agent-runtime",
- "reimagine-context-kernel",
- "rmcp",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "reimagine-agent-provider"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "reimagine-agent-runtime",
- "reimagine-ai-protocol",
- "reimagine-context-kernel",
- "reqwest 0.12.28",
- "serde_json",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "reimagine-agent-runtime"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "futures-util",
- "reimagine-context-kernel",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "reimagine-ai-protocol"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "reimagine-context-kernel",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "reimagine-context-kernel"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "futures-util",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
-]
 
 [[package]]
 name = "reqwest"

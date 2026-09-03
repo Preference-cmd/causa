@@ -1,0 +1,25 @@
+[package]
+name = "causa-runtime"
+version.workspace = true
+description = "Causa runtime — reference driver (turn loop, tool dispatch, streaming, approval pause/resume)"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+causa-kernel = { path = "../causa-kernel", version = "0.1" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tempfile = { workspace = true }
+# driver tests hash fixture payloads; blake3 stays out of the lib itself
+blake3 = "1"

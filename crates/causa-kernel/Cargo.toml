@@ -1,0 +1,22 @@
+[package]
+name = "causa-kernel"
+version.workspace = true
+description = "Causa kernel — primitive facts (ContextBlock) and behavior contracts (ports)"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tokio-util = { workspace = true }
+thiserror = "2"
+blake3 = "1"
+# ModelStream: Pin<Box<dyn Stream<Item = StreamDelta> + Send>>
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
