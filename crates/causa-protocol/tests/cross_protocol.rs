@@ -403,3 +403,77 @@ fn content_shapes_survive_all_three_renderers() {
     // responses: [0] user, [1] assistant, [2] function_call, [3] function_call_output
     assert_eq!(responses["input"][3]["output"], json!(expected_payload));
 }
+
+/// A `ToolCallId` is unique only within its turn, so two turns calling the
+/// same tool with the same arguments in round 0 reuse the same kernel id
+/// while carrying different provider ids. Each turn's result must resolve
+/// to its OWN turn's wire id — a bare call_id map would give both results
+/// the later turn's id, leaving calls and results unpaired on the wire.
+#[test]
+fn tool_result_ids_stay_scoped_to_their_own_turn() {
+    let mut state = ConversationState::new(ConversationId("repeat".into()));
+    for (turn_name, wire_id) in [("t1", "provider_first"), ("t2", "provider_second")] {
+        let id = TurnId::new(turn_name);
+        let turn = state.begin_turn(id.clone()).unwrap();
+        turn.append_input(TextPayload::new("read again"), "user")
+            .unwrap();
+        let applied = turn
+            .append_model_output(
+                invocation(turn_name, 0),
+                &ModelResponse {
+                    text: TextPayload::new(""),
+                    tool_calls: vec![ToolCallDraft {
+                        tool_name: "read".into(),
+                        arguments: json!({"path": "same"}),
+                        provider_call_id: Some(wire_id.into()),
+                    }],
+                },
+                ModelStopReason::ToolUse,
+            )
+            .unwrap();
+        turn.append_tool_results(vec![ToolResultPayload {
+            call_id: applied.tool_calls[0].call_id.clone(),
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!(turn_name)),
+        }])
+        .unwrap();
+        state
+            .seal_turn(id.clone(), SealedResult::Completed)
+            .unwrap();
+        state.commit(id).unwrap();
+    }
+    let active = state.begin_turn(TurnId::new("t3")).unwrap();
+    active
+        .append_input(TextPayload::new("next"), "user")
+        .unwrap();
+    let frame = state.frame(RoundId(0)).unwrap();
+
+    let (anthropic, chat, responses) = render(&frame);
+
+    let anthropic_ids: Vec<&str> = anthropic["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["content"].as_array().unwrap())
+        .filter(|b| b["type"] == "tool_result")
+        .map(|b| b["tool_use_id"].as_str().unwrap())
+        .collect();
+    let chat_ids: Vec<&str> = chat["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["tool_call_id"].as_str().unwrap())
+        .collect();
+    let responses_ids: Vec<&str> = responses["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["type"] == "function_call_output")
+        .map(|b| b["call_id"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(anthropic_ids, vec!["provider_first", "provider_second"]);
+    assert_eq!(chat_ids, vec!["provider_first", "provider_second"]);
+    assert_eq!(responses_ids, vec!["provider_first", "provider_second"]);
+}

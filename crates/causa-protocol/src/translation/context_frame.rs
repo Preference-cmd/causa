@@ -15,9 +15,13 @@
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
 //!   the kernel `call_id` for synthetic calls the provider never named;
 //!   the same rule resolves tool result ids through the frame's
-//!   `call_id → wire id` map (pre-pass, so order never matters). An
-//!   unpaired result falls back to its own kernel `call_id`; the
-//!   provider rejects the orphan at HTTP time — the loud failure path.
+//!   `(turn_id, call_id) → wire id` map (pre-pass, so order never
+//!   matters). The turn id scopes the key because `ToolCallId` is only
+//!   unique within one turn — two turns may reuse the same id for the
+//!   same `(tool, arguments)` call, and each turn's result must keep
+//!   its own wire id. An unpaired result falls back to its own kernel
+//!   `call_id`; the provider rejects the orphan at HTTP time — the
+//!   loud failure path.
 //! - Non-string tool observations serialize to a string.
 //!
 //! Emitters then map the ordered [`Segment`] list to per-protocol wire
@@ -84,14 +88,18 @@ pub(crate) struct NormalizedFrame {
 pub(crate) fn normalize(frame: &ContextFrame) -> NormalizedFrame {
     let blocks = &frame.model_context.blocks;
 
-    // Pairing map: kernel call_id -> the id the provider saw on the tool
-    // call. Pre-pass over the whole frame, so a result never depends on
-    // where its call block sits.
-    let mut provider_ids: HashMap<String, String> = HashMap::new();
+    // Pairing map: (owning turn id, kernel call_id) -> the id the
+    // provider saw on the tool call. The turn scopes the key because a
+    // `ToolCallId` is unique only within its turn; a result block
+    // always pairs with a call block of the same turn (kernel-enforced),
+    // so this resolves across a whole conversation frame without
+    // cross-turn collisions. Pre-pass over the frame, so a result never
+    // depends on where its call block sits.
+    let mut provider_ids: HashMap<(String, String), String> = HashMap::new();
     for block in blocks {
         if let BlockContent::ToolCall(call) = &block.content {
             provider_ids.insert(
-                call.call_id.0.clone(),
+                (block.id.turn_id.0.clone(), call.call_id.0.clone()),
                 block
                     .meta
                     .provider_call_id
@@ -141,7 +149,7 @@ pub(crate) fn normalize(frame: &ContextFrame) -> NormalizedFrame {
                 };
                 segments.push(Segment::ToolResult {
                     wire_id: provider_ids
-                        .get(&result.call_id.0)
+                        .get(&(block.id.turn_id.0.clone(), result.call_id.0.clone()))
                         .cloned()
                         .unwrap_or_else(|| result.call_id.0.clone()),
                     status: result.status.clone(),
