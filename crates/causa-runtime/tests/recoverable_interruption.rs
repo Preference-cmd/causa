@@ -12,8 +12,8 @@ use causa_kernel::{
     ToolResultStatus, TurnContext, TurnId, TurnInteraction,
 };
 use causa_runtime::{
-    HookOutcome, PausedReason, ResumeRequest, TurnOutcome, TurnResult, TurnRunOptions, TurnRunner,
-    TurnTrace, resume_turn,
+    HookOutcome, PausedReason, ResumeRequest, TurnInterruption, TurnOutcome, TurnResult,
+    TurnRunOptions, TurnRunner, TurnTrace, resume_turn,
 };
 use common::{
     EchoTool, RecordingGateway, ctrl, endturn_output, options_with_limits, runner_with,
@@ -498,4 +498,126 @@ async fn pending_inputs_are_pulled_at_round_boundaries() {
     );
     // The steering input is a fact the model saw from round 0 on.
     assert!(text_facts(&out.context).contains(&"focus on the config file".to_string()));
+}
+
+// ---- batch completeness on resume (2026-09-05 assessment F3) ----------------------
+//
+// The kernel's tool door intentionally accepts partial commits; batch
+// completeness is runner policy. A withheld decision that does not cover
+// the paused batch exactly — nothing, foreign calls, duplicates — must be
+// rejected as a RunnerInvariantViolation BEFORE anything executes.
+
+#[tokio::test]
+async fn resume_with_an_incomplete_decision_is_an_invariant_violation() {
+    let (runner, gateway) = paused_runner();
+    let out = run_to_pause(&runner).await;
+    let (context, reason, trace) = decompose_pause(out);
+    let resumed = runner
+        .resume(
+            context,
+            ResumeRequest {
+                pending: reason,
+                trace,
+                // Neither executes nor rejects: the batch is dropped on
+                // the floor, which would leave the committed calls
+                // permanently unanswered.
+                withheld: HookOutcome {
+                    to_execute: vec![],
+                    rejected: vec![],
+                },
+                inject: vec![],
+            },
+            plain_options(),
+            ctrl(),
+        )
+        .await;
+    assert!(
+        matches!(
+            resumed.result,
+            TurnResult::Interrupted {
+                cause: TurnInterruption::RunnerInvariantViolation { .. }
+            }
+        ),
+        "incomplete batch accepted: {:?}",
+        resumed.result
+    );
+    // No side effects: the tool never ran, no second model request fired.
+    assert_eq!(gateway.recorded().len(), 1);
+    assert!(
+        !resumed
+            .context
+            .blocks()
+            .iter()
+            .any(|b| matches!(b.content, causa_kernel::BlockContent::ToolResult(_)))
+    );
+}
+
+#[tokio::test]
+async fn resume_with_fabricated_pending_calls_is_rejected() {
+    let (runner, gateway) = paused_runner();
+    let out = run_to_pause(&runner).await;
+    let (context, _reason, trace) = decompose_pause(out);
+    // The host fabricates a batch the turn never emitted.
+    let fabricated = PausedReason::AwaitingApproval {
+        pending_calls: vec![ToolCallPayload {
+            call_id: causa_kernel::ToolCallId("forged".into()),
+            tool_name: "echo".into(),
+            arguments: json!({"a": 1}),
+        }],
+        deadline: None,
+    };
+    let pending = expect_pending_calls(&fabricated);
+    let resumed = runner
+        .resume(
+            context,
+            ResumeRequest {
+                pending: fabricated,
+                trace,
+                withheld: HookOutcome::passthrough(pending),
+                inject: vec![],
+            },
+            plain_options(),
+            ctrl(),
+        )
+        .await;
+    assert!(matches!(
+        resumed.result,
+        TurnResult::Interrupted {
+            cause: TurnInterruption::RunnerInvariantViolation { .. }
+        }
+    ));
+    assert_eq!(gateway.recorded().len(), 1);
+}
+
+#[tokio::test]
+async fn resume_with_a_duplicated_decision_is_rejected() {
+    let (runner, _gateway) = paused_runner();
+    let out = run_to_pause(&runner).await;
+    let (context, reason, trace) = decompose_pause(out);
+    let mut pending = expect_pending_calls(&reason);
+    let first = pending.remove(0);
+    // The same call covered twice — a duplicated decision would pair the
+    // committed call block with two results.
+    let resumed = runner
+        .resume(
+            context,
+            ResumeRequest {
+                pending: reason,
+                trace,
+                withheld: HookOutcome {
+                    to_execute: vec![first.clone(), first],
+                    rejected: vec![],
+                },
+                inject: vec![],
+            },
+            plain_options(),
+            ctrl(),
+        )
+        .await;
+    assert!(matches!(
+        resumed.result,
+        TurnResult::Interrupted {
+            cause: TurnInterruption::RunnerInvariantViolation { .. }
+        }
+    ));
 }

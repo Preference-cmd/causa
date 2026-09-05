@@ -14,8 +14,8 @@ use causa_kernel::{
     WindowBudget,
 };
 use causa_runtime::{
-    ExecutionOptions, RetryPolicy, RunControl, ToolExecutor, TurnInterruption, TurnResult,
-    TurnRunOptions,
+    ExecutionOptions, HookCtx, HookOutcome, RetryPolicy, RunControl, ToolExecutor, ToolUseHook,
+    TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
 };
 use common::{
     DropAllCompaction, EchoTool, FailTool, RecordingGateway, UnknownStopTool, ctrl, ctx, draft,
@@ -907,5 +907,47 @@ async fn completed_output_carries_reasoning_and_usage_unchanged() {
     assert_eq!(
         serde_json::to_string(&completed).unwrap(),
         serde_json::to_string(&final_output).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn hook_that_drops_a_call_interrupts_as_invariant_violation() {
+    // Batch completeness is runner policy in the normal dispatch path too:
+    // a hook that silently drops a call (neither executes nor rejects it)
+    // would leave the committed call block unanswered forever.
+    struct DropEverything;
+    #[async_trait::async_trait]
+    impl ToolUseHook for DropEverything {
+        async fn apply(&self, _calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
+            HookOutcome {
+                to_execute: vec![],
+                rejected: vec![],
+            }
+        }
+    }
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("call echo", "echo", json!({"a": 1}))),
+        Ok(endturn_output("done")),
+    ]);
+    let runner = TurnRunner::with_hook(
+        gateway,
+        Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)])),
+        Arc::new(DropEverything),
+    );
+    let out = runner
+        .run(ctx("t1"), options_with_limits(5, 10), ctrl())
+        .await;
+    assert!(matches!(
+        out.result,
+        TurnResult::Interrupted {
+            cause: TurnInterruption::RunnerInvariantViolation { .. }
+        }
+    ));
+    assert!(
+        !out.context
+            .blocks()
+            .iter()
+            .any(|b| matches!(b.content, BlockContent::ToolResult(_))),
+        "the dropped call must not produce a result"
     );
 }

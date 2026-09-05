@@ -26,9 +26,10 @@ pub struct ResumeRequest {
     pub trace: TurnTrace,
     /// The withheld approval decision: `HookOutcome` passthrough =
     /// approve, all-rejected = reject, edited `to_execute` = rewrite. It
-    /// must cover `pending_calls` (its ids pair with the committed
-    /// tool-call blocks; a mismatch surfaces later as a
-    /// `RunnerInvariantViolation`).
+    /// must cover `pending_calls` exactly (its ids pair with the committed
+    /// tool-call blocks); a partial, duplicated, or foreign decision is
+    /// rejected up front as a `RunnerInvariantViolation` — nothing
+    /// executes.
     pub withheld: HookOutcome,
     /// Steering inputs appended before the next model round (empty for
     /// pure approvals).

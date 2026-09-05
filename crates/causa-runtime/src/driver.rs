@@ -16,12 +16,14 @@ use causa_kernel::TextPayload;
 use causa_kernel::ToolCallPayload;
 use causa_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
 use causa_kernel::{AttemptControl, ModelUsage, StreamDelta};
+use causa_kernel::{
+    BlockContent, ConversationError, ConversationState, SealedResult, merged_frame,
+};
 use causa_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
-use causa_kernel::{ConversationError, ConversationState, SealedResult, merged_frame};
 use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
 use causa_kernel::{ToolExecutionOutcome, UnknownOutcomePolicy};
 use causa_kernel::{TurnContext, TurnSnapshot};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -808,6 +810,38 @@ impl TurnRunner {
                 // it belongs to the paused round, so its results land
                 // between the committed calls and the next model round.
                 if let Some((withheld, draft)) = r.batch {
+                    // Resume identity: the paused batch must be exactly the
+                    // committed-but-unanswered tool calls of this turn —
+                    // anything else means the continuation does not match
+                    // the facts. Rejected before any side effect, so a
+                    // fabricated or stale pending batch cannot execute.
+                    let mut unpaired: HashSet<ToolCallId> = HashSet::new();
+                    for b in active.blocks() {
+                        match &b.content {
+                            BlockContent::ToolCall(c) => {
+                                unpaired.insert(c.call_id.clone());
+                            }
+                            BlockContent::ToolResult(res) => {
+                                unpaired.remove(&res.call_id);
+                            }
+                            _ => {}
+                        }
+                    }
+                    let draft_ids: HashSet<ToolCallId> =
+                        draft.iter().map(|p| p.call_id.clone()).collect();
+                    if unpaired != draft_ids {
+                        return (
+                            TurnResult::Interrupted {
+                                cause: TurnInterruption::RunnerInvariantViolation {
+                                    reason: "resumed batch does not match the turn's \
+                                            unanswered tool calls"
+                                        .into(),
+                                },
+                            },
+                            trace,
+                            tool_calls_total,
+                        );
+                    }
                     // Note: the batch was already counted into
                     // `tool_calls_total` when it was emitted (the pause
                     // carries the count), so the prologue must not re-add.
@@ -1257,6 +1291,49 @@ impl TurnRunner {
         round: u32,
         trace: &mut TurnTrace,
     ) -> Result<(), TurnInterruption> {
+        // Batch completeness is runner policy (the kernel's tool door
+        // intentionally accepts partial commits): every model-emitted call
+        // must be covered exactly once by the work + rejected decision —
+        // no silent drops, no duplicates, no foreign ids. Validated BEFORE
+        // dispatch so a broken decision cannot spend side effects on calls
+        // the facts can never pair.
+        let expected: HashSet<ToolCallId> = draft_order.iter().map(|p| p.call_id.clone()).collect();
+        let mut covered: HashSet<ToolCallId> = HashSet::new();
+        let work_ids: Vec<&ToolCallId> = match &work {
+            BatchWork::Execute(payloads) => payloads.iter().map(|p| &p.call_id).collect(),
+            BatchWork::Precomputed(outcomes) => {
+                outcomes.iter().map(|o| &o.result.call_id).collect()
+            }
+        };
+        for call_id in work_ids
+            .into_iter()
+            .chain(rejected.iter().map(|o| &o.result.call_id))
+        {
+            if !expected.contains(call_id) {
+                return Err(TurnInterruption::RunnerInvariantViolation {
+                    reason: format!(
+                        "batch decision covers call {:?} which the model did not emit",
+                        call_id.0
+                    ),
+                });
+            }
+            if !covered.insert(call_id.clone()) {
+                return Err(TurnInterruption::RunnerInvariantViolation {
+                    reason: format!("batch decision covers call {:?} more than once", call_id.0),
+                });
+            }
+        }
+        if covered.len() != expected.len() {
+            let missing: Vec<String> = expected
+                .difference(&covered)
+                .map(|id| id.0.clone())
+                .collect();
+            return Err(TurnInterruption::RunnerInvariantViolation {
+                reason: format!(
+                    "batch decision does not cover every emitted call: missing {missing:?}"
+                ),
+            });
+        }
         // parallel dispatch; completion order comes from the
         // stream (each future is yielded as it finishes), so no
         // shared log is needed
@@ -1300,6 +1377,20 @@ impl TurnRunner {
             ),
         };
         results.append(&mut rejected);
+        // Post-execution identity: every returned outcome must answer one
+        // of the batch's own calls — a tool fabricating a foreign id fails
+        // loudly here instead of as a kernel pairing error after the fact.
+        if let Some(foreign) = results
+            .iter()
+            .find(|r| !expected.contains(&r.result.call_id))
+        {
+            return Err(TurnInterruption::RunnerInvariantViolation {
+                reason: format!(
+                    "tool outcome answers foreign call {:?}",
+                    foreign.result.call_id.0
+                ),
+            });
+        }
         // Canonical order = model draft order, taken from the
         // receipt's position — not from ToolCallId encoding. The
         // kernel re-derives the same order from call block
