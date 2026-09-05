@@ -47,7 +47,7 @@ pub struct ToolCallContext {
 
 /// How a tool wants its `UnknownOutcome` result treated — a declaration the
 /// driver obeys, not a fact the kernel interprets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnknownOutcomePolicy {
     /// Treat the unknown outcome as unsafe: the turn interrupts rather than
     /// continue on an unverifiable result (the default).
@@ -58,8 +58,10 @@ pub enum UnknownOutcomePolicy {
 }
 
 /// A tool door's result: the recorded [`ToolResultPayload`] fact plus the
-/// [`UnknownOutcomePolicy`] the tool declares for it.
-#[derive(Debug, Clone)]
+/// [`UnknownOutcomePolicy`] the tool declares for it. Serde-additive: the
+/// outcome rides the wire inside the runtime's continuation checkpoint
+/// (Slice 6.5), so the derives are part of the contract now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecutionOutcome {
     /// The recorded result (pairing id, status, output).
     pub result: crate::context::tool_data::ToolResultPayload,

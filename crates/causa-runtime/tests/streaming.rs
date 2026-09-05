@@ -5,13 +5,12 @@
 mod common;
 
 use causa_kernel::{
-    CancellationToken, ConversationId, ConversationState, ModelGateway, ModelInvokeError,
-    ModelInvokeErrorKind, ModelRequest, ModelStream, RoundId, StreamDelta, TextPayload,
-    TurnContext, TurnId,
+    CancellationToken, ConversationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
+    ModelRequest, ModelStream, RoundId, StreamDelta, TextPayload, TurnContext, TurnId,
 };
 use causa_runtime::{
-    NoopInteraction, RetryPolicy, RunControl, StreamEventCollector, TurnOutcome, TurnPolicy,
-    TurnResult, TurnRunOptions, TurnRunner, project_streaming_turn,
+    ConversationState, NoopInteraction, RetryPolicy, RunControl, StreamEventCollector, TurnOutcome,
+    TurnPolicy, TurnResult, TurnRunOptions, TurnRunner, project_streaming_turn,
 };
 use common::{
     EchoTool, RecordingStreamingGateway, StreamScript, ctrl, text_script, tooluse_script,
@@ -273,8 +272,8 @@ async fn conversation_streaming_entry_completes_and_stamps() {
         Some(ConversationId("conv-stream".into()))
     );
     // Host loop: commit receives the sealed turn.
-    let snap = out.state.commit(TurnId::new("t1")).unwrap();
-    assert_eq!(snap.turn_sequence.0, 0);
+    let entry = out.state.commit(TurnId::new("t1")).unwrap();
+    assert_eq!(entry.sequence.0, 0);
 }
 
 #[tokio::test]

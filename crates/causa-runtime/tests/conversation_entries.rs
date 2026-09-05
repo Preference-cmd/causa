@@ -9,10 +9,12 @@ use common::{DropAllCompaction, RecordingGateway, ctrl, endturn_output, runner_w
 use std::sync::Arc;
 
 use causa_kernel::{
-    ConversationError, ConversationId, ConversationState, FramePolicy, ModelInvokeErrorKind,
-    SealedResult, TextPayload, TurnContext, TurnId, WindowBudget,
+    ConversationId, FramePolicy, ModelInvokeErrorKind, TextPayload, TurnContext, TurnId,
+    WindowBudget,
 };
-use causa_runtime::{TurnOutcome, TurnResult, TurnRunOptions};
+use causa_runtime::{
+    ConversationError, ConversationState, SealedResult, TurnOutcome, TurnResult, TurnRunOptions,
+};
 
 /// Acceptance #1: both entries run the same state machine — same input
 /// sequence yields the same terminal result, round count, and facts.
@@ -49,10 +51,10 @@ async fn dual_entries_share_one_state_machine() {
     );
     // The conversation state comes back sealed and stamped, not yet committed.
     assert!(conv.state.active_turn().unwrap().is_sealed());
-    assert_eq!(conv.state.snapshot_count(), 0);
+    assert_eq!(conv.state.history_len(), 0);
     // The host loop completes: commit receives the turn into history.
-    let snap = conv.state.commit(TurnId::new("t1")).unwrap();
-    assert_eq!(snap.turn_sequence.0, 0);
+    let entry = conv.state.commit(TurnId::new("t1")).unwrap();
+    assert_eq!(entry.sequence.0, 0);
     assert_eq!(conv.state.version().0, 2);
 }
 
@@ -120,7 +122,7 @@ async fn conversation_entry_is_inert_to_frame_policy() {
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].model_context.blocks.len(), 1);
     // History and active facts are untouched either way.
-    assert_eq!(out.state.snapshot_count(), 0);
+    assert_eq!(out.state.history_len(), 0);
 }
 
 /// The Interrupted flow end to end: the runner seals and stamps Interrupted,
@@ -149,5 +151,5 @@ async fn interrupted_conversation_turn_is_stamped_and_aborted() {
         Err(ConversationError::TurnNotCompleted(_))
     ));
     out.state.abort_turn(TurnId::new("t1")).unwrap();
-    assert_eq!(out.state.snapshot_count(), 0);
+    assert_eq!(out.state.history_len(), 0);
 }

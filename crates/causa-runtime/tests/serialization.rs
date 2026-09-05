@@ -13,11 +13,11 @@
 mod common;
 
 use causa_kernel::{
-    ConversationId, ConversationState, ModelInvokeErrorKind, ModelStopReason, SealedResult,
-    TextPayload, TurnContext, TurnId,
+    ConversationId, ModelInvokeErrorKind, ModelStopReason, TextPayload, TurnContext, TurnId,
 };
 use causa_runtime::{
-    ConversationOutcome, PausedReason, TurnInterruption, TurnOutcome, TurnResult, TurnTrace,
+    Continuation, ConversationOutcome, ConversationState, PausePoint, PreparedApproval,
+    SealedResult, TurnInterruption, TurnOutcome, TurnResult, TurnTrace,
 };
 use common::{commit_sealed, endturn_output, turn_id};
 use serde_json::json;
@@ -104,28 +104,36 @@ fn turn_outcome_round_trip_preserves_snapshot() {
     assert_eq!(restored.context.blocks().len(), 1);
 }
 
-/// Slice 7: a paused outcome carries the open context plus the reason —
-/// the round-trip must restore both so a persisted pause reloads
-/// resumable.
+/// Slice 7, reworked by Slice 6.5: a paused outcome carries the open
+/// context plus the single continuation — the round-trip restores both.
+/// The Paused variant carries NO snapshot of its own: the outcome's
+/// `context` is the only fact source.
 #[test]
-fn turn_outcome_paused_round_trip_preserves_open_context_and_reason() {
+fn turn_outcome_paused_round_trip_preserves_open_context_and_continuation() {
     let mut context = TurnContext::new(turn_id("t-paused"));
     context
         .append_input(TextPayload::new("user said hi"), "user")
         .expect("append input");
     assert!(!context.is_sealed(), "paused turns stay open");
-    let snapshot = context.snapshot();
-    let reason = PausedReason::AwaitingApproval {
-        pending_calls: vec![causa_kernel::ToolCallPayload {
-            call_id: causa_kernel::ToolCallId("call-1".into()),
-            tool_name: "echo".into(),
-            arguments: json!({"a": 1}),
-        }],
-        deadline: Some(std::time::Duration::from_secs(30)),
+    let continuation = Continuation {
+        pause_point: PausePoint::AwaitingApproval {
+            prepared: PreparedApproval {
+                awaiting: vec![causa_kernel::ToolCallPayload {
+                    call_id: causa_kernel::ToolCallId("call-1".into()),
+                    tool_name: "echo".into(),
+                    arguments: json!({"a": 1}),
+                }],
+                rejected: vec![],
+            },
+            deadline: Some(std::time::Duration::from_secs(30)),
+        },
+        round: 0,
+        accounted_tool_calls: 1,
+        queued_inputs: vec![],
     };
     let outcome = TurnOutcome {
         context,
-        result: TurnResult::Paused { snapshot, reason },
+        result: TurnResult::Paused { continuation },
         trace: TurnTrace::new(),
     };
     let json = serde_json::to_string(&outcome).expect("serialize");
@@ -134,39 +142,86 @@ fn turn_outcome_paused_round_trip_preserves_open_context_and_reason() {
     assert_eq!(json, restored_json);
     assert!(!restored.context.is_sealed());
     match restored.result {
-        TurnResult::Paused { snapshot, reason } => {
-            assert!(!snapshot.sealed);
-            assert!(
-                matches!(&reason, PausedReason::AwaitingApproval { pending_calls, .. }
-                    if pending_calls.len() == 1
-                        && pending_calls[0].call_id.0 == "call-1"),
-                "reason must round-trip: {reason:?}"
-            );
+        TurnResult::Paused { continuation } => {
+            match continuation.pause_point {
+                PausePoint::AwaitingApproval { prepared, deadline } => {
+                    assert_eq!(prepared.awaiting.len(), 1);
+                    assert_eq!(prepared.awaiting[0].call_id.0, "call-1");
+                    assert_eq!(deadline, Some(std::time::Duration::from_secs(30)));
+                }
+                other => panic!("expected AwaitingApproval, got {other:?}"),
+            }
+            assert_eq!(continuation.round, 0);
+            assert_eq!(continuation.accounted_tool_calls, 1);
         }
         other => panic!("expected Paused, got {other:?}"),
     }
+    // The wire carries no snapshot field on the Paused variant.
+    assert!(!json.contains(r#""snapshot""#), "{json}");
 }
 
 #[test]
-fn paused_reason_tags_are_pinned() {
-    let reason = PausedReason::PausedForSteering {
+fn pause_point_tags_are_pinned() {
+    let steering = Continuation {
+        pause_point: PausePoint::PausedForSteering,
+        round: 2,
+        accounted_tool_calls: 0,
         queued_inputs: vec![TextPayload::new("wait")],
-        pending_round_id: causa_kernel::RoundId(2),
     };
-    let value = serde_json::to_value(&reason).expect("serialize");
+    let value = serde_json::to_value(&steering.pause_point).expect("serialize");
     assert_eq!(
         value.get("kind").and_then(|v| v.as_str()),
         Some("paused_for_steering")
     );
-    let approval = PausedReason::AwaitingApproval {
-        pending_calls: vec![],
-        deadline: None,
+    // Queued inputs default-and-skip: an empty queue is absent on the wire.
+    let approval = Continuation {
+        pause_point: PausePoint::AwaitingApproval {
+            prepared: PreparedApproval {
+                awaiting: vec![],
+                rejected: vec![],
+            },
+            deadline: None,
+        },
+        round: 0,
+        accounted_tool_calls: 0,
+        queued_inputs: vec![],
     };
     let value = serde_json::to_value(&approval).expect("serialize");
+    assert!(
+        !value.to_string().contains("queued_inputs"),
+        "empty queued inputs must be skipped: {value}"
+    );
     assert_eq!(
-        value.get("kind").and_then(|v| v.as_str()),
+        value["pause_point"]["kind"].as_str(),
         Some("awaiting_approval")
     );
+}
+
+/// Slice 6.5 migration: pre-continuation pause payloads (snapshot +
+/// reason riding on the variant) do NOT transparently convert — the old
+/// shape discarded the hook's prepared work, so no equivalent
+/// continuation can be constructed. Deserialization is the explicit
+/// rejection point.
+#[test]
+fn pre_continuation_paused_payloads_are_explicitly_rejected() {
+    let old = json!({
+        "Paused": {
+            "snapshot": {
+                "turn_id": "t-old",
+                "turn_sequence": 0,
+                "blocks": [],
+                "source_version": 1,
+                "sealed": false
+            },
+            "reason": {
+                "kind": "awaiting_approval",
+                "detail": {"pending_calls": [], "deadline": null}
+            }
+        }
+    });
+    let err = serde_json::from_value::<TurnResult>(old)
+        .expect_err("old pause material must not silently deserialize");
+    assert!(err.to_string().contains("continuation"), "{err}");
 }
 
 #[test]
@@ -185,7 +240,7 @@ fn conversation_outcome_round_trip_preserves_history() {
     let restored: ConversationOutcome = serde_json::from_str(&json).expect("deserialize");
     let restored_json = serde_json::to_string(&restored).expect("re-serialize");
     assert_eq!(json, restored_json);
-    assert_eq!(restored.state.snapshot_count(), 1);
+    assert_eq!(restored.state.history_len(), 1);
     assert_eq!(
         restored.state.conversation_id(),
         &ConversationId("conv-rt".into())

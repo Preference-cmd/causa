@@ -74,7 +74,8 @@ pub enum FrameScope {
         /// The turn currently active in the conversation.
         active_turn_id: TurnId,
         /// The active turn's `ContextVersion`. History snapshots are
-        /// immutable and identified by `TurnSequence`; within one round the
+        /// immutable; their session ordering lives in the runtime's
+        /// `HistoryEntry` (Slice 6.5). Within one round the
         /// (conversation_id, active_turn_id, source_version) triple is
         /// constant, so it pins the frame input.
         source_version: ContextVersion,
@@ -131,19 +132,3 @@ impl FrameId {
 /// conversation's turns, sequences, and versions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationId(pub String);
-
-/// Position of a committed turn within a conversation's history, assigned
-/// exactly once by the conversation's commit transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct TurnSequence(pub u64);
-
-/// Counts controlled transitions of a conversation (`begin_turn` / `commit`
-/// / `abort_turn`); the aggregate-level analogue of `ContextVersion`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ConversationVersion(pub u64);
-impl ConversationVersion {
-    /// Returns the successor version.
-    pub fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-}

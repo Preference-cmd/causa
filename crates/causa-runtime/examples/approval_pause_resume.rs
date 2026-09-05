@@ -18,14 +18,14 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    BatchDecision, ConversationId, ConversationState, ModelGateway, ModelInvokeError, ModelOutput,
-    ModelRequest, ModelResponse, ModelStopReason, TextPayload, Tool, ToolCallContext,
-    ToolCallDraft, ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
-    ToolResultStatus, TurnId, TurnInteraction,
+    BatchDecision, ConversationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest,
+    ModelResponse, ModelStopReason, TextPayload, Tool, ToolCallContext, ToolCallDraft,
+    ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    TurnInteraction,
 };
 use causa_runtime::{
-    ConversationOutcome, HookOutcome, PausedReason, ResumeRequest, RunControl, ToolExecutor,
-    TurnResult, TurnRunOptions, TurnRunner, resume_turn,
+    ConversationOutcome, ConversationState, HookOutcome, PausePoint, ResumeRequest, RunControl,
+    ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, resume_turn,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -154,11 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("begin_turn just opened it")
         .append_input(TextPayload::new("Read notes.txt for me."), "user")?;
 
-    let ConversationOutcome {
-        state,
-        result,
-        trace,
-    } = runner
+    let paused_outcome = runner
         .run_in_conversation(
             state,
             options.clone(),
@@ -166,36 +162,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    let (pending_calls, deadline) = match &result {
-        TurnResult::Paused {
-            reason:
-                PausedReason::AwaitingApproval {
-                    pending_calls,
-                    deadline,
-                },
-            ..
-        } => (pending_calls.clone(), *deadline),
+    let (awaiting, deadline) = match &paused_outcome.result {
+        TurnResult::Paused { continuation } => match &continuation.pause_point {
+            PausePoint::AwaitingApproval { prepared, deadline } => {
+                (prepared.awaiting.clone(), *deadline)
+            }
+            other => return Err(format!("expected an approval pause, got {other:?}").into()),
+        },
         other => return Err(format!("expected a paused turn, got {other:?}").into()),
     };
-    println!("paused behind {} call(s):", pending_calls.len());
-    for call in &pending_calls {
+    println!("paused behind {} call(s):", awaiting.len());
+    for call in &awaiting {
         println!("  {} {}", call.tool_name, call.arguments);
     }
 
     // --- the human decides: approve the batch verbatim ---------------------
     // Approve = `HookOutcome::passthrough`; reject = all-rejected;
-    // rewrite = edited `to_execute`. Same vocabulary, three verdicts.
+    // rewrite = edited `to_execute`. Same vocabulary, three verdicts. The
+    // paused outcome is the checkpoint: the resume consumes it whole and
+    // only the new decision rides on the request.
     println!("decision: approve (deadline was {deadline:?})");
     let resumed = resume_turn(
         &runner,
-        state,
+        paused_outcome,
         ResumeRequest {
-            pending: PausedReason::AwaitingApproval {
-                pending_calls: pending_calls.clone(),
-                deadline,
-            },
-            trace,
-            withheld: HookOutcome::passthrough(pending_calls),
+            decision: Some(HookOutcome::passthrough(awaiting)),
             inject: Vec::new(),
         },
         options,

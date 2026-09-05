@@ -5,7 +5,12 @@
 //!
 //! - **`context`** — the external rule interface: exactly what the fact
 //!   machine stores and validates — block content shapes, the turn state
-//!   machine and its deterministic projections, and ids.
+//!   machine and its deterministic projections, and ids. Session-level
+//!   vocabulary (the `ConversationState` aggregate, its eligibility stamp,
+//!   ordering, and the conversation store port) is runtime territory since
+//!   Slice 6.5; the kernel keeps the facts (`TurnContext` / `TurnSnapshot`),
+//!   the validated recovery entries, and the shared `merged_frame`
+//!   projection.
 //! - **`ports`** — the behavior seams external implementors fill in, each
 //!   self-contained: `ModelGateway` (request params, result envelope,
 //!   transport error), `Tool` + `ArtifactStore` (definitions, execution
@@ -32,12 +37,9 @@ mod ports;
 pub use context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload, ToolCallPayload,
 };
-pub use context::conversation::{
-    ConversationError, ConversationState, OrderedTurns, SealedResult, merged_frame,
-};
 pub use context::ids::{
-    BlockId, BlockSequence, ContextVersion, ConversationId, ConversationVersion, FrameId,
-    FrameScope, InvocationId, RoundId, TurnId, TurnSequence,
+    BlockId, BlockSequence, ContextVersion, ConversationId, FrameId, FrameScope, InvocationId,
+    RoundId, TurnId,
 };
 pub use context::model::{ModelResponse, ModelStopReason, ToolCallDraft};
 pub use context::tool_data::{
@@ -46,7 +48,8 @@ pub use context::tool_data::{
 };
 pub use context::turn::{
     AppliedModelOutput, ContextError, ContextFrame, ModelContext, OrderedBlocks, TurnContext,
-    TurnLifecycle, TurnSnapshot, turn_context_as_snapshot,
+    TurnLifecycle, TurnSnapshot, merged_frame, option_turn_context_as_snapshot,
+    turn_context_as_snapshot,
 };
 
 // --- ports: behavior seams for external implementors ------------------------
@@ -62,7 +65,6 @@ pub use ports::gateway::{
 };
 pub use ports::interaction::{BatchDecision, TurnInteraction};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
-pub use ports::store::{ConversationStore, ConversationStoreError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,
     ToolExecutionOutcome, ToolOutputLimits, UnknownOutcomePolicy,

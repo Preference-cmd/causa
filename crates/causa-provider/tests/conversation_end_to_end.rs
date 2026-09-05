@@ -10,13 +10,14 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use causa_kernel::{
-    CallControl, CancellationToken, ConversationId, ConversationState, ModelGateway, ModelRef,
-    TextPayload, Tool, ToolCallContext, ToolDefinition, ToolExecutionOutcome, ToolOutput,
-    ToolResultPayload, ToolResultStatus, ToolSurface, TurnId,
+    CallControl, CancellationToken, ConversationId, ModelGateway, ModelRef, TextPayload, Tool,
+    ToolCallContext, ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
+    ToolResultStatus, ToolSurface, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInvocation, TurnResult, TurnRunOptions, TurnRunner,
+    ConversationState, RunControl, ToolExecutor, TurnInvocation, TurnResult, TurnRunOptions,
+    TurnRunner,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};

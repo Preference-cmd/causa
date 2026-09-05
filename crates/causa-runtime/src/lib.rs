@@ -8,6 +8,12 @@
 //!   `defaults`): `TurnRunner` orchestrates turns over the kernel's ports —
 //!   retry scheduling, tool batch dispatch, artifact spill, traces, run
 //!   control, and noop port defaults.
+//! - **Session aggregate** (`conversation`): `ConversationState` (single
+//!   active slot, completed-only history, commit-time `TurnSequence` as
+//!   `HistoryEntry`), the `SealedResult` stamp, and the `ConversationStore`
+//!   archive port — migrated here from the kernel in Slice 6.5. These are
+//!   reference-harness decisions, not fact-layer invariants; a custom
+//!   harness composes the kernel facts differently.
 //! - **Tool-use filters** (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`,
 //!   `FilterChain`) implement this crate's `ToolUseHook` directly — the
 //!   trait, its consumer, and its policies share one crate (the Phase E
@@ -47,6 +53,7 @@
 pub mod composition;
 pub mod config;
 pub mod control;
+pub mod conversation;
 pub mod defaults;
 pub mod driver;
 pub mod event;
@@ -62,15 +69,19 @@ pub use config::{
     TurnRunOptions,
 };
 pub use control::RunControl;
+pub use conversation::{
+    ConversationError, ConversationState, ConversationStore, ConversationStoreError,
+    ConversationVersion, HistoryEntry, SealedResult, TurnSequence,
+};
 pub use defaults::{NoopCompaction, NoopTokenCounter};
 pub use driver::{
-    AttemptTrace, ConversationOutcome, ModelRoundTrace, OutputSummary, PausedReason,
-    ToolBatchTrace, ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult, TurnRunner,
-    TurnTrace,
+    AttemptTrace, Continuation, ConversationOutcome, ModelRoundTrace, OutputSummary, PausePoint,
+    PreparedApproval, ToolBatchTrace, ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult,
+    TurnRunner, TurnTrace,
 };
 pub use executor::{ToolExecutor, ToolRegistryError};
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
-pub use resume::{ResumeRequest, resume_turn};
+pub use resume::{ResumeRejection, ResumeRequest, resume_turn};
 
 // --- framework policies and projections --------------------------------------
 pub use event::{

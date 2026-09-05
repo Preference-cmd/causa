@@ -13,13 +13,15 @@
 use async_trait::async_trait;
 use causa_kernel::{
     AttemptControl, CallControl, Compaction, CompactionError, CompactionInput, CompactionOutput,
-    ContextFrame, ConversationState, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream, SealedResult,
-    StreamDelta, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition,
-    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation, TurnContext,
-    TurnId, UnknownOutcomePolicy,
+    ContextFrame, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRequest,
+    ModelResponse, ModelStopReason, ModelStream, StreamDelta, TextPayload, Tool, ToolCallContext,
+    ToolCallDraft, ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
+    ToolResultStatus, Truncation, TurnContext, TurnId, UnknownOutcomePolicy,
 };
-use causa_runtime::{RunControl, ToolExecutor, TurnLimits, TurnPolicy, TurnRunOptions, TurnRunner};
+use causa_runtime::{
+    ConversationState, RunControl, SealedResult, ToolExecutor, TurnLimits, TurnPolicy,
+    TurnRunOptions, TurnRunner,
+};
 use std::sync::{Arc, Mutex};
 
 // ---- ids and model-output constructors --------------------------------------

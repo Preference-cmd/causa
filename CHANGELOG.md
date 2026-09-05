@@ -17,9 +17,32 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 - **`causa-kernel`** — the facts layer: ContextBlock conversation fact
   machine, turn state machine with deterministic projections, and the
-  self-contained behavior ports (`ModelGateway`, `ConversationStore`,
-  `Tool`, `DynamicToolSource`, `CallControl`, budget seams). Zero I/O;
+  self-contained behavior ports (`ModelGateway`, `Tool`,
+  `DynamicToolSource`, `CallControl`, budget seams). Zero I/O;
   `#![deny(missing_docs)]`.
+- **Context / harness separation, first batch (Slice 6.5 Phase D–E)**:
+  the session aggregate moved from the kernel to `causa-runtime` —
+  `ConversationState` (single active slot, completed-only history,
+  commit-time ordering), `SealedResult`, `TurnSequence`,
+  `ConversationVersion`, and the `ConversationStore` archive port are
+  runtime vocabulary now; the kernel keeps the facts
+  (`TurnContext` / `TurnSnapshot`), the validated recovery entries
+  (`from_validated_blocks` / `validate_blocks` are public), and the
+  shared `merged_frame` projection. `TurnSnapshot` describes the record
+  itself only: `turn_sequence` left the snapshot and lives in the
+  runtime's `HistoryEntry { sequence, snapshot }` (the store port saves
+  entries via `save_entry` / `load_entries`). A paused turn carries a
+  single serialization-ready **`Continuation`** (`PausePoint`,
+  `accounted_tool_calls`, hook `PreparedApproval` with awaiting calls and
+  saved rejections, `queued_inputs`) — the duplicated snapshot is gone,
+  and trace trimming no longer affects resume position or quotas. Both
+  resume entries consume the complete paused outcome plus a
+  `ResumeRequest { decision, inject }`; validation runs before any
+  execution and rejections return the untouched paused material
+  (`ResumeRejection`). Lower limits stop the turn before external
+  execution. Pre-6.5 wire payloads (snapshots with `turn_sequence`,
+  pause outcomes with `snapshot` + `reason`) are migrated by explicit
+  extraction or rejected, never silently converted.
 - **Multimodal vocabulary (Slice 6.5)**: the block content vocabulary is
   frozen as **Parts** — `BlockContent::Text(TextPayload)` is replaced by
   `BlockContent::Parts(Vec<ContentPart>)` with `ContentPart = Text |

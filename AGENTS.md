@@ -12,7 +12,8 @@ Dual-licensed `MIT OR Apache-2.0`.
 ```text
 crates/causa               # facade: `kernel` always on; default = runtime + providers
 crates/causa-kernel        # facts + contracts only (no I/O, no transport, no policy)
-crates/causa-runtime       # reference driver (turn loop, dispatch, streaming, pause/resume)
+crates/causa-runtime       # reference driver + session aggregate (turn loop, dispatch,
+                           # streaming, pause/resume, ConversationState/Store)
 crates/causa-protocol      # wire-protocol translation, transport-free
 crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)

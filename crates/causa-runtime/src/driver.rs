@@ -5,6 +5,7 @@
 //! here, one layer up.
 use crate::config::TurnRunOptions;
 use crate::control::RunControl;
+use crate::conversation::{ConversationError, ConversationState, SealedResult};
 use crate::executor::ToolExecutor;
 use causa_kernel::AttemptNumber;
 use causa_kernel::BatchDecision;
@@ -16,9 +17,7 @@ use causa_kernel::TextPayload;
 use causa_kernel::ToolCallPayload;
 use causa_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
 use causa_kernel::{AttemptControl, ModelUsage, StreamDelta};
-use causa_kernel::{
-    BlockContent, ConversationError, ConversationState, SealedResult, merged_frame,
-};
+use causa_kernel::{BlockContent, merged_frame};
 use causa_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
 use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
 use causa_kernel::{ToolExecutionOutcome, UnknownOutcomePolicy};
@@ -34,6 +33,21 @@ use futures_util::StreamExt;
 
 fn millis_since(t: Instant) -> u64 {
     t.elapsed().as_millis() as u64
+}
+
+/// The turn's committed-but-unanswered tool calls, in block order — the
+/// model-emitted draft order results pair into. Shared by the resume
+/// validation and the approval-resume prologue.
+pub(crate) fn unanswered_tool_calls(active: &TurnContext) -> Vec<ToolCallPayload> {
+    let mut pending: Vec<ToolCallPayload> = Vec::new();
+    for b in active.blocks() {
+        match &b.content {
+            BlockContent::ToolCall(c) => pending.push(c.clone()),
+            BlockContent::ToolResult(r) => pending.retain(|p| p.call_id != r.call_id),
+            _ => {}
+        }
+    }
+    pending
 }
 
 // Tool-use filtering lives behind `crate::hook::ToolUseHook`.
@@ -232,46 +246,86 @@ pub enum TurnResult {
         cause: TurnInterruption,
     },
     /// Resumable suspension (Slice 7) — not a terminal state: the turn's
-    /// context stays open (this variant carries its snapshot), the batch
-    /// that triggered the pause is neither executed nor rejected, and
-    /// `resume_turn` (agent-runtime) continues the same turn.
+    /// facts stay open in the outcome's `context` / `state` (the single
+    /// fact source — Slice 6.5 removed the duplicated snapshot from this
+    /// variant), the prepared batch is neither executed nor rejected, and
+    /// `resume_turn` / `TurnRunner::resume` continue the same turn from
+    /// the [`Continuation`].
     Paused {
-        /// The turn's facts at the pause point; the context itself stays
-        /// open and resumption continues from it.
-        snapshot: TurnSnapshot,
-        /// Why and where the turn paused — see [`PausedReason`].
-        reason: PausedReason,
+        /// The single continuation: pause position, control counts,
+        /// prepared work, and queued inputs.
+        continuation: Continuation,
     },
 }
 
-/// Why a turn paused (Slice 7). `deadline` is the advisory decision
-/// budget the host granted itself, expressed as *remaining* time so the
-/// variant stays serde-friendly (a host anchors `Instant::now() + d`).
+/// The hook-prepared work an approval pause checkpoints (Slice 6.5,
+/// Decision 7): the hook has already filtered / rejected / rewritten the
+/// model-emitted batch, and those decisions cannot be re-derived on
+/// resume — they are saved, not re-run. The original payloads remain
+/// derivable from the committed tool-call blocks (fact identity); the
+/// independent rewrite and rejections live here as serializable data.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreparedApproval {
+    /// Calls the hook admitted — arguments possibly rewritten — in model
+    /// draft order. These are what still await the host's decision at
+    /// resume; the resume decision must cover them exactly once.
+    pub awaiting: Vec<ToolCallPayload>,
+    /// Calls the hook rejected. The stored outcomes commit verbatim at
+    /// resume (with their original call ids) and can never be re-decided —
+    /// a resume decision touching them is rejected before anything
+    /// executes.
+    pub rejected: Vec<ToolExecutionOutcome>,
+}
+
+/// Where a turn paused. The reference driver currently emits only the
+/// approval position; the steering position exists so hosts that suspend
+/// before a model round produce a continuation the same resume machinery
+/// consumes (Decision 6.2: the pause point and the round together define
+/// the next step — never free-floating `Option`s).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
-pub enum PausedReason {
-    /// The host's `decide_batch` paused behind a tool batch awaiting an
-    /// approval decision; the batch is neither executed nor rejected, and
-    /// resume executes the withheld decision in the paused round's
-    /// prologue.
+pub enum PausePoint {
+    /// The approval gate paused behind a hook-prepared batch.
     AwaitingApproval {
-        /// The model-emitted batch, in draft order — the same payloads
-        /// whose tool-call blocks are already committed facts.
-        pending_calls: Vec<ToolCallPayload>,
+        /// The hook's prepared work awaiting the host's decision.
+        prepared: PreparedApproval,
         /// Advisory decision budget the host granted itself, as *remaining*
         /// time so the variant stays serde-friendly (a host anchors
-        /// `Instant::now() + d`).
+        /// `Instant::now() + d`). Carried for information only — the resume
+        /// never derives a deadline from it.
         deadline: Option<Duration>,
     },
-    /// Paused before the next model round so the host can steer; resume
-    /// appends the queued inputs (labeled `user.steering`) and re-enters
-    /// the model loop at `pending_round_id`.
-    PausedForSteering {
-        /// Steering texts appended before the next model round.
-        queued_inputs: Vec<TextPayload>,
-        /// The first round whose model phase has not run yet.
-        pending_round_id: RoundId,
-    },
+    /// Paused before a model round so the host can steer; no batch awaits
+    /// (a steering continuation over a turn with unanswered tool calls is
+    /// rejected at resume — the batch could never be answered).
+    PausedForSteering,
+}
+
+/// The single continuation of a paused turn (Slice 6.5): everything
+/// resuming needs beyond the paused outcome's fact state, the runner, the
+/// new options, and the new control. Rounds and quotas are read from here
+/// — never from the trace, which is observational and may be trimmed
+/// freely without changing where a resume continues or what it may spend.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Continuation {
+    /// Where and why the turn paused.
+    pub pause_point: PausePoint,
+    /// The round the continuation sits at: for an approval pause, the
+    /// paused round whose batch executes first at resume (the loop then
+    /// continues at round+1); for a steering pause, the first round whose
+    /// model phase has not run yet.
+    pub round: u32,
+    /// Tool calls already counted against the turn's quota at emission
+    /// time (a paused batch was counted once, at emission — the resume
+    /// never re-counts it). The authoritative control count across
+    /// resumes.
+    pub accounted_tool_calls: usize,
+    /// Inputs received but not yet committed. A resume commits them first
+    /// (`user.steering` label), before the resume request's own inject —
+    /// "queued → injected → pulled" order; identical texts are independent
+    /// inputs and are never deduped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_inputs: Vec<TextPayload>,
 }
 
 /// A bare-turn entry's result: the turn context (sealed unless the turn
@@ -340,24 +394,24 @@ pub(crate) enum ModelPhase {
     Stream,
 }
 
-/// Continuation payload for a resumed turn (Slice 7). Built by
-/// `resume_turn` (agent-runtime::resume), consumed once by
-/// `drive_from`'s prologue.
+/// Continuation payload for a resumed turn (Slice 7, reworked by Slice
+/// 6.5): the validated continuation plus the new decision, consumed once
+/// by `drive_from`'s prologue. Built by the public resume entries after
+/// validation; rounds, counts, prepared work, and queued inputs all come
+/// from the [`Continuation`] — the trace rides along as observation only.
 pub(crate) struct ResumeState {
-    /// The round the continuation starts at: for an approval resume, the
-    /// paused round whose batch executes first (the model loop then
-    /// continues at round+1); for a steering resume, the first round whose
-    /// model phase has not run yet.
-    pub(crate) continue_round: u32,
-    /// The paused phase's trace — rounds append to it, totals are not
-    /// reset.
-    pub(crate) trace: TurnTrace,
-    pub(crate) tool_calls_total: usize,
-    /// The withheld approval decision plus the model-emitted draft order:
-    /// `Some` = approval resume (batch executes in the prologue).
-    pub(crate) batch: Option<(HookOutcome, Vec<ToolCallPayload>)>,
-    /// Steering inputs appended before the next model round.
+    /// The paused turn's continuation (pause position, round, counts,
+    /// prepared work, queued inputs).
+    pub(crate) continuation: Continuation,
+    /// The resume request's new decision for the prepared batch. `Some`
+    /// iff the pause point is `AwaitingApproval` (enforced by validation).
+    pub(crate) decision: Option<HookOutcome>,
+    /// The resume request's new inputs, appended before the next model
+    /// round — after the continuation's queued inputs.
     pub(crate) inject: Vec<TextPayload>,
+    /// The paused phase's trace — rounds append to it, totals re-derive
+    /// from the continuation's count. A trimmed trace changes nothing.
+    pub(crate) trace: TurnTrace,
 }
 
 /// What a batch dispatch feeds the executor: live payloads, or
@@ -506,13 +560,13 @@ impl TurnRunner {
             .await
     }
 
-    /// Slice 7: continue a paused conversation turn. The continuation
-    /// half of `run_in_conversation` — same consume/return contract and
-    /// gates (a paused target is open, so they pass); `resume` carries
-    /// the withheld decision / steering injection and the paused trace
-    /// so rounds append and totals persist. The free function
-    /// `agent_runtime::resume::resume_turn` is the public face; it
-    /// validates the paused stamp and builds the `ResumeState`.
+    /// Slice 7, reworked by Slice 6.5: continue a paused conversation
+    /// turn. The continuation half of `run_in_conversation` — same
+    /// consume/return contract; the free function
+    /// `crate::resume::resume_turn` is the public face: it validates the
+    /// complete paused outcome (stamp, open turn, continuation-vs-facts,
+    /// decision coverage) and builds the [`ResumeState`] from the
+    /// outcome's [`Continuation`].
     pub(crate) async fn resume_conversation(
         &self,
         state: ConversationState,
@@ -526,61 +580,35 @@ impl TurnRunner {
             .await
     }
 
-    /// Slice 7: continue a paused bare turn — the continuation half of
-    /// [`TurnRunner::run`]/[`TurnRunner::run_streaming`]. Same shape:
-    /// consume the open paused `TurnContext` plus the [`ResumeRequest`]
-    /// (paused reason, trace, withheld decision, steering injection) and
-    /// return a `TurnOutcome` whose context is open on a fresh pause and
-    /// sealed on a terminal result.
+    /// Slice 7, reworked by Slice 6.5: continue a paused bare turn — the
+    /// continuation half of [`TurnRunner::run`]/[`TurnRunner::run_streaming`].
+    /// Consumes the **complete paused outcome** plus the new
+    /// [`ResumeRequest`](crate::resume::ResumeRequest) (decision + inject);
+    /// the host no longer assembles reason/trace by hand. Validation runs
+    /// before anything executes or any fact changes — a rejected request
+    /// returns the untouched paused material in the
+    /// [`ResumeRejection`](crate::resume::ResumeRejection). Rounds, quota
+    /// counts, prepared hook work, and queued inputs all come from the
+    /// outcome's [`Continuation`]: a trimmed or empty trace changes
+    /// nothing, and lower limits stop the turn before external execution.
     pub async fn resume(
         &self,
-        mut context: TurnContext,
+        outcome: TurnOutcome,
         request: crate::resume::ResumeRequest,
         options: TurnRunOptions,
         ctrl: RunControl,
-    ) -> TurnOutcome {
-        let crate::resume::ResumeRequest {
-            pending,
-            trace,
-            withheld,
-            inject,
-        } = request;
-        let tool_calls_total = trace.tool_calls_total;
-        let resume = match pending {
-            PausedReason::AwaitingApproval {
-                pending_calls,
-                deadline: _,
-            } => match trace.rounds.last().map(|r| r.round_id.0) {
-                Some(batch_round) => Some(ResumeState {
-                    continue_round: batch_round,
-                    trace,
-                    tool_calls_total,
-                    batch: Some((withheld, pending_calls)),
-                    inject,
-                }),
-                None => {
-                    return TurnOutcome {
-                        context,
-                        result: TurnResult::Interrupted {
-                            cause: TurnInterruption::RunnerInvariantViolation {
-                                reason: "approval resume requires the paused turn's trace".into(),
-                            },
-                        },
-                        trace,
-                    };
-                }
-            },
-            PausedReason::PausedForSteering {
-                pending_round_id,
-                queued_inputs: _,
-            } => Some(ResumeState {
-                continue_round: pending_round_id.0,
-                trace,
-                tool_calls_total,
-                batch: None,
-                inject,
-            }),
+    ) -> Result<TurnOutcome, crate::resume::ResumeRejection<TurnOutcome>> {
+        if let Err(reason) =
+            crate::resume::validate_resume(&outcome.result, &outcome.context, &request)
+        {
+            return Err(crate::resume::ResumeRejection { reason, outcome });
+        }
+        let TurnResult::Paused { continuation } = outcome.result else {
+            unreachable!("validated above");
         };
+        let TurnOutcome {
+            mut context, trace, ..
+        } = outcome;
         let start = Instant::now();
         let (result, mut trace, tool_calls_total) = self
             .drive_from(
@@ -589,7 +617,12 @@ impl TurnRunner {
                 &options,
                 &ctrl,
                 ModelPhase::Batch,
-                resume,
+                Some(ResumeState {
+                    continuation,
+                    decision: request.decision,
+                    inject: request.inject,
+                    trace,
+                }),
             )
             .await;
         trace.tool_calls_total = tool_calls_total;
@@ -597,11 +630,11 @@ impl TurnRunner {
         if !matches!(result, TurnResult::Paused { .. }) {
             context.seal();
         }
-        TurnOutcome {
+        Ok(TurnOutcome {
             context,
             result,
             trace,
-        }
+        })
     }
 
     /// The conversation entry body — entry gates, merged-frame source,
@@ -675,7 +708,7 @@ impl TurnRunner {
                 active,
                 FrameSource::Conversation {
                     conversation_id,
-                    history,
+                    history: &history,
                 },
                 &options,
                 &ctrl,
@@ -792,10 +825,26 @@ impl TurnRunner {
                 pending_inject = Vec::new();
             }
             Some(r) => {
-                round = r.continue_round;
-                tool_calls_total = r.tool_calls_total;
-                trace = r.trace;
-                pending_inject = r.inject;
+                let ResumeState {
+                    continuation,
+                    decision,
+                    inject,
+                    trace: resumed_trace,
+                } = r;
+                let Continuation {
+                    pause_point,
+                    round: paused_round,
+                    accounted_tool_calls,
+                    queued_inputs,
+                } = continuation;
+                round = paused_round;
+                tool_calls_total = accounted_tool_calls;
+                trace = resumed_trace;
+                // Queued inputs land before the request's inject ("queued
+                // → injected → pulled"); both commit at the loop top with
+                // the `user.steering` label.
+                pending_inject = queued_inputs;
+                pending_inject.extend(inject);
                 // A resumed turn whose control is already spent exits
                 // before touching facts.
                 if ctrl.should_stop() {
@@ -806,51 +855,63 @@ impl TurnRunner {
                     };
                     return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
                 }
-                // Approval-resume prologue: execute the withheld batch —
-                // it belongs to the paused round, so its results land
-                // between the committed calls and the next model round.
-                if let Some((withheld, draft)) = r.batch {
-                    // Resume identity: the paused batch must be exactly the
-                    // committed-but-unanswered tool calls of this turn —
-                    // anything else means the continuation does not match
-                    // the facts. Rejected before any side effect, so a
-                    // fabricated or stale pending batch cannot execute.
-                    let mut unpaired: HashSet<ToolCallId> = HashSet::new();
-                    for b in active.blocks() {
-                        match &b.content {
-                            BlockContent::ToolCall(c) => {
-                                unpaired.insert(c.call_id.clone());
-                            }
-                            BlockContent::ToolResult(res) => {
-                                unpaired.remove(&res.call_id);
-                            }
-                            _ => {}
-                        }
-                    }
-                    let draft_ids: HashSet<ToolCallId> =
-                        draft.iter().map(|p| p.call_id.clone()).collect();
-                    if unpaired != draft_ids {
-                        return (
-                            TurnResult::Interrupted {
-                                cause: TurnInterruption::RunnerInvariantViolation {
-                                    reason: "resumed batch does not match the turn's \
-                                            unanswered tool calls"
-                                        .into(),
-                                },
+                // Exhausted limits stop the turn BEFORE external
+                // execution: a lowered `max_tool_calls` refuses the
+                // withheld batch itself, a lowered `max_model_rounds`
+                // refuses the paused round's batch (its results would
+                // never reach a model call). Steering pauses re-enter the
+                // loop instead, where the boundary checks apply before any
+                // model call.
+                if tool_calls_total as u64 > options.policy.limits.max_tool_calls as u64 {
+                    return (
+                        TurnResult::Interrupted {
+                            cause: TurnInterruption::MaxToolCalls {
+                                limit: options.policy.limits.max_tool_calls,
                             },
-                            trace,
-                            tool_calls_total,
-                        );
-                    }
-                    // Note: the batch was already counted into
-                    // `tool_calls_total` when it was emitted (the pause
-                    // carries the count), so the prologue must not re-add.
+                        },
+                        trace,
+                        tool_calls_total,
+                    );
+                }
+                if matches!(pause_point, PausePoint::AwaitingApproval { .. })
+                    && round >= options.policy.limits.max_model_rounds
+                {
+                    return (
+                        TurnResult::Interrupted {
+                            cause: TurnInterruption::MaxModelRounds {
+                                limit: options.policy.limits.max_model_rounds,
+                            },
+                        },
+                        trace,
+                        tool_calls_total,
+                    );
+                }
+                // Approval-resume prologue: execute the paused round's
+                // batch. The saved hook rejections stay rejected; the new
+                // decision covers the remaining awaiting calls exactly
+                // once (validated at the entry, re-checked by `run_batch`).
+                // The batch was already counted into `accounted_tool_calls`
+                // at emission, so the prologue never re-counts it.
+                if let Some(decision) = decision {
+                    let PausePoint::AwaitingApproval {
+                        prepared,
+                        deadline: _,
+                    } = pause_point
+                    else {
+                        unreachable!("entry validation pairs a decision with an approval pause");
+                    };
+                    // The paused batch is exactly the committed-but-
+                    // unanswered tool calls of this turn, in block order —
+                    // the model-emitted draft order the results pair into.
+                    let draft = unanswered_tool_calls(active);
+                    let mut rejected = prepared.rejected;
+                    rejected.extend(decision.rejected);
                     if let Err(cause) = self
                         .run_batch(
                             active,
                             &draft,
-                            BatchWork::Execute(withheld.to_execute),
-                            withheld.rejected,
+                            BatchWork::Execute(decision.to_execute),
+                            rejected,
                             options,
                             ctrl,
                             round,
@@ -1202,12 +1263,25 @@ impl TurnRunner {
                     let decision = options.interaction.decide_batch(&hook_to_exec).await;
                     match decision {
                         BatchDecision::Pause { deadline } => {
+                            // The checkpoint saves the hook's prepared work
+                            // (admitted-with-rewrites + rejections) so the
+                            // resume never re-runs the hook and never
+                            // re-admits a rejected call. The outcome's
+                            // context is the single fact source — no
+                            // duplicated snapshot rides on the variant.
                             return (
                                 TurnResult::Paused {
-                                    snapshot: active.snapshot(),
-                                    reason: PausedReason::AwaitingApproval {
-                                        pending_calls: call_payloads,
-                                        deadline,
+                                    continuation: Continuation {
+                                        pause_point: PausePoint::AwaitingApproval {
+                                            prepared: PreparedApproval {
+                                                awaiting: hook_to_exec,
+                                                rejected: hook_rejected,
+                                            },
+                                            deadline,
+                                        },
+                                        round,
+                                        accounted_tool_calls: tool_calls_total,
+                                        queued_inputs: Vec::new(),
                                     },
                                 },
                                 trace,

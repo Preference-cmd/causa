@@ -3,7 +3,7 @@ use crate::context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, TextPayload, ToolCallPayload,
 };
 use crate::context::ids::{
-    BlockId, BlockSequence, ContextVersion, FrameId, FrameScope, RoundId, TurnId, TurnSequence,
+    BlockId, BlockSequence, ContextVersion, ConversationId, FrameId, FrameScope, RoundId, TurnId,
 };
 use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::context::tool_data::{ToolCallId, ToolResultPayload};
@@ -55,9 +55,14 @@ pub mod turn_context_as_snapshot {
     }
 }
 
-pub(crate) mod option_turn_context_as_snapshot {
+/// Serde bridge for `Option<TurnContext>` fields (the session aggregate's
+/// active slot): `Some` serializes as the snapshot projection, `None` as
+/// null. Public since Slice 6.5 — the session aggregate lives in
+/// `causa-runtime` and serializes its active slot through this bridge.
+pub mod option_turn_context_as_snapshot {
     use super::*;
 
+    /// Serializes `Some` as the snapshot projection, `None` as null.
     pub fn serialize<S: Serializer>(value: &Option<TurnContext>, s: S) -> Result<S::Ok, S::Error> {
         match value {
             Some(ctx) => turn_context_as_snapshot::serialize(ctx, s),
@@ -65,6 +70,8 @@ pub(crate) mod option_turn_context_as_snapshot {
         }
     }
 
+    /// Deserializes `null` as `None`, otherwise rebuilds a validated
+    /// (re-sealed) `TurnContext`.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TurnContext>, D::Error> {
         let opt: Option<TurnSnapshot> = Option::deserialize(d)?;
         opt.map(|snap| {
@@ -532,11 +539,11 @@ impl TurnContext {
 
     /// The structural validation behind `from_validated_blocks`, callable
     /// without constructing a throwaway machine — replay paths validate
-    /// snapshots in place.
-    pub(crate) fn validate_blocks(
-        turn_id: &TurnId,
-        blocks: &[ContextBlock],
-    ) -> Result<(), ContextError> {
+    /// snapshots in place. Public since Slice 6.5: the runtime's session
+    /// replay (`ConversationState::from_history`) validates committed
+    /// snapshots through this entry, so every reload path shares one
+    /// validator.
+    pub fn validate_blocks(turn_id: &TurnId, blocks: &[ContextBlock]) -> Result<(), ContextError> {
         // validate monotonic sequence and turn_id matching
         for (idx, b) in blocks.iter().enumerate() {
             if b.id.turn_id != *turn_id {
@@ -590,12 +597,12 @@ impl TurnContext {
     }
 
     /// Projects the current state into an immutable `TurnSnapshot` — the
-    /// canonical wire shape for persistence. The turn sequence is the
-    /// placeholder zero; the conversation assigns the real one at commit.
+    /// canonical wire shape for persistence. Session ordering is NOT part of
+    /// the snapshot: the runtime's session aggregate assigns the
+    /// `HistoryEntry` sequence at commit (Slice 6.5).
     pub fn snapshot(&self) -> TurnSnapshot {
         TurnSnapshot {
             turn_id: self.turn_id.clone(),
-            turn_sequence: TurnSequence(0),
             blocks: self.blocks.clone(),
             source_version: self.version,
             sealed: self.is_sealed(),
@@ -609,13 +616,13 @@ fn default_sealed() -> bool {
 
 /// Immutable, serializable projection of a turn — the canonical wire shape
 /// for a persisted turn (a live `TurnContext` is never serialized directly).
+/// The snapshot describes the record itself only: identity, blocks, fact
+/// version, and write lifecycle. Session ordering lives in the runtime's
+/// `HistoryEntry`, not here (Slice 6.5).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnSnapshot {
     /// Identity of the snapshotted turn.
     pub turn_id: TurnId,
-    /// Position in conversation history, assigned at commit; placeholder
-    /// zero before the turn is committed.
-    pub turn_sequence: TurnSequence,
     /// The committed blocks, in commit order.
     pub blocks: OrderedBlocks,
     /// The turn's `ContextVersion` at snapshot time.
@@ -630,13 +637,33 @@ pub struct TurnSnapshot {
     pub sealed: bool,
 }
 
-impl TurnSnapshot {
-    /// Set the `turn_sequence` on a snapshot. `TurnContext::snapshot()`
-    /// returns `TurnSequence(0)` as a placeholder (the conversation
-    /// owns the sequence, not the turn); callers that need a real
-    /// sequence use this to set it after construction.
-    pub fn with_turn_sequence(mut self, turn_sequence: TurnSequence) -> Self {
-        self.turn_sequence = turn_sequence;
-        self
+/// Shared lossless merged materialization over committed history plus the
+/// active turn — the single semantics both the runtime's
+/// `ConversationState::frame()` and any external conversation driver's
+/// merged-view entry use. Public since Slice 12; the session aggregate that
+/// calls it lives in `causa-runtime` (Slice 6.5), but the projection itself
+/// is common frame vocabulary and stays with the facts. No reordering, no
+/// dedup, no trimming; nothing is written back.
+pub fn merged_frame(
+    conversation_id: &ConversationId,
+    history: &[TurnSnapshot],
+    active: &TurnContext,
+    round_id: RoundId,
+) -> ContextFrame {
+    let mut blocks = Vec::new();
+    for snapshot in history {
+        blocks.extend(snapshot.blocks.as_slice().iter().cloned());
+    }
+    blocks.extend(active.blocks().iter().cloned());
+    let scope = FrameScope::Conversation {
+        conversation_id: conversation_id.clone(),
+        active_turn_id: active.turn_id(),
+        source_version: active.version(),
+    };
+    ContextFrame {
+        frame_id: FrameId::from_scope(&scope, round_id),
+        scope,
+        round_id,
+        model_context: ModelContext { blocks },
     }
 }

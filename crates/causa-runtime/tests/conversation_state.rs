@@ -1,16 +1,21 @@
-//! ConversationState acceptance — aggregate facts and order. Fact-machine
-//! coverage: commit/seal/abort, merged views, and validated replay. The
-//! runner-entry coverage graduated to `agent-runtime/tests/
-//! conversation_entries.rs` with the driver itself (Slice 12); these tests
-//! play the driver's stamping role via `seal_turn` directly.
+//! Session-aggregate acceptance — facts and order. Graduated from the
+//! kernel's conversation suite in Slice 6.5 together with the aggregate
+//! itself (`ConversationState` is runtime vocabulary now): commit/seal/
+//! abort discipline, merged views, validated replay, and the paused-state
+//! round-trip. The runner-entry coverage lives in
+//! `conversation_entries.rs`; these tests play the host's stamping role
+//! via `seal_turn` directly.
 
 mod common;
 
 use common::commit_sealed;
 
 use causa_kernel::{
-    ContextVersion, ConversationError, ConversationId, ConversationState, FrameScope,
-    OrderedBlocks, RoundId, SealedResult, TextPayload, TurnId, TurnSequence, TurnSnapshot,
+    ContextVersion, ConversationId, FrameScope, OrderedBlocks, RoundId, TextPayload, TurnId,
+    TurnSnapshot,
+};
+use causa_runtime::{
+    ConversationError, ConversationState, HistoryEntry, SealedResult, TurnSequence,
 };
 
 fn conv() -> ConversationState {
@@ -32,16 +37,20 @@ fn commit_is_exactly_once_and_assigns_sequence() {
         .unwrap();
     c.seal_turn(TurnId::new("t1"), SealedResult::Completed)
         .unwrap();
-    let snap = c.commit(TurnId::new("t1")).unwrap();
-    assert_eq!(snap.turn_sequence.0, 0);
-    assert_eq!(snap.turn_id.0, "t1");
+    let entry = c.commit(TurnId::new("t1")).unwrap();
+    assert_eq!(entry.sequence.0, 0);
+    assert_eq!(entry.snapshot.turn_id.0, "t1");
+    // The snapshot itself carries no session order (Slice 6.5): the
+    // entry is the only place a sequence exists.
+    let wire = serde_json::to_string(&entry.snapshot).unwrap();
+    assert!(!wire.contains("turn_sequence"), "{wire}");
     // Repeated commit: the active slot is empty, so rejection lands on
     // UnknownTurn — rejection, not idempotence.
     assert!(matches!(
         c.commit(TurnId::new("t1")),
         Err(ConversationError::UnknownTurn(_))
     ));
-    assert_eq!(c.snapshot_count(), 1);
+    assert_eq!(c.history_len(), 1);
     assert!(c.active_turn().is_none());
     assert_eq!(c.version().0, 2); // begin + commit
 }
@@ -61,7 +70,7 @@ fn interrupted_turn_never_enters_history_and_id_is_reusable() {
     // Abort discards in any state; history untouched; id reusable.
     let aborted = c.abort_turn(TurnId::new("t2")).unwrap();
     assert!(aborted.is_sealed());
-    assert_eq!(c.snapshot_count(), 1);
+    assert_eq!(c.history_len(), 1);
     c.begin_turn(TurnId::new("t2")).unwrap();
 }
 
@@ -144,13 +153,13 @@ fn conversations_are_fully_isolated() {
     let mut a = ConversationState::new(ConversationId("A".into()));
     let mut b = ConversationState::new(ConversationId("B".into()));
     commit_completed(&mut a, "shared-id");
-    assert_eq!(a.snapshot_count(), 1);
-    assert_eq!(b.snapshot_count(), 0);
+    assert_eq!(a.history_len(), 1);
+    assert_eq!(b.history_len(), 0);
     assert_eq!(b.version().0, 0);
     // The same turn id lives independently in each conversation.
     commit_completed(&mut b, "shared-id");
-    assert_eq!(b.snapshot_count(), 1);
-    assert_eq!(b.completed_turns()[0].turn_sequence.0, 0);
+    assert_eq!(b.history_len(), 1);
+    assert_eq!(b.history()[0].sequence.0, 0);
 }
 
 #[test]
@@ -163,18 +172,18 @@ fn committed_snapshot_carries_turn_facts_and_abort_leaves_history() {
         .unwrap();
     c.seal_turn(TurnId::new("t1"), SealedResult::Completed)
         .unwrap();
-    let snap = c.commit(TurnId::new("t1")).unwrap();
-    assert_eq!(snap.blocks.as_slice().len(), 1);
+    let entry = c.commit(TurnId::new("t1")).unwrap();
+    assert_eq!(entry.snapshot.blocks.as_slice().len(), 1);
     // Aborting a later turn leaves committed history byte-identical.
     c.begin_turn(TurnId::new("t2")).unwrap();
     c.seal_turn(TurnId::new("t2"), SealedResult::Interrupted)
         .unwrap();
     c.abort_turn(TurnId::new("t2")).unwrap();
-    assert_eq!(c.snapshot_count(), 1);
-    assert_eq!(c.completed_turns()[0].turn_id.0, "t1");
+    assert_eq!(c.history_len(), 1);
+    assert_eq!(c.history()[0].snapshot.turn_id.0, "t1");
 }
 
-// ---- Phase B: lossless merged view ------------------------------------------
+// ---- lossless merged view ------------------------------------------------------
 
 /// Two committed turns (one input block each) plus nothing active.
 fn build_two_turn_history() -> ConversationState {
@@ -201,7 +210,7 @@ fn merged_frame_orders_history_then_active_under_conversation_scope() {
         .append_input(TextPayload::new("in-t3"), "user")
         .unwrap();
     let f = c.frame(RoundId(0)).unwrap();
-    // history blocks in TurnSequence order, then active blocks.
+    // history blocks in sequence order, then active blocks.
     let blocks = &f.model_context.blocks;
     assert_eq!(blocks.len(), 3);
     assert_eq!(blocks[0].id.turn_id.0, "t1");
@@ -252,13 +261,10 @@ fn merged_frame_is_lossless_and_writes_nothing_back() {
         .unwrap()
         .append_input(TextPayload::new("in-t3"), "user")
         .unwrap();
-    let before_history = serde_json::to_string(c.completed_turns()).unwrap();
+    let before_history = serde_json::to_string(c.history()).unwrap();
     let before_active = serde_json::to_string(&c.active_turn().unwrap().snapshot_blocks()).unwrap();
     let _ = c.frame(RoundId(0)).unwrap();
-    assert_eq!(
-        serde_json::to_string(c.completed_turns()).unwrap(),
-        before_history
-    );
+    assert_eq!(serde_json::to_string(c.history()).unwrap(), before_history);
     assert_eq!(
         serde_json::to_string(&c.active_turn().unwrap().snapshot_blocks()).unwrap(),
         before_active
@@ -270,40 +276,58 @@ fn merged_frame_is_lossless_and_writes_nothing_back() {
 #[test]
 fn frame_without_active_turn_is_rejected() {
     let c = build_two_turn_history();
-    // Pure-history inspection goes through completed_turns(); the merged
-    // frame needs an active turn for its scope identity.
+    // Pure-history inspection goes through history(); the merged frame
+    // needs an active turn for its scope identity.
     assert!(matches!(
         c.frame(RoundId(0)),
         Err(ConversationError::NoActiveTurn)
     ));
 }
 
-// ---- Phase D: validated replay ----------------------------------------------
+// ---- validated replay ----------------------------------------------------------
 
-/// Acceptance #14: out-of-order and duplicate turn sequences are rejected.
+/// Out-of-order and duplicate turn sequences are rejected.
 #[test]
-fn from_snapshots_rejects_non_monotonic_sequences() {
+fn from_history_rejects_non_monotonic_sequences() {
     let live = build_two_turn_history();
     // Out of order: [seq 1, seq 0].
-    let swapped: Vec<_> = live.completed_turns().iter().rev().cloned().collect();
+    let swapped: Vec<_> = live.history().iter().rev().cloned().collect();
     assert!(matches!(
-        ConversationState::from_snapshots(ConversationId("conv-1".into()), swapped),
+        ConversationState::from_history(ConversationId("conv-1".into()), swapped),
         Err(ConversationError::InvalidSequence(_))
     ));
-    // Duplicate: the last snapshot appears twice.
-    let mut dup: Vec<_> = live.completed_turns().to_vec();
+    // Duplicate: the last entry appears twice.
+    let mut dup: Vec<_> = live.history().to_vec();
     dup.push(dup[1].clone());
     assert!(matches!(
-        ConversationState::from_snapshots(ConversationId("conv-1".into()), dup),
+        ConversationState::from_history(ConversationId("conv-1".into()), dup),
         Err(ConversationError::InvalidSequence(_))
     ));
 }
 
-/// Acceptance #14: a snapshot whose blocks fail pairing validation is
-/// rejected. The corrupt snapshot is fabricated through serde — exactly the
-/// path corrupt external data would take.
+/// A duplicate turn id across two entries must not silently collapse into
+/// one history (Slice 6.5 replay validation).
 #[test]
-fn from_snapshots_rejects_unpaired_tool_results() {
+fn from_history_rejects_duplicate_turn_ids() {
+    let live = build_two_turn_history();
+    let mut entries: Vec<HistoryEntry> = live.history().to_vec();
+    // Re-sequence the copied entry so only the id duplicates.
+    let twin = HistoryEntry {
+        sequence: TurnSequence(9),
+        snapshot: entries[0].snapshot.clone(),
+    };
+    entries.push(twin);
+    assert!(matches!(
+        ConversationState::from_history(ConversationId("conv-1".into()), entries),
+        Err(ConversationError::InvalidSequence(_))
+    ));
+}
+
+/// A snapshot whose blocks fail pairing validation is rejected. The
+/// corrupt snapshot is fabricated through serde — exactly the path
+/// corrupt external data would take.
+#[test]
+fn from_history_rejects_unpaired_tool_results() {
     let live = build_two_turn_history();
     let blocks_json = r#"[
         {"id": {"turn_id": "bad", "sequence": 0}, "sequence": 0,
@@ -314,32 +338,33 @@ fn from_snapshots_rejects_unpaired_tool_results() {
          "meta": {}}
     ]"#;
     let blocks: OrderedBlocks = serde_json::from_str(blocks_json).unwrap();
-    let corrupt = TurnSnapshot {
-        turn_id: TurnId::new("bad"),
-        turn_sequence: TurnSequence(9),
-        blocks,
-        source_version: ContextVersion(1),
-        sealed: true,
+    let corrupt = HistoryEntry {
+        sequence: TurnSequence(9),
+        snapshot: TurnSnapshot {
+            turn_id: TurnId::new("bad"),
+            blocks,
+            source_version: ContextVersion(1),
+            sealed: true,
+        },
     };
-    let mut snapshots: Vec<_> = live.completed_turns().to_vec();
-    snapshots.push(corrupt);
+    let mut entries: Vec<_> = live.history().to_vec();
+    entries.push(corrupt);
     assert!(matches!(
-        ConversationState::from_snapshots(ConversationId("conv-1".into()), snapshots),
+        ConversationState::from_history(ConversationId("conv-1".into()), entries),
         Err(ConversationError::InvalidSequence(_))
     ));
 }
 
-/// Acceptance #14/#15: a valid replay rebuilds block-for-block identical
-/// merged frames, continues sequence assignment at max+1, and resets the
-/// conversation version.
+/// A valid replay rebuilds block-for-block identical merged frames,
+/// continues sequence assignment at max+1, and resets the session
+/// version.
 #[test]
 fn replayed_conversation_matches_live_and_continues() {
     let mut live = build_two_turn_history();
-    let snapshots: Vec<_> = live.completed_turns().to_vec();
+    let entries: Vec<HistoryEntry> = live.history().to_vec();
     let mut replayed =
-        ConversationState::from_snapshots(ConversationId("conv-1".into()), snapshots.clone())
-            .unwrap();
-    assert_eq!(replayed.snapshot_count(), 2);
+        ConversationState::from_history(ConversationId("conv-1".into()), entries.clone()).unwrap();
+    assert_eq!(replayed.history_len(), 2);
     assert_eq!(replayed.version().0, 0); // replay is a fresh load
 
     // Both continue with the same new turn; the merged frames agree.
@@ -363,25 +388,25 @@ fn replayed_conversation_matches_live_and_continues() {
     replayed
         .seal_turn(TurnId::new("t3"), SealedResult::Completed)
         .unwrap();
-    let snap = replayed.commit(TurnId::new("t3")).unwrap();
-    assert_eq!(snap.turn_sequence, TurnSequence(2));
-    assert_eq!(replayed.snapshot_count(), 3);
+    let entry = replayed.commit(TurnId::new("t3")).unwrap();
+    assert_eq!(entry.sequence, TurnSequence(2));
+    assert_eq!(replayed.history_len(), 3);
 }
 
-/// Empty replay is a valid fresh conversation.
+/// Empty replay is a valid fresh session.
 #[test]
-fn from_snapshots_accepts_empty_history() {
+fn from_history_accepts_empty_history() {
     let mut replayed =
-        ConversationState::from_snapshots(ConversationId("conv-1".into()), vec![]).unwrap();
-    assert_eq!(replayed.snapshot_count(), 0);
+        ConversationState::from_history(ConversationId("conv-1".into()), vec![]).unwrap();
+    assert_eq!(replayed.history_len(), 0);
     assert_eq!(replayed.version().0, 0);
     commit_completed(&mut replayed, "t1");
-    assert_eq!(replayed.completed_turns()[0].turn_sequence, TurnSequence(0));
+    assert_eq!(replayed.history()[0].sequence, TurnSequence(0));
 }
 
-// ---- Slice 7: paused-state persistence ---------------------------------------
+// ---- paused-state persistence ----------------------------------------------
 
-/// A paused conversation serializes with its active turn OPEN (snapshot
+/// A paused session serializes with its active turn OPEN (snapshot
 /// `sealed: false`) and the Paused stamp; the round-trip restores exactly
 /// that resumable shape.
 #[test]
@@ -408,4 +433,52 @@ fn paused_state_round_trip_preserves_open_active_and_stamp() {
         restored.commit(TurnId::new("t1")),
         Err(ConversationError::TurnPaused(_))
     ));
+}
+
+// ---- shared history, independent executions (Slice 6.5 acceptance) ----------
+
+/// Two independent executions replay the same read-only history and each
+/// begin their own turn: separate active slots, no fact pollution across
+/// the branch, and source blocks keep their identity (no renumbering).
+#[test]
+fn two_executions_share_history_without_polluting_each_other() {
+    let history: Vec<HistoryEntry> = build_two_turn_history().history().to_vec();
+
+    let mut branch_a =
+        ConversationState::from_history(ConversationId("conv-1".into()), history.clone()).unwrap();
+    let mut branch_b =
+        ConversationState::from_history(ConversationId("conv-1".into()), history).unwrap();
+
+    branch_a.begin_turn(TurnId::new("branch-a")).unwrap();
+    branch_b.begin_turn(TurnId::new("branch-b")).unwrap();
+    branch_a
+        .active_turn_mut()
+        .unwrap()
+        .append_input(TextPayload::new("only a sees this"), "user")
+        .unwrap();
+    branch_b
+        .active_turn_mut()
+        .unwrap()
+        .append_input(TextPayload::new("only b sees this"), "user")
+        .unwrap();
+
+    let frames_a = branch_a.frame(RoundId(0)).unwrap();
+    let frames_b = branch_b.frame(RoundId(0)).unwrap();
+    let texts_a = serde_json::to_string(&frames_a.model_context.blocks).unwrap();
+    let texts_b = serde_json::to_string(&frames_b.model_context.blocks).unwrap();
+    assert!(texts_a.contains("only a sees this") && !texts_a.contains("only b sees this"));
+    assert!(texts_b.contains("only b sees this") && !texts_b.contains("only a sees this"));
+
+    // Source facts keep their identity: the first two blocks of each
+    // merged view are the shared history's own BlockIds, unrenumbered.
+    let shared_a: Vec<String> = frames_a.model_context.blocks[..2]
+        .iter()
+        .map(|b| b.id.turn_id.0.clone())
+        .collect();
+    let shared_b: Vec<String> = frames_b.model_context.blocks[..2]
+        .iter()
+        .map(|b| b.id.turn_id.0.clone())
+        .collect();
+    assert_eq!(shared_a, vec!["t1".to_string(), "t2".to_string()]);
+    assert_eq!(shared_b, shared_a);
 }

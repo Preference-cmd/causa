@@ -1,18 +1,49 @@
-//! ConversationState — the conversation-level fact aggregate: ordered
-//! completed turns, the active turn host, and the eligibility stamp.
+//! The session aggregate — `ConversationState`, its ordering vocabulary,
+//! and the `ConversationStore` archive port. Migrated here from the kernel
+//! in Slice 6.5 (Context / harness separation, first batch): the single
+//! active slot, completed-only history admission, and commit-time sequence
+//! assignment are *reference-harness* decisions, not fact-layer invariants,
+//! so they live with the reference driver. The kernel keeps the facts
+//! ([`causa_kernel::TurnContext`] / [`causa_kernel::TurnSnapshot`]), the
+//! validated recovery entries, and the shared [`causa_kernel::merged_frame`]
+//! projection; it never depends back on this crate.
 //!
-//! This is not a second fact source: block-level facts live only in
-//! `TurnContext` / `TurnSnapshot`; the aggregate owns deterministic order
-//! (`TurnSequence`, assigned exactly once by `commit`), the active turn, and
-//! the `ConversationVersion` that ticks at every controlled transition
-//! (`begin_turn` / `commit` / `abort_turn`).
+//! ## Snapshot vs. session entry (Slice 6.5)
+//!
+//! A [`causa_kernel::TurnSnapshot`] describes one record only — identity,
+//! blocks, fact version, write lifecycle. Session ordering lives in
+//! [`HistoryEntry`] (`sequence` + `snapshot`), assigned exactly once by
+//! [`ConversationState::commit`]. Old wire payloads that embedded
+//! `turn_sequence` inside the snapshot are migrated by extracting the
+//! sequence into the entry (the persistence example carries the reference
+//! recipe); a bare snapshot alone promises fact recovery, never a
+//! resumable execution checkpoint.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::context::ids::{
-    ConversationId, ConversationVersion, FrameId, FrameScope, RoundId, TurnId, TurnSequence,
+use causa_kernel::{
+    ContextError, ContextFrame, ConversationId, RoundId, TurnContext, TurnSnapshot, merged_frame,
 };
-use crate::context::turn::{ContextFrame, ModelContext, TurnContext, TurnSnapshot};
+
+/// Position of a committed turn within a session's history, assigned
+/// exactly once by [`ConversationState::commit`]. Migrated from the kernel
+/// with the session aggregate (Slice 6.5): the ordering *rule* — completed
+/// turns only, dense sequence at commit — is reference-harness policy, not
+/// a fact-layer invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TurnSequence(pub u64);
+
+/// Counts controlled transitions of a session (`begin_turn` / `commit` /
+/// `abort_turn`); the aggregate-level analogue of `ContextVersion`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ConversationVersion(pub u64);
+impl ConversationVersion {
+    /// Returns the successor version.
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
 
 /// Kernel-side eligibility stamp recorded when the driver finalizes the
 /// active turn. Marker only — the rich cause stays with the caller via the
@@ -36,21 +67,26 @@ pub enum SealedResult {
     Paused,
 }
 
-/// Committed history: the turn snapshots in ascending `TurnSequence` order.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OrderedTurns(Vec<TurnSnapshot>);
-impl OrderedTurns {
-    /// An empty history.
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-    /// Read-only view of the snapshots in `TurnSequence` order.
-    pub fn ordered(&self) -> &[TurnSnapshot] {
-        &self.0
+/// One committed session entry: the snapshot plus the session order the
+/// record was admitted at. Slice 6.5 moved `turn_sequence` out of the
+/// snapshot itself — the record describes only its own facts; the session
+/// owns the order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// The `TurnSequence` `commit` assigned to this record.
+    pub sequence: TurnSequence,
+    /// The turn's committed facts.
+    pub snapshot: TurnSnapshot,
+}
+
+impl HistoryEntry {
+    /// Convenience view of the wrapped record.
+    pub fn snapshot(&self) -> &TurnSnapshot {
+        &self.snapshot
     }
 }
 
-/// Rejections of the conversation-level controlled operations. Pure state
+/// Rejections of the session-level controlled operations. Pure state
 /// guards — every variant is deterministic from the aggregate's facts.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationError {
@@ -67,26 +103,27 @@ pub enum ConversationError {
     /// The given turn id is not the active turn — including a repeated
     /// commit after the slot was cleared.
     #[error("unknown turn: {0:?}")]
-    UnknownTurn(TurnId),
+    UnknownTurn(causa_kernel::TurnId),
     /// `begin_turn` with an id already present in committed history.
     #[error("duplicate turn id: {0:?}")]
-    DuplicateTurnId(TurnId),
+    DuplicateTurnId(causa_kernel::TurnId),
     /// `commit` on a turn that is not sealed-and-`Completed`.
     #[error("turn not completed, cannot commit: {0:?}")]
-    TurnNotCompleted(TurnId),
+    TurnNotCompleted(causa_kernel::TurnId),
     /// `commit` on a paused turn; resume it or abort it instead.
     #[error("turn is paused, cannot commit until resumed: {0:?}")]
-    TurnPaused(TurnId),
+    TurnPaused(causa_kernel::TurnId),
     /// The turn is not paused (no `Paused` stamp), so it cannot be resumed.
     #[error("turn is not paused, cannot resume: {0:?}")]
-    NotPaused(TurnId),
-    /// Replay validation failed in `from_snapshots`; carries the reason
-    /// (non-monotonic `TurnSequence` or a block-level violation).
+    NotPaused(causa_kernel::TurnId),
+    /// Replay validation failed in `from_history`; carries the reason
+    /// (non-monotonic `TurnSequence`, a duplicate turn id, or a
+    /// block-level violation).
     #[error("invalid conversation state: {0}")]
     InvalidSequence(String),
 }
 
-/// Conversation-level controlled operations:
+/// Session-level controlled operations over the kernel's facts:
 ///
 /// - `begin_turn` admits a fresh active turn (rejects concurrent active and
 ///   turn-id collisions with committed history);
@@ -97,24 +134,30 @@ pub enum ConversationError {
 ///   `TurnContext` stays open, so a later `resume_turn` can continue it
 ///   (invariant `sealed_result == Paused ⇒ active` is open);
 /// - `commit` is the exactly-once transition into history: it alone assigns
-///   the `TurnSequence` (struct-update on the turn's snapshot), rejects
-///   anything not sealed-and-`Completed` (`Paused` gets the dedicated
-///   `TurnPaused` rejection), and clears the active slot — a repeated
-///   commit therefore lands on `UnknownTurn` (rejection, not idempotence);
+///   the `TurnSequence` (as a [`HistoryEntry`]), rejects anything not
+///   sealed-and-`Completed` (`Paused` gets the dedicated `TurnPaused`
+///   rejection), and clears the active slot — a repeated commit therefore
+///   lands on `UnknownTurn` (rejection, not idempotence);
 /// - `abort_turn` discards the active turn in any state (open, paused,
 ///   sealed); history is untouched either way, and an aborted turn's id
 ///   may be reused.
+///
+/// The single active slot, completed-only admission, and commit-time
+/// ordering are this crate's reference-harness defaults — a custom harness
+/// composes the kernel facts differently without touching them.
 #[derive(Serialize, Deserialize)]
 pub struct ConversationState {
     conversation_id: ConversationId,
-    completed_turns: OrderedTurns,
+    /// Committed history in `TurnSequence` order — entries, not bare
+    /// snapshots, since Slice 6.5 (the order is session vocabulary).
+    history: Vec<HistoryEntry>,
     /// The sealed active turn at handoff. Serialized through the
     /// `option_turn_context_as_snapshot` adapter (see
-    /// `crate::context::turn`): the in-memory `TurnContext` is the
+    /// `causa_kernel`): the in-memory `TurnContext` is the
     /// mutable fact machine; once sealed its snapshot projection is the
     /// canonical wire shape. On reload we rebuild a sealed
     /// `TurnContext` via `from_validated_blocks` + `seal()`.
-    #[serde(with = "crate::context::turn::option_turn_context_as_snapshot")]
+    #[serde(with = "causa_kernel::option_turn_context_as_snapshot")]
     active_turn: Option<TurnContext>,
     sealed_result: Option<SealedResult>,
     version: ConversationVersion,
@@ -125,7 +168,7 @@ impl std::fmt::Debug for ConversationState {
         f.debug_struct("ConversationState")
             .field("conversation_id", &self.conversation_id)
             .field("version", &self.version)
-            .field("snapshot_count", &self.completed_turns.0.len())
+            .field("history_len", &self.history.len())
             .field("next_turn_sequence", &self.next_turn_sequence())
             .field("active_turn", &self.active_turn)
             .field("sealed_result", &self.sealed_result)
@@ -134,32 +177,34 @@ impl std::fmt::Debug for ConversationState {
 }
 
 impl ConversationState {
-    /// A fresh, empty conversation: no history, no active turn, version zero.
+    /// A fresh, empty session: no history, no active turn, version zero.
     pub fn new(conversation_id: ConversationId) -> Self {
         Self {
             conversation_id,
-            completed_turns: OrderedTurns::empty(),
+            history: Vec::new(),
             active_turn: None,
             sealed_result: None,
             version: ConversationVersion(0),
         }
     }
 
-    /// The next `TurnSequence` the kernel will assign on `commit`. Derived
-    /// from `completed_turns.last() + 1` so the source of truth is history;
-    /// there is no in-memory field to drift. `TurnSequence(0)` if empty.
+    /// The next `TurnSequence` the session will assign on `commit`. Derived
+    /// from `history.last() + 1` so the source of truth is history; there
+    /// is no in-memory field to drift. `TurnSequence(0)` if empty.
     pub fn next_turn_sequence(&self) -> TurnSequence {
-        self.completed_turns
-            .0
+        self.history
             .last()
-            .map(|s| TurnSequence(s.turn_sequence.0 + 1))
+            .map(|e| TurnSequence(e.sequence.0 + 1))
             .unwrap_or(TurnSequence(0))
     }
 
     /// Admit a fresh active turn. Rejects while any active exists (sealed
     /// ones must be committed or aborted first) and when the id collides
     /// with committed history — an aborted turn's id is reusable.
-    pub fn begin_turn(&mut self, turn_id: TurnId) -> Result<&mut TurnContext, ConversationError> {
+    pub fn begin_turn(
+        &mut self,
+        turn_id: causa_kernel::TurnId,
+    ) -> Result<&mut TurnContext, ConversationError> {
         self.assert_stamp_invariant();
         if let Some(active) = &self.active_turn {
             return Err(if active.is_sealed() {
@@ -168,7 +213,7 @@ impl ConversationState {
                 ConversationError::TurnAlreadyActive
             });
         }
-        if self.completed_turns.0.iter().any(|s| s.turn_id == turn_id) {
+        if self.history.iter().any(|e| e.snapshot.turn_id == turn_id) {
             return Err(ConversationError::DuplicateTurnId(turn_id));
         }
         self.active_turn = Some(TurnContext::new(turn_id));
@@ -183,7 +228,7 @@ impl ConversationState {
     /// resumable pauses).
     pub fn seal_turn(
         &mut self,
-        turn_id: TurnId,
+        turn_id: causa_kernel::TurnId,
         result: SealedResult,
     ) -> Result<(), ConversationError> {
         self.assert_stamp_invariant();
@@ -217,11 +262,15 @@ impl ConversationState {
     }
 
     /// Exactly-once commit: requires the turn id to match the active slot,
-    /// the turn to be sealed, and the stamp to read `Completed`. Assigns the
-    /// next `TurnSequence` and appends the turn's snapshot to history.
-    /// Rejection (not idempotence): after the first commit the slot is
-    /// empty, so a repeated commit returns `UnknownTurn`.
-    pub fn commit(&mut self, turn_id: TurnId) -> Result<TurnSnapshot, ConversationError> {
+    /// the turn to be sealed, and the stamp to read `Completed`. Assigns
+    /// the next `TurnSequence`, appends the [`HistoryEntry`] to history,
+    /// and clears the active slot. Rejection (not idempotence): after the
+    /// first commit the slot is empty, so a repeated commit returns
+    /// `UnknownTurn`.
+    pub fn commit(
+        &mut self,
+        turn_id: causa_kernel::TurnId,
+    ) -> Result<HistoryEntry, ConversationError> {
         self.assert_stamp_invariant();
         match self.active_turn.as_ref() {
             Some(active) if active.turn_id() == turn_id => {}
@@ -238,21 +287,24 @@ impl ConversationState {
         }
         let active = self.active_turn.take().expect("matched above");
         self.sealed_result = None;
-        let turn_sequence = self.next_turn_sequence();
-        let snapshot = TurnSnapshot {
-            turn_sequence,
-            ..active.snapshot()
+        let sequence = self.next_turn_sequence();
+        let entry = HistoryEntry {
+            sequence,
+            snapshot: active.snapshot(),
         };
-        self.completed_turns.0.push(snapshot.clone());
+        self.history.push(entry.clone());
         self.version = self.version.next();
-        Ok(snapshot)
+        Ok(entry)
     }
 
-    /// Discard the active turn in any state (open, sealed-completed,
+    /// Discard the active turn in any state (open, paused, sealed-completed,
     /// sealed-interrupted). History is untouched; the returned
     /// `TurnContext` is for caller inspection only (no reopen/unseal). An
     /// aborted turn's id may be reused by a later `begin_turn`.
-    pub fn abort_turn(&mut self, turn_id: TurnId) -> Result<TurnContext, ConversationError> {
+    pub fn abort_turn(
+        &mut self,
+        turn_id: causa_kernel::TurnId,
+    ) -> Result<TurnContext, ConversationError> {
         self.assert_stamp_invariant();
         match self.active_turn.as_ref() {
             Some(active) if active.turn_id() == turn_id => {}
@@ -264,20 +316,21 @@ impl ConversationState {
         Ok(active)
     }
 
-    /// Lossless merged view: committed history (TurnSequence ascending,
+    /// Lossless merged view: committed history (sequence ascending,
     /// blocks in BlockSequence order) followed by the active turn's blocks,
     /// under the Conversation scope identity. Sync and policy-free by
     /// design — budget, selection and compaction over the merged view are
-    /// Slice 5 and will orchestrate through the policy layer, never mutate
-    /// facts. The only failure source is a missing active turn.
+    /// Slice 5 territory and orchestrate through the policy layer, never
+    /// mutate facts. The only failure source is a missing active turn.
     pub fn frame(&self, round_id: RoundId) -> Result<ContextFrame, ConversationError> {
         let active = match &self.active_turn {
             Some(active) => active,
             None => return Err(ConversationError::NoActiveTurn),
         };
+        let history: Vec<TurnSnapshot> = self.history.iter().map(|e| e.snapshot.clone()).collect();
         Ok(merged_frame(
             &self.conversation_id,
-            self.completed_turns.ordered(),
+            &history,
             active,
             round_id,
         ))
@@ -285,48 +338,57 @@ impl ConversationState {
 
     /// Borrow-split for a conversation driver's consume/return flow: the
     /// conversation id and committed history are read while the active
-    /// turn is driven mutably. Public since Slice 12 — the canonical
-    /// driver lives outside the kernel (agent-runtime), and this is the
-    /// exact seam any external conversation driver needs. Stamping still
-    /// goes through the public `seal_turn` afterwards, so no second `&mut`
+    /// turn is driven mutably. Public since Slice 12 — this is the exact
+    /// seam any external conversation driver needs. Stamping still goes
+    /// through the public `seal_turn` afterwards, so no second `&mut`
     /// seam exists.
-    pub fn runner_parts(&mut self) -> (&ConversationId, &[TurnSnapshot], Option<&mut TurnContext>) {
+    pub fn runner_parts(
+        &mut self,
+    ) -> (&ConversationId, Vec<TurnSnapshot>, Option<&mut TurnContext>) {
         (
             &self.conversation_id,
-            self.completed_turns.ordered(),
+            self.history.iter().map(|e| e.snapshot.clone()).collect(),
             self.active_turn.as_mut(),
         )
     }
 
-    /// Validated replay path: rebuild a conversation from committed
-    /// snapshots. The active slot starts empty (live paths never enter
+    /// Validated replay path: rebuild a session from committed history
+    /// entries. The active slot starts empty (live paths never enter
     /// here); `ConversationVersion` resets to zero (replay is a fresh load —
     /// cross-persistence version semantics are Slice 5). Validation closed
-    /// set: `turn_sequence` strictly increasing and distinct (gaps allowed —
-    /// future trimming territory), and every snapshot's blocks pass the same
-    /// `TurnContext::from_validated_blocks` checks; any violation maps to
+    /// set: `sequence` strictly increasing (gaps allowed — future trimming
+    /// territory), turn ids distinct (duplicate records must not silently
+    /// collapse into one history), and every snapshot's blocks pass the
+    /// kernel's `TurnContext::validate_blocks`; any violation maps to
     /// `ConversationError::InvalidSequence` so callers never touch
     /// `ContextError`. `source_version` is accepted as a recorded fact — it
     /// counts fact commits and is not derivable from the blocks.
-    pub fn from_snapshots(
+    pub fn from_history(
         conversation_id: ConversationId,
-        snapshots: Vec<TurnSnapshot>,
+        entries: Vec<HistoryEntry>,
     ) -> Result<Self, ConversationError> {
         let mut last_seq = TurnSequence(0);
-        for snapshot in &snapshots {
-            if snapshot.turn_sequence < last_seq {
+        let mut seen_ids = std::collections::HashSet::new();
+        for entry in &entries {
+            if entry.sequence < last_seq {
                 return Err(ConversationError::InvalidSequence(format!(
                     "turn_sequence not strictly increasing: {:?}",
-                    snapshot.turn_sequence
+                    entry.sequence
                 )));
             }
-            TurnContext::validate_blocks(&snapshot.turn_id, snapshot.blocks.as_slice())
-                .map_err(|e| ConversationError::InvalidSequence(e.to_string()))?;
-            last_seq = TurnSequence(snapshot.turn_sequence.0 + 1);
+            if !seen_ids.insert(entry.snapshot.turn_id.clone()) {
+                return Err(ConversationError::InvalidSequence(format!(
+                    "duplicate turn id in history: {:?}",
+                    entry.snapshot.turn_id
+                )));
+            }
+            TurnContext::validate_blocks(&entry.snapshot.turn_id, entry.snapshot.blocks.as_slice())
+                .map_err(|e: ContextError| ConversationError::InvalidSequence(e.to_string()))?;
+            last_seq = TurnSequence(entry.sequence.0 + 1);
         }
         Ok(Self {
             conversation_id,
-            completed_turns: OrderedTurns(snapshots),
+            history: entries,
             active_turn: None,
             sealed_result: None,
             version: ConversationVersion(0),
@@ -334,23 +396,23 @@ impl ConversationState {
     }
 
     /// Committed history in ascending `TurnSequence` order.
-    pub fn completed_turns(&self) -> &[TurnSnapshot] {
-        self.completed_turns.ordered()
+    pub fn history(&self) -> &[HistoryEntry] {
+        &self.history
     }
 
-    /// Number of committed turns in history.
-    pub fn snapshot_count(&self) -> usize {
-        self.completed_turns.0.len()
+    /// Number of committed entries in history.
+    pub fn history_len(&self) -> usize {
+        self.history.len()
     }
 
     /// The `ConversationVersion`, ticked at every controlled transition
     /// (`begin_turn` / `commit` / `abort_turn`); zero for a fresh or
-    /// replayed conversation.
+    /// replayed session.
     pub fn version(&self) -> ConversationVersion {
         self.version
     }
 
-    /// The conversation's identity.
+    /// The session's identity.
     pub fn conversation_id(&self) -> &ConversationId {
         &self.conversation_id
     }
@@ -372,32 +434,65 @@ impl ConversationState {
     }
 }
 
-/// Shared lossless merged materialization over committed history plus the
-/// active turn — the single semantics both `ConversationState::frame()` and
-/// a conversation driver's merged-view entry use. Public since Slice 12:
-/// the canonical driver lives outside the kernel and materializes frames
-/// through this projection. No reordering, no dedup, no trimming; nothing
-/// is written back.
-pub fn merged_frame(
-    conversation_id: &ConversationId,
-    history: &[TurnSnapshot],
-    active: &TurnContext,
-    round_id: RoundId,
-) -> ContextFrame {
-    let mut blocks = Vec::new();
-    for snapshot in history {
-        blocks.extend(snapshot.blocks.as_slice().iter().cloned());
-    }
-    blocks.extend(active.blocks().iter().cloned());
-    let scope = FrameScope::Conversation {
-        conversation_id: conversation_id.clone(),
-        active_turn_id: active.turn_id(),
-        source_version: active.version(),
-    };
-    ContextFrame {
-        frame_id: FrameId::from_scope(&scope, round_id),
-        scope,
-        round_id,
-        model_context: ModelContext { blocks },
-    }
+/// Persist one session's committed history as [`HistoryEntry`] records —
+/// the archive convenience port of the reference harness. Migrated from the
+/// kernel in Slice 6.5 with the session aggregate: it is a session-archive
+/// contract (completed-turn history), not a cross-harness capability, and
+/// it is **not** wired into `commit` — the host's harness calls
+/// `save_entry` after `ConversationState::commit`, keeping persistence
+/// policy (batch writes, compression, fsync cadence, retry strategy)
+/// host-owned.
+///
+/// Full paused outcomes are NOT stored through this port: the host saves
+/// them in its own checkpoint document (fact state + continuation can live
+/// atomically in one file).
+///
+/// Implementations are expected to be `Send + Sync` so they can sit
+/// behind an `Arc` in the host's wiring.
+#[async_trait]
+pub trait ConversationStore: Send + Sync {
+    /// Persist one committed history entry. Caller is the host's harness,
+    /// invoked inside or after `ConversationState::commit`. Idempotent on
+    /// `(conversation_id, sequence)` — repeated writes of the same entry
+    /// are valid (host may retry).
+    ///
+    /// Entries do not carry their `ConversationId` (the id is implicit in
+    /// the host's commit flow), so the trait takes it explicitly.
+    async fn save_entry(
+        &self,
+        conversation_id: &ConversationId,
+        entry: &HistoryEntry,
+    ) -> Result<(), ConversationStoreError>;
+
+    /// Load committed history for `conversation_id`. Returned entries are
+    /// in their own `TurnSequence` ascending order; the session validates
+    /// strict monotonicity through `ConversationState::from_history`.
+    /// Returns `ConversationStoreError::NotFound` when the conversation
+    /// has never been written.
+    async fn load_entries(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<HistoryEntry>, ConversationStoreError>;
+}
+
+/// Session-archive error surface. Distinct from
+/// `ArtifactStore::StoreError` (artifact persistence). Implementations
+/// map their native failures onto these variants so the host has a
+/// single error type to handle.
+#[derive(Debug, thiserror::Error)]
+pub enum ConversationStoreError {
+    /// No entry has ever been written for this conversation; carries the
+    /// conversation id.
+    #[error("conversation not found: {0}")]
+    NotFound(String),
+    /// The underlying storage failed; carries the human-readable cause.
+    #[error("io error: {0}")]
+    Io(String),
+    /// An entry could not be (de)serialized; carries the human-readable
+    /// cause.
+    #[error("serialization error: {0}")]
+    Serialization(String),
+    /// Stored data is present but unusable; carries the human-readable cause.
+    #[error("corrupted data: {0}")]
+    Corrupted(String),
 }

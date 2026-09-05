@@ -12,8 +12,8 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    Compaction, CompactionError, CompactionInput, CompactionOutput, ConversationState, ModelOutput,
-    ModelResponse, ModelStopReason, SealedResult, TextPayload, ToolCallDraft, TurnContext, TurnId,
+    Compaction, CompactionError, CompactionInput, CompactionOutput, ModelOutput, ModelResponse,
+    ModelStopReason, TextPayload, ToolCallDraft, TurnContext, TurnId,
 };
 
 // ---- ids and model-output constructors --------------------------------------
@@ -24,20 +24,6 @@ pub fn turn_id(s: &str) -> TurnId {
 
 pub fn ctx(s: &str) -> TurnContext {
     TurnContext::new(turn_id(s))
-}
-
-/// Canonical driver dance: begin_turn → append_input → seal_turn → commit.
-/// Single input + `SealedResult` (Completed or Interrupted) covers both
-/// branches; tests that need either pass the appropriate variant.
-pub fn commit_sealed(state: &mut ConversationState, turn_label: &str, result: SealedResult) {
-    state.begin_turn(TurnId::new(turn_label)).unwrap();
-    state
-        .active_turn_mut()
-        .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
-        .unwrap();
-    state.seal_turn(TurnId::new(turn_label), result).unwrap();
-    state.commit(TurnId::new(turn_label)).unwrap();
 }
 
 pub fn endturn_output(text: &str) -> ModelOutput {
