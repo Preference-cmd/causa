@@ -7,11 +7,11 @@ mod common;
 
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
-    CallControl, ContextBlock, FramePolicy, ModelInvokeErrorKind, ModelOutput, ModelResponse,
-    ModelStopReason, ModelUsage, ReasoningPayload, StoreError, TextPayload, Tool, ToolCallContext,
-    ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionOutcome, ToolOutput,
-    ToolOutputLimits, ToolResultPayload, ToolResultStatus, Truncation, UnknownOutcomePolicy,
-    WindowBudget,
+    CallControl, ContextBlock, DynamicToolSource, FramePolicy, ModelInvokeErrorKind, ModelOutput,
+    ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, SourceError, StoreError,
+    TextPayload, Tool, ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition,
+    ToolExecutionError, ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload,
+    ToolResultStatus, Truncation, UnknownOutcomePolicy, WindowBudget,
 };
 use causa_runtime::{
     ExecutionOptions, HookCtx, HookOutcome, RetryPolicy, RunControl, ToolExecutor, ToolUseHook,
@@ -24,6 +24,7 @@ use common::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[tokio::test]
 async fn final_assistant_completes_once() {
@@ -949,5 +950,65 @@ async fn hook_that_drops_a_call_interrupts_as_invariant_violation() {
             .iter()
             .any(|b| matches!(b.content, BlockContent::ToolResult(_))),
         "the dropped call must not produce a result"
+    );
+}
+
+// ---- per-round tool-surface refresh (2026-09-05 assessment F4) --------------------
+
+#[tokio::test]
+async fn dynamic_catalog_refreshes_between_model_rounds() {
+    // A dynamic source whose listing changes when one of its tools runs
+    // must reach the NEXT round's model request through the driver — the
+    // run-start snapshot alone is not the catalog.
+    struct Catalog {
+        version: AtomicU64,
+    }
+    #[async_trait::async_trait]
+    impl DynamicToolSource for Catalog {
+        fn id(&self) -> &str {
+            "catalog"
+        }
+        fn version(&self) -> u64 {
+            self.version.load(Ordering::SeqCst)
+        }
+        async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError> {
+            Ok(vec![ToolDefinition {
+                name: format!("tool_v{}", self.version()),
+                description: String::new(),
+                parameters: json!({"type": "object"}),
+            }])
+        }
+        async fn invoke(
+            &self,
+            call: &ToolCallPayload,
+            _control: &CallControl,
+        ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+            self.version.store(1, Ordering::SeqCst);
+            Ok(ToolExecutionOutcome::new(ToolResultPayload {
+                call_id: call.call_id.clone(),
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!("updated")),
+            }))
+        }
+    }
+    let source = Arc::new(Catalog {
+        version: AtomicU64::new(0),
+    });
+    let executor = Arc::new(ToolExecutor::from_vec(vec![]));
+    executor.register_dynamic(source).unwrap();
+    let mut options = options_with_limits(5, 10);
+    options.invocation.tool_surface = executor.tool_surface().await;
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("", "tool_v0", json!({}))),
+        Ok(endturn_output("done")),
+    ]);
+    let runner = TurnRunner::new(gateway.clone(), executor);
+    let out = runner.run(ctx("catalog"), options, ctrl()).await;
+    assert!(matches!(out.result, TurnResult::Completed { .. }));
+    let recorded = gateway.recorded();
+    assert_eq!(recorded[0].tool_surface.definitions[0].name, "tool_v0");
+    assert_eq!(
+        recorded[1].tool_surface.definitions[0].name, "tool_v1",
+        "second round ran on a stale catalog"
     );
 }

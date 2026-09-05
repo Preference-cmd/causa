@@ -96,7 +96,16 @@ impl Default for TurnLimits {
 pub struct TurnInvocation {
     /// Which model the gateway invokes. Default: the `"fake"` placeholder.
     pub model: ModelRef,
-    /// The tool surface advertised to the model this run. Default: empty.
+    /// The tool surface advertised to the model for this run's **first
+    /// model phase** — the baseline snapshot, conventionally
+    /// `executor.tool_surface().await`. At every later round boundary the
+    /// driver re-snapshots the runner's `ToolExecutor` instead, so catalog
+    /// changes (a dynamic source bumping its listing mid-turn) reach the
+    /// next request; registering a source therefore authorizes its
+    /// evolving catalog from the second round on. Retries within one round
+    /// reuse the round's snapshot. A hard per-round cap is a `ToolUseHook`
+    /// (reject) or unregister concern, not a frozen surface. Default:
+    /// empty.
     pub tool_surface: ToolSurface,
     /// Generation (sampling) parameters sent with every attempt. Default:
     /// `GenerationOptions::default()`.

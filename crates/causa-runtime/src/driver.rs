@@ -865,6 +865,14 @@ impl TurnRunner {
             }
         }
 
+        // The first model phase of this drive advertises the host-declared
+        // surface (the `TurnInvocation` baseline); every later round
+        // boundary re-snapshots the runner's executor, so catalog changes
+        // — including ones this turn's own tool calls triggered — reach the
+        // next request (Slice 10's per-round refresh, consumed here).
+        // Retries within one round reuse that round's snapshot.
+        let first_model_round = round;
+
         loop {
             // Steering (Slice 7): resume-time injections first, then the
             // round-boundary pull. Both append with the `user.steering`
@@ -950,6 +958,16 @@ impl TurnRunner {
                 turn_id: active.turn_id(),
                 round_id: RoundId(round),
             };
+            // Per-round tool surface (see `first_model_round` above): the
+            // host baseline for the first model phase, a fresh executor
+            // snapshot at every later round boundary. Retries inside the
+            // attempt loop below reuse the same snapshot, so advertising
+            // and dispatch routing stay one decision per round.
+            let round_surface = if round == first_model_round {
+                options.invocation.tool_surface.clone()
+            } else {
+                self.executor.tool_surface().await
+            };
             // Observability baseline (Slice 6.6): the round span covers the
             // bounded retry loop; spans are entered per poll via
             // `Instrument`, so the future stays `Send`. Fields carry ids
@@ -971,7 +989,7 @@ impl TurnRunner {
                         attempt: AttemptNumber(attempt),
                         frame: frame.clone(),
                         model: options.invocation.model.clone(),
-                        tool_surface: options.invocation.tool_surface.clone(),
+                        tool_surface: round_surface.clone(),
                         generation: options.invocation.generation.clone(),
                         cache: options.invocation.cache,
                     };
