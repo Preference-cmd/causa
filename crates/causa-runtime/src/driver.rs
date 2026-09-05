@@ -25,6 +25,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tracing::Instrument;
+
 use crate::hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
 use futures_util::StreamExt;
 
@@ -405,9 +407,26 @@ impl TurnRunner {
     /// turn alone (Turn scope, policy-shaped).
     pub async fn run(
         &self,
+        context: TurnContext,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+    ) -> TurnOutcome {
+        let span = tracing::info_span!(
+            "agent.turn",
+            turn_id = %context.turn_id().0,
+            scope = "turn"
+        );
+        self.run_inner(context, options, ctrl, ModelPhase::Batch)
+            .instrument(span)
+            .await
+    }
+
+    async fn run_inner(
+        &self,
         mut context: TurnContext,
         options: TurnRunOptions,
         ctrl: RunControl,
+        phase: ModelPhase,
     ) -> TurnOutcome {
         let start = Instant::now();
         let (result, mut trace, tool_calls_total) = self
@@ -416,7 +435,7 @@ impl TurnRunner {
                 FrameSource::Turn(&options.frame),
                 &options,
                 &ctrl,
-                ModelPhase::Batch,
+                phase,
             )
             .await;
         // Every drive exit is terminal or paused; the entry owns all
@@ -442,30 +461,18 @@ impl TurnRunner {
     /// how to present the partial-then-reset flow.
     pub async fn run_streaming(
         &self,
-        mut context: TurnContext,
+        context: TurnContext,
         options: TurnRunOptions,
         ctrl: RunControl,
     ) -> TurnOutcome {
-        let start = Instant::now();
-        let (result, mut trace, tool_calls_total) = self
-            .drive(
-                &mut context,
-                FrameSource::Turn(&options.frame),
-                &options,
-                &ctrl,
-                ModelPhase::Stream,
-            )
-            .await;
-        trace.tool_calls_total = tool_calls_total;
-        trace.total_duration_ms = millis_since(start);
-        if !matches!(result, TurnResult::Paused { .. }) {
-            context.seal();
-        }
-        TurnOutcome {
-            context,
-            result,
-            trace,
-        }
+        let span = tracing::info_span!(
+            "agent.turn",
+            turn_id = %context.turn_id().0,
+            scope = "turn.streaming"
+        );
+        self.run_inner(context, options, ctrl, ModelPhase::Stream)
+            .instrument(span)
+            .await
     }
 
     /// Slice 2 entry: frames materialize as the lossless merged view over
@@ -599,6 +606,42 @@ impl TurnRunner {
     /// terminal bookkeeping, and outcome-stamped sealing shared by both
     /// conversation entries and the resume path.
     async fn drive_conversation(
+        &self,
+        state: ConversationState,
+        options: TurnRunOptions,
+        ctrl: RunControl,
+        phase: ModelPhase,
+        resume: Option<ResumeState>,
+    ) -> Result<ConversationOutcome, ConversationError> {
+        // Observability baseline (Slice 6.6): one `agent.turn` span per
+        // entry, ids and scope only — never message content. The span is
+        // entered per poll via `Instrument`, so the future stays `Send`.
+        let scope = if resume.is_some() {
+            "conversation.resume"
+        } else if matches!(phase, ModelPhase::Stream) {
+            "conversation.streaming"
+        } else {
+            "conversation"
+        };
+        let turn_id = state
+            .active_turn()
+            .map(|t| t.turn_id().0)
+            .unwrap_or_default();
+        let span = tracing::info_span!(
+            "agent.turn",
+            turn_id = %turn_id,
+            conversation_id = %state.conversation_id().0,
+            scope = scope,
+        );
+        self.drive_conversation_inner(state, options, ctrl, phase, resume)
+            .instrument(span)
+            .await
+    }
+
+    /// The conversation entry body — entry gates, merged-frame source,
+    /// terminal bookkeeping, and outcome-stamped sealing shared by both
+    /// conversation entries and the resume path.
+    async fn drive_conversation_inner(
         &self,
         mut state: ConversationState,
         options: TurnRunOptions,
@@ -873,69 +916,95 @@ impl TurnRunner {
                 turn_id: active.turn_id(),
                 round_id: RoundId(round),
             };
-            // bounded logical retry: same InvocationId / ContextFrame, attempt+1
-            let mut attempt: u32 = 1;
-            let mut attempts: Vec<AttemptTrace> = Vec::new();
-            let output: Result<ModelOutput, ModelInvokeError> = loop {
-                let attempt_started = Instant::now();
-                let attempt_ctrl = ctrl.for_attempt(options.policy.attempt_timeout);
-                let req = ModelRequest {
-                    invocation_id: invocation.clone(),
-                    attempt: AttemptNumber(attempt),
-                    frame: frame.clone(),
-                    model: options.invocation.model.clone(),
-                    tool_surface: options.invocation.tool_surface.clone(),
-                    generation: options.invocation.generation.clone(),
-                };
-                let result = match phase {
-                    ModelPhase::Batch => self.gateway.invoke(&req, &attempt_ctrl).await,
-                    ModelPhase::Stream => {
-                        self.stream_attempt(&req, &attempt_ctrl, options, RoundId(round))
-                            .await
-                    }
-                };
-                match result {
-                    Ok(out) => {
-                        attempts.push(AttemptTrace {
-                            attempt: AttemptNumber(attempt),
-                            kind: None,
-                            is_retryable: false,
-                            duration_ms: millis_since(attempt_started),
-                        });
-                        break Ok(out);
-                    }
-                    Err(e) => {
-                        let retryable = options.policy.retry.allows(&e.kind);
-                        attempts.push(AttemptTrace {
-                            attempt: AttemptNumber(attempt),
-                            kind: Some(e.kind.clone()),
-                            is_retryable: retryable,
-                            duration_ms: millis_since(attempt_started),
-                        });
-                        if retryable && attempt <= options.policy.retry.max_retries {
-                            // Cancellation-aware backoff: sleep between
-                            // attempts, racing the shared token so a cancel
-                            // lands immediately instead of after the wait.
-                            let delay = options.policy.retry.backoff_delay(attempt + 1);
-                            if !delay.is_zero() {
-                                tokio::select! {
-                                    biased;
-                                    _ = attempt_ctrl.cancellation_token().cancelled() => {
-                                        break Err(ModelInvokeError::new(
-                                            ModelInvokeErrorKind::Cancelled,
-                                            "cancelled during retry backoff",
-                                        ));
-                                    }
-                                    _ = tokio::time::sleep(delay) => {}
-                                }
-                            }
-                            attempt += 1;
-                            continue;
+            // Observability baseline (Slice 6.6): the round span covers the
+            // bounded retry loop; spans are entered per poll via
+            // `Instrument`, so the future stays `Send`. Fields carry ids
+            // and names only — never frame content or arguments.
+            let round_span = tracing::debug_span!(
+                "agent.round",
+                turn_id = %invocation.turn_id.0,
+                round_id = round
+            );
+            let (attempts, output) = async {
+                // bounded logical retry: same InvocationId / ContextFrame, attempt+1
+                let mut attempt: u32 = 1;
+                let mut attempts: Vec<AttemptTrace> = Vec::new();
+                let output: Result<ModelOutput, ModelInvokeError> = loop {
+                    let attempt_started = Instant::now();
+                    let attempt_ctrl = ctrl.for_attempt(options.policy.attempt_timeout);
+                    let req = ModelRequest {
+                        invocation_id: invocation.clone(),
+                        attempt: AttemptNumber(attempt),
+                        frame: frame.clone(),
+                        model: options.invocation.model.clone(),
+                        tool_surface: options.invocation.tool_surface.clone(),
+                        generation: options.invocation.generation.clone(),
+                        cache: options.invocation.cache,
+                    };
+                    let attempt_span = tracing::debug_span!(
+                        "agent.attempt",
+                        attempt = attempt,
+                        model = %options.invocation.model.0
+                    );
+                    let result = match phase {
+                        ModelPhase::Batch => {
+                            self.gateway
+                                .invoke(&req, &attempt_ctrl)
+                                .instrument(attempt_span)
+                                .await
                         }
-                        break Err(e);
+                        ModelPhase::Stream => {
+                            self.stream_attempt(&req, &attempt_ctrl, options, RoundId(round))
+                                .instrument(attempt_span)
+                                .await
+                        }
+                    };
+                    match result {
+                        Ok(out) => {
+                            attempts.push(AttemptTrace {
+                                attempt: AttemptNumber(attempt),
+                                kind: None,
+                                is_retryable: false,
+                                duration_ms: millis_since(attempt_started),
+                            });
+                            break Ok(out);
+                        }
+                        Err(e) => {
+                            let retryable = options.policy.retry.allows(&e.kind);
+                            attempts.push(AttemptTrace {
+                                attempt: AttemptNumber(attempt),
+                                kind: Some(e.kind.clone()),
+                                is_retryable: retryable,
+                                duration_ms: millis_since(attempt_started),
+                            });
+                            if retryable && attempt <= options.policy.retry.max_retries {
+                                // Cancellation-aware backoff: sleep between
+                                // attempts, racing the shared token so a cancel
+                                // lands immediately instead of after the wait.
+                                let delay = options.policy.retry.backoff_delay(attempt + 1);
+                                if !delay.is_zero() {
+                                    tokio::select! {
+                                        biased;
+                                        _ = attempt_ctrl.cancellation_token().cancelled() => {
+                                            break Err(ModelInvokeError::new(
+                                                ModelInvokeErrorKind::Cancelled,
+                                                "cancelled during retry backoff",
+                                            ));
+                                        }
+                                        _ = tokio::time::sleep(delay) => {}
+                                    }
+                                }
+                                attempt += 1;
+                                continue;
+                            }
+                            break Err(e);
+                        }
                     }
-                }
-            };
+                };
+                (attempts, output)
+            }
+            .instrument(round_span)
+            .await;
             let output = match output {
                 Ok(o) => o,
                 Err(e) => {

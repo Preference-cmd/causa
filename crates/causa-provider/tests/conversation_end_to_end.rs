@@ -104,6 +104,7 @@ async fn run_in_conversation_completes_two_tool_round_trips_over_http() {
             model: ModelRef::new("claude-test"),
             tool_surface: ToolSurface::from_definitions(vec![ReadTool.definition()]),
             generation: Default::default(),
+            cache: Default::default(),
         },
         ..Default::default()
     };

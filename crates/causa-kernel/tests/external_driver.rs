@@ -79,6 +79,7 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
         model: ModelRef::new("external-model"),
         tool_surface: ToolSurface::empty(),
         generation: GenerationOptions::default(),
+        cache: causa_kernel::CacheDirective::None,
     };
     let ctrl = AttemptControl::new(CancellationToken::new(), None);
     let output = gateway.invoke(&request, &ctrl).await.unwrap();

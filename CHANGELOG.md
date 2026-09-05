@@ -31,6 +31,17 @@ Planned as **0.1.0** — the release gate is functional completeness
 - **`causa-mcp`** — MCP client (`McpToolSource`) over stdio, Streamable
   HTTP, and in-process I/O; tools namespaced `mcp_{server}_{tool}` into
   the executor with `tools/list_changed` cache invalidation.
+- Kernel-face prompt caching: `CacheDirective` rides every model
+  request — the Anthropic translation renders three-anchor
+  `cache_control` breakpoints (tool surface, system prefix, latest
+  stable conversation message); OpenAI-family renderers accept the
+  directive as a documented no-op (server-side automatic caching).
+- Structured output: `GenerationOptions::output_schema` maps to Chat
+  `response_format` and Responses `text.format`; schema validation and
+  corrective retry stay host-side.
+- Tracing baseline: `agent.turn` / `agent.round` / `agent.attempt` /
+  `agent.tool` / `agent.http` spans across driver, executor, and
+  gateway — ids and names only, never message payloads.
 - CI: fmt / clippy / test matrix (ubuntu + macos), MSRV 1.96 job, and the
   dependency-direction guard; a manual-trigger publish workflow with a
   full dry-run pass.

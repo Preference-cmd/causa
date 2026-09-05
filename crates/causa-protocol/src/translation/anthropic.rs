@@ -24,6 +24,14 @@
 //!   OpenAI-family wires carry error information in the content).
 //! - `GenerationOptions::max_tokens` is required by Anthropic; a `None`
 //!   renders as [`DEFAULT_MAX_TOKENS`].
+//! - [`CacheDirective::StablePrefix`] marks three `cache_control`
+//!   breakpoints: the last tool definition, the `system` parameter
+//!   (rendered as a block array so the anchor can attach — Anthropic
+//!   cannot hang the marker off a string parameter), and the latest
+//!   stable conversation message (the previous message when the final
+//!   one carries this round's dispatched `tool_result` blocks, the
+//!   final message otherwise). [`CacheDirective::None`] renders
+//!   byte-identically to a body without any cache key.
 //! - `reasoning` is parsed as a wire envelope only. The kernel does not
 //!   persist reasoning as facts, so cross-turn thinking replay is out of
 //!   scope here (the adapter sees fact-layer blocks each round).
@@ -33,9 +41,9 @@
 use serde_json::{Value, json};
 
 use causa_kernel::{
-    ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
-    ModelResponse, ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolResultStatus,
-    ToolSurface,
+    CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
+    ToolCallDraft, ToolResultStatus, ToolSurface,
 };
 
 use super::context_frame::{self, Role, Segment};
@@ -48,13 +56,14 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 ///
 /// The body is complete: `model`, `max_tokens`, `messages`, plus `system`,
 /// `temperature`, and `tools` when the inputs call for them. Rendering is
-/// deterministic — the same frame, surface, generation, and model always
-/// produce byte-identical JSON.
+/// deterministic — the same frame, surface, generation, model, and cache
+/// directive always produce byte-identical JSON.
 pub fn render_anthropic_messages(
     frame: &ContextFrame,
     tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
+    cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
     let normalized = context_frame::normalize(frame);
 
@@ -119,6 +128,17 @@ pub fn render_anthropic_messages(
         ));
     }
 
+    // Stable-prefix anchor: the frame is append-only, so every rendered
+    // message is byte-stable across rounds and retries; the anchor skips
+    // the final message only when it carries this round's dispatched
+    // tool results.
+    if matches!(cache, CacheDirective::StablePrefix)
+        && let Some(anchor_blocks) = stable_prefix_message(&mut messages)
+        && let Some(last_block) = anchor_blocks.last_mut()
+    {
+        last_block["cache_control"] = json!({"type": "ephemeral"});
+    }
+
     let mut body = json!({
         "model": model.0,
         "max_tokens": generation.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
@@ -131,15 +151,50 @@ pub fn render_anthropic_messages(
         body["temperature"] = json!(temperature);
     }
     if !system_parts.is_empty() {
-        body["system"] = json!(system_parts.join("\n"));
+        if matches!(cache, CacheDirective::StablePrefix) {
+            // A string parameter cannot carry the anchor; the block-array
+            // form is the documented equivalent.
+            body["system"] = json!([{
+                "type": "text",
+                "text": system_parts.join("\n"),
+                "cache_control": {"type": "ephemeral"},
+            }]);
+        } else {
+            body["system"] = json!(system_parts.join("\n"));
+        }
     }
     if !tool_surface.definitions.is_empty() {
-        body["tools"] = json!(context_frame::tool_definitions(
-            tool_surface,
-            context_frame::ToolShape::Anthropic
-        ));
+        let mut tools =
+            context_frame::tool_definitions(tool_surface, context_frame::ToolShape::Anthropic);
+        if matches!(cache, CacheDirective::StablePrefix)
+            && let Some(last_tool) = tools.last_mut()
+        {
+            last_tool["cache_control"] = json!({"type": "ephemeral"});
+        }
+        body["tools"] = json!(tools);
     }
     Ok(body)
+}
+
+/// The message the stable-prefix cache anchor lands on: the previous
+/// message when the final one carries this round's dispatched
+/// `tool_result` blocks, the final message otherwise. Anchoring the
+/// message before the fresh dispatch keeps the cached prefix clear of
+/// content the current round just appended.
+fn stable_prefix_message<'a>(
+    messages: &'a mut [(&'static str, Vec<Value>)],
+) -> Option<&'a mut Vec<Value>> {
+    let last = messages.last()?;
+    let dispatching = last
+        .1
+        .iter()
+        .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"));
+    let index = if dispatching && messages.len() > 1 {
+        messages.len() - 2
+    } else {
+        messages.len() - 1
+    };
+    Some(&mut messages[index].1)
 }
 
 /// Parse an Anthropic Messages response body into a kernel
@@ -269,6 +324,7 @@ mod tests {
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("claude-test"),
+            CacheDirective::None,
         )
         .unwrap()
     }
@@ -400,9 +456,16 @@ mod tests {
         let generation = GenerationOptions {
             temperature: Some(0.5),
             max_tokens: None,
+            ..GenerationOptions::default()
         };
-        let v = render_anthropic_messages(&f, &surface, &generation, &ModelRef::new("claude-test"))
-            .unwrap();
+        let v = render_anthropic_messages(
+            &f,
+            &surface,
+            &generation,
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
         assert_eq!(v["model"], json!("claude-test"));
         assert_eq!(v["temperature"], json!(0.5));
         // Anthropic requires max_tokens; None renders as the default
@@ -419,15 +482,26 @@ mod tests {
         let generation = GenerationOptions {
             temperature: Some(0.5),
             max_tokens: Some(100),
+            ..GenerationOptions::default()
         };
-        let v2 =
-            render_anthropic_messages(&f, &surface, &generation, &ModelRef::new("claude-test"))
-                .unwrap();
+        let v2 = render_anthropic_messages(
+            &f,
+            &surface,
+            &generation,
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
         assert_eq!(v2["max_tokens"], json!(100));
         // byte determinism over the full body
-        let again =
-            render_anthropic_messages(&f, &surface, &generation, &ModelRef::new("claude-test"))
-                .unwrap();
+        let again = render_anthropic_messages(
+            &f,
+            &surface,
+            &generation,
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
         assert_eq!(
             serde_json::to_string(&v2).unwrap(),
             serde_json::to_string(&again).unwrap()
@@ -471,9 +545,86 @@ mod tests {
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
+            CacheDirective::None,
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
+    }
+
+    #[test]
+    fn cache_none_omits_every_cache_control_key() {
+        let f = frame(vec![
+            text(0, "be terse", Some("system")),
+            text(1, "hi", Some("user")),
+        ]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
+            name: "read".into(),
+            description: "read a file".into(),
+            parameters: json!({"type": "object"}),
+        }]);
+        let v = render_anthropic_messages(
+            &f,
+            &surface,
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert!(!serde_json::to_string(&v).unwrap().contains("cache_control"));
+    }
+
+    #[test]
+    fn stable_prefix_marks_tools_system_and_previous_message() {
+        let f = frame(vec![
+            text(0, "be terse", Some("system")),
+            text(1, "hi", Some("user")),
+            call(2, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
+            result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
+        ]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
+            name: "read".into(),
+            description: "read a file".into(),
+            parameters: json!({"type": "object"}),
+        }]);
+        let v = render_anthropic_messages(
+            &f,
+            &surface,
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::StablePrefix,
+        )
+        .unwrap();
+        // system renders as a block array carrying the anchor
+        assert_eq!(
+            v["system"],
+            json!([{
+                "type": "text",
+                "text": "be terse",
+                "cache_control": {"type": "ephemeral"},
+            }])
+        );
+        // the final message carries this round's dispatched tool results,
+        // so the anchor lands on the last block of the assistant message
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[1]["content"][0].get("cache_control").is_some());
+        // the last tool definition carries the anchor
+        assert_eq!(v["tools"][0]["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    #[test]
+    fn stable_prefix_without_dispatch_anchors_the_final_message() {
+        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let v = render_anthropic_messages(
+            &f,
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::StablePrefix,
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        assert!(msgs[0]["content"][0].get("cache_control").is_some());
     }
 
     // --- parsing -----------------------------------------------------------

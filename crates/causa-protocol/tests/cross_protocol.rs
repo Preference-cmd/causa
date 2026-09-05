@@ -91,9 +91,30 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
     let surface = ToolSurface::empty();
     let generation = GenerationOptions::default();
     (
-        render_anthropic_messages(frame, &surface, &generation, &model).unwrap(),
-        render_openai_chat_messages(frame, &surface, &generation, &model).unwrap(),
-        render_openai_responses_input(frame, &surface, &generation, &model).unwrap(),
+        render_anthropic_messages(
+            frame,
+            &surface,
+            &generation,
+            &model,
+            causa_kernel::CacheDirective::None,
+        )
+        .unwrap(),
+        render_openai_chat_messages(
+            frame,
+            &surface,
+            &generation,
+            &model,
+            causa_kernel::CacheDirective::None,
+        )
+        .unwrap(),
+        render_openai_responses_input(
+            frame,
+            &surface,
+            &generation,
+            &model,
+            causa_kernel::CacheDirective::None,
+        )
+        .unwrap(),
     )
 }
 

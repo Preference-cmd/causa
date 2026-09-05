@@ -17,6 +17,7 @@ use causa_protocol::translation::openai_responses::{
 };
 use reqwest::Client;
 use serde_json::Value;
+use tracing::Instrument;
 
 use crate::gateway_transport::{GatewayCore, finish_response, send_with_control};
 
@@ -61,6 +62,7 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
             &request.tool_surface,
             &request.generation,
             &request.model,
+            request.cache,
         )
     }
 
@@ -94,6 +96,7 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
             &request.tool_surface,
             &request.generation,
             &request.model,
+            request.cache,
         )
     }
 
@@ -125,6 +128,7 @@ impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
             &request.tool_surface,
             &request.generation,
             &request.model,
+            request.cache,
         )
     }
 
@@ -197,14 +201,22 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
         request: &ModelRequest,
         control: &AttemptControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
-        // A frame the renderer rejects never reaches the wire.
-        let body = self.config.render(request)?;
-        let req = self
-            .config
-            .decorate_request(self.core.post(), &self.api_key)
-            .json(&body);
-        let (status, text) = send_with_control(req, control).await?;
-        finish_response(status, &text, C::PROVIDER, |v| self.config.parse(v))
+        // Observability baseline (Slice 6.6): ids and names only — never
+        // arguments, message bodies, or API keys. The span is entered per
+        // poll via `Instrument` so the boxed future stays `Send`.
+        let span = tracing::debug_span!("agent.http", provider = C::PROVIDER, path = C::PATH);
+        async {
+            // A frame the renderer rejects never reaches the wire.
+            let body = self.config.render(request)?;
+            let req = self
+                .config
+                .decorate_request(self.core.post(), &self.api_key)
+                .json(&body);
+            let (status, text) = send_with_control(req, control).await?;
+            finish_response(status, &text, C::PROVIDER, |v| self.config.parse(v))
+        }
+        .instrument(span)
+        .await
     }
 }
 

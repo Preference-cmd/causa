@@ -37,6 +37,12 @@
 //! rejects the orphan at HTTP time, the loud failure path); non-string
 //! tool observations serialize to a string.
 
+/// The schema name rendered into OpenAI-family structured-output envelopes
+/// (Chat `response_format.json_schema.name`, Responses `text.format.name`).
+/// The kernel carries no schema name; this placeholder keeps the wire shape
+/// complete without widening the `GenerationOptions` contract.
+pub(crate) const OUTPUT_SCHEMA_NAME: &str = "response";
+
 pub mod anthropic;
 pub(crate) mod context_frame;
 pub mod openai_chat;

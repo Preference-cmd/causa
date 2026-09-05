@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use causa_kernel::{ArtifactStore, ToolOutputLimits};
-use causa_kernel::{FramePolicy, TokenCounter};
+use causa_kernel::{CacheDirective, FramePolicy, TokenCounter};
 use causa_kernel::{GenerationOptions, ModelInvokeErrorKind, ModelRef, ToolSurface};
 use causa_kernel::{StreamDelta, TurnInteraction};
 
@@ -101,6 +101,9 @@ pub struct TurnInvocation {
     /// Generation (sampling) parameters sent with every attempt. Default:
     /// `GenerationOptions::default()`.
     pub generation: GenerationOptions,
+    /// Prompt-cache instruction rendered by the gateway's translation face.
+    /// Default: [`CacheDirective::None`].
+    pub cache: CacheDirective,
 }
 impl Default for TurnInvocation {
     fn default() -> Self {
@@ -108,6 +111,7 @@ impl Default for TurnInvocation {
             model: ModelRef::new("fake"),
             tool_surface: ToolSurface::empty(),
             generation: GenerationOptions::default(),
+            cache: CacheDirective::None,
         }
     }
 }

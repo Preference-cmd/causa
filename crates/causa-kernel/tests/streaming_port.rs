@@ -23,6 +23,7 @@ fn request(ctx: &TurnContext) -> ModelRequest {
         model: ModelRef::new("fake"),
         tool_surface: ToolSurface::empty(),
         generation: Default::default(),
+        cache: causa_kernel::CacheDirective::None,
     }
 }
 

@@ -5,6 +5,7 @@
 //! table (every row), cancellation and deadline behavior, and the
 //! end-to-end `invoke` returning a complete kernel `ModelOutput`.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use causa_kernel::{
@@ -62,6 +63,7 @@ fn request(frame: ContextFrame) -> ModelRequest {
         model: ModelRef::new("claude-test"),
         tool_surface: ToolSurface::empty(),
         generation: GenerationOptions::default(),
+        cache: causa_kernel::CacheDirective::None,
     }
 }
 
@@ -335,5 +337,65 @@ async fn pre_cancelled_control_never_reaches_the_wire() {
     assert!(
         matches!(e.kind(), ModelInvokeErrorKind::Cancelled),
         "got {e}"
+    );
+}
+
+/// Appends every write into the shared capture buffer.
+struct SpanSink(Arc<Mutex<String>>);
+impl std::io::Write for SpanSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap()
+            .push_str(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn invoke_emits_the_agent_http_span() {
+    let server = MockServer::start().await;
+    server
+        .register(messages_mock(
+            200,
+            json!({
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+            }),
+        ))
+        .await;
+
+    let captured: Arc<Mutex<String>> = Arc::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NEW)
+        .with_writer({
+            let sink = captured.clone();
+            move || SpanSink(sink.clone())
+        })
+        .finish();
+    // Global default: hyper's connection events fire off the test thread,
+    // so a thread-local default misses the span lifecycle lines.
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("span test owns the global subscriber");
+
+    gateway(&server)
+        .invoke(&request(user_frame()), &ctrl(None))
+        .await
+        .unwrap();
+
+    let text = captured.lock().unwrap().clone();
+    assert!(text.contains("agent.http"), "missing agent.http: {text}");
+    assert!(
+        text.contains("provider=\"anthropic\""),
+        "missing provider field: {text}"
+    );
+    assert!(
+        text.contains("path=\"/v1/messages\""),
+        "missing path field: {text}"
     );
 }

@@ -34,19 +34,27 @@
 use serde_json::{Value, json};
 
 use causa_kernel::{
-    ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
-    ModelResponse, ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolSurface,
+    CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
+    ToolCallDraft, ToolSurface,
 };
 
 use super::context_frame::{self, Role, Segment};
 
 /// Render a [`ContextFrame`] into an OpenAI Responses API request body.
 /// Deterministic: identical inputs produce byte-identical JSON.
+///
+/// `cache` is accepted for interface parity and ignored: OpenAI-family
+/// providers cache server-side, so the directive has no wire
+/// representation on this protocol. `GenerationOptions::output_schema`
+/// renders as `text.format` (structured output); schema validation and
+/// corrective retry stay host-side.
 pub fn render_openai_responses_input(
     frame: &ContextFrame,
     tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
+    _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
     let normalized = context_frame::normalize(frame);
 
@@ -107,6 +115,16 @@ pub fn render_openai_responses_input(
     }
     if let Some(max_tokens) = generation.max_tokens {
         body["max_output_tokens"] = json!(max_tokens);
+    }
+    if let Some(schema) = &generation.output_schema {
+        body["text"] = json!({
+            "format": {
+                "type": "json_schema",
+                "name": super::OUTPUT_SCHEMA_NAME,
+                "schema": schema,
+                "strict": false,
+            },
+        });
     }
     if !tool_surface.definitions.is_empty() {
         body["tools"] = json!(context_frame::tool_definitions(
@@ -261,6 +279,7 @@ mod tests {
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
+            CacheDirective::None,
         )
         .unwrap()
     }
@@ -359,10 +378,16 @@ mod tests {
         let generation = GenerationOptions {
             temperature: Some(0.5),
             max_tokens: Some(256),
+            ..GenerationOptions::default()
         };
-        let v =
-            render_openai_responses_input(&f, &surface, &generation, &ModelRef::new("gpt-test"))
-                .unwrap();
+        let v = render_openai_responses_input(
+            &f,
+            &surface,
+            &generation,
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
         assert_eq!(v["model"], json!("gpt-test"));
         assert_eq!(v["temperature"], json!(0.5));
         assert_eq!(v["max_output_tokens"], json!(256));
@@ -376,13 +401,56 @@ mod tests {
                 "parameters": {"type": "object"},
             }])
         );
-        let again =
-            render_openai_responses_input(&f, &surface, &generation, &ModelRef::new("gpt-test"))
-                .unwrap();
+        let again = render_openai_responses_input(
+            &f,
+            &surface,
+            &generation,
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
         assert_eq!(
             serde_json::to_string(&v).unwrap(),
             serde_json::to_string(&again).unwrap()
         );
+    }
+
+    #[test]
+    fn output_schema_maps_and_cache_directive_is_a_noop() {
+        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let generation = GenerationOptions {
+            output_schema: Some(json!({"type": "object"})),
+            ..GenerationOptions::default()
+        };
+        let v = render_openai_responses_input(
+            &f,
+            &ToolSurface::empty(),
+            &generation,
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(
+            v["text"],
+            json!({
+                "format": {
+                    "type": "json_schema",
+                    "name": "response",
+                    "schema": {"type": "object"},
+                    "strict": false,
+                },
+            })
+        );
+        // the cache directive has no wire representation on this protocol
+        let cached = render_openai_responses_input(
+            &f,
+            &ToolSurface::empty(),
+            &generation,
+            &ModelRef::new("gpt-test"),
+            CacheDirective::StablePrefix,
+        )
+        .unwrap();
+        assert_eq!(v, cached);
     }
 
     #[test]
@@ -392,6 +460,7 @@ mod tests {
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
+            CacheDirective::None,
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));

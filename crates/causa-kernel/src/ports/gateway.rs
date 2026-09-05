@@ -38,6 +38,12 @@ pub struct GenerationOptions {
     /// Upper bound on generated tokens; `None` omits the limit from the
     /// request.
     pub max_tokens: Option<u32>,
+    /// JSON Schema the final response should satisfy, rendered natively
+    /// where the provider supports it (Chat `response_format`, Responses
+    /// `text.format`; Anthropic has no native mapping — schema validation
+    /// and corrective retry stay host-side). `None` omits the knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// The tool definitions offered to the model for one invocation; renderers
@@ -156,6 +162,23 @@ impl std::fmt::Display for ModelInvokeError {
 }
 impl std::error::Error for ModelInvokeError {}
 
+/// Prompt-cache instruction carried on a [`ModelRequest`]. The Anthropic
+/// translation face renders explicit `cache_control` breakpoints at the
+/// stable-prefix anchors; OpenAI-family providers cache server-side and
+/// accept the directive as a documented no-op.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheDirective {
+    /// Mark no cache breakpoints (the default; OpenAI server-side caching
+    /// applies regardless).
+    #[default]
+    None,
+    /// Mark the stable-prefix anchors so provider caches cover the tool
+    /// surface, the system prefix, and the latest stable conversation
+    /// message.
+    StablePrefix,
+}
+
 /// Everything one gateway attempt needs: invocation identity, the context to
 /// render, and the invocation knobs. Invariant across retries of the same
 /// logical invocation except for [`ModelRequest::attempt`].
@@ -174,6 +197,9 @@ pub struct ModelRequest {
     pub tool_surface: ToolSurface,
     /// The [`GenerationOptions`] governing sampling.
     pub generation: GenerationOptions,
+    /// The prompt-cache instruction the translation face renders. Invariant
+    /// across retries like the rest of the request.
+    pub cache: CacheDirective,
 }
 
 /// The model-invocation port: concrete gateways (provider adapters) live

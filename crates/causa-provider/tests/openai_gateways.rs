@@ -60,6 +60,7 @@ fn request(frame: ContextFrame) -> ModelRequest {
         model: ModelRef::new("gpt-test"),
         tool_surface: ToolSurface::empty(),
         generation: GenerationOptions::default(),
+        cache: causa_kernel::CacheDirective::None,
     }
 }
 

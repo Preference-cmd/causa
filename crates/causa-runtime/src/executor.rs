@@ -19,6 +19,7 @@ use causa_kernel::{
 use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// One registered dynamic source plus its executor-side listing cache.
 /// The cache is keyed by the source's own change signal
@@ -230,6 +231,27 @@ impl ToolExecutor {
     /// Execute a single ToolCallPayload with panic isolation, a call-deadline
     /// backstop, and token-limit truncation.
     pub async fn execute_with_limits(
+        &self,
+        payload: ToolCallPayload,
+        control: CallControl,
+        store: Option<Arc<dyn ArtifactStore>>,
+        token_counter: Option<Arc<dyn TokenCounter>>,
+        global_limits: ToolOutputLimits,
+    ) -> ToolExecutionOutcome {
+        // Observability baseline (Slice 6.6): one `agent.tool` span per
+        // dispatch, name and id only. Entered per poll via `Instrument`,
+        // so the future stays `Send`.
+        let span = tracing::info_span!(
+            "agent.tool",
+            tool_name = %payload.tool_name,
+            call_id = %payload.call_id.0
+        );
+        self.execute_with_limits_inner(payload, control, store, token_counter, global_limits)
+            .instrument(span)
+            .await
+    }
+
+    async fn execute_with_limits_inner(
         &self,
         payload: ToolCallPayload,
         control: CallControl,
