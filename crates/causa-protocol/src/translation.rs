@@ -45,6 +45,7 @@ pub(crate) const OUTPUT_SCHEMA_NAME: &str = "response";
 
 pub mod anthropic;
 pub(crate) mod context_frame;
+pub mod media;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod sse_parser;

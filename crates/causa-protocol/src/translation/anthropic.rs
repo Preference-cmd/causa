@@ -13,15 +13,23 @@
 //! # Anthropic-specific structural rules
 //!
 //! - `system` text segments move to the top-level `system` parameter
-//!   (joined with `\n`); Anthropic has no system message role.
+//!   (joined with `\n`); Anthropic has no system message role. Media in
+//!   a system-role block degrades to its placeholder text there — the
+//!   system parameter carries no image blocks.
 //! - Consecutive segments with the same wire role merge into one
 //!   message; Anthropic requires strictly alternating `user` /
 //!   `assistant` roles.
+//! - Resolved `image/*` media parts render as `image` content blocks
+//!   (`base64` source) inside their role's message; unresolved or
+//!   non-image media degrades to the shared placeholder text.
 //! - Tool calls render as assistant `tool_use` content blocks with
 //!   `input` as a JSON object; tool results render as `tool_result`
-//!   content blocks in the following user message. Any status other
-//!   than `Succeeded` sets `is_error: true` (the flag is Anthropic-only;
-//!   OpenAI-family wires carry error information in the content).
+//!   content blocks in the following user message. Result media embeds
+//!   natively: with attachments the `tool_result` `content` becomes a
+//!   block array (text, then the images); without, it stays a string.
+//!   Any status other than `Succeeded` sets `is_error: true` (the flag
+//!   is Anthropic-only; OpenAI-family wires carry error information in
+//!   the content).
 //! - `GenerationOptions::max_tokens` is required by Anthropic; a `None`
 //!   renders as [`DEFAULT_MAX_TOKENS`].
 //! - [`CacheDirective::StablePrefix`] marks three `cache_control`
@@ -46,7 +54,8 @@ use causa_kernel::{
     ToolCallDraft, ToolResultStatus, ToolSurface,
 };
 
-use super::context_frame::{self, Role, Segment};
+use super::context_frame::{self, ResolvedMedia, Role, Segment};
+use super::media::MediaSet;
 
 /// Anthropic requires `max_tokens`; this is the documented default when
 /// `GenerationOptions::max_tokens` is `None`.
@@ -55,17 +64,20 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// Render a [`ContextFrame`] into an Anthropic Messages request body.
 ///
 /// The body is complete: `model`, `max_tokens`, `messages`, plus `system`,
-/// `temperature`, and `tools` when the inputs call for them. Rendering is
-/// deterministic — the same frame, surface, generation, model, and cache
-/// directive always produce byte-identical JSON.
+/// `temperature`, and `tools` when the inputs call for them. Media
+/// references resolve through `media`; unresolvable or non-image
+/// references degrade to the shared text placeholder. Rendering is
+/// deterministic — the same frame, surface, generation, model, media
+/// table, and cache directive always produce byte-identical JSON.
 pub fn render_anthropic_messages(
     frame: &ContextFrame,
+    media: &MediaSet,
     tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
     cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
-    let normalized = context_frame::normalize(frame);
+    let normalized = context_frame::normalize(frame, media);
 
     // Group consecutive same-wire-role segments into one message
     // (Anthropic requires strictly alternating roles).
@@ -93,6 +105,29 @@ pub fn render_anthropic_messages(
                     json!({"type": "text", "text": text}),
                 );
             }
+            Segment::Media { role, media } => match media {
+                ResolvedMedia::Image {
+                    media_type,
+                    data_base64,
+                } => append_message(
+                    &mut messages,
+                    role_name(*role),
+                    image_block(media_type, data_base64),
+                ),
+                ResolvedMedia::Placeholder(text) => {
+                    // System media degraded in the walk; its placeholder
+                    // joins the system parameter like any system text.
+                    if *role == Role::System {
+                        system_parts.push(text.clone());
+                    } else {
+                        append_message(
+                            &mut messages,
+                            role_name(*role),
+                            json!({"type": "text", "text": text}),
+                        );
+                    }
+                }
+            },
             Segment::ToolCall(call) => append_message(
                 &mut messages,
                 "assistant",
@@ -107,11 +142,19 @@ pub fn render_anthropic_messages(
                 wire_id,
                 status,
                 content,
+                media,
             } => {
+                let content_json = if media.is_empty() {
+                    json!(content)
+                } else {
+                    let mut blocks = vec![json!({"type": "text", "text": content})];
+                    blocks.extend(media.iter().map(media_block_json));
+                    json!(blocks)
+                };
                 let mut block_json = json!({
                     "type": "tool_result",
                     "tool_use_id": wire_id,
-                    "content": content,
+                    "content": content_json,
                 });
                 if *status != ToolResultStatus::Succeeded {
                     block_json["is_error"] = json!(true);
@@ -195,6 +238,34 @@ fn stable_prefix_message<'a>(
         messages.len() - 1
     };
     Some(&mut messages[index].1)
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    }
+}
+
+/// The `image` content block for a resolved inline payload.
+fn image_block(media_type: &str, data_base64: &str) -> Value {
+    json!({
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data_base64},
+    })
+}
+
+/// A resolved-or-placeholder attachment as a content block: images embed
+/// inline, everything else degrades to its placeholder text.
+fn media_block_json(media: &ResolvedMedia) -> Value {
+    match media {
+        ResolvedMedia::Image {
+            media_type,
+            data_base64,
+        } => image_block(media_type, data_base64),
+        ResolvedMedia::Placeholder(text) => json!({"type": "text", "text": text}),
+    }
 }
 
 /// Parse an Anthropic Messages response body into a kernel
@@ -312,15 +383,19 @@ fn append_message(
 mod tests {
     use super::*;
     use causa_kernel::{
-        ContextVersion, ConversationId, FrameId, FrameScope, ModelContext, ModelUsage, RoundId,
-        ToolDefinition, TurnId,
+        ContextVersion, ConversationId, FrameId, FrameScope, MediaRef, ModelContext, ModelUsage,
+        RoundId, ToolDefinition, TurnId,
     };
 
-    use crate::translation::test_support::{call, frame, result, text};
+    use crate::translation::media::{MediaPayload, MediaSet};
+    use crate::translation::test_support::{
+        call, frame, media_part, parts, result, result_with_media, text, text_part,
+    };
 
     fn render(frame: &ContextFrame) -> Value {
         render_anthropic_messages(
             frame,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("claude-test"),
@@ -460,6 +535,7 @@ mod tests {
         };
         let v = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("claude-test"),
@@ -486,6 +562,7 @@ mod tests {
         };
         let v2 = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("claude-test"),
@@ -496,6 +573,7 @@ mod tests {
         // byte determinism over the full body
         let again = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("claude-test"),
@@ -542,6 +620,7 @@ mod tests {
         let f = frame(vec![]);
         let e = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
@@ -564,6 +643,7 @@ mod tests {
         }]);
         let v = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &GenerationOptions::default(),
             &ModelRef::new("claude-test"),
@@ -588,6 +668,7 @@ mod tests {
         }]);
         let v = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &GenerationOptions::default(),
             &ModelRef::new("claude-test"),
@@ -617,6 +698,7 @@ mod tests {
         let f = frame(vec![text(0, "hi", Some("user"))]);
         let v = render_anthropic_messages(
             &f,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("claude-test"),
@@ -625,6 +707,207 @@ mod tests {
         .unwrap();
         let msgs = v["messages"].as_array().unwrap();
         assert!(msgs[0]["content"][0].get("cache_control").is_some());
+    }
+
+    // --- media (Slice 6.5) --------------------------------------------------
+
+    fn resolved(reference: &str) -> MediaSet {
+        let mut m = MediaSet::new();
+        m.insert(reference, MediaPayload::new("image/png", "AAAA"));
+        m
+    }
+
+    #[test]
+    fn image_parts_render_as_image_blocks_in_user_position() {
+        let f = frame(vec![parts(
+            0,
+            vec![
+                text_part("caption"),
+                media_part("image/png", "asset-1"),
+                text_part("after"),
+            ],
+            Some("user"),
+        )]);
+        let v = render_anthropic_messages(
+            &f,
+            &resolved("asset-1"),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        // part boundaries are preserved: text, image, text as separate blocks
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "caption"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                {"type": "text", "text": "after"},
+            ])
+        );
+    }
+
+    #[test]
+    fn unresolved_media_degrades_to_the_deterministic_placeholder() {
+        let f = frame(vec![parts(
+            0,
+            vec![media_part("image/png", "missing-asset")],
+            Some("user"),
+        )]);
+        let v = render_anthropic_messages(
+            &f,
+            &MediaSet::new(),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([{"type": "text", "text": "[media: image/png missing-asset]"}])
+        );
+    }
+
+    #[test]
+    fn non_image_media_degrades_even_when_resolved() {
+        let f = frame(vec![parts(
+            0,
+            vec![media_part("application/pdf", "doc-1")],
+            Some("user"),
+        )]);
+        let mut media = MediaSet::new();
+        media.insert("doc-1", MediaPayload::new("application/pdf", "AAAA"));
+        let v = render_anthropic_messages(
+            &f,
+            &media,
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([{"type": "text", "text": "[media: application/pdf doc-1]"}])
+        );
+    }
+
+    #[test]
+    fn media_in_system_position_degrades_to_placeholder_text() {
+        let f = frame(vec![
+            parts(0, vec![media_part("image/png", "asset-1")], Some("system")),
+            text(1, "hi", Some("user")),
+        ]);
+        let v = render_anthropic_messages(
+            &f,
+            &resolved("asset-1"),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        // the system parameter is text-only; the walk degraded it
+        assert_eq!(v["system"], json!("[media: image/png asset-1]"));
+    }
+
+    #[test]
+    fn tool_result_media_embeds_in_the_tool_result_content() {
+        let f = frame(vec![
+            call(0, "kc1", Some("toolu_a"), "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("chart ready"),
+                vec![
+                    MediaRef::new("image/png", "asset-1"),
+                    MediaRef::new("image/png", "asset-2"),
+                ],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
+        // asset-2 deliberately unregistered -> placeholder inside the array
+        let v = render_anthropic_messages(
+            &f,
+            &media,
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][1]["content"][0]["content"],
+            json!([
+                {"type": "text", "text": "chart ready"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                {"type": "text", "text": "[media: image/png asset-2]"},
+            ])
+        );
+    }
+
+    #[test]
+    fn result_without_media_keeps_the_string_content_shape() {
+        let f = frame(vec![result(
+            0,
+            "kc1",
+            ToolResultStatus::Succeeded,
+            json!("ok"),
+        )]);
+        let v = render_anthropic_messages(
+            &f,
+            &resolved("unused"),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(v["messages"][0]["content"][0]["content"], json!("ok"));
+    }
+
+    #[test]
+    fn stable_prefix_anchor_lands_on_parts_messages() {
+        let f = frame(vec![
+            text(0, "hi", Some("user")),
+            parts(
+                1,
+                vec![text_part("see"), media_part("image/png", "asset-1")],
+                Some("user"),
+            ),
+        ]);
+        let v = render_anthropic_messages(
+            &f,
+            &resolved("asset-1"),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::StablePrefix,
+        )
+        .unwrap();
+        // the second block's first text joins the seam (block boundaries
+        // are envelope-only), so both user blocks render as one message:
+        // [text "hi\nsee", image]
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0]["content"][0],
+            json!({"type": "text", "text": "hi\nsee"})
+        );
+        // the final message carries no tool_result, so it anchors itself
+        assert!(
+            msgs[0]["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .get("cache_control")
+                .is_some()
+        );
     }
 
     // --- parsing -----------------------------------------------------------

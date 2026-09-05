@@ -52,6 +52,7 @@ impl Tool for ReadTool {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!("file-a")),
+            media: Vec::new(),
         })
     }
 }

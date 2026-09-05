@@ -86,6 +86,7 @@ impl Tool for ReadFile {
             output: ToolOutput::new(serde_json::json!(
                 { "contents": "the promised file contents" }
             )),
+            media: Vec::new(),
         })
     }
 }

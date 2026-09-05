@@ -44,6 +44,7 @@ impl ToolUseHook for DedupFilter {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
+                    media: Vec::new(),
                 }));
             }
         }
@@ -107,6 +108,7 @@ impl ToolUseHook for DenyAllFilter {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": self.reason.clone()})),
+                    media: Vec::new(),
                 })
             })
             .collect();

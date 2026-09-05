@@ -1,5 +1,7 @@
 //! TurnContext / ContextFrame / TurnSnapshot — Slice 1 single-turn fact machine.
-use crate::context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
+use crate::context::block::{
+    BlockContent, BlockMeta, ContentPart, ContextBlock, TextPayload, ToolCallPayload,
+};
 use crate::context::ids::{
     BlockId, BlockSequence, ContextVersion, FrameId, FrameScope, RoundId, TurnId, TurnSequence,
 };
@@ -238,20 +240,38 @@ impl TurnContext {
         self.blocks.0.clone()
     }
 
-    /// Host door: admit one text fact with its provenance label, recorded
-    /// verbatim in the envelope. The kernel does not interpret the label;
-    /// role assignment is the renderer's job.
+    /// Host door: admit one single-text message — the one-part sugar over
+    /// [`TurnContext::append_parts`]. The kernel does not interpret the
+    /// source label; role assignment is the renderer's job.
     pub fn append_input(
         &mut self,
         text: TextPayload,
         source: impl Into<String>,
     ) -> Result<BlockId, ContextError> {
+        self.append_parts(vec![ContentPart::Text(text)], source)
+    }
+
+    /// Host door for one logical message's mixed content (caption + media,
+    /// multi-image, text runs): the ordered parts commit as ONE fact block.
+    /// Atomic — all-or-nothing validation, exactly one version bump,
+    /// contiguous sequences. Stamps `source` verbatim on the envelope.
+    /// Empty parts are rejected; media parts carry references only.
+    pub fn append_parts(
+        &mut self,
+        parts: Vec<ContentPart>,
+        source: impl Into<String>,
+    ) -> Result<BlockId, ContextError> {
         self.ensure_open()?;
+        if parts.is_empty() {
+            return Err(ContextError::InvalidSequence(
+                "append_parts: empty parts are not a fact".into(),
+            ));
+        }
         let meta = BlockMeta {
             source: Some(source.into()),
             ..BlockMeta::default()
         };
-        let mut ids = self.commit_blocks(vec![(BlockContent::Text(text), meta)]);
+        let mut ids = self.commit_blocks(vec![(BlockContent::Parts(parts), meta)]);
         Ok(ids.pop().expect("single-block commit yields one id"))
     }
 
@@ -296,7 +316,9 @@ impl TurnContext {
         let mut tool_calls: Vec<ToolCallPayload> = Vec::new();
         if !response.text.0.trim().is_empty() {
             prepared.push((
-                BlockContent::Text(TextPayload(response.text.0.clone())),
+                BlockContent::Parts(vec![ContentPart::Text(TextPayload(
+                    response.text.0.clone(),
+                ))]),
                 BlockMeta::default(),
             ));
         }
@@ -404,6 +426,7 @@ impl TurnContext {
                         call_id: r.call_id.clone(),
                         status: r.status.clone(),
                         output: r.output.clone(),
+                        media: r.media.clone(),
                     }),
                     BlockMeta::default(),
                 )
@@ -540,6 +563,11 @@ impl TurnContext {
         let mut seen_results = HashSet::new();
         for b in blocks {
             match &b.content {
+                BlockContent::Parts(parts) => {
+                    if parts.is_empty() {
+                        return Err(ContextError::InvalidSequence("empty parts block".into()));
+                    }
+                }
                 BlockContent::ToolCall(tc) => {
                     if !call_set.insert(tc.call_id.clone()) {
                         return Err(ContextError::DuplicateToolCallId(tc.call_id.clone()));
@@ -556,7 +584,6 @@ impl TurnContext {
                         )));
                     }
                 }
-                _ => {}
             }
         }
         Ok(())

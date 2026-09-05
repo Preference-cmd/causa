@@ -28,6 +28,7 @@ impl ToolUseHook for DenyAll {
                     call_id: p.call_id,
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": self.reason.clone()})),
+                    media: Vec::new(),
                 })
             })
             .collect();

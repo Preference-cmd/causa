@@ -17,7 +17,7 @@ use causa_kernel::{
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::RunControl;
 use serde_json::{Value, json};
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{body_partial_json, body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const KEY: &str = "sk-test-anthropic";
@@ -42,7 +42,9 @@ fn user_frame() -> ContextFrame {
                     sequence: BlockSequence(0),
                 },
                 sequence: BlockSequence(0),
-                content: BlockContent::Text(TextPayload::new("hi")),
+                content: BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                    TextPayload::new("hi"),
+                )]),
                 meta: BlockMeta {
                     provider_call_id: None,
                     source: Some("user".into()),
@@ -398,4 +400,123 @@ async fn invoke_emits_the_agent_http_span() {
         text.contains("path=\"/v1/messages\""),
         "missing path field: {text}"
     );
+}
+
+// ---- media resolution (Slice 6.5) -----------------------------------------------
+
+use causa_kernel::{ContentPart, MediaRef};
+use causa_protocol::translation::media::MediaPayload;
+use causa_provider::MediaResolver;
+use std::collections::HashMap;
+
+fn media_frame() -> ContextFrame {
+    let scope = FrameScope::Turn {
+        turn_id: TurnId::new("t1"),
+        source_version: ContextVersion(1),
+    };
+    ContextFrame {
+        frame_id: FrameId::from_scope(&scope, RoundId(0)),
+        scope,
+        round_id: RoundId(0),
+        model_context: ModelContext {
+            blocks: vec![ContextBlock {
+                id: BlockId {
+                    turn_id: TurnId::new("t1"),
+                    sequence: BlockSequence(0),
+                },
+                sequence: BlockSequence(0),
+                content: BlockContent::Parts(vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-1")),
+                ]),
+                meta: BlockMeta {
+                    provider_call_id: None,
+                    source: Some("user".into()),
+                },
+            }],
+        },
+    }
+}
+
+fn ok_response() -> Value {
+    json!({
+        "content": [{"type": "text", "text": "seen"}],
+        "stop_reason": "end_turn",
+    })
+}
+
+#[tokio::test]
+async fn resolved_media_rides_the_wire_as_image_blocks() {
+    let server = MockServer::start().await;
+    let asset_table: HashMap<String, MediaPayload> = [(
+        "asset-1".to_string(),
+        MediaPayload::new("image/png", "AAAA"),
+    )]
+    .into();
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({
+            "messages": [{"content": [
+                {"type": "text", "text": "look"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+            ]}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server).with_media_resolver(Arc::new(asset_table));
+    gw.invoke(&request(media_frame()), &ctrl(None))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn unresolved_media_degrades_to_placeholder_on_the_wire() {
+    let server = MockServer::start().await;
+    // no resolver wired: the reference degrades to the text placeholder
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("[media: image/png asset-1]"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server);
+    gw.invoke(&request(media_frame()), &ctrl(None))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn oversized_media_degrades_like_a_miss() {
+    let server = MockServer::start().await;
+    // payload of 4 MiB decoded bytes exceeds nothing at the default 5 MiB
+    // ceiling — so shrink the ceiling instead and watch the big payload go
+    let huge = "A".repeat(1024);
+    let asset_table: HashMap<String, MediaPayload> =
+        [("asset-1".to_string(), MediaPayload::new("image/png", huge))].into();
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("[media: image/png asset-1]"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server)
+        .with_media_resolver(Arc::new(asset_table))
+        .with_max_inline_media_bytes(16);
+    gw.invoke(&request(media_frame()), &ctrl(None))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn hash_map_asset_table_resolves_by_reference() {
+    // the blanket impl: a plain table IS a MediaResolver
+    let table: HashMap<String, MediaPayload> = [(
+        "asset-1".to_string(),
+        MediaPayload::new("image/png", "AAAA"),
+    )]
+    .into();
+    let payload = MediaResolver::resolve(&table, &MediaRef::new("image/png", "asset-1"));
+    assert_eq!(payload.unwrap().data_base64, "AAAA");
+    assert!(MediaResolver::resolve(&table, &MediaRef::new("image/png", "nope")).is_none());
 }

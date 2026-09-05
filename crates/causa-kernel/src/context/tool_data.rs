@@ -123,6 +123,12 @@ pub struct ToolResultPayload {
     pub status: ToolResultStatus,
     /// The tool's output, possibly truncated with an artifact spill.
     pub output: ToolOutput,
+    /// Media artifacts attached to this result — references only; the
+    /// bytes live in the host's asset store, resolved provider-side at
+    /// render time. Serde-additive: snapshots from before Slice 6.5
+    /// default to empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<crate::context::block::MediaRef>,
 }
 
 /// Pointer to a tool output persisted out-of-band (e.g. a spilled oversized

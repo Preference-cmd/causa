@@ -20,6 +20,14 @@
 //!   flat `function_call_output` item — the Responses wire pairs
 //!   through `call_id`s, not message roles. There is no `is_error`
 //!   flag on this wire; error information travels in the content.
+//! - Tool-result media **hoists**: `function_call_output` carries no
+//!   images, so each result's attachments render as a user message item
+//!   right after it — one provenance `input_text` naming the call, then
+//!   the images (`input_image` items with data URLs); placeholders
+//!   degrade to `input_text` parts in the same item.
+//! - Media parts in user position render as `input_image` content items
+//!   (data URLs); assistant- and system-position media degrade to the
+//!   shared placeholder text (the walk decides).
 //! - Function call `arguments` are a JSON *string* on the wire (encoded
 //!   by the emitter, decoded by the shared [`super::context_frame`]
 //!   codec).
@@ -39,7 +47,8 @@ use causa_kernel::{
     ToolCallDraft, ToolSurface,
 };
 
-use super::context_frame::{self, Role, Segment};
+use super::context_frame::{self, ResolvedMedia, Role, Segment};
+use super::media::MediaSet;
 
 /// Render a [`ContextFrame`] into an OpenAI Responses API request body.
 /// Deterministic: identical inputs produce byte-identical JSON.
@@ -51,12 +60,13 @@ use super::context_frame::{self, Role, Segment};
 /// corrective retry stay host-side.
 pub fn render_openai_responses_input(
     frame: &ContextFrame,
+    media: &MediaSet,
     tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
-    let normalized = context_frame::normalize(frame);
+    let normalized = context_frame::normalize(frame, media);
 
     let mut instructions: Vec<String> = Vec::new();
     let mut items: Vec<Value> = Vec::new();
@@ -80,6 +90,31 @@ pub fn render_openai_responses_input(
                 "role": "assistant",
                 "content": [{"type": "output_text", "text": text}],
             })),
+            Segment::Media { role, media } => match (role, media) {
+                (Role::System, ResolvedMedia::Placeholder(text)) => {
+                    instructions.push(text.clone());
+                }
+                (Role::Assistant, ResolvedMedia::Placeholder(text)) => items.push(json!({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text}],
+                })),
+                (
+                    _,
+                    ResolvedMedia::Image {
+                        media_type,
+                        data_base64,
+                    },
+                ) => items.push(json!({
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": data_url(media_type, data_base64)}
+                    ],
+                })),
+                (_, ResolvedMedia::Placeholder(text)) => items.push(json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                })),
+            },
             Segment::ToolCall(call) => items.push(json!({
                 "type": "function_call",
                 "call_id": call.wire_id,
@@ -87,12 +122,39 @@ pub fn render_openai_responses_input(
                 "arguments": call.arguments.to_string(),
             })),
             Segment::ToolResult {
-                wire_id, content, ..
-            } => items.push(json!({
-                "type": "function_call_output",
-                "call_id": wire_id,
-                "output": content,
-            })),
+                wire_id,
+                content,
+                media,
+                ..
+            } => {
+                items.push(json!({
+                    "type": "function_call_output",
+                    "call_id": wire_id,
+                    "output": content,
+                }));
+                // `function_call_output` carries no images: hoist the
+                // result's media into a user message item right after it,
+                // provenance first, one part per attachment.
+                if !media.is_empty() {
+                    let mut parts = vec![json!({
+                        "type": "input_text",
+                        "text": format!("[tool result media for call {wire_id}]"),
+                    })];
+                    parts.extend(media.iter().map(|m| match m {
+                        ResolvedMedia::Image {
+                            media_type,
+                            data_base64,
+                        } => json!({
+                            "type": "input_image",
+                            "image_url": data_url(media_type, data_base64),
+                        }),
+                        ResolvedMedia::Placeholder(text) => {
+                            json!({"type": "input_text", "text": text})
+                        }
+                    }));
+                    items.push(json!({"role": "user", "content": parts}));
+                }
+            }
         }
     }
 
@@ -133,6 +195,11 @@ pub fn render_openai_responses_input(
         ));
     }
     Ok(body)
+}
+
+/// The inline data URL for a resolved image payload (`input_image`).
+fn data_url(media_type: &str, data_base64: &str) -> String {
+    format!("data:{media_type};base64,{data_base64}")
 }
 
 /// Parse an OpenAI Responses API response body into a kernel
@@ -271,11 +338,15 @@ mod tests {
     use super::*;
     use causa_kernel::{ModelUsage, ToolDefinition, ToolResultStatus};
 
-    use crate::translation::test_support::{call, frame, result, text};
+    use crate::translation::media::{MediaPayload, MediaSet};
+    use crate::translation::test_support::{
+        call, frame, media_part, parts, result, result_with_media, text, text_part,
+    };
 
     fn render(frame: &ContextFrame) -> Value {
         render_openai_responses_input(
             frame,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
@@ -382,6 +453,7 @@ mod tests {
         };
         let v = render_openai_responses_input(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("gpt-test"),
@@ -403,6 +475,7 @@ mod tests {
         );
         let again = render_openai_responses_input(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("gpt-test"),
@@ -424,6 +497,7 @@ mod tests {
         };
         let v = render_openai_responses_input(
             &f,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
@@ -444,6 +518,7 @@ mod tests {
         // the cache directive has no wire representation on this protocol
         let cached = render_openai_responses_input(
             &f,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
@@ -457,6 +532,7 @@ mod tests {
     fn empty_frame_is_invalid_request() {
         let e = render_openai_responses_input(
             &frame(vec![]),
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
@@ -464,6 +540,109 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
+    }
+
+    // --- media (Slice 6.5) --------------------------------------------------
+
+    use causa_kernel::MediaRef;
+
+    fn resolved(reference: &str) -> MediaSet {
+        let mut m = MediaSet::new();
+        m.insert(reference, MediaPayload::new("image/png", "AAAA"));
+        m
+    }
+
+    #[test]
+    fn image_parts_render_as_input_image_items() {
+        let f = frame(vec![parts(
+            0,
+            vec![text_part("caption"), media_part("image/png", "asset-1")],
+            Some("user"),
+        )]);
+        let v = render_openai_responses_input(
+            &f,
+            &resolved("asset-1"),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        // part boundaries preserved: text message, then the image item
+        let items = v["input"].as_array().unwrap();
+        assert_eq!(
+            items[0],
+            json!({"role": "user", "content": [{"type": "input_text", "text": "caption"}]})
+        );
+        assert_eq!(
+            items[1],
+            json!({"role": "user", "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+            ]})
+        );
+    }
+
+    #[test]
+    fn unresolved_media_degrades_to_the_deterministic_placeholder() {
+        let f = frame(vec![parts(
+            0,
+            vec![media_part("image/png", "missing-asset")],
+            Some("user"),
+        )]);
+        let v = render_openai_responses_input(
+            &f,
+            &MediaSet::new(),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(
+            v["input"][0],
+            json!({"role": "user", "content": [
+                {"type": "input_text", "text": "[media: image/png missing-asset]"}
+            ]})
+        );
+    }
+
+    #[test]
+    fn tool_result_media_hoists_after_the_function_call_output() {
+        let f = frame(vec![
+            call(0, "kc1", Some("call_1"), "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("chart ready"),
+                vec![
+                    MediaRef::new("image/png", "asset-1"),
+                    MediaRef::new("image/png", "asset-2"),
+                ],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
+        // asset-2 unresolved -> placeholder text part in the same item
+        let v = render_openai_responses_input(
+            &f,
+            &media,
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        let items = v["input"].as_array().unwrap();
+        assert_eq!(items[1]["type"], "function_call_output");
+        assert_eq!(
+            items[2],
+            json!({"role": "user", "content": [
+                {"type": "input_text", "text": "[tool result media for call call_1]"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                {"type": "input_text", "text": "[media: image/png asset-2]"},
+            ]})
+        );
     }
 
     // --- parsing -----------------------------------------------------------

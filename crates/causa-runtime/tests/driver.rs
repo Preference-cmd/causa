@@ -224,6 +224,7 @@ async fn token_limits_and_artifact_truncation() {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!(big)),
+                media: Vec::new(),
             })
         }
     }
@@ -467,6 +468,7 @@ async fn unknown_outcome_continue_continues_turn() {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::UnknownOutcome,
                 output: ToolOutput::new(json!({"unk": true})),
+                media: Vec::new(),
             })
         }
     }
@@ -615,6 +617,7 @@ async fn completion_order_reflects_real_completion() {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!("slow")),
+                media: Vec::new(),
             })
         }
     }
@@ -715,7 +718,7 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     assert_eq!(out.context.blocks().len(), 2);
     assert!(matches!(
         out.context.blocks()[0].content,
-        BlockContent::Text(_)
+        BlockContent::Parts(_)
     ));
 }
 
@@ -988,6 +991,7 @@ async fn dynamic_catalog_refreshes_between_model_rounds() {
                 call_id: call.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!("updated")),
+                media: Vec::new(),
             }))
         }
     }
@@ -1010,5 +1014,55 @@ async fn dynamic_catalog_refreshes_between_model_rounds() {
     assert_eq!(
         recorded[1].tool_surface.definitions[0].name, "tool_v1",
         "second round ran on a stale catalog"
+    );
+}
+
+#[tokio::test]
+async fn truncation_never_touches_result_media_references() {
+    // Slice 6.5: media travels beside the output content; the textual
+    // truncator shrinks the content and must leave the references alone.
+    struct ImagingTool;
+    #[async_trait::async_trait]
+    impl Tool for ImagingTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "imaging".into(),
+                description: "imaging".into(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
+            ToolExecutionOutcome::new(ToolResultPayload {
+                call_id: ctx.call_id.clone(),
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!({"chart": "x".repeat(4000)})),
+                media: vec![causa_kernel::MediaRef::new("image/png", "asset-1")],
+            })
+        }
+    }
+    let executor = ToolExecutor::from_vec(vec![Arc::new(ImagingTool)]);
+    let outcome = executor
+        .execute_with_limits(
+            ToolCallPayload {
+                call_id: ToolCallId("probe".into()),
+                tool_name: "imaging".into(),
+                arguments: json!({}),
+            },
+            CallControl::new(tokio_util::sync::CancellationToken::new(), None),
+            None,
+            None,
+            ToolOutputLimits { max_tokens: 50 },
+        )
+        .await
+        .result;
+    assert_eq!(outcome.output.truncation, Truncation::Middle);
+    assert!(
+        outcome.output.content.to_string().len() < 4000,
+        "content must shrink"
+    );
+    assert_eq!(
+        outcome.media,
+        vec![causa_kernel::MediaRef::new("image/png", "asset-1")],
+        "media references survive truncation untouched"
     );
 }

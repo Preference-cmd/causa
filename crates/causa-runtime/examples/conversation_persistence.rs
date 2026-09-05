@@ -11,7 +11,7 @@
 //! ```
 //!
 //! The dance the example performs is the canonical commit loop:
-//! `begin_turn → append_input → run_in_conversation → commit →
+//! `begin_turn → append_parts → run_in_conversation → commit →
 //! save_snapshot`, and on reload `load_snapshots →
 //! ConversationState::from_snapshots`. The store writes one JSON file
 //! per committed turn; `from_snapshots` validates strict sequence
@@ -20,8 +20,8 @@
 use async_trait::async_trait;
 use causa_kernel::{
     ConversationId, ConversationState, ConversationStore, ConversationStoreError, ModelGateway,
-    ModelInvokeError, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, TextPayload,
-    ToolCallDraft, TurnId, TurnSnapshot,
+    ModelInvokeError, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, SealedResult,
+    TextPayload, ToolCallDraft, TurnId, TurnSnapshot,
 };
 use causa_runtime::{ConversationOutcome, RunControl, ToolExecutor, TurnResult, TurnRunner};
 use std::path::PathBuf;
@@ -196,10 +196,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "hello",
     )
     .await?;
-    let (state, _) = run_turn(&runner, state, "turn-2", "and again").await?;
+    let (mut state, _) = run_turn(&runner, state, "turn-2", "and again").await?;
+
+    // Slice 6.5: a turn whose message mixes text and a media reference.
+    // Facts carry the reference only; the bytes live in the host's asset
+    // store and resolve provider-side at render time.
+    let media_snapshot = {
+        state.begin_turn(TurnId::new("turn-media"))?;
+        state
+            .active_turn_mut()
+            .expect("begin_turn just opened it")
+            .append_parts(
+                vec![
+                    causa_kernel::ContentPart::Text(TextPayload::new("the chart you asked for")),
+                    causa_kernel::ContentPart::Media(causa_kernel::MediaRef::new(
+                        "image/png",
+                        "blake3-demo-asset",
+                    )),
+                ],
+                "user",
+            )?;
+        state.seal_turn(TurnId::new("turn-media"), SealedResult::Completed)?;
+        state.commit(TurnId::new("turn-media"))?
+    };
     for snapshot in state.completed_turns() {
         store.save_snapshot(&conversation_id, snapshot).await?;
     }
+    let _ = media_snapshot;
 
     // --- "restart": rebuild the conversation from disk and continue -------
     let history = store.load_snapshots(&conversation_id).await?;

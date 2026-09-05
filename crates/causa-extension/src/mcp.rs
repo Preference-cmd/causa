@@ -62,8 +62,9 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, DynamicToolSource, SourceError, ToolCallPayload, ToolDefinition,
-    ToolExecutionError, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ArtifactHint, ArtifactKind, ArtifactStore, CallControl, DynamicToolSource, MediaRef,
+    SourceError, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolExecutionOutcome,
+    ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::ContentBlock;
@@ -293,6 +294,30 @@ impl DynamicToolSource for McpToolSource {
         call: &ToolCallPayload,
         control: &CallControl,
     ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+        Self::invoke_inner(self, call, control, None).await
+    }
+
+    async fn invoke_with_store(
+        &self,
+        call: &ToolCallPayload,
+        control: &CallControl,
+        store: Option<&dyn ArtifactStore>,
+    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+        Self::invoke_inner(self, call, control, store).await
+    }
+}
+
+impl McpToolSource {
+    /// The shared invoke body: `store` is the host's artifact store for
+    /// media ingest (Slice 6.5) — with one, MCP image content is
+    /// persisted and returned as [`MediaRef`]s on the result; without
+    /// one, images degrade to placeholder text exactly as before.
+    async fn invoke_inner(
+        &self,
+        call: &ToolCallPayload,
+        control: &CallControl,
+        store: Option<&dyn ArtifactStore>,
+    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
         // 1. De-namespace; a foreign call is an executor routing bug.
         let Some(tool_name) = self.denamespace(&call.tool_name) else {
             return Err(ToolExecutionError::UnknownTool(call.tool_name.clone()));
@@ -337,17 +362,28 @@ impl DynamicToolSource for McpToolSource {
         };
 
         // 3. Translate the MCP result: text becomes the observation,
-        //    images become placeholders until Slice 6.5's media path, and
-        //    `is_error` results become Failed outcomes the model reads.
+        //    images persist into the host's store and return as media
+        //    references (placeholder text when no store is wired or the
+        //    ingest fails), and `is_error` results become Failed
+        //    outcomes the model reads.
         let mut parts: Vec<String> = Vec::new();
+        let mut media: Vec<MediaRef> = Vec::new();
         for block in result.content {
             match block {
                 ContentBlock::Text(t) => parts.push(t.text),
-                ContentBlock::Image(image) => parts.push(format!(
-                    "[image: {} mime, {} base64 chars — media passthrough lands with Slice 6.5]",
-                    image.mime_type,
-                    image.data.len()
-                )),
+                ContentBlock::Image(image) => match Self::ingest_image(&image, store, call).await {
+                    Some(reference) => {
+                        parts.push(format!(
+                            "[image attached: {} — asset {}]",
+                            image.mime_type, reference.reference
+                        ));
+                        media.push(reference);
+                    }
+                    None => parts.push(format!(
+                        "[image: {} mime — no media store available]",
+                        image.mime_type
+                    )),
+                },
                 ContentBlock::Audio(audio) => {
                     parts.push(format!("[audio: {} mime]", audio.mime_type))
                 }
@@ -377,6 +413,30 @@ impl DynamicToolSource for McpToolSource {
             call_id: call.call_id.clone(),
             status,
             output: ToolOutput::new(content),
+            media,
         }))
+    }
+
+    /// Decode one MCP image and persist its raw bytes in the host's
+    /// store. Returns the media reference keyed by the store-assigned
+    /// artifact id, or `None` when no store is wired, the base64 is
+    /// malformed, or the persist fails — the deterministic degradation.
+    async fn ingest_image(
+        image: &rmcp::model::ImageContent,
+        store: Option<&dyn ArtifactStore>,
+        call: &ToolCallPayload,
+    ) -> Option<MediaRef> {
+        use base64::Engine as _;
+        let store = store?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&image.data)
+            .ok()?;
+        let hint = ArtifactHint {
+            tool_name: call.tool_name.clone(),
+            call_id: call.call_id.clone(),
+            kind: ArtifactKind::Binary,
+        };
+        let artifact = store.persist(&bytes, hint).await.ok()?;
+        Some(MediaRef::new(image.mime_type.clone(), artifact.id))
     }
 }

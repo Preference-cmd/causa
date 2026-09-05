@@ -7,9 +7,9 @@
 use serde_json::Value;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextFrame, ContextVersion,
-    FrameId, FrameScope, ModelContext, RoundId, TextPayload, ToolCallId, ToolCallPayload,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    BlockContent, BlockId, BlockMeta, BlockSequence, ContentPart, ContextBlock, ContextFrame,
+    ContextVersion, FrameId, FrameScope, MediaRef, ModelContext, RoundId, TextPayload, ToolCallId,
+    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 
 pub(crate) fn block(
@@ -33,12 +33,22 @@ pub(crate) fn block(
 }
 
 pub(crate) fn text(seq: u64, text: &str, source: Option<&str>) -> ContextBlock {
-    block(
-        seq,
-        BlockContent::Text(TextPayload::new(text)),
-        source,
-        None,
-    )
+    parts(seq, vec![ContentPart::Text(TextPayload::new(text))], source)
+}
+
+/// A Parts block from explicit content parts — the general message shape.
+pub(crate) fn parts(seq: u64, parts: Vec<ContentPart>, source: Option<&str>) -> ContextBlock {
+    block(seq, BlockContent::Parts(parts), source, None)
+}
+
+/// A single-text part convenience over [`parts`].
+pub(crate) fn text_part(text: &str) -> ContentPart {
+    ContentPart::Text(TextPayload::new(text))
+}
+
+/// A media part pointing at a host-side asset reference.
+pub(crate) fn media_part(media_type: &str, reference: &str) -> ContentPart {
+    ContentPart::Media(MediaRef::new(media_type, reference))
 }
 
 pub(crate) fn call(
@@ -66,12 +76,24 @@ pub(crate) fn result(
     status: ToolResultStatus,
     content: Value,
 ) -> ContextBlock {
+    result_with_media(seq, call_id, status, content, Vec::new())
+}
+
+/// A tool result block with media attachments (references only).
+pub(crate) fn result_with_media(
+    seq: u64,
+    call_id: &str,
+    status: ToolResultStatus,
+    content: Value,
+    media: Vec<MediaRef>,
+) -> ContextBlock {
     block(
         seq,
         BlockContent::ToolResult(ToolResultPayload {
             call_id: ToolCallId::new(call_id),
             status,
             output: ToolOutput::new(content),
+            media,
         }),
         None,
         None,

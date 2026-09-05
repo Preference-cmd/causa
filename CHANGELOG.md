@@ -20,6 +20,28 @@ Planned as **0.1.0** — the release gate is functional completeness
   self-contained behavior ports (`ModelGateway`, `ConversationStore`,
   `Tool`, `DynamicToolSource`, `CallControl`, budget seams). Zero I/O;
   `#![deny(missing_docs)]`.
+- **Multimodal vocabulary (Slice 6.5)**: the block content vocabulary is
+  frozen as **Parts** — `BlockContent::Text(TextPayload)` is replaced by
+  `BlockContent::Parts(Vec<ContentPart>)` with `ContentPart = Text |
+  Media(MediaRef)`; one logical message's mixed content commits as one
+  fact block through the new `TurnContext::append_parts` door
+  (`append_input` is now its single-text-part sugar). Media travels as
+  cheap durable references: `ToolResultPayload.media` (serde-additive)
+  carries `MediaRef`s whose bytes live only in the host's asset store;
+  snapshots stay proportional to reference count. On the render path,
+  the provider's host-injected `MediaResolver` (+ the gateway's
+  `HashMap` asset-table impl) resolves references into a `MediaSet`
+  consumed by all three renderers: Anthropic `image` blocks (including
+  native embedding inside `tool_result` content), OpenAI Chat
+  `image_url` and Responses `input_image` (tool-result media hoists
+  into a provenance-labeled user message right after its tool message);
+  missing, non-image, oversized, or non-user-position media degrades to
+  a deterministic `[media: …]` placeholder, decided once in the shared
+  walk. MCP tool images persist through `DynamicToolSource::
+  invoke_with_store` (additive default method) into the host store and
+  return as references; the executor's textual truncation never touches
+  media references. Offline closed loop: `cargo run -p causa-runtime
+  --example media_feedback`.
 - **`causa-protocol`** — kernel-native wire translation for Anthropic
   Messages, OpenAI Chat Completions, and OpenAI Responses.
 - **`causa-runtime`** — the reference driver: bounded model retry with

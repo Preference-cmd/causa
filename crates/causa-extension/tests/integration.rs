@@ -5,9 +5,10 @@
 use async_trait::async_trait;
 use causa_extension::McpToolSource;
 use causa_kernel::{
-    AttemptControl, CallControl, CancellationToken, DynamicToolSource, ModelGateway,
-    ModelInvokeError, ModelOutput, ModelRef, ModelRequest, ModelResponse, ModelStopReason,
-    SourceError, TextPayload, ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError,
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptControl, CallControl,
+    CancellationToken, DynamicToolSource, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
+    ModelRef, ModelRequest, ModelResponse, ModelStopReason, SourceError, StoreError, TextPayload,
+    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError,
     ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload, ToolResultStatus,
     ToolSurface, TurnContext, TurnId,
 };
@@ -21,6 +22,7 @@ use rmcp::model::{
     PaginatedRequestParams, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer, ServiceExt};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -378,6 +380,7 @@ fn echo_static_tool() -> Arc<dyn causa_kernel::Tool> {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(serde_json::json!({"echo": ctx.arguments})),
+                media: Vec::new(),
             })
         }
     }
@@ -748,4 +751,118 @@ async fn http_transport_injects_the_static_bearer_token() {
         .await
         .expect("close must not hang")
         .expect("close");
+}
+
+// ---- media ingest (Slice 6.5) ---------------------------------------------------
+
+/// A fixture whose one tool returns an image content block.
+#[derive(Clone)]
+struct ImageServer;
+
+impl ServerHandler for ImageServer {
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, rmcp::ErrorData> {
+        Ok(ListToolsResult::with_all_items(vec![Tool::new(
+            "render_image",
+            "returns a tiny png",
+            Arc::new(
+                serde_json::json!({"type": "object"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )]))
+    }
+
+    async fn call_tool(
+        &self,
+        _request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        // "AAAA" is valid base64 (3 bytes); the mime marks it a png
+        Ok(CallToolResult::success(vec![ContentBlock::image("AAAA", "image/png")]).into())
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::default()
+    }
+}
+
+async fn served_image() -> (
+    McpToolSource,
+    rmcp::service::RunningService<RoleServer, ImageServer>,
+) {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move { ImageServer.serve(server_io).await });
+    let source = McpToolSource::connect_io("srv", client_io)
+        .await
+        .expect("client connect");
+    let running = server_task
+        .await
+        .expect("server task")
+        .expect("server serve");
+    (source, running)
+}
+
+/// One-slot in-memory store: every persist lands as `asset-1`.
+struct MemStore;
+#[async_trait::async_trait]
+impl ArtifactStore for MemStore {
+    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        Ok(ArtifactRef {
+            id: "asset-1".into(),
+            size_bytes: 3,
+            kind: ArtifactKind::Binary,
+            persisted: true,
+        })
+    }
+    async fn read(
+        &self,
+        _id: &str,
+        _range: Option<std::ops::Range<u64>>,
+    ) -> Result<Vec<u8>, StoreError> {
+        Ok(vec![0, 0, 0])
+    }
+}
+
+#[tokio::test]
+async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
+    let (source, _server) = served_image().await;
+    let call = ToolCallPayload {
+        call_id: ToolCallId::new("c1"),
+        tool_name: "mcp_srv_render_image".into(),
+        arguments: json!({}),
+    };
+
+    // Without a store: the deterministic placeholder text, no media.
+    let out = source.invoke(&call, &ctrl()).await.unwrap();
+    assert!(out.result.media.is_empty());
+    assert!(
+        out.result
+            .output
+            .content
+            .to_string()
+            .contains("[image: image/png mime — no media store available]")
+    );
+
+    // With a store: bytes persisted, reference attached, note names the asset.
+    let store = MemStore;
+    let out = source
+        .invoke_with_store(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
+        .await
+        .unwrap();
+    assert_eq!(
+        out.result.media,
+        vec![MediaRef::new("image/png", "asset-1")]
+    );
+    assert!(
+        out.result
+            .output
+            .content
+            .to_string()
+            .contains("[image attached: image/png — asset asset-1]")
+    );
 }

@@ -63,8 +63,11 @@ async fn streaming_run_completes_and_observes_text_deltas() {
     assert_eq!(blocks.len(), 2);
     assert!(matches!(
         &blocks[1].content,
-        causa_kernel::BlockContent::Text(causa_kernel::TextPayload(t))
-            if t == "hello world"
+        causa_kernel::BlockContent::Parts(parts)
+            if matches!(
+                parts.as_slice(),
+                [causa_kernel::ContentPart::Text(causa_kernel::TextPayload(t))] if t == "hello world"
+            )
     ));
     // The interaction observed the advisory deltas, never the terminal ones.
     let events = collector.events();

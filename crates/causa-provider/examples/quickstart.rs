@@ -56,6 +56,7 @@ impl Tool for WordCount {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(serde_json::json!({ "words": count })),
+            media: Vec::new(),
         })
     }
 }
@@ -68,7 +69,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ports out, driver in: the executor holds the tools, the gateway
     // adapter talks to the provider, the runner loops the turn.
     let executor = Arc::new(ToolExecutor::from_vec(vec![Arc::new(WordCount)]));
-    let gateway = Arc::new(AnthropicMessagesGateway::new(api_key));
+    // Media (Slice 6.5): inject the host's asset table so fact-level
+    // media references resolve to inline payloads at render time. The
+    // table is prefetched before the turn; misses degrade to a
+    // deterministic text placeholder.
+    let asset_table: std::collections::HashMap<
+        String,
+        causa_protocol::translation::media::MediaPayload,
+    > = std::collections::HashMap::new();
+    let gateway = Arc::new(
+        AnthropicMessagesGateway::new(api_key)
+            .with_media_resolver(std::sync::Arc::new(asset_table)),
+    );
     let runner = TurnRunner::new(gateway, executor.clone());
 
     let mut context = TurnContext::new(TurnId::new("quickstart"));

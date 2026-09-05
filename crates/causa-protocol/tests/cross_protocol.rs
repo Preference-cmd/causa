@@ -57,6 +57,7 @@ fn scenario_frame() -> ContextFrame {
             call_id,
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!("file-a")),
+            media: Vec::new(),
         }])
         .unwrap();
     state
@@ -90,9 +91,11 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
     let generation = GenerationOptions::default();
+    let media = causa_protocol::translation::media::MediaSet::new();
     (
         render_anthropic_messages(
             frame,
+            &media,
             &surface,
             &generation,
             &model,
@@ -101,6 +104,7 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
         .unwrap(),
         render_openai_chat_messages(
             frame,
+            &media,
             &surface,
             &generation,
             &model,
@@ -109,6 +113,7 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
         .unwrap(),
         render_openai_responses_input(
             frame,
+            &media,
             &surface,
             &generation,
             &model,
@@ -379,6 +384,7 @@ fn content_shapes_survive_all_three_renderers() {
             call_id: applied.tool_calls[0].call_id.clone(),
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(json!({"error": "denied"})),
+            media: Vec::new(),
         }])
         .unwrap();
     state
@@ -435,6 +441,7 @@ fn tool_result_ids_stay_scoped_to_their_own_turn() {
             call_id: applied.tool_calls[0].call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!(turn_name)),
+            media: Vec::new(),
         }])
         .unwrap();
         state

@@ -5,10 +5,10 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, BlockSequence, ContextBlock, ContextError, ContextVersion,
-    FrameId, FramePolicy, FrameScope, InvocationId, ModelOutput, ModelResponse, ModelStopReason,
-    ModelUsage, ReasoningPayload, RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
+    BlockContent, BlockId, BlockMeta, BlockSequence, ContentPart, ContextBlock, ContextError,
+    ContextVersion, FrameId, FramePolicy, FrameScope, InvocationId, ModelOutput, ModelResponse,
+    ModelStopReason, ModelUsage, ReasoningPayload, RoundId, TextPayload, ToolCallDraft, ToolCallId,
+    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
 };
 use common::{DropAllCompaction, ctx, endturn_output, turn_id};
 use serde_json::json;
@@ -32,11 +32,11 @@ async fn append_input_and_frame_order() {
     // Order preserved.
     assert!(matches!(
         f.model_context.blocks[0].content,
-        BlockContent::Text(_)
+        BlockContent::Parts(_)
     ));
     assert!(matches!(
         f.model_context.blocks[1].content,
-        BlockContent::Text(_)
+        BlockContent::Parts(_)
     ));
     // Sealed turn rejects further append.
     c.seal();
@@ -190,7 +190,10 @@ async fn from_validated_blocks_rejects_corrupt_state() {
         }
     }
     // Wrong turn_id
-    let mut b = block(0, BlockContent::Text(TextPayload::new("hi")));
+    let mut b = block(
+        0,
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
+    );
     b.id.turn_id = turn_id("other");
     assert!(matches!(
         TurnContext::from_validated_blocks(turn_id("t1"), vec![b], ContextVersion(1)),
@@ -198,8 +201,14 @@ async fn from_validated_blocks_rejects_corrupt_state() {
     ));
     // Non-contiguous sequence
     let blocks = vec![
-        block(0, BlockContent::Text(TextPayload::new("a"))),
-        block(2, BlockContent::Text(TextPayload::new("b"))),
+        block(
+            0,
+            BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("a"))]),
+        ),
+        block(
+            2,
+            BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("b"))]),
+        ),
     ];
     assert!(matches!(
         TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
@@ -235,6 +244,7 @@ async fn from_validated_blocks_rejects_corrupt_state() {
             call_id: ToolCallId::new("ghost"),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!({})),
+            media: Vec::new(),
         }),
     )];
     assert!(matches!(
@@ -468,8 +478,11 @@ fn content_is_first_class_with_three_shapes() {
         meta: BlockMeta::default(),
     };
 
-    let text = make(BlockContent::Text(TextPayload::new("any role")), 0);
-    assert!(matches!(text.content, BlockContent::Text(_)));
+    let text = make(
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("any role"))]),
+        0,
+    );
+    assert!(matches!(text.content, BlockContent::Parts(_)));
 
     let call_id = ToolCallId::new("echo:abcd1234:0");
     let call = make(
@@ -487,6 +500,7 @@ fn content_is_first_class_with_three_shapes() {
             call_id,
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!({})),
+            media: Vec::new(),
         }),
         2,
     );
@@ -502,14 +516,20 @@ fn context_block_serde_format_is_flat_with_content() {
     let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
     // No legacy kind field.
     assert!(!blocks_json.contains("\"kind\""));
-    // Content with shape + value.
-    assert!(blocks_json.contains("\"content\":{\"shape\":\"text\",\"value\":\"sys\"}"));
-    assert!(blocks_json.contains("\"content\":{\"shape\":\"text\",\"value\":\"hi\"}"));
+    // Content with shape + value; the value is the ordered parts list
+    // (Parts frozen 2026-09-04, Slice 6.5 — no legacy text tag remains).
+    assert!(!blocks_json.contains("\"shape\":\"text\""));
+    assert!(blocks_json.contains(
+        "\"content\":{\"shape\":\"parts\",\"value\":[{\"part\":\"text\",\"value\":\"sys\"}]}"
+    ));
+    assert!(blocks_json.contains(
+        "\"content\":{\"shape\":\"parts\",\"value\":[{\"part\":\"text\",\"value\":\"hi\"}]}"
+    ));
     // Round-trip works through the root facade.
     let restored: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
     assert_eq!(restored.len(), 2);
-    assert!(matches!(restored[0].content, BlockContent::Text(_)));
-    assert!(matches!(restored[1].content, BlockContent::Text(_)));
+    assert!(matches!(restored[0].content, BlockContent::Parts(_)));
+    assert!(matches!(restored[1].content, BlockContent::Parts(_)));
 }
 
 // ---- Phase F: door contracts ------------------------------------------------
@@ -627,11 +647,13 @@ fn tool_results_commit_in_call_order_regardless_of_submission_order() {
             call_id: call_ids[1].clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!("second")),
+            media: Vec::new(),
         },
         ToolResultPayload {
             call_id: call_ids[0].clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!("first")),
+            media: Vec::new(),
         },
     ];
     c.append_tool_results(results).unwrap();
@@ -669,4 +691,152 @@ fn frame_id_from_scope_matches_deterministic_for_turn_scope() {
             .len(),
         16
     );
+}
+
+// ---- Slice 6.5: Parts vocabulary, media references, append_parts ---------------
+
+use causa_kernel::MediaRef;
+
+#[test]
+fn append_parts_commits_one_block_with_a_single_bump() {
+    let mut c = ctx("t1");
+    let id = c
+        .append_parts(
+            vec![
+                ContentPart::Text(TextPayload::new("look at this")),
+                ContentPart::Media(MediaRef::new("image/png", "asset-1")),
+            ],
+            "user",
+        )
+        .unwrap();
+    // one logical message = one fact block, one version bump
+    assert_eq!(c.blocks().len(), 1);
+    assert_eq!(c.version(), ContextVersion(1));
+    assert_eq!(c.blocks()[0].id, id);
+    assert_eq!(c.blocks()[0].sequence, BlockSequence(0));
+    // source stamped verbatim on the envelope
+    assert_eq!(c.blocks()[0].meta.source.as_deref(), Some("user"));
+    // part order preserved
+    if let BlockContent::Parts(parts) = &c.blocks()[0].content {
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts[0],
+            ContentPart::Text(TextPayload::new("look at this"))
+        );
+        assert_eq!(
+            parts[1],
+            ContentPart::Media(MediaRef::new("image/png", "asset-1"))
+        );
+    } else {
+        panic!("expected a Parts block");
+    }
+}
+
+#[test]
+fn append_parts_rejects_empty_parts_without_committing() {
+    let mut c = ctx("t1");
+    let e = c.append_parts(vec![], "user").unwrap_err();
+    assert!(matches!(e, ContextError::InvalidSequence(_)));
+    assert!(c.blocks().is_empty());
+    assert_eq!(c.version(), ContextVersion(0));
+}
+
+#[test]
+fn append_parts_is_rejected_on_a_sealed_turn() {
+    let mut c = ctx("t1");
+    c.seal();
+    let e = c
+        .append_parts(vec![ContentPart::Text(TextPayload::new("late"))], "user")
+        .unwrap_err();
+    assert!(matches!(e, ContextError::SealedTurn));
+}
+
+#[test]
+fn append_input_is_the_single_text_part_sugar() {
+    let mut direct = ctx("t1");
+    direct
+        .append_parts(vec![ContentPart::Text(TextPayload::new("hi"))], "user")
+        .unwrap();
+    let mut sugar = ctx("t1");
+    sugar.append_input(TextPayload::new("hi"), "user").unwrap();
+    assert_eq!(
+        serde_json::to_string(&direct.snapshot_blocks()).unwrap(),
+        serde_json::to_string(&sugar.snapshot_blocks()).unwrap()
+    );
+}
+
+#[test]
+fn media_reference_round_trips_without_bytes_in_facts() {
+    let mut c = ctx("t1");
+    c.append_parts(
+        vec![
+            ContentPart::Text(TextPayload::new("caption")),
+            ContentPart::Media(MediaRef::new("image/png", "blake3-asset-id")),
+        ],
+        "user",
+    )
+    .unwrap();
+    let json = serde_json::to_string(&c.snapshot()).unwrap();
+    // the reference is the only media content on the wire shape
+    assert!(json.contains(
+        r#""part":"media","value":{"media_type":"image/png","reference":"blake3-asset-id"}"#
+    ));
+    // snapshot size stays proportional to the reference, not to any payload
+    assert!(json.len() < 800);
+    let restored: causa_kernel::TurnSnapshot = serde_json::from_str(&json).unwrap();
+    let causa_kernel::BlockContent::Parts(parts) = &restored.blocks.as_slice()[0].content else {
+        panic!("expected Parts after round-trip");
+    };
+    assert_eq!(
+        parts[1],
+        ContentPart::Media(MediaRef::new("image/png", "blake3-asset-id"))
+    );
+}
+
+#[test]
+fn tool_result_media_is_serde_additive_both_ways() {
+    let payload = ToolResultPayload {
+        call_id: ToolCallId::new("c1"),
+        status: ToolResultStatus::Succeeded,
+        output: ToolOutput::new(json!("ok")),
+        media: vec![MediaRef::new("image/png", "a1")],
+    };
+    let json = serde_json::to_string(&payload).unwrap();
+    assert!(json.contains(r#""media":[{"media_type":"image/png","reference":"a1"}]"#));
+    let restored: ToolResultPayload = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.media, vec![MediaRef::new("image/png", "a1")]);
+
+    // empty media is skipped on the wire...
+    let empty = ToolResultPayload {
+        call_id: ToolCallId::new("c2"),
+        status: ToolResultStatus::Failed,
+        output: ToolOutput::new(json!("no")),
+        media: Vec::new(),
+    };
+    assert!(!serde_json::to_string(&empty).unwrap().contains("media"));
+    // ...and a pre-6.5 snapshot without the field defaults to empty.
+    let old = json!({
+        "call_id": "c1",
+        "status": "Succeeded",
+        "output": {"content": "ok", "truncation": "none", "meta": null, "artifact": null},
+    });
+    let from_old: ToolResultPayload = serde_json::from_value(old).unwrap();
+    assert!(from_old.media.is_empty());
+}
+
+#[test]
+fn empty_parts_block_is_rejected_on_recovery() {
+    let mut c = ctx("t1");
+    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    let mut json = serde_json::to_value(c.snapshot()).unwrap();
+    // Corrupt the history: a Parts block the doors could never produce.
+    json["blocks"][0]["content"]["value"] = json!([]);
+    let snap: causa_kernel::TurnSnapshot = serde_json::from_value(json).unwrap();
+    let err = causa_kernel::TurnContext::from_validated_blocks(
+        snap.turn_id.clone(),
+        snap.blocks.into_inner(),
+        snap.source_version,
+    )
+    .unwrap_err();
+    assert!(matches!(err, ContextError::InvalidSequence(_)));
 }

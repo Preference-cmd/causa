@@ -24,6 +24,14 @@
 //!   — `tool_call_id` pairing requires one message per call. There is no
 //!   `is_error` flag on this wire; error information travels in the
 //!   content.
+//! - Tool-result media **hoists**: a tool message cannot carry images,
+//!   so each result's attachments render as a user message immediately
+//!   after it — one provenance text part naming the call, then the
+//!   images (data-URL `image_url` parts); placeholders degrade to text
+//!   parts in the same message.
+//! - Media parts in user position render as `image_url` content-array
+//!   messages (data URLs); assistant- and system-position media degrade
+//!   to the shared placeholder text (the walk decides).
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
 //!   emitter, decoded by the shared [`super::context_frame`] codec);
 //!   parsing rejects a non-JSON arguments string as `Permanent`.
@@ -37,7 +45,8 @@ use causa_kernel::{
     ToolCallDraft, ToolSurface,
 };
 
-use super::context_frame::{self, Role, Segment};
+use super::context_frame::{self, ResolvedMedia, Role, Segment};
+use super::media::MediaSet;
 
 /// A run of assistant text + tool call segments coalescing into one
 /// assistant message.
@@ -56,12 +65,13 @@ struct AssistantRun {
 /// and corrective retry stay host-side.
 pub fn render_openai_chat_messages(
     frame: &ContextFrame,
+    media: &MediaSet,
     tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
-    let normalized = context_frame::normalize(frame);
+    let normalized = context_frame::normalize(frame, media);
 
     // A run of assistant text + tool call segments coalesces into one
     // assistant message; any other segment closes the open run.
@@ -91,6 +101,33 @@ pub fn render_openai_chat_messages(
             } => {
                 messages.push(json!({"role": "user", "content": text}));
             }
+            Segment::Media { role, media } => match (role, media) {
+                (Role::System, ResolvedMedia::Placeholder(text)) => {
+                    messages.push(json!({"role": "system", "content": text}));
+                }
+                (Role::Assistant, ResolvedMedia::Placeholder(text)) => {
+                    // closes the open run, then a degraded assistant text
+                    if let Some(finished) = run.take() {
+                        messages.push(assistant_message(finished));
+                    }
+                    messages.push(json!({"role": "assistant", "content": text}));
+                }
+                (
+                    _,
+                    ResolvedMedia::Image {
+                        media_type,
+                        data_base64,
+                    },
+                ) => {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": data_url(media_type, data_base64)}}],
+                    }));
+                }
+                (_, ResolvedMedia::Placeholder(text)) => {
+                    messages.push(json!({"role": "user", "content": text}));
+                }
+            },
             Segment::Text {
                 role: Role::Assistant,
                 text,
@@ -126,13 +163,38 @@ pub fn render_openai_chat_messages(
                 }
             }
             Segment::ToolResult {
-                wire_id, content, ..
+                wire_id,
+                content,
+                media,
+                ..
             } => {
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": wire_id,
                     "content": content,
                 }));
+                // A tool message cannot carry images: hoist the result's
+                // media into a user message right after it, provenance
+                // first, one part per attachment in payload order.
+                if !media.is_empty() {
+                    let mut parts = vec![json!({
+                        "type": "text",
+                        "text": format!("[tool result media for call {wire_id}]"),
+                    })];
+                    parts.extend(media.iter().map(|m| match m {
+                        ResolvedMedia::Image {
+                            media_type,
+                            data_base64,
+                        } => json!({
+                            "type": "image_url",
+                            "image_url": {"url": data_url(media_type, data_base64)},
+                        }),
+                        ResolvedMedia::Placeholder(text) => {
+                            json!({"type": "text", "text": text})
+                        }
+                    }));
+                    messages.push(json!({"role": "user", "content": parts}));
+                }
             }
         }
     }
@@ -188,6 +250,11 @@ fn assistant_message(run: AssistantRun) -> Value {
         message["tool_calls"] = json!(run.calls);
     }
     message
+}
+
+/// The inline data URL for a resolved image payload (`image_url` shape).
+fn data_url(media_type: &str, data_base64: &str) -> String {
+    format!("data:{media_type};base64,{data_base64}")
 }
 
 /// Parse an OpenAI Chat Completions response body into a kernel
@@ -283,11 +350,15 @@ mod tests {
     use super::*;
     use causa_kernel::{ModelUsage, ToolDefinition, ToolResultStatus};
 
-    use crate::translation::test_support::{call, frame, result, text};
+    use crate::translation::media::{MediaPayload, MediaSet};
+    use crate::translation::test_support::{
+        call, frame, media_part, parts, result, result_with_media, text, text_part,
+    };
 
     fn render(frame: &ContextFrame) -> Value {
         render_openai_chat_messages(
             frame,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
@@ -434,6 +505,7 @@ mod tests {
         };
         let v = render_openai_chat_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("gpt-test"),
@@ -459,6 +531,7 @@ mod tests {
         };
         let v2 = render_openai_chat_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("gpt-test"),
@@ -468,6 +541,7 @@ mod tests {
         assert_eq!(v2["max_tokens"], json!(100));
         let again = render_openai_chat_messages(
             &f,
+            &MediaSet::new(),
             &surface,
             &generation,
             &ModelRef::new("gpt-test"),
@@ -489,6 +563,7 @@ mod tests {
         };
         let v = render_openai_chat_messages(
             &f,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
@@ -509,6 +584,7 @@ mod tests {
         // the cache directive has no wire representation on this protocol
         let cached = render_openai_chat_messages(
             &f,
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
@@ -522,6 +598,7 @@ mod tests {
     fn empty_frame_is_invalid_request() {
         let e = render_openai_chat_messages(
             &frame(vec![]),
+            &MediaSet::new(),
             &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
@@ -529,6 +606,150 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
+    }
+
+    // --- media (Slice 6.5) --------------------------------------------------
+
+    use causa_kernel::MediaRef;
+
+    fn resolved(reference: &str) -> MediaSet {
+        let mut m = MediaSet::new();
+        m.insert(reference, MediaPayload::new("image/png", "AAAA"));
+        m
+    }
+
+    #[test]
+    fn image_parts_render_as_image_url_messages() {
+        let f = frame(vec![parts(
+            0,
+            vec![
+                text_part("caption"),
+                media_part("image/png", "asset-1"),
+                text_part("after"),
+            ],
+            Some("user"),
+        )]);
+        let v = render_openai_chat_messages(
+            &f,
+            &resolved("asset-1"),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        // part boundaries preserved: each text part is its own message,
+        // the image rides an array-content user message with a data URL
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs[0], json!({"role": "user", "content": "caption"}));
+        assert_eq!(
+            msgs[1],
+            json!({"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+            ]})
+        );
+        assert_eq!(msgs[2], json!({"role": "user", "content": "after"}));
+    }
+
+    #[test]
+    fn unresolved_media_degrades_to_the_deterministic_placeholder() {
+        let f = frame(vec![parts(
+            0,
+            vec![media_part("image/png", "missing-asset")],
+            Some("user"),
+        )]);
+        let v = render_openai_chat_messages(
+            &f,
+            &MediaSet::new(),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][0],
+            json!({"role": "user", "content": "[media: image/png missing-asset]"})
+        );
+    }
+
+    #[test]
+    fn tool_result_media_hoists_into_a_user_message_with_provenance() {
+        let f = frame(vec![
+            call(0, "kc1", Some("call_1"), "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("chart ready"),
+                vec![
+                    MediaRef::new("image/png", "asset-1"),
+                    MediaRef::new("image/png", "asset-2"),
+                ],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
+        media.insert("asset-2", MediaPayload::new("image/jpeg", "BBBB"));
+        let v = render_openai_chat_messages(
+            &f,
+            &media,
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        // tool message stays text-only; media hoists right after it
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[2]["role"], "user");
+        assert_eq!(
+            msgs[2]["content"],
+            json!([
+                {"type": "text", "text": "[tool result media for call call_1]"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBBB"}},
+            ])
+        );
+    }
+
+    #[test]
+    fn hoisted_placeholders_stay_in_payload_order() {
+        let f = frame(vec![result_with_media(
+            0,
+            "kc1",
+            ToolResultStatus::Succeeded,
+            json!("mixed"),
+            vec![
+                MediaRef::new("image/png", "good"),
+                MediaRef::new("image/png", "missing"),
+                MediaRef::new("application/pdf", "doc"),
+            ],
+        )]);
+        let mut media = MediaSet::new();
+        media.insert("good", MediaPayload::new("image/png", "AAAA"));
+        media.insert("doc", MediaPayload::new("application/pdf", "BBBB"));
+        let v = render_openai_chat_messages(
+            &f,
+            &media,
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(
+            msgs[1]["content"],
+            json!([
+                {"type": "text", "text": "[tool result media for call kc1]"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {"type": "text", "text": "[media: image/png missing]"},
+                // resolved but non-image: degraded, never inlined
+                {"type": "text", "text": "[media: application/pdf doc]"},
+            ])
+        );
     }
 
     // --- parsing -----------------------------------------------------------

@@ -46,6 +46,22 @@ pub trait DynamicToolSource: Send + Sync {
         call: &ToolCallPayload,
         control: &CallControl,
     ) -> Result<ToolExecutionOutcome, ToolExecutionError>;
+
+    /// Execute one call with the host's artifact store available for
+    /// media ingest: a source whose tools produce images can persist the
+    /// bytes via `store` and attach [`crate::context::block::MediaRef`]s
+    /// to the outcome's `ToolResultPayload.media` instead of degrading
+    /// them to text. Additive with a delegating default, so sources that
+    /// never produce media keep their existing `invoke` only.
+    async fn invoke_with_store(
+        &self,
+        call: &ToolCallPayload,
+        control: &CallControl,
+        store: Option<&dyn crate::ports::tool::ArtifactStore>,
+    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+        let _ = store;
+        Self::invoke(self, call, control).await
+    }
 }
 
 /// Listing failure — the catalog as a whole is unusable right now.

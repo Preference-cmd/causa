@@ -29,7 +29,9 @@ mod context;
 mod ports;
 
 // --- context: the external rule interface ------------------------------------
-pub use context::block::{BlockContent, BlockMeta, ContextBlock, TextPayload, ToolCallPayload};
+pub use context::block::{
+    BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload, ToolCallPayload,
+};
 pub use context::conversation::{
     ConversationError, ConversationState, OrderedTurns, SealedResult, merged_frame,
 };

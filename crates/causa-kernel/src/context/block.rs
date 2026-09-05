@@ -4,6 +4,14 @@
 //! identity (id, sequence), content (BlockContent), and envelope
 //! provenance (BlockMeta). Provider-specific role assignment (system /
 //! user / assistant / tool) is the renderer's job, not the kernel's.
+//!
+//! Content vocabulary is **Parts** (frozen 2026-09-04, Slice 6.5): one
+//! logical message's mixed content commits as one block of ordered
+//! [`ContentPart`]s — the block is the fact atom (identity, sequence,
+//! single version bump, pairing invariant), the part is the content
+//! atom (ordered, identity-free, shares the envelope). Media enters as
+//! a [`MediaRef`] — a cheap durable reference; bytes never enter facts,
+//! they appear only in resolved render payloads (provider side).
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +32,7 @@ pub struct BlockMeta {
 }
 
 /// A single string of text. Serializes transparently as the inner string.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TextPayload(pub String);
 impl TextPayload {
@@ -63,17 +71,52 @@ pub struct ContextBlock {
     pub meta: BlockMeta,
 }
 
-/// The content shape of a block. Three shapes:
-/// text (any role), tool call, tool result.
+/// A media fact: a cheap, durable reference. Bytes never enter facts —
+/// they appear only in resolved render payloads (provider side).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaRef {
+    /// IANA media type; this slice renders only `image/*` to the wire,
+    /// anything else degrades to a deterministic text placeholder.
+    pub media_type: String,
+    /// Host-side asset reference (workspace asset id / content-addressed
+    /// hash). The kernel never interprets it; the host's resolver does.
+    pub reference: String,
+}
+
+impl MediaRef {
+    /// Wraps a media type and a host-side asset reference.
+    pub fn new(media_type: impl Into<String>, reference: impl Into<String>) -> Self {
+        Self {
+            media_type: media_type.into(),
+            reference: reference.into(),
+        }
+    }
+}
+
+/// The content shape of a block. Three shapes: one message's ordered
+/// parts (any role), a tool call, a tool result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "shape", content = "value", rename_all = "snake_case")]
 pub enum BlockContent {
-    /// Plain text, legal for any role; provider role assignment is the
-    /// renderer's job.
-    Text(TextPayload),
+    /// One logical message's ordered content parts (text and media
+    /// references) — atomic at the block: identity, sequence, one
+    /// version bump, and the pairing invariant live only here.
+    Parts(Vec<ContentPart>),
     /// A model-issued tool invocation.
     ToolCall(ToolCallPayload),
     /// The recorded outcome of a prior call, paired by
     /// `ToolResultPayload::call_id`.
     ToolResult(ToolResultPayload),
+}
+
+/// One content atom inside a [`BlockContent::Parts`] block: ordered,
+/// identity-free, sharing the block's envelope. New modalities arrive
+/// as new variants (additive); media bytes stay out of facts forever.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "part", content = "value", rename_all = "snake_case")]
+pub enum ContentPart {
+    /// Plain text; provider role assignment stays the renderer's job.
+    Text(TextPayload),
+    /// A media reference; bytes never enter facts.
+    Media(MediaRef),
 }

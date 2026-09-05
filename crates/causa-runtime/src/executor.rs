@@ -279,6 +279,7 @@ impl ToolExecutor {
                 output: ToolOutput::new(
                     serde_json::json!({"error": format!("unknown tool: {}", payload.tool_name)}),
                 ),
+                media: Vec::new(),
             });
         };
 
@@ -419,6 +420,7 @@ impl ToolExecutor {
             call_id: payload.call_id.clone(),
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(serde_json::json!({"error": "tool panicked"})),
+            media: Vec::new(),
         })
     }
 
@@ -436,6 +438,7 @@ impl ToolExecutor {
                 }),
                 artifact: None,
             },
+            media: Vec::new(),
         })
     }
 }

@@ -111,9 +111,15 @@ fn text_facts(context: &TurnContext) -> Vec<String> {
     context
         .blocks()
         .iter()
-        .filter_map(|b| match &b.content {
-            causa_kernel::BlockContent::Text(t) => Some(t.0.clone()),
-            _ => None,
+        .flat_map(|b| match &b.content {
+            causa_kernel::BlockContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    causa_kernel::ContentPart::Text(t) => Some(t.0.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -255,6 +261,7 @@ async fn resume_with_reject_records_rejected_results() {
         call_id: pending[0].call_id.clone(),
         status: ToolResultStatus::Rejected,
         output: ToolOutput::new(json!({"error": "denied by operator"})),
+        media: Vec::new(),
     });
     let resumed = runner
         .resume(

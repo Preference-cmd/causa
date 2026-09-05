@@ -235,6 +235,7 @@ impl causa_runtime::ToolUseHook for TestDedupHook {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
+                    media: Vec::new(),
                 }));
             } else {
                 to_execute.push(payload);
@@ -281,6 +282,7 @@ impl Tool for EchoTool {
                 meta: None,
                 artifact: None,
             },
+            media: Vec::new(),
         })
     }
 }
@@ -301,6 +303,7 @@ impl Tool for FailTool {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(serde_json::json!({"err": "fail"})),
+            media: Vec::new(),
         })
     }
 }
@@ -324,6 +327,7 @@ impl Tool for UnknownStopTool {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::UnknownOutcome,
             output: ToolOutput::new(serde_json::json!({"unk": true})),
+            media: Vec::new(),
         })
         .with_policy(UnknownOutcomePolicy::Stop)
     }

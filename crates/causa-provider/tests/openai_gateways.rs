@@ -39,7 +39,9 @@ fn user_frame() -> ContextFrame {
                     sequence: BlockSequence(0),
                 },
                 sequence: BlockSequence(0),
-                content: BlockContent::Text(TextPayload::new("hi")),
+                content: BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                    TextPayload::new("hi"),
+                )]),
                 meta: BlockMeta {
                     provider_call_id: None,
                     source: Some("user".into()),

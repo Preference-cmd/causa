@@ -12,13 +12,14 @@
 use async_trait::async_trait;
 use causa_kernel::ToolCallPayload;
 use causa_kernel::{
-    CallControl, DynamicToolSource, Tool, ToolCallContext, ToolDefinition, ToolExecutionError,
-    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ArtifactStore, CallControl, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
+    ToolExecutionError, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 
 /// A single dynamic-source tool exposed through the plain [`Tool`]
 /// interface. The bridge routes `execute` to
-/// [`DynamicToolSource::invoke`] (the source de-namespaces the call) and
+/// [`DynamicToolSource::invoke_with_store`] (the source de-namespaces the
+/// call; the host's artifact store is forwarded for media ingest) and
 /// maps invoke errors onto structured outcomes: a timeout or cancellation
 /// is `UnknownOutcome` (the call may have run server-side), an
 /// out-of-catalog name is `Rejected`, unavailability and protocol
@@ -46,12 +47,25 @@ impl Tool for ToolBridge {
     }
 
     async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolExecutionOutcome {
+        self.execute_with_store(ctx, control, None).await
+    }
+
+    async fn execute_with_store(
+        &self,
+        ctx: &ToolCallContext,
+        control: &CallControl,
+        store: Option<&dyn ArtifactStore>,
+    ) -> ToolExecutionOutcome {
         let payload = ToolCallPayload {
             call_id: ctx.call_id.clone(),
             tool_name: ctx.tool_name.clone(),
             arguments: ctx.arguments.clone(),
         };
-        match self.source.invoke(&payload, control).await {
+        match self
+            .source
+            .invoke_with_store(&payload, control, store)
+            .await
+        {
             Ok(outcome) => outcome,
             Err(e) => ToolExecutionOutcome::new(ToolResultPayload {
                 call_id: ctx.call_id.clone(),
@@ -65,6 +79,7 @@ impl Tool for ToolBridge {
                     }
                 },
                 output: ToolOutput::new(serde_json::json!({ "error": e.to_string() })),
+                media: Vec::new(),
             }),
         }
     }
@@ -102,6 +117,7 @@ mod tests {
                     call_id: call.call_id.clone(),
                     status: ToolResultStatus::Succeeded,
                     output: ToolOutput::new(call.arguments.clone()),
+                    media: Vec::new(),
                 })),
             }
         }
