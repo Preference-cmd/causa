@@ -51,3 +51,24 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 - Brand: **Causa** (formerly Archy) — every crate renamed to `causa-*`;
   project pages live under the Project inceptae domain.
+
+### Fixed
+
+- Protocol translation resolves tool result ids through a
+  `(turn_id, call_id)` map instead of a bare `call_id` map: two turns
+  calling the same tool with the same arguments keep their own provider
+  ids instead of the later turn's overwriting the earlier turn's.
+- Tool-output truncation sizes the retained head+tail against the
+  declared token budget — notice and JSON-string wrapping measured, with
+  re-estimation until the output fits — so truncated content actually
+  shrinks and lands at or under `max_tokens`; a budget smaller than the
+  notice itself leaves the notice as the defined floor.
+- Batch completeness is enforced by the runner on every dispatch path:
+  the withheld decision must cover the emitted batch exactly (no silent
+  drops, duplicates, or foreign calls), and an approval resume must match
+  the turn's unanswered tool calls — violations interrupt as
+  `RunnerInvariantViolation` before anything executes.
+- The driver re-snapshots the executor's tool surface at every round
+  boundary (first model phase keeps the host-declared baseline), so
+  dynamic-catalog changes made during a turn reach the next model
+  request; retries within a round reuse the round's snapshot.
