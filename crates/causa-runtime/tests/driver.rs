@@ -9,11 +9,13 @@ use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
     CallControl, ContextBlock, FramePolicy, ModelInvokeErrorKind, ModelOutput, ModelResponse,
     ModelStopReason, ModelUsage, ReasoningPayload, StoreError, TextPayload, Tool, ToolCallContext,
-    ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload,
-    ToolResultStatus, Truncation, UnknownOutcomePolicy, WindowBudget,
+    ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionOutcome, ToolOutput,
+    ToolOutputLimits, ToolResultPayload, ToolResultStatus, Truncation, UnknownOutcomePolicy,
+    WindowBudget,
 };
 use causa_runtime::{
-    ExecutionOptions, RetryPolicy, RunControl, TurnInterruption, TurnResult, TurnRunOptions,
+    ExecutionOptions, RetryPolicy, RunControl, ToolExecutor, TurnInterruption, TurnResult,
+    TurnRunOptions,
 };
 use common::{
     DropAllCompaction, EchoTool, FailTool, RecordingGateway, UnknownStopTool, ctrl, ctx, draft,
@@ -765,6 +767,112 @@ async fn artifact_store_failure_still_truncates_without_artifact() {
     } else {
         panic!()
     }
+}
+
+// ---- truncation budget (2026-09-05 assessment F2) --------------------------------
+//
+// The retained head+tail must be sized against the DECLARED limit — notice
+// and JSON-string wrapping included — so the committed content re-estimates
+// at or under `max_tokens`; a limit smaller than the notice itself leaves
+// the notice as the defined floor.
+
+struct RecordingStore;
+#[async_trait::async_trait]
+impl ArtifactStore for RecordingStore {
+    async fn persist(&self, data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        Ok(ArtifactRef {
+            id: blake3::hash(data).to_hex().to_string()[..8].into(),
+            size_bytes: data.len(),
+            kind: ArtifactKind::FullOutput,
+            persisted: true,
+        })
+    }
+    async fn read(
+        &self,
+        _id: &str,
+        _range: Option<std::ops::Range<u64>>,
+    ) -> Result<Vec<u8>, StoreError> {
+        Ok(vec![])
+    }
+}
+
+/// Echo a payload straight through the executor under the given output
+/// limit; returns the result fact.
+async fn truncated_echo(
+    arguments: serde_json::Value,
+    max_tokens: usize,
+    store: Option<Arc<dyn ArtifactStore>>,
+) -> ToolResultPayload {
+    let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
+    executor
+        .execute_with_limits(
+            ToolCallPayload {
+                call_id: ToolCallId("probe".into()),
+                tool_name: "echo".into(),
+                arguments,
+            },
+            CallControl::new(tokio_util::sync::CancellationToken::new(), None),
+            store,
+            None,
+            ToolOutputLimits { max_tokens },
+        )
+        .await
+        .result
+}
+
+#[tokio::test]
+async fn truncation_reduces_output_and_reestimates_within_the_limit() {
+    // The 2026-09-05 probe: a 4k-byte observation under a small limit grew
+    // instead of shrinking, because head+tail covered the whole original.
+    let original = json!({"echo": {"text": "a".repeat(4000)}});
+    let before = serde_json::to_string(&original).unwrap().len();
+    let result = truncated_echo(json!({"text": "a".repeat(4000)}), 100, None).await;
+    assert_eq!(result.output.truncation, Truncation::Middle);
+    let after = serde_json::to_string(&result.output.content).unwrap().len();
+    assert!(
+        after < before,
+        "truncation grew output: {before} -> {after} bytes"
+    );
+    assert!(
+        causa_runtime::defaults::placeholder_token_estimate_value(&result.output.content) <= 100,
+        "truncated output re-estimates above the declared limit"
+    );
+}
+
+#[tokio::test]
+async fn truncation_holds_for_utf8_and_artifact_spill() {
+    // Multibyte payload: the head/tail cuts must respect char boundaries
+    // (no panic), and the budget must hold with the artifact notice too.
+    let result = truncated_echo(
+        json!({"text": "中文内容".repeat(500)}),
+        100,
+        Some(Arc::new(RecordingStore)),
+    )
+    .await;
+    assert_eq!(result.output.truncation, Truncation::Middle);
+    assert!(result.output.artifact.is_some());
+    let text = result
+        .output
+        .content
+        .as_str()
+        .expect("truncated content is a JSON string");
+    assert!(text.contains("中文"), "kept text is not split mid-char");
+    assert!(
+        causa_runtime::defaults::placeholder_token_estimate_value(&result.output.content) <= 100
+    );
+}
+
+#[tokio::test]
+async fn tiny_budget_leaves_the_notice_as_the_floor() {
+    // 10 tokens cannot even hold the notice: the defined floor is the
+    // notice alone — never the untruncated payload.
+    let result = truncated_echo(json!({"text": "a".repeat(4000)}), 10, None).await;
+    let text = result.output.content.as_str().unwrap();
+    assert!(text.starts_with("\n...[truncated:"));
+    assert!(
+        !text.contains("aaaa"),
+        "tiny budget still leaked the payload: {text}"
+    );
 }
 
 #[tokio::test]

@@ -325,14 +325,26 @@ impl ToolExecutor {
         // an object or array observation becomes a string on the wire. The
         // `truncation: Middle` marker and the artifact ref are how consumers
         // detect this.
+        //
+        // Budget note: the retained head+tail is sized against the DECLARED
+        // limit, not the original size — the notice and the JSON-string
+        // wrapping are part of the measured output. Every candidate is
+        // re-estimated with the wired estimator and the data budget shrinks
+        // until the result fits, so the committed content re-estimates at or
+        // under `max_tokens` — with one defined floor: when the limit is
+        // smaller than the notice's own estimate, the notice alone is
+        // emitted (nothing smaller is representable).
         let effective_limit = tool.output_limits().unwrap_or(global_limits).max_tokens;
 
-        let estimated = if let Some(counter) = &token_counter {
-            counter.estimate_value(&outcome.result.output.content)
-        } else {
-            // The driver's fallback opinion — single home in `defaults` (7.4).
-            crate::defaults::placeholder_token_estimate_value(&outcome.result.output.content)
+        let estimate = |value: &serde_json::Value| -> usize {
+            if let Some(counter) = &token_counter {
+                counter.estimate_value(value)
+            } else {
+                // The driver's fallback opinion — single home in `defaults` (7.4).
+                crate::defaults::placeholder_token_estimate_value(value)
+            }
         };
+        let estimated = estimate(&outcome.result.output.content);
 
         if estimated > effective_limit {
             let content_str = serde_json::to_string(&outcome.result.output.content)
@@ -363,17 +375,32 @@ impl ToolExecutor {
                 )
             };
 
-            // head 60% + notice + tail 40% — slice at char boundaries safely
-            let total = content_str.len();
-            let head_target = total * 3 / 5;
-            let tail_target = total - head_target;
-            let head_end = floor_char_boundary(&content_str, head_target);
-            let tail_start = ceil_char_boundary(&content_str, total.saturating_sub(tail_target));
-            let head = &content_str[..head_end];
-            let tail = &content_str[tail_start..];
-            let preview = format!("{}{}{}", head, notice, tail);
+            // Initial data budget under the chars/4 heuristic with the
+            // notice's own footprint reserved; the loop re-measures every
+            // candidate with the wired estimator, so any counter converges.
+            // The cut floors at budget/8 (geometric convergence) and 1
+            // (termination); budget 0 leaves the notice as the floor.
+            let mut data_budget = effective_limit
+                .saturating_sub(estimate(&serde_json::Value::String(notice.clone())))
+                .saturating_mul(4);
+            let mut preview_value;
+            loop {
+                let (head, tail) = split_head_tail(&content_str, data_budget);
+                let candidate = serde_json::Value::String(format!("{head}{notice}{tail}"));
+                let candidate_tokens = estimate(&candidate);
+                let fits = candidate_tokens <= effective_limit;
+                preview_value = candidate;
+                if fits || data_budget == 0 {
+                    break;
+                }
+                let cut = (candidate_tokens - effective_limit)
+                    .saturating_mul(4)
+                    .max(data_budget / 8)
+                    .max(1);
+                data_budget = data_budget.saturating_sub(cut);
+            }
 
-            outcome.result.output.content = serde_json::Value::String(preview);
+            outcome.result.output.content = preview_value;
             outcome.result.output.truncation = Truncation::Middle;
             outcome.result.output.artifact = artifact;
             let prev_meta = outcome.result.output.meta.take();
@@ -411,6 +438,17 @@ impl ToolExecutor {
             },
         })
     }
+}
+
+/// Head+tail preview split of `s` totalling at most `budget` bytes
+/// (60% head / 40% tail), each cut at a char boundary and never
+/// overlapping — the retained amount follows the budget, never the
+/// original size.
+fn split_head_tail(s: &str, budget: usize) -> (&str, &str) {
+    let kept = budget.min(s.len());
+    let head_end = floor_char_boundary(s, kept * 3 / 5);
+    let tail_start = ceil_char_boundary(s, s.len() - (kept - head_end));
+    (&s[..head_end], &s[tail_start..])
 }
 
 fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
