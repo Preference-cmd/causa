@@ -6,11 +6,11 @@ mod common;
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, BlockSequence, ContentPart, ContextBlock, ContextError,
-    ContextVersion, FrameId, FramePolicy, FrameScope, InvocationId, ModelOutput, ModelResponse,
-    ModelStopReason, ModelUsage, ReasoningPayload, RoundId, TextPayload, ToolCallDraft, ToolCallId,
-    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, WindowBudget,
+    ContextVersion, FrameId, FrameScope, InvocationId, ModelOutput, ModelResponse, ModelStopReason,
+    ModelUsage, ReasoningPayload, RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext,
 };
-use common::{DropAllCompaction, ctx, endturn_output, turn_id};
+use common::{ctx, endturn_output, turn_id};
 use serde_json::json;
 
 #[tokio::test]
@@ -419,46 +419,26 @@ fn fidelity_fields_are_serde_additive() {
 }
 
 // ---- Phase D boundary: compaction projection identity ----
+// The budget/compaction policy moved to `causa-runtime` (Slice 13); the
+// projection-identity test lives with it in `causa-runtime/tests/budget.rs`.
+// What stays here is the fact-machine side: the lossless frame is a pure
+// function of the committed facts.
 
 #[tokio::test]
-async fn compaction_projection_identity() {
+async fn lossless_frame_is_a_pure_function_of_facts() {
     let mut c = ctx("t1");
     c.append_input(TextPayload::new("hello"), "user").unwrap();
-    let lossless = FramePolicy::default();
-    // The token estimate itself is a behavior -- host chooses the
-    // heuristic. `NoopTokenCounter` returns 0 and never trips the
-    // budget; wire a real counter here to exercise compaction.
-    struct CountPlusOne;
-    impl causa_kernel::TokenCounter for CountPlusOne {
-        fn estimate(&self, blocks: &[ContextBlock]) -> usize {
-            blocks.len() + 100
-        }
-        fn estimate_value(&self, _value: &serde_json::Value) -> usize {
-            1
-        }
-    }
-    let compacting = FramePolicy {
-        window_budget: WindowBudget {
-            model_window_limit: 100,
-            compaction_trigger: 1,
-        },
-        compaction: Some(std::sync::Arc::new(DropAllCompaction)),
-        token_counter: Some(std::sync::Arc::new(CountPlusOne)),
-    };
-    let sync_frame = c.frame(RoundId(0));
-    let lossless_frame = lossless.materialize(&c, RoundId(0)).await.unwrap();
-    assert_eq!(sync_frame.frame_id, lossless_frame.frame_id);
+    let f0 = c.frame(RoundId(0));
+    let f1 = c.frame(RoundId(0));
+    assert_eq!(f0.frame_id, f1.frame_id);
     assert_eq!(
-        serde_json::to_string(&sync_frame.model_context.blocks).unwrap(),
-        serde_json::to_string(&lossless_frame.model_context.blocks).unwrap()
+        serde_json::to_string(&f0.model_context.blocks).unwrap(),
+        serde_json::to_string(&f1.model_context.blocks).unwrap()
     );
     assert_eq!(
-        serde_json::to_string(&lossless_frame.model_context.blocks).unwrap(),
+        serde_json::to_string(&f0.model_context.blocks).unwrap(),
         serde_json::to_string(&c.snapshot_blocks()).unwrap()
     );
-    let projected = compacting.materialize(&c, RoundId(0)).await.unwrap();
-    assert_eq!(projected.frame_id, sync_frame.frame_id);
-    assert!(projected.model_context.blocks.is_empty());
     assert_eq!(c.snapshot_blocks().len(), 1);
 }
 

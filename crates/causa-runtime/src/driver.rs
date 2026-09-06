@@ -3,13 +3,13 @@
 //! kernel's staged `internal/` perimeter by Slice 12: the kernel is facts
 //! and contracts only; the canonical consumer of those contracts lives
 //! here, one layer up.
+use crate::budget::FramePolicy;
 use crate::config::TurnRunOptions;
 use crate::control::RunControl;
 use crate::conversation::{ConversationError, ConversationState, SealedResult};
 use crate::executor::ToolExecutor;
+use crate::interaction::BatchDecision;
 use causa_kernel::AttemptNumber;
-use causa_kernel::BatchDecision;
-use causa_kernel::FramePolicy;
 use causa_kernel::ModelGateway;
 use causa_kernel::ModelRequest;
 use causa_kernel::ModelStopReason;

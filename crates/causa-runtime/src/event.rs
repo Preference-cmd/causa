@@ -51,9 +51,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{ModelRoundTrace, TurnResult, TurnTrace};
+use crate::interaction::TurnInteraction;
 use causa_kernel::{
     BlockContent, ConversationId, RoundId, StreamDelta, ToolCallPayload, TurnContext, TurnId,
-    TurnInteraction,
 };
 
 /// Framework-side event projected from a turn's facts.

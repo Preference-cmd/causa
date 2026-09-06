@@ -7,15 +7,15 @@ mod common;
 
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
-    CallControl, ContextBlock, DynamicToolSource, FramePolicy, ModelInvokeErrorKind, ModelOutput,
-    ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, SourceError, StoreError,
-    TextPayload, Tool, ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition,
-    ToolExecutionError, ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload,
-    ToolResultStatus, Truncation, UnknownOutcomePolicy, WindowBudget,
+    CallControl, ContextBlock, DynamicToolSource, ModelInvokeErrorKind, ModelOutput, ModelResponse,
+    ModelStopReason, ModelUsage, ReasoningPayload, SourceError, StoreError, TextPayload, Tool,
+    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError,
+    ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload, ToolResultStatus,
+    Truncation, UnknownOutcomePolicy,
 };
 use causa_runtime::{
-    ExecutionOptions, HookCtx, HookOutcome, RetryPolicy, RunControl, ToolExecutor, ToolUseHook,
-    TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
+    ExecutionOptions, FramePolicy, HookCtx, HookOutcome, RetryPolicy, RunControl, ToolExecutor,
+    ToolUseHook, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner, WindowBudget,
 };
 use common::{
     DropAllCompaction, EchoTool, FailTool, RecordingGateway, UnknownStopTool, ctrl, ctx, draft,
@@ -684,7 +684,7 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     // wires a real `TokenCounter` -- `NoopTokenCounter` returns 0
     // and never trips the budget.
     struct CountPlusOne;
-    impl causa_kernel::TokenCounter for CountPlusOne {
+    impl causa_runtime::TokenCounter for CountPlusOne {
         fn estimate(&self, blocks: &[ContextBlock]) -> usize {
             blocks.len() + 100
         }

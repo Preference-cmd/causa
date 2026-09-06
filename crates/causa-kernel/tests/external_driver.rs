@@ -6,7 +6,7 @@
 //! module path.
 
 use causa_kernel::{
-    AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion, FramePolicy,
+    AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion,
     GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef,
     ModelRequest, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
     TextPayload, ToolSurface, TurnContext, TurnId, TurnSnapshot,
@@ -61,13 +61,11 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
         },
     };
 
-    // The external loop: materialize a frame through the canonical policy
-    // port, invoke the model through the gateway port, apply the output as
-    // facts, and seal the turn — no reference driver involved.
-    let frame = FramePolicy::default()
-        .materialize(&context, RoundId(0))
-        .await
-        .unwrap();
+    // The external loop: project the lossless frame directly (the kernel
+    // has no budget policy — that is reference-harness territory), invoke
+    // the model through the gateway port, apply the output as facts, and
+    // seal the turn — no reference driver involved.
+    let frame = context.frame(RoundId(0));
     let invocation = InvocationId {
         turn_id: context.turn_id(),
         round_id: RoundId(0),

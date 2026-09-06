@@ -1,16 +1,18 @@
-//! Frame-materialization ports — window budget, compaction seam, token
-//! counter, and the canonical `FramePolicy` carrier. The policy orchestrates
-//! materialization itself: the fact machine offers only the lossless
-//! projection and never awaits behavior.
+//! Reference frame-materialization policy — window budget, compaction seam,
+//! token counter, and the canonical [`FramePolicy`] carrier. Slice 13 moved
+//! these here from the kernel: they are the reference harness's budget
+//! opinions, not fact-layer invariants. A custom harness composes the
+//! kernel's lossless projection (`TurnContext::frame`) differently.
+//!
+//! The policy orchestrates materialization itself: the fact machine offers
+//! only the lossless projection and never awaits behavior, so compaction
+//! output is frame-local and never written back into fact state.
 
-use crate::context::block::ContextBlock;
-use crate::context::ids::RoundId;
-use crate::context::turn::{ContextFrame, TurnContext};
+use causa_kernel::{ContextBlock, ContextFrame, RoundId, TurnContext};
 
 /// Trigger thresholds for frame materialization, in estimated tokens. A pure
-/// value: the kernel's trigger check reads only `compaction_trigger`; the
-/// full budget rides along to the compaction implementation via
-/// [`CompactionInput`].
+/// value: the trigger check reads only `compaction_trigger`; the full budget
+/// rides along to the compaction implementation via [`CompactionInput`].
 #[derive(Debug, Clone, Copy)]
 pub struct WindowBudget {
     /// Upper bound of the model's context window, in estimated tokens.
@@ -49,10 +51,10 @@ pub struct CompactionInput {
     pub estimated_tokens: usize,
 }
 /// `summary` is host-observation only; if a summary must be model-visible,
-/// the implementation folds it into `blocks` itself — `frame` materializes
-/// `out.blocks` and never appends `summary`.
+/// the implementation folds it into `blocks` itself — `materialize`
+/// emits `out.blocks` and never appends `summary`.
 pub struct CompactionOutput {
-    /// The replacement block list that `frame` materializes. Frame-local —
+    /// The replacement block list that `materialize` projects. Frame-local —
     /// never written back into fact state.
     pub blocks: Vec<ContextBlock>,
     /// Host-observation-only summary block, if the implementation produced
@@ -99,19 +101,11 @@ pub enum FrameError {
     CompactionFailed(String),
 }
 
-// Note: prior revisions shipped a `placeholder_token_estimate`
-// helper ("JSON length / 4"). It was a specific heuristic carried
-// inside `ports/`, violating "invariants only". `FramePolicy::estimate`
-// now returns 0 when no `TokenCounter` is wired, so `should_compact`
-// computes as "no trigger". Hosts that need the heuristic can wire
-// `agent_runtime::defaults::NoopTokenCounter` or their own `TokenCounter`.
-
 /// Carrier of the frame-materialization policy: trigger budget, optional
-/// compaction, optional token counter. A canonical value assembled from port
-/// instances — drivers build and own it, and it orchestrates
+/// compaction, optional token counter. A reference-harness value assembled
+/// from port instances — the driver builds and owns it, and it orchestrates
 /// materialization itself, using only the fact machine's public accessors.
-/// Placeholder semantics stay frame-local and non-persisting; real
-/// conversation-level policy is Slice 5 territory.
+/// Placeholder semantics stay frame-local and non-persisting.
 #[derive(Clone, Default)]
 pub struct FramePolicy {
     /// Trigger thresholds; the all-`usize::MAX` default never trips
@@ -169,7 +163,11 @@ impl FramePolicy {
                 .compact(input)
                 .await
                 .map_err(|e| FrameError::CompactionFailed(e.to_string()))?;
-            return Ok(ctx.frame_with(round_id, out.blocks));
+            // Metadata-consistent projection: the lossless frame carries the
+            // deterministic frame identity; only the block list is replaced.
+            let mut frame = ctx.frame(round_id);
+            frame.model_context.blocks = out.blocks;
+            return Ok(frame);
         }
         Ok(ctx.frame(round_id))
     }

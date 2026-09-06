@@ -4,9 +4,9 @@
 //! and dynamic sources (`DynamicToolSource`, e.g. MCP servers) merge into
 //! one dispatch path; the driver only consumes the assembled surface.
 
+use crate::budget::TokenCounter;
 use crate::composition::ToolBridge;
 use causa_kernel::CallControl;
-use causa_kernel::TokenCounter;
 use causa_kernel::ToolCallPayload;
 use causa_kernel::{
     ArtifactHint, ArtifactStore, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,

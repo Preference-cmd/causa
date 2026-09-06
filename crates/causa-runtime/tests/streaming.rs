@@ -208,7 +208,7 @@ async fn cancellation_mid_stream_interrupts_explicitly() {
         token: CancellationToken,
     }
     #[async_trait::async_trait]
-    impl causa_kernel::TurnInteraction for CancelOnFirstDelta {
+    impl causa_runtime::TurnInteraction for CancelOnFirstDelta {
         async fn on_delta(&self, _round_id: RoundId, _delta: &StreamDelta) {
             self.token.cancel();
         }

@@ -19,9 +19,10 @@ use async_trait::async_trait;
 use causa_kernel::{
     AttemptControl, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse,
     ModelStopReason, RoundId, StreamDelta, TextPayload, ToolCallDraft, TurnContext, TurnId,
-    TurnInteraction,
 };
-use causa_runtime::{RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner};
+use causa_runtime::{
+    RunControl, ToolExecutor, TurnInteraction, TurnResult, TurnRunOptions, TurnRunner,
+};
 use std::io::Write as _;
 use std::sync::Arc;
 use tokio::sync::Mutex;

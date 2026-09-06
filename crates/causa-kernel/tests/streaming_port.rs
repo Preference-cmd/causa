@@ -1,16 +1,16 @@
 //! Streaming-port tests (Slice 6 Phase A): the `ModelGateway::stream`
-//! default degeneration, `completed_model_stream`, and the
-//! `TurnInteraction` contract as seen from the kernel alone.
+//! default degeneration and `completed_model_stream`. (The
+//! `TurnInteraction` contract moved to `causa-runtime` in Slice 13 — its
+//! tests live there now.)
 
 use async_trait::async_trait;
 use causa_kernel::{
     AttemptControl, AttemptNumber, InvocationId, ModelGateway, ModelInvokeError, ModelOutput,
     ModelRef, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage,
     ReasoningPayload, RoundId, StreamDelta, TextPayload, ToolSurface, TurnContext, TurnId,
-    TurnInteraction, completed_model_stream,
+    completed_model_stream,
 };
 use futures_util::StreamExt;
-use std::sync::{Arc, Mutex};
 
 fn request(ctx: &TurnContext) -> ModelRequest {
     ModelRequest {
@@ -89,44 +89,6 @@ async fn completed_model_stream_wraps_one_done() {
     }
     assert_eq!(items.len(), 1);
     assert!(matches!(items[0], StreamDelta::Done { .. }));
-}
-
-#[tokio::test]
-async fn turn_interaction_default_methods_are_noop_and_implementable() {
-    /// A host-side observer counting what it sees through the port.
-    struct CountingInteraction {
-        text_deltas: Mutex<usize>,
-    }
-    #[async_trait]
-    impl TurnInteraction for CountingInteraction {
-        async fn on_delta(&self, _round_id: RoundId, delta: &StreamDelta) {
-            if matches!(delta, StreamDelta::TextDelta { .. }) {
-                *self.text_deltas.lock().unwrap() += 1;
-            }
-        }
-    }
-
-    let interaction = Arc::new(CountingInteraction {
-        text_deltas: Mutex::new(0),
-    });
-    // Default no-op: the trait's own methods are callable on Arc<dyn _>.
-    let noop: Arc<dyn TurnInteraction> = interaction.clone();
-    noop.on_delta(
-        RoundId(0),
-        &StreamDelta::ReasoningDelta {
-            delta: "thinking".into(),
-        },
-    )
-    .await;
-    interaction
-        .on_delta(
-            RoundId(3),
-            &StreamDelta::TextDelta {
-                delta: "token".into(),
-            },
-        )
-        .await;
-    assert_eq!(*interaction.text_deltas.lock().unwrap(), 1);
 }
 
 fn no_ctrl() -> AttemptControl {

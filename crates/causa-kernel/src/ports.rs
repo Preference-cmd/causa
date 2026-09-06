@@ -7,12 +7,11 @@
 //! implement or call against; the kernel itself consumes none of it — the
 //! canonical consumer (driver, executor) lives in `causa-runtime`. The
 //! conversation-persistence port (`ConversationStore`) moved there with the
-//! session aggregate in Slice 6.5 — it is a session-archive convenience
-//! contract, not a cross-harness capability.
+//! session aggregate in Slice 6.5; the reference budget/compaction seam and
+//! the host↔driver interaction seam moved to `causa-runtime` in Slice 13 —
+//! they are the reference harness's opinions, not cross-harness capabilities.
 
-pub mod budget;
 pub mod control;
 pub mod gateway;
-pub mod interaction;
 pub mod source;
 pub mod tool;

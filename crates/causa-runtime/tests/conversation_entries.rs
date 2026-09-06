@@ -8,12 +8,10 @@ mod common;
 use common::{DropAllCompaction, RecordingGateway, ctrl, endturn_output, runner_with};
 use std::sync::Arc;
 
-use causa_kernel::{
-    ConversationId, FramePolicy, ModelInvokeErrorKind, TextPayload, TurnContext, TurnId,
-    WindowBudget,
-};
+use causa_kernel::{ConversationId, ModelInvokeErrorKind, TextPayload, TurnContext, TurnId};
 use causa_runtime::{
-    ConversationError, ConversationState, SealedResult, TurnOutcome, TurnResult, TurnRunOptions,
+    ConversationError, ConversationState, FramePolicy, SealedResult, TurnOutcome, TurnResult,
+    TurnRunOptions, WindowBudget,
 };
 
 /// Acceptance #1: both entries run the same state machine — same input

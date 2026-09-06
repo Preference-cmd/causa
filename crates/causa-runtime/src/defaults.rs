@@ -10,8 +10,8 @@
 //! impl site as the driver's opinion. The token-estimate fallback below is
 //! the single home of the chars/4 heuristic — no other copy exists.
 
+use crate::budget::{Compaction, CompactionError, CompactionInput, CompactionOutput, TokenCounter};
 use async_trait::async_trait;
-use causa_kernel::{Compaction, CompactionError, CompactionInput, CompactionOutput, TokenCounter};
 
 /// Noop [`Compaction`] default: returns the input blocks unchanged —
 /// no summary, nothing truncated.

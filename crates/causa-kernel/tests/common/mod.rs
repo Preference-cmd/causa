@@ -10,10 +10,8 @@
 
 #![allow(dead_code)]
 
-use async_trait::async_trait;
 use causa_kernel::{
-    Compaction, CompactionError, CompactionInput, CompactionOutput, ModelOutput, ModelResponse,
-    ModelStopReason, TextPayload, ToolCallDraft, TurnContext, TurnId,
+    ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnContext, TurnId,
 };
 
 // ---- ids and model-output constructors --------------------------------------
@@ -43,20 +41,5 @@ pub fn draft(tool_name: &str, args: serde_json::Value) -> ToolCallDraft {
         tool_name: tool_name.into(),
         arguments: args,
         provider_call_id: None,
-    }
-}
-
-// ---- compaction fake ----------------------------------------------------------
-
-pub struct DropAllCompaction;
-
-#[async_trait]
-impl Compaction for DropAllCompaction {
-    async fn compact(&self, _input: CompactionInput) -> Result<CompactionOutput, CompactionError> {
-        Ok(CompactionOutput {
-            blocks: Vec::new(),
-            summary: None,
-            truncated: true,
-        })
     }
 }

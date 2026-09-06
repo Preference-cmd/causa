@@ -1,24 +1,19 @@
 //! `TurnInteraction` port — the single host↔driver interaction boundary
-//! during a turn (Slice 6, chartered by Slice 12 Decision 3; batch
-//! decisions and steering injection added by Slice 7).
+//! during a turn (batch decisions and steering injection added by Slice 7).
+//! Slice 13 moved the port here from the kernel: when it fires is reference
+//! driver policy, so the contract lives with its only consumer.
 //!
 //! One port with default no-ops replaces per-entry callback channels:
 //! entry signatures never grow interaction parameters, and new
 //! interactions (progress, per-call approval) arrive as new default
 //! methods without breaking third-party implementors. The driver consumes
 //! exactly one of these per turn via `TurnRunOptions.interaction`
-//! (agent-runtime).
-//!
-//! The kernel defines the contract only; the noop default
-//! (`NoopInteraction`) lives with the driver's config axes in
-//! `agent-runtime`, mirroring where the hook policies live.
+//! (`config`); the noop default is [`crate::config::NoopInteraction`],
+//! which stays with the config axes.
 
 use async_trait::async_trait;
 
-use crate::context::block::{TextPayload, ToolCallPayload};
-use crate::context::ids::RoundId;
-use crate::ports::gateway::StreamDelta;
-use crate::ports::tool::ToolExecutionOutcome;
+use causa_kernel::{RoundId, StreamDelta, TextPayload, ToolCallPayload, ToolExecutionOutcome};
 
 /// Host observations and decisions while a turn is in flight.
 #[async_trait]
@@ -35,11 +30,12 @@ pub trait TurnInteraction: Send + Sync {
     /// filtered the model-emitted batch and before executor dispatch.
     /// Default [`BatchDecision::Proceed`] — the literal absence of
     /// opinion. Returning [`BatchDecision::Pause`] suspends the turn
-    /// (`TurnResult::Paused`, context left open) until the host resumes
-    /// it through `resume_turn` (agent-runtime) with the withheld
-    /// `HookOutcome` — approve is passthrough, reject is all-rejected,
-    /// rewrite is the edited batch; the HookOutcome constructors cover
-    /// every decision, so no separate resume-decision enum exists.
+    /// ([`crate::driver::TurnResult::Paused`], context left open) until
+    /// the host resumes it through [`crate::resume::resume_turn`] with
+    /// the withheld [`crate::hook::HookOutcome`] — approve is
+    /// passthrough, reject is all-rejected, rewrite is the edited batch;
+    /// the HookOutcome constructors cover every decision, so no separate
+    /// resume-decision enum exists.
     async fn decide_batch(&self, _calls: &[ToolCallPayload]) -> BatchDecision {
         BatchDecision::Proceed
     }
@@ -48,7 +44,7 @@ pub trait TurnInteraction: Send + Sync {
     /// boundary before the frame materializes; each non-empty entry is
     /// appended to the active turn with the `user.steering` source label
     /// and the next model round sees it. Default: empty (zero-cost
-    /// pull). The queue itself is host vocabulary — the kernel holds no
+    /// pull). The queue itself is host vocabulary — the runtime holds no
     /// channel type.
     async fn pending_inputs(&self) -> Vec<TextPayload> {
         Vec::new()
@@ -75,9 +71,9 @@ pub enum BatchDecision {
     Rewrite(Vec<ToolCallPayload>),
     /// Suspend the turn: context stays open, the batch is neither
     /// executed nor rejected, and the outcome carries
-    /// `TurnResult::Paused` with the model-emitted calls as
-    /// `pending_calls`. `deadline` is the advisory decision budget the
-    /// host grants itself (remaining time; host-side anchoring).
+    /// [`crate::driver::TurnResult::Paused`]. `deadline` is the advisory
+    /// decision budget the host grants itself (remaining time;
+    /// host-side anchoring).
     Pause {
         /// Advisory remaining decision budget the host grants itself
         /// (host-side anchoring).

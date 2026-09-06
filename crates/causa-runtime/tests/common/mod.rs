@@ -12,15 +12,15 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    AttemptControl, CallControl, Compaction, CompactionError, CompactionInput, CompactionOutput,
-    ContextFrame, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRequest,
-    ModelResponse, ModelStopReason, ModelStream, StreamDelta, TextPayload, Tool, ToolCallContext,
-    ToolCallDraft, ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
-    ToolResultStatus, Truncation, TurnContext, TurnId, UnknownOutcomePolicy,
+    AttemptControl, CallControl, ContextFrame, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream,
+    StreamDelta, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition,
+    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation, TurnContext,
+    TurnId, UnknownOutcomePolicy,
 };
 use causa_runtime::{
-    ConversationState, RunControl, SealedResult, ToolExecutor, TurnLimits, TurnPolicy,
-    TurnRunOptions, TurnRunner,
+    Compaction, CompactionError, CompactionInput, CompactionOutput, ConversationState, RunControl,
+    SealedResult, ToolExecutor, TurnLimits, TurnPolicy, TurnRunOptions, TurnRunner,
 };
 use std::sync::{Arc, Mutex};
 

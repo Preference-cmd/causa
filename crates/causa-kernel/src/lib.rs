@@ -14,9 +14,14 @@
 //! - **`ports`** — the behavior seams external implementors fill in, each
 //!   self-contained: `ModelGateway` (request params, result envelope,
 //!   transport error), `Tool` + `ArtifactStore` (definitions, execution
-//!   context, outcome policy, limits), control planes, budget seams. A
+//!   context, outcome policy, limits), `DynamicToolSource`, control planes. A
 //!   type belongs here iff it is the contract surface third parties
 //!   implement or call against; the kernel itself consumes none of it.
+//!   The reference budget/compaction seam and the host↔driver interaction
+//!   seam are the reference harness's opinions, not cross-harness
+//!   contracts — they moved to `causa-runtime` in Slice 13 (the
+//!   conversation-persistence port moved with the session aggregate in
+//!   Slice 6.5).
 //!
 //! The reference driver, executor, hook seam, config axes, and run
 //! control that once lived in a staged perimeter inside this crate
@@ -53,17 +58,12 @@ pub use context::turn::{
 };
 
 // --- ports: behavior seams for external implementors ------------------------
-pub use ports::budget::{
-    Compaction, CompactionError, CompactionInput, CompactionOutput, FrameError, FramePolicy,
-    TokenCounter, WindowBudget,
-};
 pub use ports::control::{AttemptControl, CallControl, ControlError, effective_deadline};
 pub use ports::gateway::{
     AttemptNumber, CacheDirective, GenerationOptions, ModelGateway, ModelInvokeError,
     ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage,
     ReasoningPayload, StreamDelta, ToolSurface, completed_model_stream,
 };
-pub use ports::interaction::{BatchDecision, TurnInteraction};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, IsolationLevel, StoreError, Tool, ToolCallContext, ToolDefinition,

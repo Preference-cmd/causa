@@ -188,8 +188,9 @@ impl OrderedBlocks {
 /// `append_tool_results`) plus `seal`; there is no second `&mut` seam —
 /// fields are private by design. The only projection the fact machine offers
 /// is the lossless `frame()`; policy-shaped materialization lives in
-/// `FramePolicy::materialize` (`ports`), so context never depends on ports
-/// and never awaits behavior.
+/// `causa_runtime::budget::FramePolicy::materialize` (runtime, since Slice
+/// 13), so context never depends on harness policy and never awaits
+/// behavior.
 pub struct TurnContext {
     turn_id: TurnId,
     blocks: OrderedBlocks,
@@ -445,15 +446,15 @@ impl TurnContext {
     /// Lossless canonical projection: the committed facts, ordered, with the
     /// deterministic frame identity. Frame-materialization policy (budget,
     /// compaction) is NOT applied here — the fact machine never awaits
-    /// behavior; drivers materialize policy-shaped frames through
-    /// `FramePolicy::materialize` in `ports`.
+    /// behavior; the reference driver materializes policy-shaped frames
+    /// through `causa_runtime::budget::FramePolicy::materialize`, which
+    /// replaces only this frame's block list.
     pub fn frame(&self, round_id: RoundId) -> ContextFrame {
         self.frame_with(round_id, self.blocks.0.clone())
     }
 
     /// Crate-only: the same Turn-scope projection over an explicit block
-    /// list — the single home of the frame-identity construction, used by
-    /// the policy layer to wrap compaction output.
+    /// list — the single home of the frame-identity construction.
     pub(crate) fn frame_with(&self, round_id: RoundId, blocks: Vec<ContextBlock>) -> ContextFrame {
         let frame_id =
             crate::context::ids::FrameId::deterministic(&self.turn_id, self.version, round_id);

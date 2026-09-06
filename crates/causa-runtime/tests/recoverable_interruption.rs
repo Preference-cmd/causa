@@ -10,16 +10,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use causa_kernel::{
-    BatchDecision, BlockContent, ContextVersion, ConversationId, InvocationId, RoundId,
-    TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolCallId, ToolCallPayload, ToolDefinition,
+    BlockContent, ContextVersion, ConversationId, InvocationId, RoundId, TextPayload, Tool,
+    ToolCallContext, ToolCallDraft, ToolCallId, ToolCallPayload, ToolDefinition,
     ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
-    TurnInteraction,
 };
 use causa_runtime::{
-    Continuation, ConversationError, ConversationOutcome, ConversationState, HookCtx, HookOutcome,
-    ModelRoundTrace, PausePoint, PreparedApproval, ResumeRequest, SealedResult, ToolExecutor,
-    ToolUseHook, TurnInterruption, TurnOutcome, TurnResult, TurnRunOptions, TurnRunner, TurnTrace,
-    resume_turn,
+    BatchDecision, Continuation, ConversationError, ConversationOutcome, ConversationState,
+    HookCtx, HookOutcome, ModelRoundTrace, PausePoint, PreparedApproval, ResumeRequest,
+    SealedResult, ToolExecutor, ToolUseHook, TurnInteraction, TurnInterruption, TurnOutcome,
+    TurnResult, TurnRunOptions, TurnRunner, TurnTrace, resume_turn,
 };
 use common::{
     EchoTool, RecordingGateway, ctrl, endturn_output, options_with_limits, runner_with,

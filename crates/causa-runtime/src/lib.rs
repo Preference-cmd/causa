@@ -8,6 +8,13 @@
 //!   `defaults`): `TurnRunner` orchestrates turns over the kernel's ports —
 //!   retry scheduling, tool batch dispatch, artifact spill, traces, run
 //!   control, and noop port defaults.
+//! - **Reference budget & interaction** (`budget`, `interaction`): the
+//!   frame-materialization policy (`FramePolicy`, window budget,
+//!   compaction, token counting) and the host↔driver `TurnInteraction`
+//!   seam — moved here from the kernel in Slice 13 because they are the
+//!   reference harness's opinions, not fact-layer invariants. A custom
+//!   harness composes the kernel's lossless `TurnContext::frame`
+//!   differently.
 //! - **Session aggregate** (`conversation`): `ConversationState` (single
 //!   active slot, completed-only history, commit-time `TurnSequence` as
 //!   `HistoryEntry`), the `SealedResult` stamp, and the `ConversationStore`
@@ -50,6 +57,7 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod budget;
 pub mod composition;
 pub mod config;
 pub mod control;
@@ -60,7 +68,15 @@ pub mod event;
 pub mod executor;
 pub mod filter;
 pub mod hook;
+pub mod interaction;
 pub mod resume;
+
+// --- reference budget & interaction (moved from the kernel, Slice 13) --------
+pub use budget::{
+    Compaction, CompactionError, CompactionInput, CompactionOutput, FrameError, FramePolicy,
+    TokenCounter, WindowBudget,
+};
+pub use interaction::{BatchDecision, TurnInteraction};
 
 // --- driver stack (graduated from context-kernel internal/, Slice 12) --------
 pub use composition::ToolBridge;
