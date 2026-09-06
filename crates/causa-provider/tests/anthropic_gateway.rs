@@ -15,7 +15,6 @@ use causa_kernel::{
     ModelRequest, ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
-use causa_runtime::RunControl;
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -23,7 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const KEY: &str = "sk-test-anthropic";
 
 fn ctrl(deadline: Option<Instant>) -> AttemptControl {
-    RunControl::new(CancellationToken::new(), deadline).for_attempt(None)
+    AttemptControl::new(CancellationToken::new(), deadline)
 }
 
 fn user_frame() -> ContextFrame {
@@ -307,10 +306,10 @@ async fn cancelled_token_yields_cancelled_promptly() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         canceller.cancel();
     });
-    let run = RunControl::new(token, None);
+    let attempt = AttemptControl::new(token.clone(), None);
     let started = Instant::now();
     let e = gateway(&server)
-        .invoke(&request(user_frame()), &run.for_attempt(None))
+        .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
     assert!(
@@ -331,9 +330,9 @@ async fn pre_cancelled_control_never_reaches_the_wire() {
     let server = MockServer::start().await;
     let token = CancellationToken::new();
     token.cancel();
-    let run = RunControl::new(token, None);
+    let attempt = AttemptControl::new(token.clone(), None);
     let e = gateway(&server)
-        .invoke(&request(user_frame()), &run.for_attempt(None))
+        .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
     assert!(

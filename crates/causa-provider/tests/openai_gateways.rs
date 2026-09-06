@@ -12,7 +12,6 @@ use causa_kernel::{
     ModelRequest, ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
 };
 use causa_provider::{OpenAiChatCompletionsGateway, OpenAiResponsesGateway};
-use causa_runtime::RunControl;
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -20,7 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const KEY: &str = "sk-test-openai";
 
 fn ctrl(deadline: Option<Instant>) -> AttemptControl {
-    RunControl::new(CancellationToken::new(), deadline).for_attempt(None)
+    AttemptControl::new(CancellationToken::new(), deadline)
 }
 
 fn user_frame() -> ContextFrame {
@@ -346,7 +345,7 @@ async fn cancelled_token_yields_cancelled_promptly_on_both_paths() {
             tokio::time::sleep(Duration::from_millis(100)).await;
             canceller.cancel();
         });
-        let run = RunControl::new(token, None);
+        let attempt = AttemptControl::new(token.clone(), None);
         let gw: Box<dyn ModelGateway> = match path_suffix {
             "/v1/chat/completions" => {
                 Box::new(OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri()))
@@ -355,7 +354,7 @@ async fn cancelled_token_yields_cancelled_promptly_on_both_paths() {
         };
         let started = Instant::now();
         let e = gw
-            .invoke(&request(user_frame()), &run.for_attempt(None))
+            .invoke(&request(user_frame()), &attempt)
             .await
             .unwrap_err();
         assert!(
@@ -377,11 +376,11 @@ async fn pre_cancelled_control_never_reaches_the_wire_on_both_paths() {
     let server = MockServer::start().await;
     let token = CancellationToken::new();
     token.cancel();
-    let run = RunControl::new(token, None);
+    let attempt = AttemptControl::new(token.clone(), None);
 
     let chat = OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri());
     let e = chat
-        .invoke(&request(user_frame()), &run.for_attempt(None))
+        .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
     assert!(
@@ -391,7 +390,7 @@ async fn pre_cancelled_control_never_reaches_the_wire_on_both_paths() {
 
     let responses = OpenAiResponsesGateway::new(KEY).with_base_url(server.uri());
     let e = responses
-        .invoke(&request(user_frame()), &run.for_attempt(None))
+        .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
     assert!(
