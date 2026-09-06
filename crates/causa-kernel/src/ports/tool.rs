@@ -10,17 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolCallId};
 use crate::ports::control::CallControl;
 
-/// Where a tool's work runs — a declaration the driver obeys, set through
-/// [`Tool::isolation_level`].
-#[derive(Debug, Clone, Copy, Default)]
-pub enum IsolationLevel {
-    /// In-process, as an async task on the driver's runtime (the default).
-    #[default]
-    Task,
-    /// Out-of-process, in a spawned subprocess.
-    Subprocess,
-}
-
 /// The model-facing description of one callable tool; renderers map it onto
 /// the protocol's tool entries (name, description, parameter schema).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,10 +145,6 @@ pub trait Tool: Send + Sync {
     /// host's global limits.
     fn output_limits(&self) -> Option<ToolOutputLimits> {
         None
-    }
-    /// Where this tool's work runs; defaults to [`IsolationLevel::Task`].
-    fn isolation_level(&self) -> IsolationLevel {
-        IsolationLevel::Task
     }
     /// How an `UnknownOutcome` result from this tool is treated; defaults
     /// to [`UnknownOutcomePolicy::Stop`].

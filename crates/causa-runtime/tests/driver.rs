@@ -681,7 +681,7 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     let mut c = ctx("t1");
     c.append_input(TextPayload::new("hello"), "user").unwrap();
     // any non-empty content trips the trigger when the host
-    // wires a real `TokenCounter` -- `NoopTokenCounter` returns 0
+    // wires a real `TokenCounter` -- an absent counter estimates 0
     // and never trips the budget.
     struct CountPlusOne;
     impl causa_runtime::TokenCounter for CountPlusOne {
@@ -824,6 +824,16 @@ async fn truncated_echo(
         .result
 }
 
+/// Test mirror of the driver's documented fallback opinion (serialized JSON
+/// length / 4, single library home in `defaults`) — used to assert what the
+/// `None`-counter fallback would estimate, without reaching into a private
+/// module.
+fn fallback_estimate(value: &serde_json::Value) -> usize {
+    serde_json::to_string(value)
+        .map(|s| s.len() / 4)
+        .unwrap_or(0)
+}
+
 #[tokio::test]
 async fn truncation_reduces_output_and_reestimates_within_the_limit() {
     // The 2026-09-05 probe: a 4k-byte observation under a small limit grew
@@ -838,7 +848,7 @@ async fn truncation_reduces_output_and_reestimates_within_the_limit() {
         "truncation grew output: {before} -> {after} bytes"
     );
     assert!(
-        causa_runtime::defaults::placeholder_token_estimate_value(&result.output.content) <= 100,
+        fallback_estimate(&result.output.content) <= 100,
         "truncated output re-estimates above the declared limit"
     );
 }
@@ -861,9 +871,7 @@ async fn truncation_holds_for_utf8_and_artifact_spill() {
         .as_str()
         .expect("truncated content is a JSON string");
     assert!(text.contains("中文"), "kept text is not split mid-char");
-    assert!(
-        causa_runtime::defaults::placeholder_token_estimate_value(&result.output.content) <= 100
-    );
+    assert!(fallback_estimate(&result.output.content) <= 100);
 }
 
 #[tokio::test]
