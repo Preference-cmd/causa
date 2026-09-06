@@ -8,7 +8,7 @@
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
 //! text joining, tool id pairing, observation stringification) lives in
-//! [`super::context_frame`]; this module only shapes the Anthropic wire.
+//! `super::context_frame`; this module only shapes the Anthropic wire.
 //!
 //! # Anthropic-specific structural rules
 //!

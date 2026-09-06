@@ -4,10 +4,10 @@
 //!
 //! The port stays in the kernel by the Slice 12 criterion: it is the
 //! contract surface third parties implement against the facts crate alone
-//! (`agent-mcp` implements it with only this crate as dependency, exactly
-//! as `agent-provider` implements `ModelGateway`). The aggregation and
-//! dispatch logic that *consumes* the port lives in `agent-runtime`'s
-//! executor.
+//! (`causa-extension` implements it with only this crate as dependency,
+//! exactly as `causa-provider` implements `ModelGateway`). The aggregation
+//! and dispatch logic that *consumes* the port lives in
+//! `causa_runtime`'s executor.
 
 use async_trait::async_trait;
 
@@ -17,7 +17,7 @@ use crate::ports::tool::{ToolDefinition, ToolExecutionOutcome};
 
 /// One external tool catalog. Implementors own their connection, their
 /// naming (see the `mcp_{server_id}_{tool}` namespace convention in
-/// `agent-mcp`), and their change notifications.
+/// `causa-extension`), and their change notifications.
 #[async_trait]
 pub trait DynamicToolSource: Send + Sync {
     /// Stable catalog identity — also the dispatch namespace key.
@@ -76,7 +76,7 @@ pub enum SourceError {
 }
 
 /// Single-call failure inside a source. The executor's tool adapter
-/// (`ToolBridge` in `agent-runtime`) turns every variant into a structured
+/// (`ToolBridge` in `causa_runtime`) turns every variant into a structured
 /// tool result the model reads; the status mapping lives there, not here.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolExecutionError {

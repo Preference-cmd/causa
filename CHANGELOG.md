@@ -96,6 +96,34 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 - Brand: **Causa** (formerly Archy) — every crate renamed to `causa-*`;
   project pages live under the Project inceptae domain.
+- **Reference budget & interaction ownership (Slice 13)**: `FramePolicy`,
+  `WindowBudget`, `FrameError`, `Compaction`, `CompactionInput`,
+  `CompactionOutput`, `CompactionError`, `TokenCounter`,
+  `TurnInteraction`, and `BatchDecision` are the reference harness's
+  opinions, not cross-harness kernel contracts — they moved from
+  `causa-kernel` to `causa-runtime` (new `budget` / `interaction`
+  modules with explicit root re-exports; no kernel re-export or reverse
+  alias remains). `FramePolicy::materialize` now composes the public
+  lossless `TurnContext::frame` and replaces only the projected block
+  list, so the deterministic frame identity is unchanged. The runtime's
+  crate docs state the four optional usage paths (reference execution,
+  standalone tool execution via `ToolExecutor::execute_with_limits`,
+  reference session, observation).
+
+### Removed
+
+- `IsolationLevel` and `Tool::isolation_level` (Slice 13): no executor
+  ever read the declaration, and panic capture plus a call deadline are
+  not process isolation — the "declaration the driver obeys" claim was
+  unfounded. No replacement enum or subprocess framework is provided.
+- `causa_runtime::defaults::{NoopTokenCounter, NoopCompaction}` (Slice
+  13): no consumers, and a zero counter is behaviorally distinct from no
+  counter — the executor's chars/4 fallback estimates real sizes and can
+  trigger truncation, while a zero counter never does. Hosts that need a
+  zero estimate keep their own `TokenCounter` implementation. The
+  `defaults` module is private now; the chars/4 fallback keeps its
+  algorithm unchanged as a crate-internal function, and the unused
+  `placeholder_token_estimate` blocks wrapper is gone.
 
 ### Fixed
 

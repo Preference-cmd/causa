@@ -8,7 +8,7 @@
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
 //! text joining, tool id pairing, observation stringification) lives in
-//! [`super::context_frame`]; this module only shapes the chat wire.
+//! `super::context_frame`; this module only shapes the chat wire.
 //!
 //! # Chat-specific structural rules
 //!
@@ -33,7 +33,7 @@
 //!   messages (data URLs); assistant- and system-position media degrade
 //!   to the shared placeholder text (the walk decides).
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
-//!   emitter, decoded by the shared [`super::context_frame`] codec);
+//!   emitter, decoded by the shared `super::context_frame` codec);
 //!   parsing rejects a non-JSON arguments string as `Permanent`.
 //! - `max_tokens` is optional for OpenAI (no default injected).
 

@@ -31,8 +31,31 @@
 //!   event sequence for UI / observability / audit consumers.
 //!
 //! Implementation-side note: implementing a `ModelGateway` or a `Tool`
-//! requires only `causa-kernel`; this crate is required to
-//! *drive* turns, not to fill the kernel's ports.
+//! requires only `causa-kernel`; this crate is required to *use the
+//! reference driver*, not to fill the kernel's ports.
+//!
+//! # Reference-harness usage paths (Slice 13)
+//!
+//! Everything here is optional; the four responsibilities a host can adopt
+//! independently:
+//!
+//! 1. **Reference execution** — [`TurnRunner`] plus its config
+//!    ([`TurnRunOptions`], policy axes), resume ([`resume_turn`]), hook
+//!    seam, and the migrated reference budget ([`FramePolicy`]) and
+//!    interaction ([`TurnInteraction`]) seams. The defaults are this
+//!    crate's documented opinions, not fact-layer invariants.
+//! 2. **Standalone tool execution** — [`ToolExecutor::execute_with_limits`]
+//!    runs one call (panic isolation, deadline backstop, limit truncation,
+//!    error mapping) with no runner and no session. Its catalog cache and
+//!    static-name priority are executor policies, documented at the impl
+//!    site.
+//! 3. **Optional reference session** — [`ConversationState`] owns the
+//!    single-active slot, completed-only history, and commit ordering
+//!    (`HistoryEntry`). A host with different session needs composes
+//!    kernel facts directly.
+//! 4. **Optional observation** — traces and [`ContextEvent`] are
+//!    projections of a finished turn for UI / audit consumers. The host
+//!    chooses what to persist; there is no separate wire model.
 //!
 //! # Driver policy surface (7.6)
 //!

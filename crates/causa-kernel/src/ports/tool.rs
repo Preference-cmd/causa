@@ -46,8 +46,9 @@ pub enum UnknownOutcomePolicy {
     Continue,
 }
 
-/// A tool door's result: the recorded [`ToolResultPayload`] fact plus the
-/// [`UnknownOutcomePolicy`] the tool declares for it. Serde-additive: the
+/// A tool door's result: the recorded
+/// [`ToolResultPayload`](crate::context::tool_data::ToolResultPayload) fact
+/// plus the [`UnknownOutcomePolicy`] the tool declares for it. Serde-additive: the
 /// outcome rides the wire inside the runtime's continuation checkpoint
 /// (Slice 6.5), so the derives are part of the contract now.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,7 +8,7 @@
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
 //! text joining, tool id pairing, observation stringification) lives in
-//! [`super::context_frame`]; this module only shapes the Responses wire.
+//! `super::context_frame`; this module only shapes the Responses wire.
 //!
 //! # Responses-specific structural rules
 //!
@@ -29,7 +29,7 @@
 //!   (data URLs); assistant- and system-position media degrade to the
 //!   shared placeholder text (the walk decides).
 //! - Function call `arguments` are a JSON *string* on the wire (encoded
-//!   by the emitter, decoded by the shared [`super::context_frame`]
+//!   by the emitter, decoded by the shared `super::context_frame`
 //!   codec).
 //! - Stop-reason derivation: the Responses wire has no `finish_reason`.
 //!   A refusal output item wins, then `incomplete` + `max_output_tokens`

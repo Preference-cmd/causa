@@ -6,7 +6,7 @@
 //! concrete filter policies (`DedupFilter`, `DenyAllFilter`,
 //! `FilterChain`) in this crate implement it directly. Defining the trait
 //! next to both its consumer (the driver) and its policies (the filters)
-//! closes the Phase E split where `agent-runtime` re-exported a kernel
+//! closes the Phase E split where this crate re-exported a kernel-staged
 //! type it was the sole real consumer of.
 //!
 //! ## Minimum invariant, not a policy
@@ -75,7 +75,7 @@ impl HookOutcome {
 
 /// Kernel-side tool-use filter seam.
 ///
-/// Filters in `agent-runtime::filter` (`FilterChain` and friends)
+/// Filters in `causa_runtime::filter` (`FilterChain` and friends)
 /// implement this trait. The driver calls `hook.apply(calls, ctx).await`
 /// between receiving the model's `ToolCallPayload` batch and dispatching
 /// it to `ToolExecutor`.
@@ -92,7 +92,7 @@ pub trait ToolUseHook: Send + Sync {
 /// `TurnRunner::new()` defaults to this hook: callers who want a filter
 /// chain opt in via `TurnRunner::with_hook(_, _, filter_chain)`.
 /// Concrete filter policies (dedup, approval, kill-switch) are host
-/// concerns and live in `agent-runtime::filter` or beyond.
+/// concerns and live in `causa_runtime::filter` or beyond.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PassthroughHook;
 

@@ -2,8 +2,9 @@
 //! implementors. `AttemptControl` rides on `ModelGateway::invoke`,
 //! `CallControl` on `Tool::execute`; both carry the turn-shared
 //! `CancellationToken` plus a deadline chain (turn → attempt → call). The
-//! turn-level bundling (`RunControl`) is driver vocabulary and lives in
-//! `agent-runtime::control`, not here: no port signature consumes it.
+//! turn-level bundling (`RunControl`) is reference-driver vocabulary and
+//! lives in
+//! `causa_runtime::control`, not here: no port signature consumes it.
 
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -11,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 /// Fold a parent deadline and a timeout into the effective deadline: the
 /// earlier of the two, where "no parent"/"no timeout" each leave the other
 /// side in force. Public since Slice 12: external drivers (the canonical
-/// one lives in agent-runtime) narrow turn deadlines into attempt
+/// one lives in causa_runtime) narrow turn deadlines into attempt
 /// deadlines through this fold.
 pub fn effective_deadline(parent: Option<Instant>, timeout: Option<Duration>) -> Option<Instant> {
     let from_timeout = timeout.map(|t| Instant::now() + t);
@@ -33,8 +34,9 @@ pub struct AttemptControl {
 }
 impl AttemptControl {
     /// Public since Slice 12: external drivers (the canonical one lives in
-    /// agent-runtime) build attempt controls directly — e.g. through the
-    /// root-exported `RunControl::for_attempt` chain or from a bare token.
+    /// causa_runtime) build attempt controls directly — e.g. through the
+    /// `causa_runtime::control::RunControl::for_attempt` chain or from a
+    /// bare token.
     pub fn new(cancellation: CancellationToken, deadline: Option<Instant>) -> Self {
         Self {
             cancellation,

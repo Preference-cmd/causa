@@ -56,7 +56,8 @@
 //!
 //! External tools are an injection surface: their output is model-visible
 //! input and their effects are host-executed. Hosts should keep the Slice
-//! 7 approval gate (`TurnInteraction::decide_batch`) in front of
+//! 7 approval gate (`causa_runtime::TurnInteraction::decide_batch`) in
+//! front of
 //! dynamic-source batches, exactly as for local tools.
 #![deny(unsafe_code)]
 

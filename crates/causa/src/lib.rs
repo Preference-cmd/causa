@@ -9,7 +9,7 @@
 //! | `runtime` | [`runtime`] | reference driver (turn loop, dispatch) |
 //! | `protocol` | [`protocol`] | wire-protocol translation (no transport) |
 //! | `providers` | [`providers`] | reqwest gateways (implies `protocol`) |
-//! | `extension-mcp` | [`extension`] | MCP client (implies `mcp` adapter) |
+//! | `extension-mcp` | `extension` | MCP client (implies `mcp` adapter) |
 //!
 //! The default is the runnable stack (`runtime` + `providers`); `full`
 //! adds the extensions. `--no-default-features` is the bare kernel for

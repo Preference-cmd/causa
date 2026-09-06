@@ -2,8 +2,8 @@
 //! fact-level [`MediaRef`]s into renderable inline payloads.
 //!
 //! The resolver lives here — provider-side — because only the render
-//! path needs bytes; the kernel stays reference-only and `FramePolicy`
-//! stays content-neutral. The contract is deliberately **sync and
+//! path needs bytes; the kernel stays reference-only and the reference
+//! frame policy stays content-neutral. The contract is deliberately **sync and
 //! memory-only**: an implementation should answer from an in-memory or
 //! cached asset table and return `None` fast for anything it cannot
 //! serve. Disk/network fetches are the host's prefetch responsibility

@@ -349,7 +349,7 @@ pub struct TurnOutcome {
 // Wire-contract note (Slice 5A, 2026-09-02 review): `TurnResult`,
 // `TurnOutcome`, `ConversationOutcome` and the `TurnTrace` family are
 // embedded in `agent_runtime::event::ContextEvent` and delivered over
-// IPC. Since Slice 12 their Rust item paths live in `agent-runtime`
+// IPC. Since Slice 12 their Rust item paths live in this crate
 // (graduated from the kernel's staged perimeter) and may move between
 // layers without notice — but their serde shapes are a load-bearing
 // external contract and must not change without a breaking migration of

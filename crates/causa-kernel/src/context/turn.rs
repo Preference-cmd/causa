@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 // `TurnContext` via `from_validated_blocks`.
 
 // Public since Slice 12: the canonical driver lives outside the kernel
-// (agent-runtime), so the serde bridge it serializes `TurnOutcome` with
+// (causa_runtime), so the serde bridge it serializes `TurnOutcome` with
 // is part of the external-driver contract surface.
 /// Serde bridge: a `TurnContext` is serialized as its immutable
 /// `TurnSnapshot` projection and rebuilt from that shape on load. The wire
