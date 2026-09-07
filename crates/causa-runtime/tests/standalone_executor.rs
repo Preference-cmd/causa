@@ -1,15 +1,17 @@
-//! Standalone executor evidence (Slice 13 Phase B.3): tools execute
-//! directly through `ToolExecutor::execute_with_limits` — no `TurnRunner`,
-//! no `ConversationState`, no session — with the same result pairing,
-//! error mapping, and limit semantics the reference driver gets.
+//! Standalone executor evidence (Slice 13 Phase B.3, extended by
+//! Decision 6/8 in Phases E–H): tools execute directly through
+//! `ToolExecutor::execute_with_limits` — no `TurnRunner`, no
+//! `ConversationState`, no session — with the same result pairing, error
+//! mapping, and limit semantics the reference driver gets. The executor
+//! returns the recorded result only; the unknown-outcome action is the
+//! caller's configuration.
 
 use async_trait::async_trait;
 use causa_kernel::{
     CallControl, DynamicToolSource, Tool, ToolCallContext, ToolCallId, ToolCallPayload,
-    ToolDefinition, ToolExecutionError, ToolExecutionOutcome, ToolOutput, ToolOutputLimits,
-    ToolResultPayload, ToolResultStatus,
+    ToolDefinition, ToolExecutionError, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
-use causa_runtime::{ToolBridge, ToolExecutor};
+use causa_runtime::{ToolBridge, ToolExecutor, ToolOutputLimits};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -25,6 +27,10 @@ fn ctrl() -> CallControl {
     CallControl::new(tokio_util::sync::CancellationToken::new(), None)
 }
 
+fn limits(max_tokens: usize) -> ToolOutputLimits {
+    ToolOutputLimits { max_tokens }
+}
+
 /// A plain local tool: echoes arguments back.
 struct EchoTool;
 
@@ -37,13 +43,13 @@ impl Tool for EchoTool {
             parameters: json!({"type": "object"}),
         }
     }
-    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(ctx.arguments.clone()),
             media: Vec::new(),
-        })
+        }
     }
 }
 
@@ -66,38 +72,32 @@ impl DynamicToolSource for StubSource {
         &self,
         call: &ToolCallPayload,
         _control: &CallControl,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         match &self.0 {
             Some(e) => Err(e.clone()),
-            None => Ok(ToolExecutionOutcome::new(ToolResultPayload {
+            None => Ok(ToolResultPayload {
                 call_id: call.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(call.arguments.clone()),
                 media: Vec::new(),
-            })),
+            }),
         }
     }
 }
 
 /// Direct execution pairs the result with the call id and needs nothing
-/// beyond the executor itself.
+/// beyond the executor itself — the recorded result is all a standalone
+/// caller gets, and it chooses any continuation itself.
 #[tokio::test]
 async fn executor_executes_a_static_tool_without_a_runner() {
     let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
     let payload = call("echo", json!({"q": 1}));
-    let outcome = executor
-        .execute_with_limits(
-            payload.clone(),
-            ctrl(),
-            None,
-            None,
-            ToolOutputLimits { max_tokens: 10_000 },
-        )
+    let result = executor
+        .execute_with_limits(payload.clone(), ctrl(), None, None, limits(10_000))
         .await;
-    assert_eq!(outcome.result.call_id, payload.call_id);
-    assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
-    assert_eq!(outcome.result.output.content, json!({"q": 1}));
-    assert_eq!(outcome.policy, causa_kernel::UnknownOutcomePolicy::Stop);
+    assert_eq!(result.call_id, payload.call_id);
+    assert_eq!(result.status, ToolResultStatus::Succeeded);
+    assert_eq!(result.output.content, json!({"q": 1}));
 }
 
 /// Snapshot semantics: a `(source, definition)` pair bridged once becomes a
@@ -115,17 +115,17 @@ async fn bridged_dynamic_tool_executes_and_maps_errors() {
         },
     );
     let executor = ToolExecutor::from_vec(vec![Arc::new(bridge)]);
-    let outcome = executor
+    let result = executor
         .execute_with_limits(
             call("mcp_srv_echo", json!({"hello": "world"})),
             ctrl(),
             None,
             None,
-            ToolOutputLimits { max_tokens: 10_000 },
+            limits(10_000),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
-    assert_eq!(outcome.result.output.content, json!({"hello": "world"}));
+    assert_eq!(result.status, ToolResultStatus::Succeeded);
+    assert_eq!(result.output.content, json!({"hello": "world"}));
 
     // Out-of-catalog source error maps to Rejected with a model-readable copy.
     let failing = Arc::new(StubSource(Some(ToolExecutionError::UnknownTool(
@@ -140,67 +140,45 @@ async fn bridged_dynamic_tool_executes_and_maps_errors() {
         },
     );
     let executor = ToolExecutor::from_vec(vec![Arc::new(bridge)]);
-    let outcome = executor
+    let result = executor
         .execute_with_limits(
             call("mcp_srv_echo", json!({})),
             ctrl(),
             None,
             None,
-            ToolOutputLimits { max_tokens: 10_000 },
+            limits(10_000),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Rejected);
-    assert_eq!(outcome.policy, causa_kernel::UnknownOutcomePolicy::Stop);
+    assert_eq!(result.status, ToolResultStatus::Rejected);
 }
 
-/// A tool's own limit declaration overrides the global fallback (the
-/// executor takes `tool.output_limits().unwrap_or(global)`), and the
-/// default unknown-outcome policy is `Stop` — both unchanged.
+/// Decision 8: the last argument IS the per-call limit — the executor
+/// never consults the tool object anymore. A standalone caller passes
+/// exactly the limit it wants (the runner resolves fallback vs
+/// per-tool-name override before dispatch).
 #[tokio::test]
-async fn tool_limit_declaration_overrides_the_global_fallback() {
-    struct BigLimitTool;
-
-    #[async_trait]
-    impl Tool for BigLimitTool {
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: "big".into(),
-                description: "big".into(),
-                parameters: json!({"type": "object"}),
-            }
-        }
-        fn output_limits(&self) -> Option<ToolOutputLimits> {
-            Some(ToolOutputLimits { max_tokens: 10_000 })
-        }
-        async fn execute(
-            &self,
-            ctx: &ToolCallContext,
-            _control: &CallControl,
-        ) -> ToolExecutionOutcome {
-            ToolExecutionOutcome::new(ToolResultPayload {
-                call_id: ctx.call_id.clone(),
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!({ "text": "x".repeat(4000) })),
-                media: Vec::new(),
-            })
-        }
-    }
-
-    let executor = ToolExecutor::from_vec(vec![Arc::new(BigLimitTool)]);
-    // Global limit 100 would truncate; the tool's 10,000 wins and the
-    // output passes through whole.
-    let outcome = executor
+async fn the_passed_limit_is_the_effective_limit() {
+    // 4k bytes under a 100-token limit truncates…
+    let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
+    let result = executor
         .execute_with_limits(
-            call("big", json!({})),
+            call("echo", json!({"text": "a".repeat(4000)})),
             ctrl(),
             None,
             None,
-            ToolOutputLimits { max_tokens: 100 },
+            limits(100),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
-    assert_eq!(
-        outcome.result.output.truncation,
-        causa_kernel::Truncation::None
-    );
+    assert_eq!(result.output.truncation, causa_kernel::Truncation::Middle);
+    // …and the same output under usize::MAX (the default) passes whole.
+    let result = executor
+        .execute_with_limits(
+            call("echo", json!({"text": "a".repeat(4000)})),
+            ctrl(),
+            None,
+            None,
+            ToolOutputLimits::default(),
+        )
+        .await;
+    assert_eq!(result.output.truncation, causa_kernel::Truncation::None);
 }

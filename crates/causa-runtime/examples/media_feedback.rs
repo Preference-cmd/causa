@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, MediaRef, ModelGateway,
     ModelInvokeError, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, StoreError,
-    TextPayload, Tool, ToolCallContext, ToolDefinition, ToolExecutionOutcome, ToolOutput,
-    ToolResultPayload, ToolResultStatus,
+    TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
+    ToolResultStatus,
 };
 use causa_runtime::{RunControl, ToolExecutor, TurnRunOptions, TurnRunner};
 use std::sync::{Arc, Mutex};
@@ -57,7 +57,7 @@ impl Tool for RenderChart {
         &self,
         ctx: &ToolCallContext,
         _c: &causa_kernel::CallControl,
-    ) -> ToolExecutionOutcome {
+    ) -> ToolResultPayload {
         let bytes = b"fake-png-bytes".to_vec();
         let artifact = self
             .0
@@ -71,12 +71,12 @@ impl Tool for RenderChart {
             )
             .await
             .expect("ingest");
-        ToolExecutionOutcome::new(ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(serde_json::json!("chart ready")),
             media: vec![causa_kernel::MediaRef::new("image/png", artifact.id)],
-        })
+        }
     }
 }
 

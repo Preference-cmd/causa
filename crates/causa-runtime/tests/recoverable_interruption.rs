@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use causa_kernel::{
     BlockContent, ContextVersion, ConversationId, InvocationId, RoundId, TextPayload, Tool,
-    ToolCallContext, ToolCallDraft, ToolCallId, ToolCallPayload, ToolDefinition,
-    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
+    ToolCallContext, ToolCallDraft, ToolCallId, ToolCallPayload, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
 };
 use causa_runtime::{
     BatchDecision, Continuation, ConversationError, ConversationOutcome, ConversationState,
@@ -65,12 +65,12 @@ impl ToolUseHook for RejectDangerRewriteRest {
         let mut rejected = Vec::new();
         for mut payload in calls {
             if payload.tool_name == "danger" {
-                rejected.push(ToolExecutionOutcome::new(ToolResultPayload {
+                rejected.push(ToolResultPayload {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(json!({"error": "hook denied danger"})),
                     media: Vec::new(),
-                }));
+                });
             } else {
                 payload.arguments = json!({"hooked": true});
                 to_execute.push(payload);
@@ -79,6 +79,7 @@ impl ToolUseHook for RejectDangerRewriteRest {
         HookOutcome {
             to_execute,
             rejected,
+            unknown_decisions: Vec::new(),
         }
     }
 }
@@ -99,13 +100,13 @@ impl Tool for DangerTool {
         &self,
         ctx: &ToolCallContext,
         _c: &causa_kernel::CallControl,
-    ) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    ) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!({"boom": true})),
             media: Vec::new(),
-        })
+        }
     }
 }
 
@@ -363,12 +364,12 @@ async fn resume_with_reject_records_rejected_results() {
         other => panic!("expected Paused, got {other:?}"),
     };
 
-    let rejected = ToolExecutionOutcome::new(ToolResultPayload {
+    let rejected = ToolResultPayload {
         call_id: awaiting[0].call_id.clone(),
         status: ToolResultStatus::Rejected,
         output: ToolOutput::new(json!({"error": "denied by operator"})),
         media: Vec::new(),
-    });
+    };
     let resumed = runner
         .resume(
             out,
@@ -376,6 +377,7 @@ async fn resume_with_reject_records_rejected_results() {
                 decision: Some(HookOutcome {
                     to_execute: vec![],
                     rejected: vec![rejected],
+                    unknown_decisions: Vec::new(),
                 }),
                 inject: vec![],
             },
@@ -570,10 +572,7 @@ async fn pause_preserves_hook_rejections_and_rewrites() {
                 assert_eq!(prepared.rejected.len(), 1, "the hook rejection is saved");
                 // The saved rejection keeps the original call id — and it is
                 // NOT one of the awaiting ids.
-                assert_ne!(
-                    prepared.rejected[0].result.call_id,
-                    prepared.awaiting[0].call_id
-                );
+                assert_ne!(prepared.rejected[0].call_id, prepared.awaiting[0].call_id);
                 prepared.awaiting.clone()
             }
             other => panic!("expected AwaitingApproval, got {other:?}"),
@@ -583,9 +582,7 @@ async fn pause_preserves_hook_rejections_and_rewrites() {
 
     let danger_id = match &out.result {
         TurnResult::Paused { continuation } => match &continuation.pause_point {
-            PausePoint::AwaitingApproval { prepared, .. } => {
-                prepared.rejected[0].result.call_id.clone()
-            }
+            PausePoint::AwaitingApproval { prepared, .. } => prepared.rejected[0].call_id.clone(),
             other => panic!("expected AwaitingApproval, got {other:?}"),
         },
         other => panic!("expected Paused, got {other:?}"),
@@ -889,6 +886,7 @@ async fn resume_with_an_incomplete_decision_is_rejected_before_execution() {
                 decision: Some(HookOutcome {
                     to_execute: vec![],
                     rejected: vec![],
+                    unknown_decisions: Vec::new(),
                 }),
                 inject: vec![],
             },
@@ -947,6 +945,7 @@ async fn resume_with_a_continuation_mismatching_the_facts_is_rejected() {
                     arguments: json!({"a": 1}),
                 }],
                 rejected: vec![],
+                unknown_decisions: Vec::new(),
             },
             deadline: None,
         },
@@ -1008,6 +1007,7 @@ async fn resume_with_a_duplicated_decision_is_rejected() {
                 decision: Some(HookOutcome {
                     to_execute: vec![first.clone(), first],
                     rejected: vec![],
+                    unknown_decisions: Vec::new(),
                 }),
                 inject: vec![],
             },

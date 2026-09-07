@@ -124,6 +124,7 @@ fn turn_outcome_paused_round_trip_preserves_open_context_and_continuation() {
                     arguments: json!({"a": 1}),
                 }],
                 rejected: vec![],
+                unknown_decisions: vec![],
             },
             deadline: Some(std::time::Duration::from_secs(30)),
         },
@@ -179,6 +180,7 @@ fn pause_point_tags_are_pinned() {
             prepared: PreparedApproval {
                 awaiting: vec![],
                 rejected: vec![],
+                unknown_decisions: Vec::new(),
             },
             deadline: None,
         },

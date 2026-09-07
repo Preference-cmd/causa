@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use causa_kernel::{
     CallControl, CancellationToken, ConversationId, ModelGateway, ModelRef, TextPayload, Tool,
-    ToolCallContext, ToolDefinition, ToolExecutionOutcome, ToolOutput, ToolResultPayload,
-    ToolResultStatus, ToolSurface, TurnId,
+    ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface,
+    TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
@@ -48,13 +48,13 @@ impl Tool for ReadTool {
             parameters: json!({"type": "object"}),
         }
     }
-    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!("file-a")),
             media: Vec::new(),
-        })
+        }
     }
 }
 

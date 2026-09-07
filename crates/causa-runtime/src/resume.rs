@@ -199,7 +199,7 @@ pub(crate) fn validate_continuation(
                 .to_execute
                 .iter()
                 .map(|p| &p.call_id)
-                .chain(decision.rejected.iter().map(|o| &o.result.call_id))
+                .chain(decision.rejected.iter().map(|r| &r.call_id))
             {
                 if !awaiting.contains(id) {
                     return Err(format!(
@@ -220,13 +220,61 @@ pub(crate) fn validate_continuation(
                     "decision does not cover every awaiting call: missing {missing:?}"
                 ));
             }
+            // Decision 7 rule 1: the new decision's explicit unknown-outcome
+            // entries may only pin calls among its own precomputed results
+            // whose status is UnknownOutcome — no foreign ids, no
+            // duplicates, no actions on decided results. Entries may be
+            // omitted; the driver resolves those through its configuration.
+            let rejected_unknown: HashSet<&ToolCallId> = decision
+                .rejected
+                .iter()
+                .filter(|r| r.status == causa_kernel::ToolResultStatus::UnknownOutcome)
+                .map(|r| &r.call_id)
+                .collect();
+            let mut pinned: HashSet<&ToolCallId> = HashSet::new();
+            for d in &decision.unknown_decisions {
+                if !rejected_unknown.contains(&d.call_id) {
+                    return Err(format!(
+                        "decision pins an unknown-outcome action for call {:?} which has no precomputed UnknownOutcome result",
+                        d.call_id.0
+                    ));
+                }
+                if !pinned.insert(&d.call_id) {
+                    return Err(format!(
+                        "decision pins call {:?} more than once",
+                        d.call_id.0
+                    ));
+                }
+            }
             // The checkpoint's prepared work must be exactly the turn's
             // unanswered calls: awaiting plus saved hook rejections.
             let mut checkpoint: HashSet<&ToolCallId> = awaiting;
-            checkpoint.extend(prepared.rejected.iter().map(|o| &o.result.call_id));
+            checkpoint.extend(prepared.rejected.iter().map(|r| &r.call_id));
             let fact_ids: HashSet<&ToolCallId> = unanswered.iter().map(|p| &p.call_id).collect();
             if checkpoint != fact_ids {
                 return Err("continuation does not match the turn's unanswered tool calls".into());
+            }
+            // Defense-in-depth for the checkpoint's own decision set
+            // (already enforced by the wire DTO's exact-cover check).
+            let saved_unknown: HashSet<&ToolCallId> = prepared
+                .rejected
+                .iter()
+                .filter(|r| r.status == causa_kernel::ToolResultStatus::UnknownOutcome)
+                .map(|r| &r.call_id)
+                .collect();
+            let mut saved_pinned: HashSet<&ToolCallId> = HashSet::new();
+            for d in &prepared.unknown_decisions {
+                if !saved_unknown.contains(&d.call_id) || !saved_pinned.insert(&d.call_id) {
+                    return Err(format!(
+                        "checkpoint decision for call {:?} does not match its saved UnknownOutcome results",
+                        d.call_id.0
+                    ));
+                }
+            }
+            if saved_pinned.len() != saved_unknown.len() {
+                return Err(
+                    "checkpoint is missing the unknown-outcome decision for a saved result".into(),
+                );
             }
             Ok(())
         }

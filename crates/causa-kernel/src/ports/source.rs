@@ -12,8 +12,9 @@
 use async_trait::async_trait;
 
 use crate::context::block::ToolCallPayload;
+use crate::context::tool_data::ToolResultPayload;
 use crate::ports::control::CallControl;
-use crate::ports::tool::{ToolDefinition, ToolExecutionOutcome};
+use crate::ports::tool::ToolDefinition;
 
 /// One external tool catalog. Implementors own their connection, their
 /// naming (see the `mcp_{server_id}_{tool}` namespace convention in
@@ -40,17 +41,19 @@ pub trait DynamicToolSource: Send + Sync {
 
     /// Execute one call against the catalog. `call.tool_name` arrives in
     /// the source's namespace; implementors de-namespace it (and reject
-    /// names outside their namespace).
+    /// names outside their namespace). Sources return the recorded result
+    /// only — what an `UnknownOutcome` result does next is harness
+    /// configuration, not source vocabulary.
     async fn invoke(
         &self,
         call: &ToolCallPayload,
         control: &CallControl,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError>;
+    ) -> Result<ToolResultPayload, ToolExecutionError>;
 
     /// Execute one call with the host's artifact store available for
     /// media ingest: a source whose tools produce images can persist the
     /// bytes via `store` and attach [`crate::context::block::MediaRef`]s
-    /// to the outcome's `ToolResultPayload.media` instead of degrading
+    /// to the result's `ToolResultPayload.media` instead of degrading
     /// them to text. Additive with a delegating default, so sources that
     /// never produce media keep their existing `invoke` only.
     async fn invoke_with_store(
@@ -58,7 +61,7 @@ pub trait DynamicToolSource: Send + Sync {
         call: &ToolCallPayload,
         control: &CallControl,
         store: Option<&dyn crate::ports::tool::ArtifactStore>,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         let _ = store;
         Self::invoke(self, call, control).await
     }

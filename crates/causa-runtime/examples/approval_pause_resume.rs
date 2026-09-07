@@ -19,8 +19,8 @@
 use async_trait::async_trait;
 use causa_kernel::{
     ConversationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse,
-    ModelStopReason, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition,
-    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    ModelStopReason, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
     BatchDecision, ConversationOutcome, ConversationState, HookOutcome, PausePoint, ResumeRequest,
@@ -78,15 +78,15 @@ impl Tool for ReadFile {
         &self,
         ctx: &ToolCallContext,
         _control: &causa_kernel::CallControl,
-    ) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    ) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(serde_json::json!(
                 { "contents": "the promised file contents" }
             )),
             media: Vec::new(),
-        })
+        }
     }
 }
 

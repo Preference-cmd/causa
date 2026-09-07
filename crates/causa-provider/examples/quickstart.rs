@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use causa_kernel::{
     CallControl, CancellationToken, ModelRef, TextPayload, Tool, ToolCallContext, ToolDefinition,
-    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
@@ -45,19 +45,19 @@ impl Tool for WordCount {
         }
     }
 
-    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolExecutionOutcome {
+    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
         let text = ctx
             .arguments
             .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let count = text.split_whitespace().count();
-        ToolExecutionOutcome::new(ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(serde_json::json!({ "words": count })),
             media: Vec::new(),
-        })
+        }
     }
 }
 

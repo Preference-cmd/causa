@@ -9,9 +9,8 @@ use std::time::Duration;
 use crate::budget::{FramePolicy, TokenCounter};
 use crate::interaction::TurnInteraction;
 use causa_kernel::StreamDelta;
-use causa_kernel::{ArtifactStore, ToolOutputLimits};
 use causa_kernel::{
-    CacheDirective, GenerationOptions, ModelInvokeErrorKind, ModelRef, ToolSurface,
+    ArtifactStore, CacheDirective, GenerationOptions, ModelInvokeErrorKind, ModelRef, ToolSurface,
 };
 
 /// Retry policy — driver-side scheduling, not a kernel fact. The retryability
@@ -137,14 +136,91 @@ pub struct TurnPolicy {
     pub limits: TurnLimits,
     /// Per-model-attempt budget; `None` = unbounded attempt.
     pub attempt_timeout: Option<Duration>,
+    /// What the reference driver does after committing an `UnknownOutcome`
+    /// tool result — see [`UnknownOutcomeConfig`]. Default: stop the turn.
+    pub unknown_outcome: UnknownOutcomeConfig,
+}
+
+/// Reference-harness vocabulary for the action taken after an
+/// `UnknownOutcome` tool result is committed (Slice 13 Decision 6). It is
+/// configuration and saved host-decision data, not tool vocabulary and not
+/// a fact: the recorded result is committed verbatim either way, `Stop`
+/// merely interrupts the turn before the next model call, and `Continue`
+/// only allows the next round — it never re-runs the call, never rewrites
+/// the result into a success, and never cancels sibling calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum UnknownOutcomePolicy {
+    /// Treat the unknown outcome as unsafe: the turn interrupts rather
+    /// than continue on an unverifiable result (the default).
+    #[default]
+    Stop,
+    /// Keep the turn alive; the `UnknownOutcome` result still lands in the
+    /// transcript.
+    Continue,
+}
+
+/// Unknown-outcome continuation configuration: a default action plus
+/// per-tool-name overrides. Resolution is by the **actual executed tool
+/// name** (post hook / rewrite / resume decision, full namespace for
+/// dynamic tools) — never the original model draft's name, and never read
+/// out of a result body. An explicit override wins over the default even
+/// when a tool used to declare the opposite; hosts migrating a removed
+/// `Tool::unknown_outcome_policy` declaration place it here.
+#[derive(Debug, Clone, Default)]
+pub struct UnknownOutcomeConfig {
+    /// The action for `UnknownOutcome` results whose tool has no explicit
+    /// override. Default: [`UnknownOutcomePolicy::Stop`].
+    pub default: UnknownOutcomePolicy,
+    /// Explicit per-tool actions, keyed by the executed tool name (the
+    /// executor's full namespace name for dynamic tools).
+    pub overrides: std::collections::HashMap<String, UnknownOutcomePolicy>,
+}
+impl UnknownOutcomeConfig {
+    /// Resolve the action for one executed tool name: the explicit
+    /// override if present, else the default.
+    pub fn resolve(&self, tool_name: &str) -> UnknownOutcomePolicy {
+        self.overrides
+            .get(tool_name)
+            .copied()
+            .unwrap_or(self.default)
+    }
+}
+/// Per-call truncation thresholds for tool outputs — the explicit
+/// truncation effect hosts opt into (Slice 13 Decision 8: output retention
+/// is harness configuration, not a tool declaration).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolOutputLimits {
+    /// Maximum estimated tokens a tool result may carry before it gets
+    /// truncated; [`usize::MAX`] (the default) disables truncation.
+    pub max_tokens: usize,
+}
+impl Default for ToolOutputLimits {
+    /// No limit by default — callers opt in to truncation.
+    ///
+    /// Specific limits come from host configuration (`ExecutionOptions`):
+    /// the fallback plus per-tool-name overrides. The default is
+    /// `usize::MAX` so truncation is an *explicit* effect, never the
+    /// absence of configuration.
+    fn default() -> Self {
+        Self {
+            max_tokens: usize::MAX,
+        }
+    }
 }
 
 /// Execution options — how tool calls run inside a round.
 #[derive(Clone, Default)]
 pub struct ExecutionOptions {
-    /// Fallback per-output token limit for truncation; a trusted tool's
-    /// own `output_limits` declaration overrides it.
+    /// Fallback per-output token limit for truncation; a per-tool-name
+    /// entry in `tool_output_limits_overrides` replaces it (even with a
+    /// larger value — the override is the chosen limit, not a cap).
     pub tool_output_limits: ToolOutputLimits,
+    /// Per-tool-name limit overrides, keyed by the actual executed tool
+    /// name (full namespace name for dynamic tools). A name not yet
+    /// present in a dynamic catalog may still be configured here; the
+    /// entry applies once that name executes. Hosts migrating a removed
+    /// `Tool::output_limits` declaration place it here.
+    pub tool_output_limits_overrides: std::collections::HashMap<String, ToolOutputLimits>,
     /// Where a truncated output's full bytes are spilled as an artifact;
     /// `None` = truncate without a retrievable original.
     pub artifact_store: Option<Arc<dyn ArtifactStore>>,
@@ -158,6 +234,10 @@ impl std::fmt::Debug for ExecutionOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExecutionOptions")
             .field("tool_output_limits", &self.tool_output_limits)
+            .field(
+                "tool_output_limits_overrides",
+                &self.tool_output_limits_overrides.len(),
+            )
             .field("artifact_store", &self.artifact_store.is_some())
             .field("token_counter", &self.token_counter.is_some())
             .field("call_timeout", &self.call_timeout)

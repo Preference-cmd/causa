@@ -9,13 +9,13 @@ use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
     CallControl, ContextBlock, DynamicToolSource, ModelInvokeErrorKind, ModelOutput, ModelResponse,
     ModelStopReason, ModelUsage, ReasoningPayload, SourceError, StoreError, TextPayload, Tool,
-    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError,
-    ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload, ToolResultStatus,
-    Truncation, UnknownOutcomePolicy,
+    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    ToolResultPayload, ToolResultStatus, Truncation,
 };
 use causa_runtime::{
     ExecutionOptions, FramePolicy, HookCtx, HookOutcome, RetryPolicy, RunControl, ToolExecutor,
-    ToolUseHook, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner, WindowBudget,
+    ToolOutputLimits, ToolUseHook, TurnInterruption, TurnPolicy, TurnResult, TurnRunOptions,
+    TurnRunner, UnknownOutcomeConfig, UnknownOutcomePolicy, WindowBudget,
 };
 use common::{
     DropAllCompaction, EchoTool, FailTool, RecordingGateway, UnknownStopTool, ctrl, ctx, draft,
@@ -215,17 +215,14 @@ async fn token_limits_and_artifact_truncation() {
                 parameters: json!({"type":"object"}),
             }
         }
-        fn output_limits(&self) -> Option<ToolOutputLimits> {
-            Some(ToolOutputLimits { max_tokens: 10 })
-        }
-        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
+        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             let big = "a".repeat(1000);
-            ToolExecutionOutcome::new(ToolResultPayload {
+            ToolResultPayload {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!(big)),
                 media: Vec::new(),
-            })
+            }
         }
     }
     let c = ctx("t1");
@@ -460,16 +457,13 @@ async fn unknown_outcome_continue_continues_turn() {
                 parameters: json!({"type":"object"}),
             }
         }
-        fn unknown_outcome_policy(&self) -> UnknownOutcomePolicy {
-            UnknownOutcomePolicy::Continue
-        }
-        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
-            ToolExecutionOutcome::new(ToolResultPayload {
+        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+            ToolResultPayload {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::UnknownOutcome,
                 output: ToolOutput::new(json!({"unk": true})),
                 media: Vec::new(),
-            })
+            }
         }
     }
     let c = ctx("t1");
@@ -478,7 +472,19 @@ async fn unknown_outcome_continue_continues_turn() {
         Ok(endturn_output("done")),
     ]);
     let runner = runner_with(gw, vec![Arc::new(UnknownContinueTool)]);
-    let cfg = TurnRunOptions::default();
+    // Decision 6: the Continue action moved from the tool declaration to
+    // the host's unknown-outcome configuration, keyed by the executed name.
+    let mut unknown_outcome = UnknownOutcomeConfig::default();
+    unknown_outcome
+        .overrides
+        .insert("unkc".into(), UnknownOutcomePolicy::Continue);
+    let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            unknown_outcome,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let out = runner.run(c, cfg, ctrl()).await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     assert!(out.context.blocks().iter().any(
@@ -501,7 +507,7 @@ async fn hung_tool_stop_policy_interrupts_with_unknown_outcome() {
                 parameters: json!({"type":"object"}),
             }
         }
-        async fn execute(&self, _ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
+        async fn execute(&self, _ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             std::future::pending::<()>().await;
             unreachable!()
         }
@@ -542,10 +548,7 @@ async fn hung_tool_continue_policy_still_completes() {
                 parameters: json!({"type":"object"}),
             }
         }
-        fn unknown_outcome_policy(&self) -> UnknownOutcomePolicy {
-            UnknownOutcomePolicy::Continue
-        }
-        async fn execute(&self, _ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
+        async fn execute(&self, _ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             std::future::pending::<()>().await;
             unreachable!()
         }
@@ -556,7 +559,15 @@ async fn hung_tool_continue_policy_still_completes() {
         Ok(endturn_output("done")),
     ]);
     let runner = runner_with(gw, vec![Arc::new(HungContinueTool)]);
+    let mut unknown_outcome = UnknownOutcomeConfig::default();
+    unknown_outcome
+        .overrides
+        .insert("hungc".into(), UnknownOutcomePolicy::Continue);
     let cfg = TurnRunOptions {
+        policy: TurnPolicy {
+            unknown_outcome,
+            ..Default::default()
+        },
         execution: ExecutionOptions {
             call_timeout: Some(std::time::Duration::from_millis(50)),
             ..Default::default()
@@ -611,14 +622,14 @@ async fn completion_order_reflects_real_completion() {
                 parameters: json!({"type":"object"}),
             }
         }
-        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
+        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            ToolExecutionOutcome::new(ToolResultPayload {
+            ToolResultPayload {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!("slow")),
                 media: Vec::new(),
-            })
+            }
         }
     }
     let c = ctx("t1");
@@ -821,7 +832,6 @@ async fn truncated_echo(
             ToolOutputLimits { max_tokens },
         )
         .await
-        .result
 }
 
 /// Test mirror of the driver's documented fallback opinion (serialized JSON
@@ -934,6 +944,7 @@ async fn hook_that_drops_a_call_interrupts_as_invariant_violation() {
             HookOutcome {
                 to_execute: vec![],
                 rejected: vec![],
+                unknown_decisions: Vec::new(),
             }
         }
     }
@@ -993,14 +1004,14 @@ async fn dynamic_catalog_refreshes_between_model_rounds() {
             &self,
             call: &ToolCallPayload,
             _control: &CallControl,
-        ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+        ) -> Result<ToolResultPayload, ToolExecutionError> {
             self.version.store(1, Ordering::SeqCst);
-            Ok(ToolExecutionOutcome::new(ToolResultPayload {
+            Ok(ToolResultPayload {
                 call_id: call.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!("updated")),
                 media: Vec::new(),
-            }))
+            })
         }
     }
     let source = Arc::new(Catalog {
@@ -1039,13 +1050,13 @@ async fn truncation_never_touches_result_media_references() {
                 parameters: json!({"type": "object"}),
             }
         }
-        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
-            ToolExecutionOutcome::new(ToolResultPayload {
+        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+            ToolResultPayload {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!({"chart": "x".repeat(4000)})),
                 media: vec![causa_kernel::MediaRef::new("image/png", "asset-1")],
-            })
+            }
         }
     }
     let executor = ToolExecutor::from_vec(vec![Arc::new(ImagingTool)]);
@@ -1061,8 +1072,7 @@ async fn truncation_never_touches_result_media_references() {
             None,
             ToolOutputLimits { max_tokens: 50 },
         )
-        .await
-        .result;
+        .await;
     assert_eq!(outcome.output.truncation, Truncation::Middle);
     assert!(
         outcome.output.content.to_string().len() < 4000,

@@ -24,12 +24,33 @@
 
 use async_trait::async_trait;
 
-use causa_kernel::{CallControl, ConversationId, RoundId, ToolCallPayload, TurnId};
+use crate::config::UnknownOutcomePolicy;
+use causa_kernel::ToolResultPayload;
+use causa_kernel::{CallControl, ConversationId, RoundId, ToolCallId, ToolCallPayload, TurnId};
 
 // This trait is deliberately NOT a `causa_kernel::ports` item:
 // a port there is a host-facing contract third parties implement against
 // the facts crate alone. The hook's sole consumer is this crate's driver,
 // so the contract lives with the driver.
+
+/// One explicit per-call unknown-outcome decision (Slice 13 Decision 7) —
+/// host decision / checkpoint data attached to a precomputed result whose
+/// status is `UnknownOutcome`, not a result envelope: the recorded result
+/// is committed verbatim either way. Where a decision set is a *new* host
+/// input (hook, `BatchDecision::Reject`, resume), entries may be omitted —
+/// the missing ones resolve through [`UnknownOutcomeConfig`](crate::config::UnknownOutcomeConfig)
+/// by the executed tool name. Where it is a checkpoint
+/// ([`PreparedApproval`](crate::driver::PreparedApproval)), it must
+/// exactly cover the saved `UnknownOutcome` results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownDecision {
+    /// The precomputed result's call id — must be one of the same
+    /// decision's rejected results, and its status must be
+    /// `UnknownOutcome`.
+    pub call_id: ToolCallId,
+    /// The fixed action for that result.
+    pub policy: UnknownOutcomePolicy,
+}
 
 /// Context supplied to every hook invocation.
 ///
@@ -54,13 +75,25 @@ pub struct HookCtx<'a> {
 /// the input batch; forging a new id would make `append_tool_results`
 /// reject the entry with `UnpairedToolResult`. `to_execute` may rewrite
 /// `arguments` (open `FilterResult` — approval can rewrite, defer, split).
+///
+/// Since Slice 13 (Decision 7) `rejected` carries the recorded results
+/// only. A host precomputing an `UnknownOutcome` result may pin its
+/// continuation action in `unknown_decisions` — the per-call migration
+/// position of the removed `Tool::unknown_outcome_policy` declaration;
+/// entries may be omitted and the driver then resolves through its
+/// unknown-outcome configuration by the executed tool name. Rejections
+/// with any other status take no action and need no entry.
 pub struct HookOutcome {
     /// Calls that pass the hook and reach the executor (arguments may
     /// have been rewritten).
     pub to_execute: Vec<ToolCallPayload>,
-    /// Calls the hook rejected; each outcome must reuse the input's
+    /// Calls the hook rejected; each result must reuse the input's
     /// `call_id`.
-    pub rejected: Vec<causa_kernel::ToolExecutionOutcome>,
+    pub rejected: Vec<ToolResultPayload>,
+    /// Explicit unknown-outcome actions for precomputed results whose
+    /// status is `UnknownOutcome`. Optional per entry; must not point at
+    /// `to_execute`, foreign ids, or results with any other status.
+    pub unknown_decisions: Vec<UnknownDecision>,
 }
 
 impl HookOutcome {
@@ -69,7 +102,21 @@ impl HookOutcome {
         Self {
             to_execute: calls,
             rejected: Vec::new(),
+            unknown_decisions: Vec::new(),
         }
+    }
+
+    /// Builder: pin an explicit unknown-outcome action for one precomputed
+    /// result (its `call_id`, which must appear in `rejected` with status
+    /// `UnknownOutcome`).
+    pub fn with_unknown_decision(
+        mut self,
+        call_id: ToolCallId,
+        policy: UnknownOutcomePolicy,
+    ) -> Self {
+        self.unknown_decisions
+            .push(UnknownDecision { call_id, policy });
+        self
     }
 }
 

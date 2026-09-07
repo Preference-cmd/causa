@@ -1,13 +1,15 @@
 //! Tool behavior — the `Tool` trait and the `ArtifactStore` port, plus the
-//! execution vocabulary that drivers and they consume: definitions, call
-//! context, outcome policies, output limits. Recorded facts (results,
-//! outputs, artifacts) live in `crate::context::tool_data`; batch dispatch
-//! lives in `causa-runtime`'s executor.
+//! execution vocabulary they share with drivers: definitions and call
+//! context. Recorded facts (results, outputs, artifacts) live in
+//! `crate::context::tool_data`; batch dispatch lives in `causa-runtime`'s
+//! executor. Since Slice 13 (Decision 6) a tool returns its recorded
+//! result and nothing else — unknown-outcome continuation and output
+//! retention are reference-harness configuration, not tool declarations.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolCallId};
+use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolCallId, ToolResultPayload};
 use crate::ports::control::CallControl;
 
 /// The model-facing description of one callable tool; renderers map it onto
@@ -32,68 +34,6 @@ pub struct ToolCallContext {
     pub tool_name: String,
     /// The model-emitted arguments, as a raw JSON value.
     pub arguments: serde_json::Value,
-}
-
-/// How a tool wants its `UnknownOutcome` result treated — a declaration the
-/// driver obeys, not a fact the kernel interprets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UnknownOutcomePolicy {
-    /// Treat the unknown outcome as unsafe: the turn interrupts rather than
-    /// continue on an unverifiable result (the default).
-    Stop,
-    /// Keep the turn alive; the `UnknownOutcome` result still lands in the
-    /// transcript.
-    Continue,
-}
-
-/// A tool door's result: the recorded
-/// [`ToolResultPayload`](crate::context::tool_data::ToolResultPayload) fact
-/// plus the [`UnknownOutcomePolicy`] the tool declares for it. Serde-additive: the
-/// outcome rides the wire inside the runtime's continuation checkpoint
-/// (Slice 6.5), so the derives are part of the contract now.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolExecutionOutcome {
-    /// The recorded result (pairing id, status, output).
-    pub result: crate::context::tool_data::ToolResultPayload,
-    /// How the driver should treat this result if its status is
-    /// `UnknownOutcome`.
-    pub policy: UnknownOutcomePolicy,
-}
-impl ToolExecutionOutcome {
-    /// Creates an outcome under the default [`UnknownOutcomePolicy::Stop`].
-    pub fn new(result: crate::context::tool_data::ToolResultPayload) -> Self {
-        Self {
-            result,
-            policy: UnknownOutcomePolicy::Stop,
-        }
-    }
-    /// Builder: overrides the outcome's [`UnknownOutcomePolicy`].
-    pub fn with_policy(mut self, policy: UnknownOutcomePolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-}
-
-/// Truncation thresholds applied when a tool result exceeds its token
-/// estimate — the explicit truncation effect callers opt into.
-#[derive(Debug, Clone)]
-pub struct ToolOutputLimits {
-    /// Maximum estimated tokens a tool result may carry before it gets
-    /// truncated; [`usize::MAX`] (the default) disables truncation.
-    pub max_tokens: usize,
-}
-impl Default for ToolOutputLimits {
-    /// No limit by default — callers opt in to truncation.
-    ///
-    /// Specific limits are set by the caller (e.g. per-tool
-    /// `Tool::output_limits()` or host configuration). The kernel
-    /// defaults to `usize::MAX` so truncation is an *explicit*
-    /// effect, never the absence of configuration.
-    fn default() -> Self {
-        Self {
-            max_tokens: usize::MAX,
-        }
-    }
 }
 
 /// Provenance a caller attaches to bytes handed to [`ArtifactStore::persist`],
@@ -137,24 +77,17 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 /// The tool port: one callable tool the model can invoke. Implementations
-/// live outside the kernel; the driver's executor dispatches them.
+/// live outside the kernel; the driver's executor dispatches them. A tool
+/// returns only its recorded result — whether an `UnknownOutcome` result
+/// may continue the turn and how output is retained are reference-harness
+/// configuration (`causa_runtime`), not tool declarations.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// The model-facing [`ToolDefinition`] for this tool.
     fn definition(&self) -> ToolDefinition;
-    /// Per-tool truncation limits; `None` (the default) defers to the
-    /// host's global limits.
-    fn output_limits(&self) -> Option<ToolOutputLimits> {
-        None
-    }
-    /// How an `UnknownOutcome` result from this tool is treated; defaults
-    /// to [`UnknownOutcomePolicy::Stop`].
-    fn unknown_outcome_policy(&self) -> UnknownOutcomePolicy {
-        UnknownOutcomePolicy::Stop
-    }
     /// Runs one call under the call's [`CallControl`], returning the
-    /// recorded outcome.
-    async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolExecutionOutcome;
+    /// recorded result.
+    async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolResultPayload;
     /// Extension point for tools that persist artifacts: receives the host's
     /// [`ArtifactStore`] when one is configured (`None` otherwise). The
     /// default ignores the store and delegates to [`Tool::execute`].
@@ -163,7 +96,7 @@ pub trait Tool: Send + Sync {
         ctx: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
-    ) -> ToolExecutionOutcome {
+    ) -> ToolResultPayload {
         let _ = store;
         self.execute(ctx, control).await
     }

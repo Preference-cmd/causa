@@ -8,13 +8,12 @@ use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptControl, CallControl,
     CancellationToken, DynamicToolSource, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
     ModelRef, ModelRequest, ModelResponse, ModelStopReason, SourceError, StoreError, TextPayload,
-    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError,
-    ToolExecutionOutcome, ToolOutput, ToolOutputLimits, ToolResultPayload, ToolResultStatus,
-    ToolSurface, TurnContext, TurnId,
+    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInvocation, TurnLimits, TurnPolicy, TurnResult, TurnRunOptions,
-    TurnRunner,
+    RunControl, ToolExecutor, ToolOutputLimits, TurnInvocation, TurnLimits, TurnPolicy, TurnResult,
+    TurnRunOptions, TurnRunner,
 };
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -197,12 +196,9 @@ async fn invoke_executes_and_returns_text_content() {
         arguments: serde_json::json!({"a": 1}),
     };
     let outcome = source.invoke(&call, &ctrl()).await.expect("invoke");
-    assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
-    assert_eq!(
-        outcome.result.output.content,
-        serde_json::json!("echo: {\"a\":1}")
-    );
-    assert_eq!(outcome.result.call_id, call.call_id);
+    assert_eq!(outcome.status, ToolResultStatus::Succeeded);
+    assert_eq!(outcome.output.content, serde_json::json!("echo: {\"a\":1}"));
+    assert_eq!(outcome.call_id, call.call_id);
     server.cancel().await.expect("server stop");
 }
 
@@ -228,16 +224,15 @@ async fn is_error_results_map_to_failed_outcomes() {
         arguments: serde_json::json!({"x": 1}),
     };
     let outcome = source.invoke(&call, &ctrl()).await.expect("invoke");
-    assert_eq!(outcome.result.status, ToolResultStatus::Failed);
+    assert_eq!(outcome.status, ToolResultStatus::Failed);
     assert!(
         outcome
-            .result
             .output
             .content
             .to_string()
             .contains("fixture failure"),
         "model-readable copy: {}",
-        outcome.result.output.content
+        outcome.output.content
     );
     server.cancel().await.expect("server stop");
 }
@@ -352,7 +347,7 @@ impl DynamicToolSource for BrokenSource {
         &self,
         call: &ToolCallPayload,
         _control: &CallControl,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         Err(ToolExecutionError::Unavailable(format!(
             "fixture outage: {}",
             call.tool_name
@@ -375,13 +370,13 @@ fn echo_static_tool() -> Arc<dyn causa_kernel::Tool> {
             &self,
             ctx: &ToolCallContext,
             _control: &CallControl,
-        ) -> ToolExecutionOutcome {
-            ToolExecutionOutcome::new(ToolResultPayload {
+        ) -> ToolResultPayload {
+            ToolResultPayload {
                 call_id: ctx.call_id.clone(),
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(serde_json::json!({"echo": ctx.arguments})),
                 media: Vec::new(),
-            })
+            }
         }
     }
     Arc::new(Echo)
@@ -458,9 +453,9 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
             ToolOutputLimits::default(),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
+    assert_eq!(outcome.status, ToolResultStatus::Succeeded);
     assert_eq!(
-        outcome.result.output.content,
+        outcome.output.content,
         serde_json::json!("echo: {\"k\":\"v\"}")
     );
 
@@ -479,7 +474,7 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
             ToolOutputLimits::default(),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Rejected);
+    assert_eq!(outcome.status, ToolResultStatus::Rejected);
 
     // A name in no listing at all is rejected by the executor too.
     let outcome = executor
@@ -495,7 +490,7 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
             ToolOutputLimits::default(),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Rejected);
+    assert_eq!(outcome.status, ToolResultStatus::Rejected);
 
     // A remote tool-level failure (`is_error` result) is a Failed outcome
     // with model-readable copy, from a distinct server namespace.
@@ -517,16 +512,15 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
             ToolOutputLimits::default(),
         )
         .await;
-    assert_eq!(outcome.result.status, ToolResultStatus::Failed);
+    assert_eq!(outcome.status, ToolResultStatus::Failed);
     assert!(
         outcome
-            .result
             .output
             .content
             .to_string()
             .contains("fixture failure"),
         "model-readable copy: {}",
-        outcome.result.output.content
+        outcome.output.content
     );
     server3.cancel().await.expect("server stop");
     server.cancel().await.expect("server stop");
@@ -631,7 +625,7 @@ async fn kernel_turn_completes_through_the_mcp_source() {
     assert!(
         matches!(out.result, TurnResult::Completed { .. }),
         "expected completion, got {:?}",
-        out.result
+        out
     );
     assert_eq!(out.trace.tool_calls_total, 1);
     let result_block = out
@@ -725,9 +719,9 @@ async fn http_transport_lists_and_invokes() {
         .invoke(&call, &ctrl())
         .await
         .expect("invoke over http");
-    assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
+    assert_eq!(outcome.status, ToolResultStatus::Succeeded);
     assert_eq!(
-        outcome.result.output.content,
+        outcome.output.content,
         serde_json::json!("echo: {\"via\":\"http\"}")
     );
     tokio::time::timeout(std::time::Duration::from_secs(5), source.close())
@@ -839,10 +833,9 @@ async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
 
     // Without a store: the deterministic placeholder text, no media.
     let out = source.invoke(&call, &ctrl()).await.unwrap();
-    assert!(out.result.media.is_empty());
+    assert!(out.media.is_empty());
     assert!(
-        out.result
-            .output
+        out.output
             .content
             .to_string()
             .contains("[image: image/png mime — no media store available]")
@@ -854,13 +847,9 @@ async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
         .invoke_with_store(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
         .await
         .unwrap();
-    assert_eq!(
-        out.result.media,
-        vec![MediaRef::new("image/png", "asset-1")]
-    );
+    assert_eq!(out.media, vec![MediaRef::new("image/png", "asset-1")]);
     assert!(
-        out.result
-            .output
+        out.output
             .content
             .to_string()
             .contains("[image attached: image/png — asset asset-1]")

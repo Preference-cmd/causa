@@ -8,9 +8,7 @@
 //! concerns and live here, not in the kernel.
 
 use async_trait::async_trait;
-use causa_kernel::{
-    ToolCallPayload, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
-};
+use causa_kernel::{ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus};
 use causa_runtime::{DedupFilter, FilterChain, HookCtx, HookOutcome, ToolUseHook};
 use std::sync::Arc;
 
@@ -23,18 +21,17 @@ impl ToolUseHook for DenyAll {
     async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
         let rejected = calls
             .into_iter()
-            .map(|p| {
-                ToolExecutionOutcome::new(ToolResultPayload {
-                    call_id: p.call_id,
-                    status: ToolResultStatus::Rejected,
-                    output: ToolOutput::new(serde_json::json!({"error": self.reason.clone()})),
-                    media: Vec::new(),
-                })
+            .map(|p| ToolResultPayload {
+                call_id: p.call_id,
+                status: ToolResultStatus::Rejected,
+                output: ToolOutput::new(serde_json::json!({"error": self.reason.clone()})),
+                media: Vec::new(),
             })
             .collect();
         HookOutcome {
             to_execute: Vec::new(),
             rejected,
+            unknown_decisions: Vec::new(),
         }
     }
 }

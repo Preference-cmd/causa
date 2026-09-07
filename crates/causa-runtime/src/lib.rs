@@ -104,8 +104,8 @@ pub use interaction::{BatchDecision, TurnInteraction};
 // --- driver stack (graduated from context-kernel internal/, Slice 12) --------
 pub use composition::ToolBridge;
 pub use config::{
-    ExecutionOptions, NoopInteraction, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy,
-    TurnRunOptions,
+    ExecutionOptions, NoopInteraction, RetryPolicy, ToolOutputLimits, TurnInvocation, TurnLimits,
+    TurnPolicy, TurnRunOptions, UnknownOutcomeConfig, UnknownOutcomePolicy,
 };
 pub use control::RunControl;
 pub use conversation::{

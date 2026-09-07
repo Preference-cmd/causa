@@ -13,7 +13,8 @@
 
 use async_trait::async_trait;
 
-use causa_kernel::{RoundId, StreamDelta, TextPayload, ToolCallPayload, ToolExecutionOutcome};
+use crate::hook::UnknownDecision;
+use causa_kernel::{RoundId, StreamDelta, TextPayload, ToolCallPayload, ToolResultPayload};
 
 /// Host observations and decisions while a turn is in flight.
 #[async_trait]
@@ -56,14 +57,21 @@ pub trait TurnInteraction: Send + Sync {
 pub enum BatchDecision {
     /// Dispatch the batch to the executor unchanged.
     Proceed,
-    /// Skip execution entirely; the supplied outcomes become the tool
-    /// results (the host supplies the error copy). Outcome `call_id`s
+    /// Skip execution entirely; the supplied results become the tool
+    /// results (the host supplies the error copy). Result `call_id`s
     /// must pair with the batch — the fact machine rejects unpaired
-    /// results.
+    /// results. Despite the variant's name, any recorded status is
+    /// accepted; a precomputed `UnknownOutcome` result takes its action
+    /// from `unknown_decisions` (or the runner's unknown-outcome
+    /// configuration when omitted).
     Reject {
-        /// Outcomes standing in for the skipped batch; their `call_id`s must
+        /// Results standing in for the skipped batch; their `call_id`s must
         /// pair with the batch.
-        results: Vec<ToolExecutionOutcome>,
+        results: Vec<ToolResultPayload>,
+        /// Explicit unknown-outcome actions for precomputed results whose
+        /// status is `UnknownOutcome` (see [`UnknownDecision`]); entries
+        /// may be omitted.
+        unknown_decisions: Vec<UnknownDecision>,
     },
     /// Execute the rewritten payloads instead of the model-emitted ones.
     /// Call ids are expected to be preserved so results pair with the

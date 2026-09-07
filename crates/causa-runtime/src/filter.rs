@@ -15,9 +15,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::hook::{HookCtx, HookOutcome, ToolUseHook};
-use causa_kernel::{
-    ToolCallPayload, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
-};
+use causa_kernel::{ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus};
 
 /// Default deduplication policy — same-batch `(tool_name, arguments)` dedup.
 /// Subsequent occurrences of an identical pair are pushed to `rejected` with
@@ -40,17 +38,18 @@ impl ToolUseHook for DedupFilter {
             if seen.insert(key) {
                 to_execute.push(payload);
             } else {
-                rejected.push(ToolExecutionOutcome::new(ToolResultPayload {
+                rejected.push(ToolResultPayload {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
                     media: Vec::new(),
-                }));
+                });
             }
         }
         HookOutcome {
             to_execute,
             rejected,
+            unknown_decisions: Vec::new(),
         }
     }
 }
@@ -103,18 +102,17 @@ impl ToolUseHook for DenyAllFilter {
     async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
         let rejected = calls
             .into_iter()
-            .map(|payload| {
-                ToolExecutionOutcome::new(ToolResultPayload {
-                    call_id: payload.call_id.clone(),
-                    status: ToolResultStatus::Rejected,
-                    output: ToolOutput::new(serde_json::json!({"error": self.reason.clone()})),
-                    media: Vec::new(),
-                })
+            .map(|payload| ToolResultPayload {
+                call_id: payload.call_id.clone(),
+                status: ToolResultStatus::Rejected,
+                output: ToolOutput::new(serde_json::json!({"error": self.reason.clone()})),
+                media: Vec::new(),
             })
             .collect();
         HookOutcome {
             to_execute: Vec::new(),
             rejected,
+            unknown_decisions: Vec::new(),
         }
     }
 }
@@ -197,6 +195,7 @@ impl ToolUseHook for FilterChain {
         HookOutcome {
             to_execute: calls,
             rejected: all_rejected,
+            unknown_decisions: Vec::new(),
         }
     }
 }
@@ -259,11 +258,8 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["a", "c", "d"]);
         // Rejected carries the original call_id (b), not a fresh one.
-        assert_eq!(outcome.rejected[0].result.call_id.0, "b");
-        assert_eq!(
-            outcome.rejected[0].result.status,
-            ToolResultStatus::Rejected
-        );
+        assert_eq!(outcome.rejected[0].call_id.0, "b");
+        assert_eq!(outcome.rejected[0].status, ToolResultStatus::Rejected);
     }
 
     #[tokio::test]
@@ -282,7 +278,7 @@ mod tests {
         let rejected_ids: Vec<String> = outcome
             .rejected
             .iter()
-            .map(|o| o.result.call_id.0.clone())
+            .map(|r| r.call_id.0.clone())
             .collect();
         assert_eq!(rejected_ids, vec!["id-2", "id-3"]);
     }
@@ -308,14 +304,11 @@ mod tests {
         let outcome = DenyAllFilter::new("test deny").apply(calls, &ctx).await;
         assert!(outcome.to_execute.is_empty());
         assert_eq!(outcome.rejected.len(), 2);
-        assert_eq!(outcome.rejected[0].result.call_id.0, "a");
-        assert_eq!(outcome.rejected[1].result.call_id.0, "b");
-        assert_eq!(
-            outcome.rejected[0].result.status,
-            ToolResultStatus::Rejected
-        );
+        assert_eq!(outcome.rejected[0].call_id.0, "a");
+        assert_eq!(outcome.rejected[1].call_id.0, "b");
+        assert_eq!(outcome.rejected[0].status, ToolResultStatus::Rejected);
         // Reason is recorded in the output payload's content field.
-        let json = &outcome.rejected[0].result.output.content;
+        let json = &outcome.rejected[0].output.content;
         assert_eq!(json["error"], "test deny");
     }
 
@@ -361,7 +354,7 @@ mod tests {
         let ids: Vec<String> = outcome
             .rejected
             .iter()
-            .map(|o| o.result.call_id.0.clone())
+            .map(|r| r.call_id.0.clone())
             .collect();
         // Both ids must be preserved (call_id pairing invariant).
         assert!(ids.contains(&"a".to_string()));

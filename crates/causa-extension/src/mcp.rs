@@ -64,8 +64,8 @@
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactStore, CallControl, DynamicToolSource, MediaRef,
-    SourceError, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolExecutionOutcome,
-    ToolOutput, ToolResultPayload, ToolResultStatus,
+    SourceError, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    ToolResultPayload, ToolResultStatus,
 };
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::ContentBlock;
@@ -294,7 +294,7 @@ impl DynamicToolSource for McpToolSource {
         &self,
         call: &ToolCallPayload,
         control: &CallControl,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         Self::invoke_inner(self, call, control, None).await
     }
 
@@ -303,7 +303,7 @@ impl DynamicToolSource for McpToolSource {
         call: &ToolCallPayload,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         Self::invoke_inner(self, call, control, store).await
     }
 }
@@ -318,7 +318,7 @@ impl McpToolSource {
         call: &ToolCallPayload,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
-    ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         // 1. De-namespace; a foreign call is an executor routing bug.
         let Some(tool_name) = self.denamespace(&call.tool_name) else {
             return Err(ToolExecutionError::UnknownTool(call.tool_name.clone()));
@@ -410,12 +410,12 @@ impl McpToolSource {
         } else {
             ToolResultStatus::Succeeded
         };
-        Ok(ToolExecutionOutcome::new(ToolResultPayload {
+        Ok(ToolResultPayload {
             call_id: call.call_id.clone(),
             status,
             output: ToolOutput::new(content),
             media,
-        }))
+        })
     }
 
     /// Decode one MCP image and persist its raw bytes in the host's

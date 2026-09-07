@@ -6,11 +6,12 @@
 
 use crate::budget::TokenCounter;
 use crate::composition::ToolBridge;
+use crate::config::ToolOutputLimits;
 use causa_kernel::CallControl;
 use causa_kernel::ToolCallPayload;
 use causa_kernel::{
     ArtifactHint, ArtifactStore, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
-    ToolExecutionOutcome, ToolOutputLimits, ToolSurface,
+    ToolSurface,
 };
 use causa_kernel::{
     ArtifactKind, ArtifactRef, ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus,
@@ -229,15 +230,21 @@ impl ToolExecutor {
     }
 
     /// Execute a single ToolCallPayload with panic isolation, a call-deadline
-    /// backstop, and token-limit truncation.
+    /// backstop, and token-limit truncation. Returns the recorded result
+    /// only — the caller owns the unknown-outcome action (in the reference
+    /// driver that is the turn policy, resolved by the executed tool name
+    /// before dispatch). The `effective_limits` argument is the already
+    /// chosen per-call limit: the runner resolves the fallback /
+    /// per-tool-name override by the executed name before dispatch; a
+    /// standalone caller passes the limit it wants.
     pub async fn execute_with_limits(
         &self,
         payload: ToolCallPayload,
         control: CallControl,
         store: Option<Arc<dyn ArtifactStore>>,
         token_counter: Option<Arc<dyn TokenCounter>>,
-        global_limits: ToolOutputLimits,
-    ) -> ToolExecutionOutcome {
+        effective_limits: ToolOutputLimits,
+    ) -> ToolResultPayload {
         // Observability baseline (Slice 6.6): one `agent.tool` span per
         // dispatch, name and id only. Entered per poll via `Instrument`,
         // so the future stays `Send`.
@@ -246,7 +253,7 @@ impl ToolExecutor {
             tool_name = %payload.tool_name,
             call_id = %payload.call_id.0
         );
-        self.execute_with_limits_inner(payload, control, store, token_counter, global_limits)
+        self.execute_with_limits_inner(payload, control, store, token_counter, effective_limits)
             .instrument(span)
             .await
     }
@@ -257,13 +264,13 @@ impl ToolExecutor {
         control: CallControl,
         store: Option<Arc<dyn ArtifactStore>>,
         token_counter: Option<Arc<dyn TokenCounter>>,
-        global_limits: ToolOutputLimits,
-    ) -> ToolExecutionOutcome {
+        effective_limits: ToolOutputLimits,
+    ) -> ToolResultPayload {
         // Route: the static map first, then dynamic sources by listing
         // membership. A dynamic call is wrapped in a [`ToolBridge`] and
         // runs the exact static path below — panic isolation, call-deadline
-        // backstop, unknown-outcome policy (bridge default: `Stop`),
-        // truncation — one code path, one error mapping (the bridge's).
+        // backstop, truncation — one code path, one error mapping (the
+        // bridge's).
         let tool: Option<Arc<dyn Tool>> = match self.tools.get(&payload.tool_name) {
             Some(tool) => Some(tool.clone()),
             None => self
@@ -273,14 +280,14 @@ impl ToolExecutor {
                 }),
         };
         let Some(tool) = tool else {
-            return ToolExecutionOutcome::new(ToolResultPayload {
+            return ToolResultPayload {
                 call_id: payload.call_id.clone(),
                 status: ToolResultStatus::Rejected,
                 output: ToolOutput::new(
                     serde_json::json!({"error": format!("unknown tool: {}", payload.tool_name)}),
                 ),
                 media: Vec::new(),
-            });
+            };
         };
 
         let ctx = ToolCallContext {
@@ -302,23 +309,17 @@ impl ToolExecutor {
             })
             .catch_unwind()
         };
-        let mut outcome = match control.deadline() {
+        let mut result = match control.deadline() {
             Some(deadline) => match tokio::time::timeout_at(deadline.into(), fut).await {
-                Ok(Ok(o)) => o,
+                Ok(Ok(r)) => r,
                 Ok(Err(_)) => Self::panicked_outcome(&payload),
                 Err(_) => Self::deadline_backstop_outcome(&payload),
             },
             None => match fut.await {
-                Ok(o) => o,
+                Ok(r) => r,
                 Err(_) => Self::panicked_outcome(&payload),
             },
         };
-
-        // UnknownOutcome policy always comes from the trusted tool declaration,
-        // never from the outcome the tool produced itself.
-        if matches!(outcome.result.status, ToolResultStatus::UnknownOutcome) {
-            outcome.policy = tool.unknown_outcome_policy();
-        }
 
         // Token-limit truncation (middle truncation + artifact spill).
         // Shape note: on truncation `content` is REPLACED by a JSON string
@@ -335,7 +336,7 @@ impl ToolExecutor {
         // under `max_tokens` — with one defined floor: when the limit is
         // smaller than the notice's own estimate, the notice alone is
         // emitted (nothing smaller is representable).
-        let effective_limit = tool.output_limits().unwrap_or(global_limits).max_tokens;
+        let effective_limit = effective_limits.max_tokens;
 
         let estimate = |value: &serde_json::Value| -> usize {
             if let Some(counter) = &token_counter {
@@ -345,12 +346,12 @@ impl ToolExecutor {
                 crate::defaults::placeholder_token_estimate_value(value)
             }
         };
-        let estimated = estimate(&outcome.result.output.content);
+        let estimated = estimate(&result.output.content);
 
         if estimated > effective_limit {
-            let content_str = serde_json::to_string(&outcome.result.output.content)
-                .unwrap_or_else(|_| outcome.result.output.content.to_string());
-            let data_bytes = serde_json::to_vec(&outcome.result.output.content)
+            let content_str = serde_json::to_string(&result.output.content)
+                .unwrap_or_else(|_| result.output.content.to_string());
+            let data_bytes = serde_json::to_vec(&result.output.content)
                 .unwrap_or_else(|_| content_str.clone().into_bytes());
 
             let artifact: Option<ArtifactRef> = if let Some(store_arc) = &store {
@@ -401,31 +402,31 @@ impl ToolExecutor {
                 data_budget = data_budget.saturating_sub(cut);
             }
 
-            outcome.result.output.content = preview_value;
-            outcome.result.output.truncation = Truncation::Middle;
-            outcome.result.output.artifact = artifact;
-            let prev_meta = outcome.result.output.meta.take();
-            outcome.result.output.meta = Some(ToolOutputMeta {
+            result.output.content = preview_value;
+            result.output.truncation = Truncation::Middle;
+            result.output.artifact = artifact;
+            let prev_meta = result.output.meta.take();
+            result.output.meta = Some(ToolOutputMeta {
                 duration_ms: prev_meta.as_ref().and_then(|m| m.duration_ms),
                 original_tokens: Some(estimated),
                 extra: prev_meta.as_ref().and_then(|m| m.extra.clone()),
             });
         }
 
-        outcome
+        result
     }
 
-    fn panicked_outcome(payload: &ToolCallPayload) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    fn panicked_outcome(payload: &ToolCallPayload) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: payload.call_id.clone(),
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(serde_json::json!({"error": "tool panicked"})),
             media: Vec::new(),
-        })
+        }
     }
 
-    fn deadline_backstop_outcome(payload: &ToolCallPayload) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    fn deadline_backstop_outcome(payload: &ToolCallPayload) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: payload.call_id.clone(),
             status: ToolResultStatus::UnknownOutcome,
             output: ToolOutput {
@@ -439,7 +440,7 @@ impl ToolExecutor {
                 artifact: None,
             },
             media: Vec::new(),
-        })
+        }
     }
 }
 

@@ -14,9 +14,8 @@ use async_trait::async_trait;
 use causa_kernel::{
     AttemptControl, CallControl, ContextFrame, ModelGateway, ModelInvokeError,
     ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream,
-    StreamDelta, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition,
-    ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation, TurnContext,
-    TurnId, UnknownOutcomePolicy,
+    StreamDelta, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, Truncation, TurnContext, TurnId,
 };
 use causa_runtime::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, ConversationState, RunControl,
@@ -233,12 +232,12 @@ impl causa_runtime::ToolUseHook for TestDedupHook {
         for payload in calls {
             let key = (payload.tool_name.clone(), payload.arguments.clone());
             if seen.insert(key, ()).is_some() {
-                rejected.push(ToolExecutionOutcome::new(ToolResultPayload {
+                rejected.push(ToolResultPayload {
                     call_id: payload.call_id.clone(),
                     status: ToolResultStatus::Rejected,
                     output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
                     media: Vec::new(),
-                }));
+                });
             } else {
                 to_execute.push(payload);
             }
@@ -246,6 +245,7 @@ impl causa_runtime::ToolUseHook for TestDedupHook {
         causa_runtime::HookOutcome {
             to_execute,
             rejected,
+            unknown_decisions: Vec::new(),
         }
     }
 }
@@ -274,8 +274,8 @@ impl Tool for EchoTool {
             parameters: serde_json::json!({"type":"object"}),
         }
     }
-    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput {
@@ -285,7 +285,7 @@ impl Tool for EchoTool {
                 artifact: None,
             },
             media: Vec::new(),
-        })
+        }
     }
 }
 
@@ -300,16 +300,19 @@ impl Tool for FailTool {
             parameters: serde_json::json!({"type":"object"}),
         }
     }
-    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(serde_json::json!({"err": "fail"})),
             media: Vec::new(),
-        })
+        }
     }
 }
 
+/// Returns `UnknownOutcome` — its continuation action is the host's
+/// unknown-outcome configuration now (Slice 13 removed the tool-side
+/// declaration).
 pub struct UnknownStopTool;
 
 #[async_trait]
@@ -321,17 +324,13 @@ impl Tool for UnknownStopTool {
             parameters: serde_json::json!({"type":"object"}),
         }
     }
-    fn unknown_outcome_policy(&self) -> UnknownOutcomePolicy {
-        UnknownOutcomePolicy::Stop
-    }
-    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolExecutionOutcome {
-        ToolExecutionOutcome::new(ToolResultPayload {
+    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+        ToolResultPayload {
             call_id: ctx.call_id.clone(),
             status: ToolResultStatus::UnknownOutcome,
             output: ToolOutput::new(serde_json::json!({"unk": true})),
             media: Vec::new(),
-        })
-        .with_policy(UnknownOutcomePolicy::Stop)
+        }
     }
 }
 

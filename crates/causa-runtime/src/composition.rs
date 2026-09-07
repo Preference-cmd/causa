@@ -13,17 +13,20 @@ use async_trait::async_trait;
 use causa_kernel::ToolCallPayload;
 use causa_kernel::{
     ArtifactStore, CallControl, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
-    ToolExecutionError, ToolExecutionOutcome, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ToolExecutionError, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 
 /// A single dynamic-source tool exposed through the plain [`Tool`]
 /// interface. The bridge routes `execute` to
 /// [`DynamicToolSource::invoke_with_store`] (the source de-namespaces the
 /// call; the host's artifact store is forwarded for media ingest) and
-/// maps invoke errors onto structured outcomes: a timeout or cancellation
+/// maps invoke errors onto structured results: a timeout or cancellation
 /// is `UnknownOutcome` (the call may have run server-side), an
 /// out-of-catalog name is `Rejected`, unavailability and protocol
-/// failures are `Failed` with a model-readable message.
+/// failures are `Failed` with a model-readable message. Since Slice 13
+/// (Decision 6) the bridge returns the recorded result only — what an
+/// `UnknownOutcome` result does next is the caller's configuration (the
+/// executor resolves it; a standalone bridge consumer chooses).
 ///
 /// Snapshot semantics: the [`ToolDefinition`] is fixed at construction —
 /// listing changes after bridging are not picked up. For live catalogs
@@ -46,7 +49,7 @@ impl Tool for ToolBridge {
         self.definition.clone()
     }
 
-    async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolExecutionOutcome {
+    async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolResultPayload {
         self.execute_with_store(ctx, control, None).await
     }
 
@@ -55,7 +58,7 @@ impl Tool for ToolBridge {
         ctx: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
-    ) -> ToolExecutionOutcome {
+    ) -> ToolResultPayload {
         let payload = ToolCallPayload {
             call_id: ctx.call_id.clone(),
             tool_name: ctx.tool_name.clone(),
@@ -66,8 +69,8 @@ impl Tool for ToolBridge {
             .invoke_with_store(&payload, control, store)
             .await
         {
-            Ok(outcome) => outcome,
-            Err(e) => ToolExecutionOutcome::new(ToolResultPayload {
+            Ok(result) => result,
+            Err(e) => ToolResultPayload {
                 call_id: ctx.call_id.clone(),
                 status: match &e {
                     ToolExecutionError::TimedOut | ToolExecutionError::Cancelled => {
@@ -80,7 +83,7 @@ impl Tool for ToolBridge {
                 },
                 output: ToolOutput::new(serde_json::json!({ "error": e.to_string() })),
                 media: Vec::new(),
-            }),
+            },
         }
     }
 }
@@ -110,15 +113,15 @@ mod tests {
             &self,
             call: &ToolCallPayload,
             _control: &CallControl,
-        ) -> Result<ToolExecutionOutcome, ToolExecutionError> {
+        ) -> Result<ToolResultPayload, ToolExecutionError> {
             match &self.0 {
                 Some(e) => Err(e.clone()),
-                None => Ok(ToolExecutionOutcome::new(ToolResultPayload {
+                None => Ok(ToolResultPayload {
                     call_id: call.call_id.clone(),
                     status: ToolResultStatus::Succeeded,
                     output: ToolOutput::new(call.arguments.clone()),
                     media: Vec::new(),
-                })),
+                }),
             }
         }
     }
@@ -144,9 +147,9 @@ mod tests {
 
     #[tokio::test]
     async fn success_passes_through() {
-        let outcome = bridge(None).execute(&call(), &ctrl()).await;
-        assert_eq!(outcome.result.status, ToolResultStatus::Succeeded);
-        assert_eq!(outcome.result.output.content, serde_json::json!({"k": "v"}));
+        let result = bridge(None).execute(&call(), &ctrl()).await;
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        assert_eq!(result.output.content, serde_json::json!({"k": "v"}));
     }
 
     #[tokio::test]
@@ -174,11 +177,10 @@ mod tests {
             ),
         ];
         for (error, expected) in cases {
-            let outcome = bridge(Some(error.clone())).execute(&call(), &ctrl()).await;
-            assert_eq!(outcome.result.status, expected, "mapping for {error}");
+            let result = bridge(Some(error.clone())).execute(&call(), &ctrl()).await;
+            assert_eq!(result.status, expected, "mapping for {error}");
             assert!(
-                outcome
-                    .result
+                result
                     .output
                     .content
                     .to_string()

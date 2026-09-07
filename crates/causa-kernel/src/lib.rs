@@ -67,7 +67,6 @@ pub use ports::gateway::{
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDefinition,
-    ToolExecutionOutcome, ToolOutputLimits, UnknownOutcomePolicy,
 };
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.

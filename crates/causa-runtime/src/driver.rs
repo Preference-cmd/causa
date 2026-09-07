@@ -5,9 +5,11 @@
 //! here, one layer up.
 use crate::budget::FramePolicy;
 use crate::config::TurnRunOptions;
+use crate::config::UnknownOutcomePolicy;
 use crate::control::RunControl;
 use crate::conversation::{ConversationError, ConversationState, SealedResult};
 use crate::executor::ToolExecutor;
+use crate::hook::UnknownDecision;
 use crate::interaction::BatchDecision;
 use causa_kernel::AttemptNumber;
 use causa_kernel::ModelGateway;
@@ -15,12 +17,12 @@ use causa_kernel::ModelRequest;
 use causa_kernel::ModelStopReason;
 use causa_kernel::TextPayload;
 use causa_kernel::ToolCallPayload;
+use causa_kernel::ToolResultPayload;
 use causa_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
 use causa_kernel::{AttemptControl, ModelUsage, StreamDelta};
 use causa_kernel::{BlockContent, merged_frame};
 use causa_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
 use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
-use causa_kernel::{ToolExecutionOutcome, UnknownOutcomePolicy};
 use causa_kernel::{TurnContext, TurnSnapshot};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -259,22 +261,179 @@ pub enum TurnResult {
 }
 
 /// The hook-prepared work an approval pause checkpoints (Slice 6.5,
-/// Decision 7): the hook has already filtered / rejected / rewritten the
-/// model-emitted batch, and those decisions cannot be re-derived on
-/// resume — they are saved, not re-run. The original payloads remain
-/// derivable from the committed tool-call blocks (fact identity); the
-/// independent rewrite and rejections live here as serializable data.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// reworked by Slice 13 Decision 7): the hook has already filtered /
+/// rejected / rewritten the model-emitted batch, and those decisions
+/// cannot be re-derived on resume — they are saved, not re-run. The
+/// original payloads remain derivable from the committed tool-call blocks
+/// (fact identity); the independent rewrite and rejections live here as
+/// serializable data.
+///
+/// Since Decision 6/7 the checkpoint stores recorded results plus the
+/// unknown-outcome actions fixed at pause time, not result envelopes: a
+/// tool's recorded result is a fact, and what an `UnknownOutcome` result
+/// does next is harness configuration. [`unknown_decisions`](Self::unknown_decisions)
+/// must exactly cover the saved results whose status is `UnknownOutcome`
+/// — no extra, missing, or duplicate entries — and a resume may never
+/// recompute them through new configuration.
+///
+/// # Wire compatibility
+///
+/// The serialized shape is unchanged from Slice 6.5: `rejected` is written
+/// as `[{result, policy}]` through a private runtime DTO — the policy is
+/// the fixed decision for `UnknownOutcome` entries and the canonical
+/// `Stop` for every other status (whose policy never participated in
+/// execution). Deserialization reads the same shape (both fields
+/// required), drops the policy of non-unknown entries, and rejects any
+/// decision set that does not exactly cover the saved `UnknownOutcome`
+/// results — earlier formats without prepared work still fail loudly.
 pub struct PreparedApproval {
     /// Calls the hook admitted — arguments possibly rewritten — in model
     /// draft order. These are what still await the host's decision at
     /// resume; the resume decision must cover them exactly once.
     pub awaiting: Vec<ToolCallPayload>,
-    /// Calls the hook rejected. The stored outcomes commit verbatim at
+    /// Calls the hook rejected. The stored results commit verbatim at
     /// resume (with their original call ids) and can never be re-decided —
     /// a resume decision touching them is rejected before anything
     /// executes.
-    pub rejected: Vec<ToolExecutionOutcome>,
+    pub rejected: Vec<ToolResultPayload>,
+    /// The unknown-outcome actions fixed when the turn paused: exactly one
+    /// entry per saved `UnknownOutcome` result, no more, no fewer. New
+    /// configuration never overrides these on resume.
+    pub unknown_decisions: Vec<UnknownDecision>,
+}
+impl std::fmt::Debug for PreparedApproval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedApproval")
+            .field("awaiting", &self.awaiting.len())
+            .field("rejected", &self.rejected.len())
+            .field("unknown_decisions", &self.unknown_decisions.len())
+            .finish()
+    }
+}
+impl Clone for PreparedApproval {
+    fn clone(&self) -> Self {
+        Self {
+            awaiting: self.awaiting.clone(),
+            rejected: self.rejected.clone(),
+            unknown_decisions: self.unknown_decisions.clone(),
+        }
+    }
+}
+
+/// Private wire shape for one checkpointed rejection: the old
+/// `{result, policy}` envelope. Not part of the public API — the public
+/// in-memory structure separates the recorded result from the saved
+/// action (Decision 6/7).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RejectedWire {
+    result: ToolResultPayload,
+    policy: UnknownOutcomePolicy,
+}
+
+impl serde::Serialize for PreparedApproval {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let rejected: Vec<RejectedWire> = self
+            .rejected
+            .iter()
+            .map(|result| RejectedWire {
+                result: result.clone(),
+                policy: if result.status == ToolResultStatus::UnknownOutcome {
+                    // Exact cover is an invariant; fall back to the default
+                    // action only to keep serialization total.
+                    self.unknown_decisions
+                        .iter()
+                        .find(|d| d.call_id == result.call_id)
+                        .map(|d| d.policy)
+                        .unwrap_or_default()
+                } else {
+                    // The policy of a decided result never participated in
+                    // execution; the canonical Stop keeps the old shape.
+                    UnknownOutcomePolicy::Stop
+                },
+            })
+            .collect();
+        #[derive(serde::Serialize)]
+        struct Wire<'a> {
+            awaiting: &'a Vec<ToolCallPayload>,
+            rejected: Vec<RejectedWire>,
+        }
+        Wire {
+            awaiting: &self.awaiting,
+            rejected,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PreparedApproval {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Wire {
+            awaiting: Vec<ToolCallPayload>,
+            rejected: Vec<RejectedWire>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let mut rejected = Vec::with_capacity(wire.rejected.len());
+        let mut unknown_decisions: Vec<UnknownDecision> = Vec::new();
+        for entry in wire.rejected {
+            if entry.result.status == ToolResultStatus::UnknownOutcome {
+                // The saved action rides the old policy field; a missing
+                // one is a hard deserialize error, never a silent Stop.
+                unknown_decisions.push(UnknownDecision {
+                    call_id: entry.result.call_id.clone(),
+                    policy: entry.policy,
+                });
+            }
+            // Non-unknown entries' policy was never consumed by the
+            // reference driver; it is dropped on load and re-canonicalized
+            // to Stop on write.
+            rejected.push(entry.result);
+        }
+        // Exact cover: every saved UnknownOutcome has exactly one decision,
+        // and no decision points at a decided (non-unknown) result.
+        let unknown_ids: std::collections::HashSet<&ToolCallId> = rejected
+            .iter()
+            .filter(|r| r.status == ToolResultStatus::UnknownOutcome)
+            .map(|r| &r.call_id)
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for d in &unknown_decisions {
+            if !unknown_ids.contains(&d.call_id) {
+                return Err(serde::de::Error::custom(format!(
+                    "checkpoint decision for call {:?} does not match a saved UnknownOutcome result",
+                    d.call_id.0
+                )));
+            }
+            if !seen.insert(&d.call_id) {
+                return Err(serde::de::Error::custom(format!(
+                    "checkpoint has conflicting decisions for call {:?}",
+                    d.call_id.0
+                )));
+            }
+        }
+        if seen.len() != unknown_ids.len() {
+            return Err(serde::de::Error::custom(
+                "checkpoint is missing the unknown-outcome decision for a saved result",
+            ));
+        }
+        // A call id appearing twice among the results would already be a
+        // fact-pairing error downstream; reject it here where the wire is
+        // at fault.
+        let mut ids = std::collections::HashSet::new();
+        for r in &rejected {
+            if !ids.insert(&r.call_id) {
+                return Err(serde::de::Error::custom(format!(
+                    "checkpoint saves call {:?} twice",
+                    r.call_id.0
+                )));
+            }
+        }
+        Ok(Self {
+            awaiting: wire.awaiting,
+            rejected,
+            unknown_decisions,
+        })
+    }
 }
 
 /// Where a turn paused. The reference driver currently emits only the
@@ -415,10 +574,47 @@ pub(crate) struct ResumeState {
 }
 
 /// What a batch dispatch feeds the executor: live payloads, or
-/// pre-computed outcomes (the host's `BatchDecision::Reject` copy).
+/// pre-computed results (hook rejections and the host's
+/// `BatchDecision::Reject` copy).
 enum BatchWork {
     Execute(Vec<ToolCallPayload>),
-    Precomputed(Vec<ToolExecutionOutcome>),
+    Precomputed(Vec<PrecomputedResult>),
+}
+
+/// One pre-computed tool result with its unknown-outcome action when that
+/// action is already fixed — a checkpoint entry, an explicit host
+/// decision, or an executed `UnknownOutcome` (resolved by the executed
+/// name at dispatch time). `None` resolves through the turn's
+/// unknown-outcome configuration by the batch's tool name (Decision 6);
+/// results with any other status never consume an action.
+#[derive(Debug, Clone)]
+struct PrecomputedResult {
+    result: ToolResultPayload,
+    fixed_policy: Option<UnknownOutcomePolicy>,
+}
+
+/// Attach explicit host decisions to precomputed results: an
+/// `UnknownOutcome` entry picks up its explicit decision if one is given,
+/// else stays unfixed (resolved by the batch name later). Entries for
+/// non-unknown results are ignored here and rejected by validation.
+fn attach_decisions(
+    results: Vec<ToolResultPayload>,
+    decisions: &[UnknownDecision],
+) -> Vec<PrecomputedResult> {
+    results
+        .into_iter()
+        .map(|result| PrecomputedResult {
+            fixed_policy: if result.status == ToolResultStatus::UnknownOutcome {
+                decisions
+                    .iter()
+                    .find(|d| d.call_id == result.call_id)
+                    .map(|d| d.policy)
+            } else {
+                None
+            },
+            result,
+        })
+        .collect()
 }
 
 /// The reference driver over the kernel's ports: frame materialization,
@@ -904,8 +1100,30 @@ impl TurnRunner {
                     // unanswered tool calls of this turn, in block order —
                     // the model-emitted draft order the results pair into.
                     let draft = unanswered_tool_calls(active);
-                    let mut rejected = prepared.rejected;
-                    rejected.extend(decision.rejected);
+                    // Decision 7 rule 3: checkpoint entries commit verbatim
+                    // with their fixed actions; only the awaiting calls are
+                    // newly decided. New precomputed rejections use the
+                    // host's explicit entries, else resolve through the
+                    // current configuration by the batch name.
+                    let PreparedApproval {
+                        rejected: saved_rejected,
+                        unknown_decisions: saved_decisions,
+                        ..
+                    } = prepared;
+                    let mut rejected: Vec<PrecomputedResult> = saved_rejected
+                        .into_iter()
+                        .map(|result| PrecomputedResult {
+                            fixed_policy: saved_decisions
+                                .iter()
+                                .find(|d| d.call_id == result.call_id)
+                                .map(|d| d.policy),
+                            result,
+                        })
+                        .collect();
+                    rejected.extend(attach_decisions(
+                        decision.rejected,
+                        &decision.unknown_decisions,
+                    ));
                     if let Err(cause) = self
                         .run_batch(
                             active,
@@ -1234,9 +1452,10 @@ impl TurnRunner {
                     // defaults to `PassthroughHook` (no filter applied — opt in
                     // via `with_hook`). `FilterChain` plugs in via `with_hook`,
                     // implementing `ToolUseHook` directly.
-                    let (hook_to_exec, hook_rejected): (
+                    let (hook_to_exec, hook_rejected, hook_decisions): (
                         Vec<ToolCallPayload>,
-                        Vec<ToolExecutionOutcome>,
+                        Vec<ToolResultPayload>,
+                        Vec<UnknownDecision>,
                     ) = {
                         let call_control = ctrl
                             .for_attempt(options.policy.attempt_timeout)
@@ -1254,7 +1473,11 @@ impl TurnRunner {
                             control: &call_control,
                         };
                         let outcome = self.hook.apply(call_payloads.clone(), &hook_ctx).await;
-                        (outcome.to_execute, outcome.rejected)
+                        (
+                            outcome.to_execute,
+                            outcome.rejected,
+                            outcome.unknown_decisions,
+                        )
                     };
                     // Slice 7: the second gate — the host's batch decision.
                     // Default `Proceed`; `Pause` suspends the turn with the
@@ -1269,6 +1492,35 @@ impl TurnRunner {
                             // re-admits a rejected call. The outcome's
                             // context is the single fact source — no
                             // duplicated snapshot rides on the variant.
+                            // Decision 7 rule 2: the checkpoint fixes the
+                            // actual action for every prepared
+                            // UnknownOutcome — the explicit hook entry if
+                            // given, else the turn's current configuration
+                            // resolved by the batch's tool name. A resume
+                            // can never recompute these.
+                            let draft_names: HashMap<ToolCallId, String> = call_payloads
+                                .iter()
+                                .map(|p| (p.call_id.clone(), p.tool_name.clone()))
+                                .collect();
+                            let unknown_decisions = hook_rejected
+                                .iter()
+                                .filter(|r| r.status == ToolResultStatus::UnknownOutcome)
+                                .map(|r| UnknownDecision {
+                                    call_id: r.call_id.clone(),
+                                    policy: hook_decisions
+                                        .iter()
+                                        .find(|d| d.call_id == r.call_id)
+                                        .map(|d| d.policy)
+                                        .unwrap_or_else(|| {
+                                            options.policy.unknown_outcome.resolve(
+                                                draft_names
+                                                    .get(&r.call_id)
+                                                    .map(String::as_str)
+                                                    .unwrap_or(""),
+                                            )
+                                        }),
+                                })
+                                .collect();
                             return (
                                 TurnResult::Paused {
                                     continuation: Continuation {
@@ -1276,6 +1528,7 @@ impl TurnRunner {
                                             prepared: PreparedApproval {
                                                 awaiting: hook_to_exec,
                                                 rejected: hook_rejected,
+                                                unknown_decisions,
                                             },
                                             deadline,
                                         },
@@ -1294,7 +1547,7 @@ impl TurnRunner {
                                     active,
                                     &call_payloads,
                                     BatchWork::Execute(hook_to_exec),
-                                    hook_rejected,
+                                    attach_decisions(hook_rejected, &hook_decisions),
                                     options,
                                     ctrl,
                                     round,
@@ -1315,7 +1568,7 @@ impl TurnRunner {
                                     active,
                                     &call_payloads,
                                     BatchWork::Execute(rewritten),
-                                    hook_rejected,
+                                    attach_decisions(hook_rejected, &hook_decisions),
                                     options,
                                     ctrl,
                                     round,
@@ -1330,13 +1583,19 @@ impl TurnRunner {
                                 );
                             }
                         }
-                        BatchDecision::Reject { results } => {
+                        BatchDecision::Reject {
+                            results,
+                            unknown_decisions,
+                        } => {
                             if let Err(cause) = self
                                 .run_batch(
                                     active,
                                     &call_payloads,
-                                    BatchWork::Precomputed(results),
-                                    hook_rejected,
+                                    BatchWork::Precomputed(attach_decisions(
+                                        results,
+                                        &unknown_decisions,
+                                    )),
+                                    attach_decisions(hook_rejected, &hook_decisions),
                                     options,
                                     ctrl,
                                     round,
@@ -1377,7 +1636,7 @@ impl TurnRunner {
         active: &mut TurnContext,
         draft_order: &[ToolCallPayload],
         work: BatchWork,
-        mut rejected: Vec<ToolExecutionOutcome>,
+        mut rejected: Vec<PrecomputedResult>,
         options: &TurnRunOptions,
         ctrl: &RunControl,
         round: u32,
@@ -1393,9 +1652,7 @@ impl TurnRunner {
         let mut covered: HashSet<ToolCallId> = HashSet::new();
         let work_ids: Vec<&ToolCallId> = match &work {
             BatchWork::Execute(payloads) => payloads.iter().map(|p| &p.call_id).collect(),
-            BatchWork::Precomputed(outcomes) => {
-                outcomes.iter().map(|o| &o.result.call_id).collect()
-            }
+            BatchWork::Precomputed(pre) => pre.iter().map(|o| &o.result.call_id).collect(),
         };
         for call_id in work_ids
             .into_iter()
@@ -1430,35 +1687,59 @@ impl TurnRunner {
         // stream (each future is yielded as it finishes), so no
         // shared log is needed
         let (mut results, completion_order, call_durations): (
-            Vec<ToolExecutionOutcome>,
+            Vec<PrecomputedResult>,
             Vec<ToolCallId>,
             HashMap<ToolCallId, u64>,
         ) = match work {
             BatchWork::Execute(to_exec) => {
                 let futs = to_exec.into_iter().map(|payload| {
+                    let unknown_outcome = options.policy.unknown_outcome.clone();
                     let cc = ctrl
                         .for_attempt(options.policy.attempt_timeout)
                         .for_call(options.execution.call_timeout);
                     let store = options.execution.artifact_store.clone();
                     let tc = options.execution.token_counter.clone();
-                    let limits = options.execution.tool_output_limits.clone();
+                    // Decision 8: the effective per-call output limit is
+                    // resolved by the ACTUAL executed name (post hook /
+                    // rewrite / resume decision) before dispatch; the
+                    // executor never consults the tool object.
+                    let limits = options
+                        .execution
+                        .tool_output_limits_overrides
+                        .get(&payload.tool_name)
+                        .copied()
+                        .unwrap_or(options.execution.tool_output_limits);
+                    // Decision 6: an executed UnknownOutcome's action
+                    // resolves by the executed name, not the draft's.
+                    let name = payload.tool_name.clone();
                     let exec = self.executor.clone();
                     async move {
                         let t0 = Instant::now();
-                        let out = exec
+                        let result = exec
                             .execute_with_limits(payload, cc, store, tc, limits)
                             .await;
-                        (out, millis_since(t0))
+                        let fixed_policy = if result.status == ToolResultStatus::UnknownOutcome {
+                            Some(unknown_outcome.resolve(&name))
+                        } else {
+                            None
+                        };
+                        (
+                            PrecomputedResult {
+                                result,
+                                fixed_policy,
+                            },
+                            millis_since(t0),
+                        )
                     }
                 });
                 let mut stream = futures_util::stream::FuturesUnordered::from_iter(futs);
                 let mut results = Vec::with_capacity(stream.len());
                 let mut completion_order = Vec::with_capacity(stream.len());
                 let mut call_durations: HashMap<ToolCallId, u64> = HashMap::new();
-                while let Some((out, duration_ms)) = stream.next().await {
-                    completion_order.push(out.result.call_id.clone());
-                    call_durations.insert(out.result.call_id.clone(), duration_ms);
-                    results.push(out);
+                while let Some((pre, duration_ms)) = stream.next().await {
+                    completion_order.push(pre.result.call_id.clone());
+                    call_durations.insert(pre.result.call_id.clone(), duration_ms);
+                    results.push(pre);
                 }
                 (results, completion_order, call_durations)
             }
@@ -1497,6 +1778,26 @@ impl TurnRunner {
             .iter()
             .map(|p| (p.call_id.clone(), p.tool_name.clone()))
             .collect();
+        // Decision 6: resolve every remaining unknown-outcome action through
+        // the turn policy, keyed by the batch's tool name for the call
+        // (precomputed entries were never executed, so the batch name is
+        // their actual name). Explicit / checkpoint-fixed actions win.
+        for pre in &mut results {
+            if pre.result.status == ToolResultStatus::UnknownOutcome && pre.fixed_policy.is_none() {
+                pre.fixed_policy = Some(
+                    options.policy.unknown_outcome.resolve(
+                        tool_names
+                            .get(&pre.result.call_id)
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                    ),
+                );
+            }
+        }
+        // Every UnknownOutcome now carries exactly one resolved action.
+        debug_assert!(results.iter().all(|pre| {
+            pre.result.status != ToolResultStatus::UnknownOutcome || pre.fixed_policy.is_some()
+        }));
         // attach batch trace before committing so even a
         // RunnerInvariantViolation keeps the observations
         if let Some(rt) = trace
@@ -1507,37 +1808,43 @@ impl TurnRunner {
             rt.tool_batch = Some(ToolBatchTrace {
                 calls: results
                     .iter()
-                    .map(|r| ToolCallTrace {
-                        call_id: r.result.call_id.clone(),
+                    .map(|pre| ToolCallTrace {
+                        call_id: pre.result.call_id.clone(),
                         tool_name: tool_names
-                            .get(&r.result.call_id)
+                            .get(&pre.result.call_id)
                             .cloned()
                             .unwrap_or_default(),
                         position: order_index
-                            .get(&r.result.call_id)
+                            .get(&pre.result.call_id)
                             .copied()
                             .unwrap_or_default(),
-                        status: r.result.status.clone(),
-                        truncation: r.result.output.truncation,
-                        artifact: r.result.output.artifact.clone(),
-                        duration_ms: call_durations.get(&r.result.call_id).copied().unwrap_or(0),
+                        status: pre.result.status.clone(),
+                        truncation: pre.result.output.truncation,
+                        artifact: pre.result.output.artifact.clone(),
+                        duration_ms: call_durations
+                            .get(&pre.result.call_id)
+                            .copied()
+                            .unwrap_or(0),
                     })
                     .collect(),
                 completion_order,
             });
         }
         if let Err(e) =
-            active.append_tool_results(results.iter().map(|o| o.result.clone()).collect())
+            active.append_tool_results(results.iter().map(|pre| pre.result.clone()).collect())
         {
             return Err(TurnInterruption::RunnerInvariantViolation {
                 reason: e.to_string(),
             });
         }
-        // UnknownOutcome policy: Stop interrupts, Continue proceeds;
-        // parent should_stop is checked at the next loop top.
-        if let Some(uu) = results.iter().find(|r| {
-            r.result.status == ToolResultStatus::UnknownOutcome
-                && r.policy == UnknownOutcomePolicy::Stop
+        // UnknownOutcome action (Decision 6): Stop interrupts after the real
+        // result is committed, Continue proceeds to the next round — it
+        // never re-runs the call, rewrites the result into a success, or
+        // cancels sibling calls; parent should_stop is checked at the next
+        // loop top.
+        if let Some(uu) = results.iter().find(|pre| {
+            pre.result.status == ToolResultStatus::UnknownOutcome
+                && pre.fixed_policy == Some(UnknownOutcomePolicy::Stop)
         }) {
             return Err(TurnInterruption::UnsafeUnknownOutcome {
                 call_id: uu.result.call_id.clone(),
