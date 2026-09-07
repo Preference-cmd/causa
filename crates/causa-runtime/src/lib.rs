@@ -118,7 +118,7 @@ pub use driver::{
     TurnRunner, TurnTrace,
 };
 pub use executor::{ToolExecutor, ToolRegistryError};
-pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
+pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook, UnknownDecision};
 pub use resume::{ResumeRejection, ResumeRequest, resume_turn};
 
 // --- framework policies and projections --------------------------------------
