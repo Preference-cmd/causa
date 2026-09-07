@@ -306,3 +306,131 @@ fn model_stop_reason_serialization_is_stable() {
     let restored: ModelStopReason = serde_json::from_value(v).expect("deserialize");
     assert_eq!(restored, ModelStopReason::EndTurn);
 }
+
+// ---- Slice 13 Decision 7: the {result, policy} checkpoint wire ------------------
+
+use causa_kernel::{ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus};
+use causa_runtime::{UnknownDecision, UnknownOutcomePolicy};
+
+fn unknown_result(call: &str) -> ToolResultPayload {
+    ToolResultPayload {
+        call_id: ToolCallId(call.into()),
+        status: ToolResultStatus::UnknownOutcome,
+        output: ToolOutput::new(json!({"unk": call})),
+        media: Vec::new(),
+    }
+}
+
+fn decided_result(call: &str) -> ToolResultPayload {
+    ToolResultPayload {
+        call_id: ToolCallId(call.into()),
+        status: ToolResultStatus::Rejected,
+        output: ToolOutput::new(json!({"denied": call})),
+        media: Vec::new(),
+    }
+}
+
+/// The old `{result, policy}` envelope: an UnknownOutcome entry writes its
+/// saved decision as the policy, every other status writes the canonical
+/// Stop — and loading restores exactly the saved actions, never a
+/// guessed default.
+#[test]
+fn checkpoint_wire_round_trips_saved_unknown_actions() {
+    let prepared = PreparedApproval {
+        awaiting: vec![],
+        rejected: vec![unknown_result("call-unk"), decided_result("call-rej")],
+        unknown_decisions: vec![UnknownDecision {
+            call_id: ToolCallId("call-unk".into()),
+            policy: UnknownOutcomePolicy::Continue,
+        }],
+    };
+    let value = serde_json::to_value(&prepared).expect("serialize");
+    assert_eq!(value["rejected"][0]["policy"], "Continue");
+    assert_eq!(value["rejected"][1]["policy"], "Stop");
+    let restored: PreparedApproval = serde_json::from_value(value.clone()).expect("deserialize");
+    assert_eq!(
+        restored.unknown_decisions,
+        vec![UnknownDecision {
+            call_id: ToolCallId("call-unk".into()),
+            policy: UnknownOutcomePolicy::Continue,
+        }]
+    );
+    assert_eq!(
+        serde_json::to_value(&restored.rejected).unwrap(),
+        serde_json::to_value(&prepared.rejected).unwrap()
+    );
+    assert_eq!(serde_json::to_value(&restored).unwrap(), value);
+}
+
+/// Broken decision sets are hard deserialize errors — a missing policy on
+/// an UnknownOutcome entry is never guessed into a default Stop, a
+/// duplicated call is refused, and a non-unknown entry's stray Continue
+/// policy is dropped (never consumed) and re-canonicalized to Stop.
+#[test]
+fn checkpoint_wire_rejects_broken_or_ambiguous_decision_sets() {
+    let base = || PreparedApproval {
+        awaiting: vec![],
+        rejected: vec![unknown_result("call-unk"), decided_result("call-rej")],
+        unknown_decisions: vec![UnknownDecision {
+            call_id: ToolCallId("call-unk".into()),
+            policy: UnknownOutcomePolicy::Continue,
+        }],
+    };
+
+    // A saved UnknownOutcome without its policy field: hard error, never
+    // a silent Stop.
+    let mut missing = serde_json::to_value(base()).unwrap();
+    missing["rejected"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("policy");
+    let err =
+        serde_json::from_value::<PreparedApproval>(missing).expect_err("missing policy must fail");
+    assert!(err.to_string().contains("policy"), "{err}");
+
+    // A stray Continue on a decided (non-unknown) entry: loaded, dropped,
+    // and re-canonicalized to Stop on write.
+    let mut stray = serde_json::to_value(base()).unwrap();
+    stray["rejected"][1]["policy"] = json!("Continue");
+    let restored: PreparedApproval = serde_json::from_value(stray).expect("stray policy dropped");
+    assert!(
+        restored
+            .unknown_decisions
+            .iter()
+            .all(|d| d.call_id.0 == "call-unk"),
+        "no decision may come from a non-unknown entry"
+    );
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap()["rejected"][1]["policy"],
+        "Stop"
+    );
+
+    // The same call saved twice among the results: refused.
+    let mut dup = serde_json::to_value(base()).unwrap();
+    let rej = dup["rejected"][1].clone();
+    dup["rejected"].as_array_mut().unwrap().push(rej);
+    let err =
+        serde_json::from_value::<PreparedApproval>(dup).expect_err("duplicate call must fail");
+    assert!(err.to_string().contains("twice"), "{err}");
+
+    // Two UnknownOutcome entries sharing one call id: conflicting
+    // decisions, refused.
+    let conflicting = PreparedApproval {
+        awaiting: vec![],
+        rejected: vec![unknown_result("call-unk"), unknown_result("call-unk")],
+        unknown_decisions: vec![
+            UnknownDecision {
+                call_id: ToolCallId("call-unk".into()),
+                policy: UnknownOutcomePolicy::Stop,
+            },
+            UnknownDecision {
+                call_id: ToolCallId("call-unk".into()),
+                policy: UnknownOutcomePolicy::Continue,
+            },
+        ],
+    };
+    let err =
+        serde_json::from_value::<PreparedApproval>(serde_json::to_value(&conflicting).unwrap())
+            .expect_err("conflicting decisions must fail");
+    assert!(err.to_string().contains("conflicting"), "{err}");
+}

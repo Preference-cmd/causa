@@ -18,10 +18,11 @@ use causa_runtime::{
     BatchDecision, Continuation, ConversationError, ConversationOutcome, ConversationState,
     HookCtx, HookOutcome, ModelRoundTrace, PausePoint, PreparedApproval, ResumeRequest,
     SealedResult, ToolExecutor, ToolUseHook, TurnInteraction, TurnInterruption, TurnOutcome,
-    TurnResult, TurnRunOptions, TurnRunner, TurnTrace, resume_turn,
+    TurnResult, TurnRunOptions, TurnRunner, TurnTrace, UnknownDecision, UnknownOutcomePolicy,
+    resume_turn,
 };
 use common::{
-    EchoTool, RecordingGateway, ctrl, endturn_output, options_with_limits, runner_with,
+    EchoTool, RecordingGateway, ctrl, draft, endturn_output, options_with_limits, runner_with,
     tooluse_calls_output, tooluse_output,
 };
 use serde_json::json;
@@ -1172,4 +1173,202 @@ async fn pending_inputs_are_pulled_at_round_boundaries() {
     );
     // The steering input is a fact the model saw from round 0 on.
     assert!(text_facts(&out.context).contains(&"focus on the config file".to_string()));
+}
+
+// ---- Decision 7: saved unknown actions survive resumes (Slice 13) ---------------
+
+/// Rejects `unk` with a precomputed UnknownOutcome result pinned to
+/// Continue and admits every other call.
+struct PinUnknownContinueHook;
+#[async_trait::async_trait]
+impl ToolUseHook for PinUnknownContinueHook {
+    async fn apply(&self, calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
+        let mut outcome = HookOutcome::passthrough(Vec::new());
+        let mut kept = Vec::new();
+        for payload in calls {
+            if payload.tool_name == "unk" {
+                outcome.rejected.push(ToolResultPayload {
+                    call_id: payload.call_id.clone(),
+                    status: ToolResultStatus::UnknownOutcome,
+                    output: ToolOutput::new(json!({"precomputed": "unk"})),
+                    media: Vec::new(),
+                });
+            } else {
+                kept.push(payload);
+            }
+        }
+        outcome.to_execute = kept;
+        let id = outcome.rejected[0].call_id.clone();
+        outcome.with_unknown_decision(id, UnknownOutcomePolicy::Continue)
+    }
+}
+
+/// The checkpoint fixes the hook's explicit Continue; resuming under a
+/// configuration that says Stop for `unk` must NOT recompute the saved
+/// action — the result commits verbatim and the turn continues.
+#[tokio::test]
+async fn saved_unknown_action_survives_a_changed_config_on_resume() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_calls_output(
+            "two calls",
+            vec![draft("unk", json!({})), draft("echo", json!({}))],
+        )),
+        Ok(endturn_output("done")),
+    ]);
+    let runner = TurnRunner::with_hook(
+        gateway,
+        Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)])),
+        Arc::new(PinUnknownContinueHook),
+    );
+    let mut ctx = TurnContext::new(TurnId::new("t1"));
+    ctx.append_input(TextPayload::new("hi"), "user").unwrap();
+    let out = runner.run(ctx, pause_options(), ctrl()).await;
+    assert!(matches!(out.result, TurnResult::Paused { .. }));
+    let (awaiting, saved) = match &out.result {
+        TurnResult::Paused { continuation } => match &continuation.pause_point {
+            PausePoint::AwaitingApproval { prepared, .. } => (
+                prepared.awaiting.clone(),
+                prepared.unknown_decisions.clone(),
+            ),
+            other => panic!("expected approval pause, got {other:?}"),
+        },
+        other => panic!("expected Paused, got {other:?}"),
+    };
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].policy, UnknownOutcomePolicy::Continue);
+    assert_eq!(awaiting.len(), 1);
+
+    // A changed configuration that disagrees with the saved action.
+    let mut resume_options = plain_options(); // default Stop
+    resume_options
+        .policy
+        .unknown_outcome
+        .overrides
+        .insert("unk".into(), UnknownOutcomePolicy::Stop);
+    let resumed = runner
+        .resume(
+            out,
+            ResumeRequest {
+                decision: approve(awaiting),
+                inject: vec![],
+            },
+            resume_options,
+            ctrl(),
+        )
+        .await
+        .expect("valid resume");
+    assert!(matches!(resumed.result, TurnResult::Completed { .. }));
+    let results = result_facts(&resumed.context);
+    let unknown = results
+        .iter()
+        .find(|r| r.call_id == saved[0].call_id)
+        .expect("saved unknown result committed");
+    assert_eq!(unknown.status, ToolResultStatus::UnknownOutcome);
+    assert_eq!(unknown.output.content, json!({"precomputed": "unk"}));
+    // The awaiting sibling executed under the new inputs.
+    assert!(
+        results
+            .iter()
+            .any(|r| r.status == ToolResultStatus::Succeeded)
+    );
+}
+
+/// Pins in a resume decision may only point at that decision's own
+/// precomputed UnknownOutcome results — foreign ids, duplicates, and
+/// pins on decided (non-unknown) results are rejected before anything
+/// executes, with the paused material returned untouched.
+#[tokio::test]
+async fn resume_rejects_illegal_unknown_decision_pins() {
+    // A pin targeting `echo_id` with the given rejected status must be
+    // refused, leaving the material as paused (open, unsealed, no
+    // results committed). Each attempt gets a fresh pause.
+    let attempt = |echo_id: ToolCallId,
+                   rejected_status: ToolResultStatus,
+                   pins: Vec<UnknownDecision>,
+                   expect: &'static str| async move {
+        let (runner, _gw) = paused_runner();
+        let out = run_to_pause(&runner).await;
+        let decision = HookOutcome {
+            to_execute: vec![],
+            rejected: vec![ToolResultPayload {
+                call_id: echo_id,
+                status: rejected_status,
+                output: ToolOutput::new(json!({"operator": "decided"})),
+                media: Vec::new(),
+            }],
+            unknown_decisions: pins,
+        };
+        let rejection = runner
+            .resume(
+                out,
+                ResumeRequest {
+                    decision: Some(decision),
+                    inject: vec![],
+                },
+                plain_options(),
+                ctrl(),
+            )
+            .await
+            .expect_err("illegal pin must reject the resume");
+        assert!(rejection.reason.contains(expect), "{}", rejection.reason);
+        // The material comes back exactly as paused.
+        assert!(matches!(
+            rejection.outcome.result,
+            TurnResult::Paused { .. }
+        ));
+        assert!(!rejection.outcome.context.is_sealed());
+        assert!(result_facts(&rejection.outcome.context).is_empty());
+    };
+
+    // Call ids are deterministic for identical pauses (kernel-generated),
+    // so one fresh pause supplies the awaiting id for every attempt.
+    let echo_id = {
+        let (runner, _gw) = paused_runner();
+        let out = run_to_pause(&runner).await;
+        match &out.result {
+            TurnResult::Paused { continuation } => expect_awaiting(continuation)[0].call_id.clone(),
+            other => panic!("expected Paused, got {other:?}"),
+        }
+    };
+
+    // A pin for a call that has no precomputed UnknownOutcome result
+    // (foreign id, but the coverage itself is valid).
+    attempt(
+        echo_id.clone(),
+        ToolResultStatus::UnknownOutcome,
+        vec![UnknownDecision {
+            call_id: ToolCallId("not-in-this-batch".into()),
+            policy: UnknownOutcomePolicy::Stop,
+        }],
+        "no precomputed UnknownOutcome result",
+    )
+    .await;
+    // The same call pinned twice.
+    attempt(
+        echo_id.clone(),
+        ToolResultStatus::UnknownOutcome,
+        vec![
+            UnknownDecision {
+                call_id: echo_id.clone(),
+                policy: UnknownOutcomePolicy::Stop,
+            },
+            UnknownDecision {
+                call_id: echo_id.clone(),
+                policy: UnknownOutcomePolicy::Continue,
+            },
+        ],
+        "more than once",
+    )
+    .await;
+    // A pin on a decided (non-unknown) result.
+    attempt(
+        echo_id,
+        ToolResultStatus::Rejected,
+        vec![UnknownDecision {
+            call_id: ToolCallId("placeholder-must-not-match".into()),
+            policy: UnknownOutcomePolicy::Stop,
+        }],
+        "no precomputed UnknownOutcome result",
+    )
+    .await;
 }
