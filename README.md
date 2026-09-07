@@ -23,7 +23,7 @@ is kernel-only.
 | `causa` | facade over the family |
 | `causa-kernel` | facts + contracts: conversation kernel and ports, no I/O |
 | `causa-protocol` | wire-protocol translation (Anthropic / OpenAI Chat / OpenAI Responses) |
-| `causa-runtime` | reference driver: turn loop, tool dispatch, streaming, pause/resume |
+| `causa-runtime` | reference driver: turn loop, tool dispatch, streaming, pause/resume, unknown-outcome & output-retention config |
 | `causa-provider` | reqwest adapters for the `ModelGateway` port |
 | `causa-extension` | extension adapters (`mcp` feature: MCP client) |
 

@@ -72,7 +72,7 @@
 //! | Tool-use filtering | port object [`HookCtx`] / [`ToolUseHook`], default [`PassthroughHook`] | `hook`, `filter` |
 //! | Token estimation fallback (chars/4) | documented opinion, single home | `defaults::placeholder_token_estimate_value` (crate-internal) |
 //! | Output truncation shape (retained head 60% + tail 40% sized to the declared token budget — notice and JSON-string wrapping measured, notice-only floor at tiny budgets; artifact spill; content replaced by a JSON string; `Truncation::Middle` marker) | documented opinion | `executor::ToolExecutor::execute_with_limits` |
-//! | Unknown-outcome policy (`Stop` unless the trusted tool declares otherwise) | port vocabulary default | kernel `UnknownOutcomePolicy` |
+//! | Unknown-outcome continuation (default `Stop`, per-executed-name overrides, explicit per-call host decisions) | config object [`UnknownOutcomeConfig`] + checkpoint [`UnknownDecision`] data | `config`, `hook`, `driver` |
 //! | Batch semantics (dedup-then-parallel, per-call panic isolation → `Failed`, call-deadline backstop → `UnknownOutcome`) | documented opinion | `executor` |
 //!
 //! Anything not in this table is facts, not policy.

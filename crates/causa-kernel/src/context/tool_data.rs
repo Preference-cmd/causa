@@ -56,7 +56,8 @@ pub enum ToolResultStatus {
     /// The invocation exceeded its time budget before producing an outcome.
     TimedOut,
     /// No outcome was observed (e.g. the call-deadline backstop fired);
-    /// turn treatment is governed by the tool's `UnknownOutcomePolicy`.
+    /// whether the turn continues is the harness's unknown-outcome
+    /// configuration, not tool vocabulary (Slice 13).
     UnknownOutcome,
 }
 

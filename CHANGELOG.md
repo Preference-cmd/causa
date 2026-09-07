@@ -109,6 +109,33 @@ Planned as **0.1.0** — the release gate is functional completeness
   crate docs state the four optional usage paths (reference execution,
   standalone tool execution via `ToolExecutor::execute_with_limits`,
   reference session, observation).
+- **Tool results split from continuation actions and host limits (Slice
+  13)**: a shared `Tool::execute` / `execute_with_store` now returns the
+  recorded `ToolResultPayload` only, and `DynamicToolSource::invoke` /
+  `invoke_with_store` return `Result<ToolResultPayload,
+  ToolExecutionError>` — what an `UnknownOutcome` result does next and
+  how much output to retain are reference-harness configuration, not
+  declarations on the capability. The action lives in
+  `TurnPolicy.unknown_outcome` (`UnknownOutcomeConfig`: a `Stop` default
+  plus per-executed-name overrides — the name after hook / rewrite /
+  resume decisions, full namespace for dynamic tools, never the draft's
+  name or a value read out of a result body); results always commit
+  first, `Stop` interrupts afterwards, `Continue` only allows the next
+  round and never re-runs a call, rewrites it into a success, or cancels
+  siblings. Retention lives in `ExecutionOptions`
+  (`tool_output_limits` fallback plus `tool_output_limits_overrides` —
+  the explicit override is the chosen limit even when larger than the
+  fallback; the executor no longer reads tool declarations).
+  `HookOutcome.rejected`, `BatchDecision::Reject.results`, and
+  `PreparedApproval.rejected` carry `ToolResultPayload`s plus per-call
+  `UnknownDecision` entries for `UnknownOutcome` results: new host
+  inputs may omit entries (resolved by configuration), while a
+  checkpoint fixes exactly one action per saved `UnknownOutcome` and
+  resume validation refuses foreign, duplicate, or non-covering
+  decision sets before anything executes. The continuation's serialized
+  shape is unchanged — a private runtime DTO writes and reads the old
+  `{result, policy}` entries (fixed action for unknown entries,
+  canonical `Stop` otherwise), so existing pause material round-trips.
 
 ### Removed
 
@@ -124,6 +151,17 @@ Planned as **0.1.0** — the release gate is functional completeness
   `defaults` module is private now; the chars/4 fallback keeps its
   algorithm unchanged as a crate-internal function, and the unused
   `placeholder_token_estimate` blocks wrapper is gone.
+- Tool-side action and retention declarations (Slice 13): the kernel's
+  `ToolExecutionOutcome` envelope, `UnknownOutcomePolicy`, and
+  `ToolOutputLimits` leave the kernel's public interface, and
+  `Tool::unknown_outcome_policy` / `Tool::output_limits` are gone —
+  hosts migrating a tool that declared `Continue` place an entry in
+  `TurnPolicy.unknown_outcome.overrides`, and a tool that declared
+  output limits gets an `ExecutionOptions.tool_output_limits_overrides`
+  entry (same truncation algorithm and artifact spill as before; the
+  default remains no truncation). `UnknownOutcomePolicy`,
+  `UnknownOutcomeConfig`, `ToolOutputLimits`, and `UnknownDecision` are
+  root-exported by `causa-runtime`.
 
 ### Fixed
 

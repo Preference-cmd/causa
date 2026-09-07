@@ -26,9 +26,10 @@ pub trait DynamicToolSource: Send + Sync {
 
     /// Change signal for executor-side caching: bump whenever the tool
     /// listing may have changed (e.g. MCP `tools/list_changed`). The
-    /// executor re-lists only when the observed value differs; a source
-    /// without change notifications can keep the default (its listing is
-    /// then refreshed on every surface assembly — or the host caches).
+    /// executor caches the listing keyed by this value — a source whose
+    /// observed version matches the cache costs no re-list, and a source
+    /// without change notifications (the `0` default) is therefore listed
+    /// once and served from the cache until it bumps.
     fn version(&self) -> u64 {
         0
     }
