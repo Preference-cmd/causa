@@ -183,3 +183,8 @@ Planned as **0.1.0** — the release gate is functional completeness
   boundary (first model phase keeps the host-declared baseline), so
   dynamic-catalog changes made during a turn reach the next model
   request; retries within a round reuse the round's snapshot.
+- Retry backoff now respects the turn deadline: the inter-attempt wait
+  is capped at the remaining deadline, the stop guard is re-checked
+  before each further attempt, and a retry loop that gives up after the
+  deadline has passed ends the turn as `TurnDeadlineExceeded` (matching
+  the round-boundary check) instead of the last attempt's error kind.

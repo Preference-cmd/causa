@@ -47,4 +47,11 @@ impl RunControl {
             effective_deadline(self.turn_deadline, attempt_timeout),
         )
     }
+    /// Time left until the turn deadline, `Some(0)` once it has passed —
+    /// for driver-owned waits (retry backoff) that must not outlive the
+    /// turn.
+    pub fn remaining_turn_time(&self) -> Option<Duration> {
+        self.turn_deadline
+            .map(|d| d.saturating_duration_since(Instant::now()))
+    }
 }

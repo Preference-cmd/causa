@@ -67,7 +67,10 @@ pub enum TurnInterruption {
     /// retry backoff).
     ExplicitCancellation,
     /// The turn deadline carried by `RunControl` passed (checked at every
-    /// loop top).
+    /// loop top; retry backoff caps its wait at the remaining deadline and
+    /// re-checks before each attempt, and a retry loop that gives up after
+    /// the deadline has passed ends here rather than with the last
+    /// attempt's error kind).
     TurnDeadlineExceeded,
     /// Uniform carrier for terminal model-call failures: retry exhaustion
     /// and non-retryable kinds (Permanent / InvalidRequest / UnknownOutcome)
@@ -1309,11 +1312,18 @@ impl TurnRunner {
                                 duration_ms: millis_since(attempt_started),
                             });
                             if retryable && attempt <= options.policy.retry.max_retries {
-                                // Cancellation-aware backoff: sleep between
-                                // attempts, racing the shared token so a cancel
-                                // lands immediately instead of after the wait.
+                                // Cancellation- and deadline-aware backoff:
+                                // sleep between attempts, racing the shared
+                                // token so a cancel lands immediately instead
+                                // of after the wait, and capping the wait at
+                                // the remaining turn deadline so the driver
+                                // never holds the turn hostage in its own
+                                // backoff.
                                 let delay = options.policy.retry.backoff_delay(attempt + 1);
-                                if !delay.is_zero() {
+                                let capped = ctrl
+                                    .remaining_turn_time()
+                                    .map_or(delay, |remaining| delay.min(remaining));
+                                if !capped.is_zero() {
                                     tokio::select! {
                                         biased;
                                         _ = attempt_ctrl.cancellation_token().cancelled() => {
@@ -1322,8 +1332,27 @@ impl TurnRunner {
                                                 "cancelled during retry backoff",
                                             ));
                                         }
-                                        _ = tokio::time::sleep(delay) => {}
+                                        _ = tokio::time::sleep(capped) => {}
                                     }
+                                }
+                                // Stop guard before spending another attempt:
+                                // a cancel or a deadline that landed during the
+                                // backoff (or the previous attempt) ends the
+                                // loop here. The outer mapping attributes the
+                                // turn's end to `TurnDeadlineExceeded` whenever
+                                // the deadline has passed, so the terminal
+                                // reason matches the round-boundary check.
+                                if ctrl.should_stop() {
+                                    if ctrl.is_cancelled() {
+                                        break Err(ModelInvokeError::new(
+                                            ModelInvokeErrorKind::Cancelled,
+                                            "cancelled during retry backoff",
+                                        ));
+                                    }
+                                    break Err(ModelInvokeError::new(
+                                        ModelInvokeErrorKind::TimedOut,
+                                        "turn deadline passed during retry backoff",
+                                    ));
                                 }
                                 attempt += 1;
                                 continue;
@@ -1343,6 +1372,13 @@ impl TurnRunner {
                         && ctrl.is_cancelled()
                     {
                         TurnInterruption::ExplicitCancellation
+                    } else if ctrl.should_stop() && !ctrl.is_cancelled() {
+                        // The turn deadline passed while the retry loop was
+                        // still working — mid-attempt or during backoff — so
+                        // the turn ends with the same verdict the
+                        // round-boundary check would produce, not with the
+                        // last attempt's error kind.
+                        TurnInterruption::TurnDeadlineExceeded
                     } else {
                         TurnInterruption::RetryExhausted {
                             last_kind: e.kind.clone(),

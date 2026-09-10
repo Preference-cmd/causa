@@ -420,6 +420,44 @@ async fn backoff_sleep_cancels_immediately() {
 }
 
 #[tokio::test]
+async fn backoff_sleep_respects_the_turn_deadline() {
+    let gateway = RecordingStreamingGateway::scripted(vec![Err(ModelInvokeErrorKind::Transient)]);
+    let runner = TurnRunner::new(
+        gateway.clone(),
+        Arc::new(causa_runtime::ToolExecutor::from_vec(vec![])),
+    );
+    // 60s backoff; the turn deadline fires 50ms in. The driver must cap
+    // its backoff wait at the remaining deadline and end the turn instead
+    // of sitting out a wait it owns.
+    let mut options = streaming_options(1, 60_000);
+    options.interaction = Arc::new(NoopInteraction);
+    let started = Instant::now();
+    let out: TurnOutcome = runner
+        .run_streaming(
+            ctx(),
+            options,
+            RunControl::new(
+                CancellationToken::new(),
+                Some(Instant::now() + Duration::from_millis(50)),
+            ),
+        )
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "backoff must not outlive the turn deadline, took {:?}",
+        started.elapsed()
+    );
+    match out.result {
+        TurnResult::Interrupted {
+            cause: causa_runtime::TurnInterruption::TurnDeadlineExceeded,
+        } => {}
+        other => panic!("expected TurnDeadlineExceeded, got {other:?}"),
+    }
+    // The deadline landed during backoff: no second attempt was spent.
+    assert_eq!(gateway.attempts(), 1);
+}
+
+#[tokio::test]
 async fn backoff_base_zero_keeps_immediate_retry_behavior() {
     let gateway = RecordingStreamingGateway::scripted(vec![
         Err(ModelInvokeErrorKind::Transient),
