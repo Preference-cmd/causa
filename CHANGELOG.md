@@ -188,3 +188,8 @@ Planned as **0.1.0** — the release gate is functional completeness
   before each further attempt, and a retry loop that gives up after the
   deadline has passed ends the turn as `TurnDeadlineExceeded` (matching
   the round-boundary check) instead of the last attempt's error kind.
+- `ConversationState` reload validates the whole payload, not only the
+  active slot: committed history entries go through the same closed set
+  as `from_history` (strictly increasing turn sequences, distinct turn
+  ids, kernel block validation), and the active turn's id must not
+  duplicate a committed one. The wire shape is unchanged.

@@ -20,7 +20,7 @@
 //! resumable execution checkpoint.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use causa_kernel::{
     ContextError, ContextFrame, ConversationId, RoundId, TurnContext, TurnSnapshot, merged_frame,
@@ -145,7 +145,7 @@ pub enum ConversationError {
 /// The single active slot, completed-only admission, and commit-time
 /// ordering are this crate's reference-harness defaults — a custom harness
 /// composes the kernel facts differently without touching them.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct ConversationState {
     conversation_id: ConversationId,
     /// Committed history in `TurnSequence` order — entries, not bare
@@ -161,6 +161,84 @@ pub struct ConversationState {
     active_turn: Option<TurnContext>,
     sealed_result: Option<SealedResult>,
     version: ConversationVersion,
+}
+
+/// Wire-shaped field carrier for [`ConversationState`]: the exact derived
+/// shape the `Serialize` derive emits, kept in one place so the manual
+/// `Deserialize` impl below cannot drift from it. The wire shape itself is
+/// unchanged — this only adds load-time validation.
+#[derive(Deserialize)]
+struct ConversationStateFields {
+    conversation_id: ConversationId,
+    history: Vec<HistoryEntry>,
+    #[serde(with = "causa_kernel::option_turn_context_as_snapshot")]
+    active_turn: Option<TurnContext>,
+    sealed_result: Option<SealedResult>,
+    version: ConversationVersion,
+}
+
+impl<'de> Deserialize<'de> for ConversationState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fields = ConversationStateFields::deserialize(deserializer)?;
+        // `begin_turn` never admits an active turn whose id is already in
+        // committed history, so a payload claiming otherwise never came
+        // from this aggregate.
+        if let Some(active) = &fields.active_turn
+            && fields
+                .history
+                .iter()
+                .any(|entry| entry.snapshot.turn_id == active.turn_id())
+        {
+            return Err(serde::de::Error::custom(format!(
+                "active turn {:?} duplicates a committed history id",
+                active.turn_id()
+            )));
+        }
+        // Same closed set as `from_history`: a corrupt or hand-edited
+        // payload is rejected with the strength the in-memory paths
+        // enforce by construction.
+        validate_history(&fields.history).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            conversation_id: fields.conversation_id,
+            history: fields.history,
+            active_turn: fields.active_turn,
+            sealed_result: fields.sealed_result,
+            version: fields.version,
+        })
+    }
+}
+
+/// The validated-replay closed set shared by
+/// [`ConversationState::from_history`] and the aggregate's `Deserialize`
+/// impl: `TurnSequence` strictly increasing (gaps allowed — future
+/// trimming territory), turn ids distinct (duplicate records must not
+/// silently collapse into one history), and every snapshot's blocks pass
+/// the kernel's `TurnContext::validate_blocks`; any violation maps to
+/// `ConversationError::InvalidSequence`.
+fn validate_history(entries: &[HistoryEntry]) -> Result<(), ConversationError> {
+    let mut last_seq = TurnSequence(0);
+    let mut seen_ids = std::collections::HashSet::new();
+    for entry in entries {
+        if entry.sequence < last_seq {
+            return Err(ConversationError::InvalidSequence(format!(
+                "turn_sequence not strictly increasing: {:?}",
+                entry.sequence
+            )));
+        }
+        if !seen_ids.insert(entry.snapshot.turn_id.clone()) {
+            return Err(ConversationError::InvalidSequence(format!(
+                "duplicate turn id in history: {:?}",
+                entry.snapshot.turn_id
+            )));
+        }
+        TurnContext::validate_blocks(&entry.snapshot.turn_id, entry.snapshot.blocks.as_slice())
+            .map_err(|e: ContextError| ConversationError::InvalidSequence(e.to_string()))?;
+        last_seq = TurnSequence(entry.sequence.0 + 1);
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for ConversationState {
@@ -355,11 +433,8 @@ impl ConversationState {
     /// Validated replay path: rebuild a session from committed history
     /// entries. The active slot starts empty (live paths never enter
     /// here); `ConversationVersion` resets to zero (replay is a fresh load —
-    /// cross-persistence version semantics are Slice 5). Validation closed
-    /// set: `sequence` strictly increasing (gaps allowed — future trimming
-    /// territory), turn ids distinct (duplicate records must not silently
-    /// collapse into one history), and every snapshot's blocks pass the
-    /// kernel's `TurnContext::validate_blocks`; any violation maps to
+    /// cross-persistence version semantics are Slice 5). Validation runs
+    /// the shared `validate_history` closed set — any violation maps to
     /// `ConversationError::InvalidSequence` so callers never touch
     /// `ContextError`. `source_version` is accepted as a recorded fact — it
     /// counts fact commits and is not derivable from the blocks.
@@ -367,25 +442,7 @@ impl ConversationState {
         conversation_id: ConversationId,
         entries: Vec<HistoryEntry>,
     ) -> Result<Self, ConversationError> {
-        let mut last_seq = TurnSequence(0);
-        let mut seen_ids = std::collections::HashSet::new();
-        for entry in &entries {
-            if entry.sequence < last_seq {
-                return Err(ConversationError::InvalidSequence(format!(
-                    "turn_sequence not strictly increasing: {:?}",
-                    entry.sequence
-                )));
-            }
-            if !seen_ids.insert(entry.snapshot.turn_id.clone()) {
-                return Err(ConversationError::InvalidSequence(format!(
-                    "duplicate turn id in history: {:?}",
-                    entry.snapshot.turn_id
-                )));
-            }
-            TurnContext::validate_blocks(&entry.snapshot.turn_id, entry.snapshot.blocks.as_slice())
-                .map_err(|e: ContextError| ConversationError::InvalidSequence(e.to_string()))?;
-            last_seq = TurnSequence(entry.sequence.0 + 1);
-        }
+        validate_history(&entries)?;
         Ok(Self {
             conversation_id,
             history: entries,

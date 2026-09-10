@@ -8,7 +8,8 @@
 //!
 //! These tests pin the serde tag discipline: adding a new
 //! TurnInterruption variant or a new ConversationState field must keep
-//! the derive (Serialize, Deserialize) honest.
+//! the wire honest (ConversationState reloads through the validating
+//! manual Deserialize impl, not a bare derive).
 
 mod common;
 
@@ -268,6 +269,49 @@ fn conversation_state_round_trip_with_sealed_active() {
     assert_eq!(active.turn_id(), TurnId::new("a"));
     assert!(active.is_sealed());
     assert_eq!(active.blocks().len(), 1);
+}
+
+#[test]
+fn conversation_state_load_rejects_tampered_block_sequence() {
+    let mut state = ConversationState::new(ConversationId("conv-f7".into()));
+    commit_sealed(&mut state, "t1", SealedResult::Completed);
+
+    let mut value = serde_json::to_value(&state).expect("serialize");
+    serde_json::from_value::<ConversationState>(value.clone())
+        .expect("untampered payload still loads");
+    value["history"][0]["snapshot"]["blocks"][0]["sequence"] = json!(42);
+    let err = serde_json::from_value::<ConversationState>(value)
+        .expect_err("tampered block sequence must not load");
+    assert!(
+        err.to_string().contains("invalid conversation state"),
+        "{err}"
+    );
+}
+
+#[test]
+fn conversation_state_load_rejects_non_monotonic_entry_sequence() {
+    let mut state = ConversationState::new(ConversationId("conv-f7-seq".into()));
+    commit_sealed(&mut state, "t1", SealedResult::Completed);
+    commit_sealed(&mut state, "t2", SealedResult::Completed);
+
+    let mut value = serde_json::to_value(&state).expect("serialize");
+    value["history"][1]["sequence"] = json!(0);
+    let err = serde_json::from_value::<ConversationState>(value)
+        .expect_err("non-monotonic turn sequence must not load");
+    assert!(err.to_string().contains("strictly increasing"), "{err}");
+}
+
+#[test]
+fn conversation_state_load_rejects_active_turn_duplicating_committed_id() {
+    let mut state = ConversationState::new(ConversationId("conv-f7-dup".into()));
+    commit_sealed(&mut state, "t1", SealedResult::Completed);
+    state.begin_turn(TurnId::new("a")).expect("begin");
+
+    let mut value = serde_json::to_value(&state).expect("serialize");
+    value["active_turn"]["turn_id"] = json!("t1");
+    let err = serde_json::from_value::<ConversationState>(value)
+        .expect_err("active turn duplicating a committed id must not load");
+    assert!(err.to_string().contains("duplicates a committed"), "{err}");
 }
 
 #[test]
