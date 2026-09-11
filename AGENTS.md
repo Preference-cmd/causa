@@ -108,6 +108,11 @@ rendering) — bare `causa` false-positives on `causa-*` names.
 - `Cargo.lock` is committed (workspace binary story + reproducible CI).
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
+- Module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard
+  rejects it). `foo.rs` is a thin index — docs, `mod` declarations,
+  re-exports — and the code lives in `foo/*.rs`. Private submodules
+  re-exported at `foo.rs` keep the path flat (`crate::session::WorkRef`);
+  `pub mod` only for nested surfaces (`ports`, `context`).
 - Commit style: Conventional Commits (`feat:`, `fix:`, `refactor!:`,
   `chore:`, `docs:`). One logical change per commit.
 
