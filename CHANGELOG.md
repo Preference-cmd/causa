@@ -11,7 +11,7 @@ load-bearing external contract pinned by `causa-runtime` serialization tests.
 ## [Unreleased]
 
 Planned as **0.1.0** — the release gate is functional completeness
-(slices 6.5 multimodal I/O and 8 subagents), per the slice 11 proposal.
+(multimodal I/O and subagents).
 
 ### Added
 
@@ -20,8 +20,8 @@ Planned as **0.1.0** — the release gate is functional completeness
   self-contained behavior ports (`ModelGateway`, `Tool`,
   `DynamicToolSource`, `CallControl`, budget seams). Zero I/O;
   `#![deny(missing_docs)]`.
-- **Context / harness separation, first batch (Slice 6.5 Phase D–E)**:
-  the session aggregate moved from the kernel to `causa-runtime` —
+- **Context / harness separation**: the session aggregate moved from the
+  kernel to `causa-runtime` —
   `ConversationState` (single active slot, completed-only history,
   commit-time ordering), `SealedResult`, `TurnSequence`,
   `ConversationVersion`, and the `ConversationStore` archive port are
@@ -40,10 +40,10 @@ Planned as **0.1.0** — the release gate is functional completeness
   `ResumeRequest { decision, inject }`; validation runs before any
   execution and rejections return the untouched paused material
   (`ResumeRejection`). Lower limits stop the turn before external
-  execution. Pre-6.5 wire payloads (snapshots with `turn_sequence`,
+  execution. Legacy wire payloads (snapshots with `turn_sequence`,
   pause outcomes with `snapshot` + `reason`) are migrated by explicit
   extraction or rejected, never silently converted.
-- **Multimodal vocabulary (Slice 6.5)**: the block content vocabulary is
+- **Multimodal vocabulary**: the block content vocabulary is
   frozen as **Parts** — `BlockContent::Text(TextPayload)` is replaced by
   `BlockContent::Parts(Vec<ContentPart>)` with `ContentPart = Text |
   Media(MediaRef)`; one logical message's mixed content commits as one
@@ -96,7 +96,7 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 - Brand: **Causa** (formerly Archy) — every crate renamed to `causa-*`;
   project pages live under the Project inceptae domain.
-- **Reference budget & interaction ownership (Slice 13)**: `FramePolicy`,
+- **Reference budget & interaction ownership**: `FramePolicy`,
   `WindowBudget`, `FrameError`, `Compaction`, `CompactionInput`,
   `CompactionOutput`, `CompactionError`, `TokenCounter`,
   `TurnInteraction`, and `BatchDecision` are the reference harness's
@@ -109,8 +109,8 @@ Planned as **0.1.0** — the release gate is functional completeness
   crate docs state the four optional usage paths (reference execution,
   standalone tool execution via `ToolExecutor::execute_with_limits`,
   reference session, observation).
-- **Tool results split from continuation actions and host limits (Slice
-  13)**: a shared `Tool::execute` / `execute_with_store` now returns the
+- **Tool results split from continuation actions and host limits**: a
+  shared `Tool::execute` / `execute_with_store` now returns the
   recorded `ToolResultPayload` only, and `DynamicToolSource::invoke` /
   `invoke_with_store` return `Result<ToolResultPayload,
   ToolExecutionError>` — what an `UnknownOutcome` result does next and
@@ -136,22 +136,45 @@ Planned as **0.1.0** — the release gate is functional completeness
   shape is unchanged — a private runtime DTO writes and reads the old
   `{result, policy}` entries (fixed action for unknown entries,
   canonical `Stop` otherwise), so existing pause material round-trips.
+- **`causa-runtime` — single-session coordination**: the new `session`
+  module adds one `Session` owner per conversation plus cloneable
+  `SessionHandle`s (`id` / `submit` / `observe` / `wait`) over an assembled
+  `TurnRunner` + `TurnRunOptions`. `Session::new` accepts only an idle
+  `ConversationState` and never calls the model; a rejected construction
+  returns every by-value input (state, runner, options, config) in
+  `SessionBuildRejection`. One work is active at a time (no queue, no
+  steering, no implicit approval): `submit` on a busy session is
+  `SessionError::Busy` naming the active `WorkRef`. Each work gets
+  a fresh `TurnId` at acceptance that is never reused, plus a local
+  `request_key` dedup table (same key + parts → the original `WorkReceipt`;
+  same key, different parts → `Conflict`; rejected submits do not consume the
+  key), and an explicit `SessionConfig::retained_work_capacity` (default 256)
+  bounding the registry; an optional `SessionConfig::work_deadline` is measured
+  from acceptance and wired into the work's `RunControl`. Completed turns
+  commit into history; interrupted ones retain their real aborted facts (a
+  `TurnSnapshot`) and cause outside the completed-only history; paused ones
+  retain the complete `ConversationOutcome` for a later explicit resume. A
+  worker panic or runner rejection is published as `Faulted` and the session
+  refuses new work, while dropping the owner closes acceptance and fires the
+  active work's stop token. Execution is one `tokio::spawn` worker per
+  accepted work holding an `Arc` of a private session core — no `JoinHandle`,
+  no reference cycle, and exactly one writable `ConversationState`.
 
 ### Removed
 
-- `IsolationLevel` and `Tool::isolation_level` (Slice 13): no executor
+- `IsolationLevel` and `Tool::isolation_level`: no executor
   ever read the declaration, and panic capture plus a call deadline are
   not process isolation — the "declaration the driver obeys" claim was
   unfounded. No replacement enum or subprocess framework is provided.
-- `causa_runtime::defaults::{NoopTokenCounter, NoopCompaction}` (Slice
-  13): no consumers, and a zero counter is behaviorally distinct from no
+- `causa_runtime::defaults::{NoopTokenCounter, NoopCompaction}`: no
+  consumers, and a zero counter is behaviorally distinct from no
   counter — the executor's chars/4 fallback estimates real sizes and can
   trigger truncation, while a zero counter never does. Hosts that need a
   zero estimate keep their own `TokenCounter` implementation. The
   `defaults` module is private now; the chars/4 fallback keeps its
   algorithm unchanged as a crate-internal function, and the unused
   `placeholder_token_estimate` blocks wrapper is gone.
-- Tool-side action and retention declarations (Slice 13): the kernel's
+- Tool-side action and retention declarations: the kernel's
   `ToolExecutionOutcome` envelope, `UnknownOutcomePolicy`, and
   `ToolOutputLimits` leave the kernel's public interface, and
   `Tool::unknown_outcome_policy` / `Tool::output_limits` are gone —
