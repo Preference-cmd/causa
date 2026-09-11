@@ -14,24 +14,17 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use causa_kernel::{ContentPart, ConversationId, TextPayload};
+use causa_kernel::ConversationId;
 use causa_runtime::{
-    ConversationState, FinishedKind, Session, SessionConfig, SessionError, SubmitRequest,
-    TurnInterruption, TurnRunOptions, WaitEnd, WorkState,
+    ConversationState, FinishedKind, Session, SessionConfig, SessionError, TurnInterruption,
+    TurnRunOptions, WaitEnd, WorkState,
 };
 use common::{
     EchoTool, GatedGateway, PanickingGateway, PausingInteraction, RecordingGateway, approve,
-    awaiting_echo, idle_session, runner_with, tooluse_output,
+    awaiting_echo, idle_session, runner_with, session_req, tooluse_output,
 };
 
 // ---- helpers ---------------------------------------------------------------
-
-fn req(key: &str, text: &str) -> SubmitRequest {
-    SubmitRequest {
-        request_key: key.into(),
-        parts: vec![ContentPart::Text(TextPayload::new(text))],
-    }
-}
 
 // ---- shutdown waits for the worker to wind down ----------------------------
 
@@ -42,7 +35,7 @@ async fn shutdown_winds_down_a_running_work() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("w", "hold"))
+        .submit(session_req("w", "hold"))
         .expect("an idle session accepts the work");
     let work = receipt.work.clone();
     gateway.wait_entered().await;
@@ -81,14 +74,14 @@ async fn after_shutdown_submit_is_closed() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("first", "hold"))
+        .submit(session_req("first", "hold"))
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
 
     session.shutdown().await;
 
     // No new work is accepted once shut down.
-    match handle.submit(req("second", "later")) {
+    match handle.submit(session_req("second", "later")) {
         Err(SessionError::Closed) => {}
         other => panic!("expected SessionError::Closed after shutdown, got {other:?}"),
     }
@@ -127,7 +120,7 @@ async fn shutdown_retains_paused_material() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("p", "approve me"))
+        .submit(session_req("p", "approve me"))
         .expect("an idle session accepts the work");
     let paused = handle
         .wait(&receipt.work, Duration::from_secs(5))
@@ -176,7 +169,7 @@ async fn shutdown_is_idempotent() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("w", "hold"))
+        .submit(session_req("w", "hold"))
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
 
@@ -212,7 +205,7 @@ async fn faulted_is_not_replayed_by_shutdown() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("w", "boom"))
+        .submit(session_req("w", "boom"))
         .expect("an idle session accepts the work");
     let faulted = handle
         .wait(&receipt.work, Duration::from_secs(5))
@@ -243,7 +236,7 @@ async fn faulted_is_not_replayed_by_shutdown() {
         "a fault must not fake a finished kind"
     );
 
-    match handle.submit(req("next", "after")) {
+    match handle.submit(session_req("next", "after")) {
         Err(SessionError::Closed) => {}
         other => panic!("expected SessionError::Closed after shutdown, got {other:?}"),
     }
@@ -261,7 +254,7 @@ async fn shutdown_with_no_active_work_returns_immediately() {
         .await
         .expect("an idle shutdown does not wait on a worker");
 
-    match handle.submit(req("w", "later")) {
+    match handle.submit(session_req("w", "later")) {
         Err(SessionError::Closed) => {}
         other => panic!("expected SessionError::Closed after shutdown, got {other:?}"),
     }
@@ -290,7 +283,7 @@ async fn after_shutdown_resume_and_cancel_are_closed_but_paused_material_stays_r
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("p", "approve me"))
+        .submit(session_req("p", "approve me"))
         .expect("an idle session accepts the work");
     let paused = handle
         .wait(&receipt.work, Duration::from_secs(5))

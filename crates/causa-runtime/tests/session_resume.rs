@@ -15,17 +15,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, ContentPart, ContextFrame, ConversationId, FrameScope, TextPayload, Tool,
-    ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
-    TurnId,
+    CallControl, ContextFrame, ConversationId, FrameScope, TextPayload, Tool, ToolCallContext,
+    ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation, TurnId,
 };
 use causa_runtime::{
     ConversationState, FinishedKind, Session, SessionConfig, SessionError, SessionHandle,
-    SubmitRequest, TurnInterruption, TurnRunOptions, WaitEnd, WorkRef, WorkState,
+    TurnInterruption, TurnRunOptions, WaitEnd, WorkRef, WorkState,
 };
 use common::{
     EchoTool, RecordingGateway, SlowGateway, approve, awaiting_echo, endturn_output,
-    pausing_session, runner_with, submit_to_pause, tooluse_output,
+    pausing_session, runner_with, session_req, submit_to_pause, tooluse_output,
 };
 
 // ---- local fixtures --------------------------------------------------------
@@ -76,13 +75,6 @@ impl Tool for CountingEcho {
 
 // ---- helpers ---------------------------------------------------------------
 
-fn submit_req(key: &str, text: &str) -> SubmitRequest {
-    SubmitRequest {
-        request_key: key.into(),
-        parts: vec![ContentPart::Text(TextPayload::new(text))],
-    }
-}
-
 /// The committed-history length a merged conversation frame reports: the
 /// distinct turns among the frame's blocks that are not its active turn.
 /// Merged frames carry history blocks first (`merged_frame`), so this is
@@ -109,7 +101,7 @@ async fn history_len_seen_by_probe(
     key: &str,
 ) -> usize {
     let probe = handle
-        .submit(submit_req(key, "probe"))
+        .submit(session_req(key, "probe"))
         .expect("a finished resume leaves the session idle");
     let done = handle
         .wait(&probe.work, Duration::from_secs(5))
@@ -482,7 +474,7 @@ async fn wait_does_not_extend_the_deadline() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(submit_req("s1", "slow"))
+        .submit(session_req("s1", "slow"))
         .expect("an idle session accepts the work");
 
     // A finite wait times out while the work is still inside its slow model

@@ -13,24 +13,16 @@ mod common;
 
 use std::time::Duration;
 
-use causa_kernel::{ContentPart, ConversationId, TextPayload, TurnId};
+use causa_kernel::{ConversationId, TurnId};
 use causa_runtime::{
-    CancelOutcome, FinishedKind, SessionError, SubmitRequest, TurnInterruption, WaitEnd, WorkRef,
-    WorkState,
+    CancelOutcome, FinishedKind, SessionError, TurnInterruption, WaitEnd, WorkRef, WorkState,
 };
 use common::{
-    GatedGateway, RecordingGateway, endturn_output, idle_session, paused_work, tooluse_output,
+    GatedGateway, RecordingGateway, endturn_output, idle_session, paused_work, session_req,
+    tooluse_output,
 };
 
 // ---- helpers ----------------------------------------------------------------
-
-/// One text submission part.
-fn req(key: &str, text: &str) -> SubmitRequest {
-    SubmitRequest {
-        request_key: key.into(),
-        parts: vec![ContentPart::Text(TextPayload::new(text))],
-    }
-}
 
 // ---- the cancel outcome per state ------------------------------------------
 
@@ -100,7 +92,7 @@ async fn cancelled_turn_id_is_not_reused() {
 
     // The stopped work left the slot idle, so the next submit is accepted.
     let next = handle
-        .submit(req("s2", "two"))
+        .submit(session_req("s2", "two"))
         .expect("a cancelled work frees the conversation");
     assert_ne!(
         next.work.turn_id, work.turn_id,
@@ -138,7 +130,7 @@ async fn cancel_of_a_running_work_signals_then_interrupts() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("r1", "hold"))
+        .submit(session_req("r1", "hold"))
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
     assert_eq!(
@@ -207,7 +199,7 @@ async fn cancel_of_a_terminal_work_keeps_its_result() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("t1", "go"))
+        .submit(session_req("t1", "go"))
         .expect("an idle session accepts the work");
     let finished = handle
         .wait(&receipt.work, Duration::from_secs(5))
@@ -303,7 +295,7 @@ async fn cancel_races_a_completion_keeps_the_real_result() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("q1", "fast"))
+        .submit(session_req("q1", "fast"))
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
 
@@ -348,7 +340,7 @@ async fn cancel_immediately_after_submit_signals_the_accepted_work() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("r1", "hold"))
+        .submit(session_req("r1", "hold"))
         .expect("an idle session accepts the work");
     // No `wait_entered`: `submit` switches the slot to `Running`
     // synchronously under the registry lock, so the cancel deterministically

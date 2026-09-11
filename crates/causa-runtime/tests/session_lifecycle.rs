@@ -29,24 +29,17 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use causa_kernel::{ContentPart, ConversationId, ModelInvokeErrorKind, TextPayload, TurnId};
+use causa_kernel::{ConversationId, ModelInvokeErrorKind, TurnId};
 use causa_runtime::{
-    ConversationState, FinishedKind, Session, SessionConfig, SessionError, SubmitRequest,
-    TurnInterruption, TurnRunOptions, WaitEnd, WorkObservation, WorkRef, WorkState,
+    ConversationState, FinishedKind, Session, SessionConfig, SessionError, TurnInterruption,
+    TurnRunOptions, WaitEnd, WorkObservation, WorkRef, WorkState,
 };
 use common::{
     EchoTool, GatedGateway, PanickingGateway, RecordingGateway, SlowGateway, endturn_output,
-    idle_session, pausing_session, runner_with, tooluse_output,
+    idle_session, pausing_session, runner_with, session_req, tooluse_output,
 };
 
 // ---- helpers ---------------------------------------------------------------
-
-fn req(key: &str, text: &str) -> SubmitRequest {
-    SubmitRequest {
-        request_key: key.into(),
-        parts: vec![ContentPart::Text(TextPayload::new(text))],
-    }
-}
 
 /// Field-wise equality of two observations. `WorkObservation` deliberately has
 /// no `PartialEq` (its `finished` payload is not comparable), so the test
@@ -85,7 +78,7 @@ async fn multiple_handles_observe_one_work_and_finite_wait_never_mutates_it() {
     let h2 = h1.clone();
 
     let receipt = h1
-        .submit(req("k1", "hold"))
+        .submit(session_req("k1", "hold"))
         .expect("an idle session accepts the work");
     let work = receipt.work.clone();
     assert_eq!(receipt.accepted_revision, 0, "acceptance is revision 0");
@@ -152,7 +145,7 @@ async fn completed_commits_into_history_and_the_next_work_sees_it() {
     let session = idle_session("hist", gateway.clone());
     let handle = session.handle();
 
-    let r1 = handle.submit(req("a", "alpha-input")).unwrap();
+    let r1 = handle.submit(session_req("a", "alpha-input")).unwrap();
     let w1 = handle.wait(&r1.work, Duration::from_secs(5)).await.unwrap();
     assert_eq!(w1.end, WaitEnd::ReachedState);
     assert_eq!(w1.observation.state, WorkState::Finished);
@@ -165,7 +158,7 @@ async fn completed_commits_into_history_and_the_next_work_sees_it() {
 
     // A completed turn leaves the session idle, so the next submit is
     // accepted and — never reusing an identity — gets a fresh `TurnId`.
-    let r2 = handle.submit(req("b", "beta-input")).unwrap();
+    let r2 = handle.submit(session_req("b", "beta-input")).unwrap();
     assert_ne!(
         r1.work.turn_id, r2.work.turn_id,
         "a later work must not reuse an earlier work's TurnId"
@@ -213,7 +206,7 @@ async fn interrupted_keeps_its_cause_stays_out_of_history_and_allocates_a_new_tu
     let session = idle_session("abort", gateway.clone());
     let handle = session.handle();
 
-    let r1 = handle.submit(req("a", "aborted-input")).unwrap();
+    let r1 = handle.submit(session_req("a", "aborted-input")).unwrap();
     let w1 = handle.wait(&r1.work, Duration::from_secs(5)).await.unwrap();
     assert_eq!(w1.end, WaitEnd::ReachedState);
     assert_eq!(w1.observation.state, WorkState::Finished);
@@ -247,7 +240,7 @@ async fn interrupted_keeps_its_cause_stays_out_of_history_and_allocates_a_new_tu
 
     // The aborted work left the slot idle: the next submit is accepted and
     // gets a NEW `TurnId` — the interrupted identity is never replayed.
-    let r2 = handle.submit(req("b", "second-input")).unwrap();
+    let r2 = handle.submit(session_req("b", "second-input")).unwrap();
     assert_ne!(
         r1.work.turn_id, r2.work.turn_id,
         "the next work must receive a new TurnId, never the interrupted one"
@@ -295,7 +288,7 @@ async fn panicking_gateway_is_faulted_and_the_session_refuses_new_work() {
     let session = idle_session("fault", Arc::new(PanickingGateway));
     let handle = session.handle();
 
-    let r = handle.submit(req("a", "boom-input")).unwrap();
+    let r = handle.submit(session_req("a", "boom-input")).unwrap();
     let w = handle
         .wait(&r.work, Duration::from_secs(5))
         .await
@@ -322,7 +315,7 @@ async fn panicking_gateway_is_faulted_and_the_session_refuses_new_work() {
     assert_eq!(obs.fault.as_deref(), Some(fault.as_str()));
 
     // The session now refuses new work, carrying the retained reason.
-    match handle.submit(req("b", "later")) {
+    match handle.submit(session_req("b", "later")) {
         Err(SessionError::Faulted { reason }) => assert_eq!(reason, fault),
         other => panic!("expected SessionError::Faulted, got {other:?}"),
     }
@@ -334,7 +327,7 @@ async fn dropping_the_owner_closes_submission_and_cancels_the_running_work() {
     let session = idle_session("stop", gateway.clone());
     let handle = session.handle();
 
-    let r = handle.submit(req("a", "hold")).unwrap();
+    let r = handle.submit(session_req("a", "hold")).unwrap();
     gateway.wait_entered().await;
     assert_eq!(
         handle.observe(&r.work).unwrap().state,
@@ -344,7 +337,7 @@ async fn dropping_the_owner_closes_submission_and_cancels_the_running_work() {
 
     // Owner drop: acceptance stops at once, and the running work's token fires.
     drop(session);
-    match handle.submit(req("b", "later")) {
+    match handle.submit(session_req("b", "later")) {
         Err(SessionError::Closed) => {}
         other => panic!("expected SessionError::Closed after the owner dropped, got {other:?}"),
     }
@@ -387,7 +380,7 @@ async fn paused_is_observable_and_keeps_the_conversation_busy() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("p", "approve me"))
+        .submit(session_req("p", "approve me"))
         .expect("an idle session accepts the work");
     let waited = handle
         .wait(&receipt.work, Duration::from_secs(5))
@@ -409,7 +402,7 @@ async fn paused_is_observable_and_keeps_the_conversation_busy() {
     // naming exactly the paused ref — no queue, no steering, no implicit
     // approval.
     let busy = handle
-        .submit(req("q", "later"))
+        .submit(session_req("q", "later"))
         .expect_err("a paused work keeps the conversation busy");
     assert_eq!(
         busy,
@@ -451,7 +444,7 @@ async fn work_deadline_interrupts_a_slow_model_round() {
     let handle = session.handle();
 
     let receipt = handle
-        .submit(req("d", "slow"))
+        .submit(session_req("d", "slow"))
         .expect("an idle session accepts the work");
     let waited = handle
         .wait(&receipt.work, Duration::from_secs(5))
@@ -504,7 +497,7 @@ async fn unknown_and_foreign_refs_are_not_found() {
     // (b) A ref whose conversation_id differs from the session's — even one
     // reusing a real work's turn id — is never routed to the real work.
     let real = handle
-        .submit(req("k", "hi"))
+        .submit(session_req("k", "hi"))
         .expect("an idle session accepts the work");
     let foreign = WorkRef {
         conversation_id: ConversationId("other".into()),
