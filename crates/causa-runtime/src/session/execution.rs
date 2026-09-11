@@ -15,32 +15,18 @@ use futures_util::FutureExt;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use causa_kernel::{ContentPart, ConversationId, TurnId};
+use causa_kernel::{ContentPart, ConversationId, TurnId, TurnSnapshot};
 
 use crate::config::TurnRunOptions;
 use crate::control::RunControl;
 use crate::conversation::ConversationState;
-use crate::driver::{ConversationOutcome, TurnResult, TurnRunner};
+use crate::driver::{Continuation, ConversationOutcome, TurnInterruption, TurnResult, TurnRunner};
+use crate::resume::ResumeRequest;
 
 use super::{
-    FinishedKind, SessionConfig, SessionError, SubmitRequest, WaitEnd, WaitOutcome,
-    WorkObservation, WorkReceipt, WorkRef, WorkState,
+    CancelOutcome, CancelReceipt, FinishedKind, SessionConfig, SessionError, SubmitRequest,
+    WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
 };
-
-/// The request-table operation a key belongs to. `submit` is the only
-/// operation today; a later `resume` / `cancel` extends this without reusing
-/// the table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Op {
-    Submit,
-}
-
-/// One accepted request-key record: the original receipt plus the arguments it
-/// was accepted for, so a repeat with different arguments is `Conflict`.
-struct Accepted {
-    receipt: WorkReceipt,
-    parts: Vec<ContentPart>,
-}
 
 /// The published view of one retained work.
 struct WorkEntry {
@@ -48,6 +34,10 @@ struct WorkEntry {
     state: WorkState,
     finished: Option<FinishedKind>,
     fault: Option<String>,
+    /// The per-work deadline measured from acceptance; it survives a pause, so
+    /// a resume continues under the same absolute bound rather than a fresh
+    /// one.
+    deadline: Option<Instant>,
 }
 
 /// The single execution slot — the one place the writable conversation lives
@@ -74,11 +64,131 @@ enum Slot {
     Faulted { reason: String },
 }
 
-/// The lock-protected registry.
+impl Slot {
+    /// The admission error for a non-idle slot, or `None` when a `submit`
+    /// may begin a turn. One active work per conversation: no queue, no
+    /// steering, no implicit approval.
+    fn admission_error(&self, id: &ConversationId) -> Option<SessionError> {
+        match self {
+            Slot::Idle(_) => None,
+            Slot::Running { work, .. } => Some(SessionError::Busy {
+                active: work.clone(),
+            }),
+            Slot::Paused(outcome) => Some(SessionError::Busy {
+                active: WorkRef {
+                    conversation_id: id.clone(),
+                    turn_id: paused_turn_id(outcome),
+                },
+            }),
+            Slot::Faulted { reason } => Some(SessionError::Faulted {
+                reason: reason.clone(),
+            }),
+        }
+    }
+
+    /// Borrow the paused outcome for `work`, or explain why it cannot
+    /// resume. A `Running` slot is `Busy` (another work owns the
+    /// conversation); anything else holding no resumable material is
+    /// `NotPaused`.
+    fn paused_for(&self, work: &WorkRef) -> Result<&ConversationOutcome, SessionError> {
+        match self {
+            Slot::Paused(outcome) if paused_turn_id(outcome) == work.turn_id => Ok(outcome),
+            Slot::Running { work: active, .. } => Err(SessionError::Busy {
+                active: active.clone(),
+            }),
+            _ => Err(SessionError::NotPaused(work.clone())),
+        }
+    }
+
+    /// Move the paused outcome for `work` out of the slot, leaving it
+    /// `Running` under the caller's new token. The single match validates
+    /// and extracts together, so no second resume can interleave between
+    /// the check and the handoff.
+    fn take_paused_for(
+        &mut self,
+        work: &WorkRef,
+        token: CancellationToken,
+    ) -> Result<ConversationOutcome, SessionError> {
+        match self {
+            Slot::Paused(outcome) if paused_turn_id(outcome) == work.turn_id => {
+                let previous = std::mem::replace(
+                    self,
+                    Slot::Running {
+                        work: work.clone(),
+                        token,
+                    },
+                );
+                let Slot::Paused(outcome) = previous else {
+                    unreachable!("the paused arm was matched above");
+                };
+                Ok(outcome)
+            }
+            Slot::Running { work: active, .. } => Err(SessionError::Busy {
+                active: active.clone(),
+            }),
+            _ => Err(SessionError::NotPaused(work.clone())),
+        }
+    }
+
+    /// Terminate the paused `work` in place with no new external call:
+    /// abort its active turn and leave the slot `Idle` with the aborted
+    /// state. Returns the aborted facts plus the retained continuation.
+    /// A rejection leaves the slot untouched.
+    fn stop_paused(
+        &mut self,
+        work: &WorkRef,
+    ) -> Result<(TurnSnapshot, Continuation), SessionError> {
+        match self {
+            Slot::Paused(outcome) if paused_turn_id(outcome) == work.turn_id => {}
+            Slot::Running { work: active, .. } => {
+                return Err(SessionError::Busy {
+                    active: active.clone(),
+                });
+            }
+            _ => return Err(SessionError::NotFound(work.clone())),
+        }
+        // The guard above established the arm; the placeholder below is the
+        // only safe-Rust way to move the aborted state out from behind
+        // `&mut` (the transient is never observable — the real state is
+        // assigned before the lock is released).
+        let previous = std::mem::replace(
+            self,
+            Slot::Idle(ConversationState::new(work.conversation_id.clone())),
+        );
+        let Slot::Paused(outcome) = previous else {
+            unreachable!("the paused arm was matched above");
+        };
+        let ConversationOutcome {
+            mut state, result, ..
+        } = outcome;
+        let TurnResult::Paused { continuation } = result else {
+            unreachable!("a paused slot holds a paused result");
+        };
+        let facts = state
+            .abort_turn(work.turn_id.clone())
+            .expect("the paused active turn aborts")
+            .snapshot();
+        *self = Slot::Idle(state);
+        Ok((facts, continuation))
+    }
+}
+
+/// The lock-protected registry. Request keys dedup per operation — each
+/// operation keeps its own table, so one `request_key` string may be reused
+/// across operations without colliding, and every lookup is precisely typed
+/// with no operation tag to re-assert.
 struct Inner {
     slot: Slot,
     works: HashMap<WorkRef, WorkEntry>,
-    by_key: HashMap<(Op, String), Accepted>,
+    /// `submit` receipts by key, with the parts each key was accepted for.
+    submit_keys: HashMap<String, (WorkReceipt, Vec<ContentPart>)>,
+    /// `resume` receipts by key, with the work, the paused revision it
+    /// named, and the request it was accepted for — a same-key repeat with
+    /// a different decision or injection is `Conflict`, not a second
+    /// execution.
+    resume_keys: HashMap<String, (WorkReceipt, WorkRef, u64, ResumeRequest)>,
+    /// `cancel` receipts by key, with the work each key targeted.
+    cancel_keys: HashMap<String, (CancelReceipt, WorkRef)>,
     next_turn: u64,
     closed: bool,
 }
@@ -116,7 +226,9 @@ impl SessionCore {
             inner: Mutex::new(Inner {
                 slot: Slot::Idle(state),
                 works: HashMap::new(),
-                by_key: HashMap::new(),
+                submit_keys: HashMap::new(),
+                resume_keys: HashMap::new(),
+                cancel_keys: HashMap::new(),
                 next_turn: 0,
                 closed: false,
             }),
@@ -153,35 +265,15 @@ impl SessionCore {
         // receipt must resolve to the original receipt even while the work
         // runs. A key that was never accepted (because a submit was rejected)
         // is absent here, so fixing a rejected submit keeps the key free.
-        if let Some(accepted) = inner.by_key.get(&(Op::Submit, request.request_key.clone())) {
-            return if accepted.parts == request.parts {
-                Ok(accepted.receipt.clone())
+        if let Some((receipt, parts)) = inner.submit_keys.get(&request.request_key) {
+            return if *parts == request.parts {
+                Ok(receipt.clone())
             } else {
                 Err(SessionError::Conflict)
             };
         }
-        // One active work per conversation: no queue, no steering, no
-        // implicit approval.
-        match &inner.slot {
-            Slot::Idle(_) => {}
-            Slot::Running { work, .. } => {
-                return Err(SessionError::Busy {
-                    active: work.clone(),
-                });
-            }
-            Slot::Paused(outcome) => {
-                return Err(SessionError::Busy {
-                    active: WorkRef {
-                        conversation_id: self.id.clone(),
-                        turn_id: paused_turn_id(outcome),
-                    },
-                });
-            }
-            Slot::Faulted { reason } => {
-                return Err(SessionError::Faulted {
-                    reason: reason.clone(),
-                });
-            }
+        if let Some(error) = inner.slot.admission_error(&self.id) {
+            return Err(error);
         }
         if inner.works.len() >= self.config.retained_work_capacity {
             return Err(SessionError::CapacityExceeded);
@@ -232,15 +324,12 @@ impl SessionCore {
                 state: WorkState::Accepted,
                 finished: None,
                 fault: None,
+                deadline,
             },
         );
-        inner.by_key.insert(
-            (Op::Submit, request.request_key),
-            Accepted {
-                receipt: receipt.clone(),
-                parts: request.parts,
-            },
-        );
+        inner
+            .submit_keys
+            .insert(request.request_key, (receipt.clone(), request.parts));
 
         // Exactly one writable ConversationState: move it into the worker.
         let Slot::Idle(state) = std::mem::replace(
@@ -250,14 +339,236 @@ impl SessionCore {
                 token,
             },
         ) else {
-            unreachable!("idle slot checked above");
+            unreachable!("the slot was admitted idle above");
         };
         drop(inner);
         self.bump_epoch();
 
         let options = self.options.clone();
-        tokio::spawn(worker(Arc::clone(self), work, state, options, ctrl));
+        let core = Arc::clone(self);
+        let marking = work.clone();
+        let drive_core = Arc::clone(&core);
+        let drive = async move {
+            drive_core.mark_running(&marking);
+            drive_core
+                .runner
+                .run_in_conversation(state, options, ctrl)
+                .await
+                .map_err(|error| format!("runner rejected the work: {error}"))
+        };
+        tokio::spawn(supervise(core, work, "worker", drive));
         Ok(receipt)
+    }
+
+    /// Continue one paused work, or reject the request without side effects.
+    ///
+    /// Synchronous and atomic under the registry lock — no await point between
+    /// validating the paused material and switching the work back to
+    /// `Running`, mirroring `submit`'s accept-once guarantee. Validation runs
+    /// against the paused outcome before the slot is touched, so a rejected
+    /// request leaves the material exactly as it was.
+    pub(super) fn resume(
+        self: &Arc<Self>,
+        work: &WorkRef,
+        expected_revision: u64,
+        request_key: String,
+        request: ResumeRequest,
+    ) -> Result<WorkReceipt, SessionError> {
+        let mut inner = self.lock();
+        if inner.closed {
+            return Err(SessionError::Closed);
+        }
+        // Local dedup is checked before the state guards: a retry of a lost
+        // receipt must resolve to the original receipt. A key accepted for a
+        // different work, revision, or request is a conflict, not a second
+        // execution.
+        if let Some((receipt, recorded_work, recorded_revision, recorded_request)) =
+            inner.resume_keys.get(&request_key)
+        {
+            return if recorded_work == work
+                && *recorded_revision == expected_revision
+                && *recorded_request == request
+            {
+                Ok(receipt.clone())
+            } else {
+                Err(SessionError::Conflict)
+            };
+        }
+        if work.conversation_id != self.id {
+            return Err(SessionError::NotFound(work.clone()));
+        }
+        let Some(entry) = inner.works.get(work) else {
+            return Err(SessionError::NotFound(work.clone()));
+        };
+        if matches!(entry.state, WorkState::Finished | WorkState::Faulted) {
+            return Err(SessionError::NotPaused(work.clone()));
+        }
+        // Copy the scalars out before the slot is mutated: the deadline is the
+        // one stored at acceptance, so a resume continues under the same
+        // absolute bound rather than a fresh one.
+        let paused_revision = entry.revision;
+        let deadline = entry.deadline;
+        // Validate against the paused outcome before anything moves: a
+        // rejected request executes nothing and leaves the material untouched.
+        {
+            let outcome = inner.slot.paused_for(work)?;
+            if expected_revision != paused_revision {
+                return Err(SessionError::StaleRevision {
+                    work: work.clone(),
+                    expected: expected_revision,
+                    actual: paused_revision,
+                });
+            }
+            let active = outcome
+                .state
+                .active_turn()
+                .expect("a paused outcome keeps its active turn open");
+            if let Err(reason) = crate::resume::validate_resume(&outcome.result, active, &request) {
+                return Err(SessionError::InvalidResume(reason));
+            }
+        }
+
+        // Accept: the outcome moves out of the slot and the work returns to
+        // `Running` under the same lock that validated it, so no second
+        // resume can interleave.
+        let token = CancellationToken::new();
+        let outcome = inner.slot.take_paused_for(work, token.clone())?;
+        let ctrl = RunControl::new(token, deadline);
+        let receipt = WorkReceipt {
+            work: work.clone(),
+            accepted_revision: paused_revision,
+        };
+        update(&mut inner, work, |entry| entry.state = WorkState::Running);
+        inner.resume_keys.insert(
+            request_key,
+            (
+                receipt.clone(),
+                work.clone(),
+                expected_revision,
+                request.clone(),
+            ),
+        );
+        drop(inner);
+        self.bump_epoch();
+
+        let core = Arc::clone(self);
+        let options = self.options.clone();
+        let drive_core = Arc::clone(&core);
+        let drive = async move {
+            crate::resume::resume_turn(drive_core.runner.as_ref(), outcome, request, options, ctrl)
+                .await
+                .map_err(|rejection| {
+                    format!("resume rejected after acceptance: {}", rejection.reason)
+                })
+        };
+        tokio::spawn(supervise(core, work.clone(), "resume worker", drive));
+        Ok(receipt)
+    }
+
+    /// Cancel one work: fire its own stop token while it runs, or terminate a
+    /// paused work in place.
+    ///
+    /// Synchronous and atomic under the registry lock. A terminal work is never
+    /// rewritten — the cancel reports `AlreadyTerminal` and leaves its result
+    /// intact.
+    pub(super) fn cancel(
+        self: &Arc<Self>,
+        work: &WorkRef,
+        request_key: String,
+    ) -> Result<CancelReceipt, SessionError> {
+        let mut inner = self.lock();
+        if inner.closed {
+            return Err(SessionError::Closed);
+        }
+        // Local dedup: a retry of a lost receipt resolves to the original
+        // receipt without signalling or terminating anything again.
+        if let Some((receipt, recorded)) = inner.cancel_keys.get(&request_key) {
+            return if recorded == work {
+                Ok(receipt.clone())
+            } else {
+                Err(SessionError::Conflict)
+            };
+        }
+        if work.conversation_id != self.id || !inner.works.contains_key(work) {
+            return Err(SessionError::NotFound(work.clone()));
+        }
+        // A terminal work keeps its result: the cancel only records the key.
+        if matches!(
+            inner.works.get(work).expect("checked above").state,
+            WorkState::Finished | WorkState::Faulted
+        ) {
+            let receipt = CancelReceipt {
+                work: work.clone(),
+                outcome: CancelOutcome::AlreadyTerminal,
+            };
+            inner
+                .cancel_keys
+                .insert(request_key, (receipt.clone(), work.clone()));
+            return Ok(receipt);
+        }
+        // Still executing (accepted-and-not-yet-started, or running): its
+        // own control token is enough — the runner ends and publishes. No
+        // state changes yet, so no epoch bump: waiters re-observe on the
+        // terminal publish.
+        if let Slot::Running {
+            work: active,
+            token,
+        } = &inner.slot
+        {
+            if active == work {
+                token.cancel();
+                let receipt = CancelReceipt {
+                    work: work.clone(),
+                    outcome: CancelOutcome::Signalled,
+                };
+                inner
+                    .cancel_keys
+                    .insert(request_key, (receipt.clone(), work.clone()));
+                return Ok(receipt);
+            }
+            return Err(SessionError::Busy {
+                active: active.clone(),
+            });
+        }
+
+        // Paused: terminate in place with no new external call.
+        let (facts, continuation) = inner.slot.stop_paused(work)?;
+        let receipt = CancelReceipt {
+            work: work.clone(),
+            outcome: CancelOutcome::Stopped,
+        };
+        update(&mut inner, work, |entry| {
+            entry.state = WorkState::Finished;
+            entry.finished = Some(FinishedKind::Interrupted {
+                cause: TurnInterruption::ExplicitCancellation,
+                facts,
+                continuation: Some(continuation),
+            });
+        });
+        inner
+            .cancel_keys
+            .insert(request_key, (receipt.clone(), work.clone()));
+        drop(inner);
+        self.bump_epoch();
+        Ok(receipt)
+    }
+
+    /// Wait until no work is running.
+    ///
+    /// Subscribe-before-check, the same order as `wait`, so a change between
+    /// the observation and the block is never lost. The core is kept alive by
+    /// the caller; a dropped epoch sender ends the wait rather than hanging.
+    pub(super) async fn quiesce(&self) {
+        let mut rx = self.epoch.subscribe();
+        loop {
+            let running = matches!(&self.lock().slot, Slot::Running { .. });
+            if !running {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Read one work's published view.
@@ -343,12 +654,18 @@ impl SessionCore {
             .send_modify(|version| *version = version.wrapping_add(1));
     }
 
-    /// `Accepted` → `Running`, published before the runner is polled.
-    fn mark_running(&self, work: &WorkRef) {
+    /// Apply one work-entry mutation and wake every waiter. The single
+    /// entry-only publish path, so no caller can forget the epoch bump.
+    fn publish(&self, work: &WorkRef, mutate: impl FnOnce(&mut WorkEntry)) {
         let mut inner = self.lock();
-        update(&mut inner, work, |entry| entry.state = WorkState::Running);
+        update(&mut inner, work, mutate);
         drop(inner);
         self.bump_epoch();
+    }
+
+    /// `Accepted` → `Running`, published before the runner is polled.
+    fn mark_running(&self, work: &WorkRef) {
+        self.publish(work, |entry| entry.state = WorkState::Running);
     }
 
     /// Publish a fault: the slot becomes unusable and the work becomes
@@ -370,8 +687,11 @@ impl SessionCore {
     /// `Interrupted` carries the real aborted facts (a snapshot) plus the
     /// cause publicly and stays out of history, `Paused` retains the complete
     /// outcome.
+    ///
+    /// The commit/abort runs before the lock is taken — it works on the
+    /// owned state the worker handed back, so the registry is never held
+    /// while facts validate.
     fn publish_outcome(&self, work: &WorkRef, outcome: ConversationOutcome) {
-        let mut inner = self.lock();
         let ConversationOutcome {
             mut state,
             result,
@@ -414,6 +734,7 @@ impl SessionCore {
                     Some(FinishedKind::Interrupted {
                         cause,
                         facts: facts.snapshot(),
+                        continuation: None,
                     }),
                     None,
                 ),
@@ -430,6 +751,7 @@ impl SessionCore {
                 }
             },
         };
+        let mut inner = self.lock();
         inner.slot = slot;
         update(&mut inner, work, |entry| {
             entry.state = kind;
@@ -482,27 +804,26 @@ fn update(inner: &mut Inner, work: &WorkRef, mutate: impl FnOnce(&mut WorkEntry)
     }
 }
 
-/// The worker task body: one accepted work, driven by the reference runner.
+/// Drive one work to its terminal publish: run `drive` to a
+/// [`ConversationOutcome`], then publish it. A driver rejection after
+/// acceptance is an invariant break (the request was validated under the
+/// lock), so it faults with the caller's message rather than dropping the
+/// material; a panic is caught and faulted the same way.
 ///
 /// Holds `Arc<SessionCore>` (never a `JoinHandle`) so the session can forget
 /// the task and no strong reference cycle forms.
-async fn worker(
+async fn supervise(
     core: Arc<SessionCore>,
     work: WorkRef,
-    state: ConversationState,
-    options: TurnRunOptions,
-    ctrl: RunControl,
+    task: &'static str,
+    drive: impl std::future::Future<Output = Result<ConversationOutcome, String>>,
 ) {
-    core.mark_running(&work);
-    let outcome = AssertUnwindSafe(core.runner.run_in_conversation(state, options, ctrl))
-        .catch_unwind()
-        .await;
-    match outcome {
+    match AssertUnwindSafe(drive).catch_unwind().await {
         Ok(Ok(outcome)) => core.publish_outcome(&work, outcome),
-        Ok(Err(error)) => core.mark_faulted(&work, format!("runner rejected the work: {error}")),
+        Ok(Err(reason)) => core.mark_faulted(&work, reason),
         Err(payload) => core.mark_faulted(
             &work,
-            format!("worker panicked: {}", panic_message(&*payload)),
+            format!("{task} panicked: {}", panic_message(&*payload)),
         ),
     }
 }

@@ -79,6 +79,7 @@ pub struct HookCtx<'a> {
 /// `unknown_decisions`; entries may be omitted and the driver then resolves
 /// through its unknown-outcome configuration by the executed tool name.
 /// Rejections with any other status take no action and need no entry.
+#[derive(Debug, Clone, PartialEq)]
 pub struct HookOutcome {
     /// Calls that pass the hook and reach the executor (arguments may
     /// have been rewritten).

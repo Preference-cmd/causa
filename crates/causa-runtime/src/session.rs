@@ -5,8 +5,8 @@
 //! [`ConversationState`](crate::conversation::ConversationState) plus an
 //! already-assembled [`TurnRunner`](crate::driver::TurnRunner) /
 //! [`TurnRunOptions`](crate::config::TurnRunOptions); cloneable
-//! [`SessionHandle`]s submit, observe, and wait. The session is the
-//! coordination layer around the driver (accept → begin/append → run →
+//! [`SessionHandle`]s submit, observe, wait, resume, and cancel. The session is
+//! the coordination layer around the driver (accept → begin/append → run →
 //! commit/abort/retain → notify); it neither duplicates the model loop nor
 //! exposes a writable
 //! [`ConversationState`](crate::conversation::ConversationState).
@@ -28,11 +28,18 @@
 //!   explicit `resume`.
 //! - A panic or runner rejection publishes [`WorkState::Faulted`] with the
 //!   reason and refuses new work — never a work stuck `Running`.
+//! - `resume` continues a paused work after validating the work's paused
+//!   revision and the request; a rejected request executes nothing and leaves
+//!   the paused material untouched. `cancel` fires the work's own control token
+//!   (a racing completion keeps its result, a paused work is terminated in
+//!   place with its continuation retained, and a terminal work is not
+//!   rewritten). `shutdown` stops acceptance, winds down the running work, and
+//!   retains material for inspection.
 //! - Dropping the owner stops acceptance and fires the active work's
 //!   cancellation token; retained observations stay readable.
 //!
-//! `resume`, `cancel`, `shutdown`, checkpoint/restore, multi-session
-//! coordination, materials, and model tools are not here.
+//! Checkpoint/restore, multi-session coordination, materials, and model tools
+//! are not here.
 //!
 //! # Runtime
 //!
@@ -53,6 +60,6 @@ mod types;
 pub use handle::SessionHandle;
 pub use owner::{Session, SessionBuildRejection};
 pub use types::{
-    FinishedKind, SessionConfig, SessionError, SubmitRequest, WaitEnd, WaitOutcome,
-    WorkObservation, WorkReceipt, WorkRef, WorkState,
+    CancelOutcome, CancelReceipt, FinishedKind, SessionConfig, SessionError, SubmitRequest,
+    WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
 };

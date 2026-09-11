@@ -33,6 +33,7 @@ use crate::hook::HookOutcome;
 /// The resume payload: only what is NEW at resume time. The host passes
 /// the complete paused outcome — the single checkpoint — plus this
 /// request.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResumeRequest {
     /// The new decision for the calls still awaiting approval: approve =
     /// `HookOutcome::passthrough(awaiting)`, reject = all-rejected,

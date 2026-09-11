@@ -113,6 +113,18 @@ impl Session {
             core: Arc::clone(&self.core),
         }
     }
+
+    /// Shut the session down: stop accepting, then wait for the running work to
+    /// wind down.
+    ///
+    /// Stops acceptance and fires the active work's stop signal, then waits
+    /// until no work is running. The session keeps its retrievable results
+    /// and paused material readable through surviving [`SessionHandle`]s;
+    /// work submitted afterwards reports [`SessionError::Closed`].
+    pub async fn shutdown(&self) {
+        self.core.close();
+        self.core.quiesce().await;
+    }
 }
 
 impl Drop for Session {

@@ -20,11 +20,12 @@
 //!   invariants; a custom harness composes the kernel facts differently.
 //! - **Session coordination** (`session`): one [`Session`] owner per
 //!   conversation drives accepted work through the assembled [`TurnRunner`]
-//!   — cloneable [`SessionHandle`]s submit / observe / wait, one active work
-//!   at a time, per-work `TurnId`s assigned at acceptance and never reused,
-//!   local `request_key` dedup, explicit retained-work capacity, and an
-//!   observable `Faulted` state. Only the single-session closed loop is
-//!   implemented; `resume` / `cancel` / checkpointing are out of scope.
+//!   — cloneable [`SessionHandle`]s submit / observe / wait / resume / cancel,
+//!   one active work at a time, per-work `TurnId`s assigned at acceptance and
+//!   never reused, local `request_key` dedup, explicit retained-work capacity,
+//!   and an observable `Faulted` state. Only the single-session closed loop is
+//!   implemented; checkpointing / multi-session coordination / materials are
+//!   out of scope.
 //! - **Tool-use filters** (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`,
 //!   `FilterChain`) implement this crate's `ToolUseHook` directly — the
 //!   trait, its consumer, and its policies share one crate. The default is
@@ -125,8 +126,9 @@ pub use executor::{ToolExecutor, ToolRegistryError};
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook, UnknownDecision};
 pub use resume::{ResumeRejection, ResumeRequest, resume_turn};
 pub use session::{
-    FinishedKind, Session, SessionBuildRejection, SessionConfig, SessionError, SessionHandle,
-    SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
+    CancelOutcome, CancelReceipt, FinishedKind, Session, SessionBuildRejection, SessionConfig,
+    SessionError, SessionHandle, SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt,
+    WorkRef, WorkState,
 };
 
 // --- framework policies and projections --------------------------------------

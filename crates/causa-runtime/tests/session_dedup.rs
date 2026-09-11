@@ -17,103 +17,23 @@
 //! - a rejected submit never disturbs the existing work, which stays
 //!   observable.
 //!
-//! Shared fixtures come from `tests/common`; the gated gateway (a model call
-//! that blocks until the test releases it, or the session is cancelled) is
-//! local to this target.
+//! Shared fixtures come from `tests/common`, including the gated gateway
+//! (a model call that parks until the test releases it; the non-cancelling
+//! mode ignores the session token, so every parked call needs its release).
 
 mod common;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use async_trait::async_trait;
-use causa_kernel::{
-    AttemptControl, ContentPart, ConversationId, ModelGateway, ModelInvokeError,
-    ModelInvokeErrorKind, ModelOutput, ModelRequest, TextPayload,
-};
+use causa_kernel::{ContentPart, ConversationId, ModelGateway, TextPayload};
 use causa_runtime::{
     ConversationState, FinishedKind, Session, SessionConfig, SessionError, SubmitRequest,
     TurnRunOptions, WaitEnd, WorkState,
 };
-use common::{RecordingGateway, endturn_output, runner_with};
-use tokio::sync::Semaphore;
+use common::{GatedGateway, RecordingGateway, endturn_output, runner_with};
 
 // ---- local fixtures -----------------------------------------------------------
-
-/// A gateway whose one model call parks until the test releases it, so the
-/// session stays in `Running` for as long as the assertions need. `release`
-/// opens the gate permanently: subsequent calls return immediately.
-struct GatedGateway {
-    text: String,
-    calls: AtomicUsize,
-    /// One permit per `invoke` entry — lets the test know the work has
-    /// actually reached the model, not merely been accepted.
-    entered: Semaphore,
-    /// One permit per `release()`, consumed by the parked `invoke`.
-    release: Semaphore,
-    open: AtomicBool,
-}
-
-impl GatedGateway {
-    fn new(text: &str) -> Arc<Self> {
-        Arc::new(Self {
-            text: text.to_string(),
-            calls: AtomicUsize::new(0),
-            entered: Semaphore::new(0),
-            release: Semaphore::new(0),
-            open: AtomicBool::new(false),
-        })
-    }
-
-    /// How many model calls have been entered — the "accepted once" evidence.
-    fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
-    }
-
-    /// Wait until the worker has entered the gated model call. Bounded so a
-    /// regression fails loudly instead of hanging the suite.
-    async fn wait_entered(&self) {
-        tokio::time::timeout(Duration::from_secs(5), self.entered.acquire())
-            .await
-            .expect("the gated gateway is entered within 5s")
-            .expect("the entry semaphore stays open")
-            .forget();
-    }
-
-    /// Open the gate: unblock the parked call and let every later call pass.
-    fn release(&self) {
-        self.open.store(true, Ordering::SeqCst);
-        self.release.add_permits(1);
-    }
-}
-
-#[async_trait]
-impl ModelGateway for GatedGateway {
-    async fn invoke(
-        &self,
-        _req: &ModelRequest,
-        ctrl: &AttemptControl,
-    ) -> Result<ModelOutput, ModelInvokeError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.entered.add_permits(1);
-        if self.open.load(Ordering::SeqCst) {
-            return Ok(endturn_output(&self.text));
-        }
-        tokio::select! {
-            permit = self.release.acquire() => {
-                permit.expect("the release semaphore stays open").forget();
-                Ok(endturn_output(&self.text))
-            }
-            // Owner drop cancels the work; release the parked call so the
-            // worker cannot outlive the runtime.
-            _ = ctrl.cancellation_token().cancelled() => Err(ModelInvokeError::new(
-                ModelInvokeErrorKind::Permanent,
-                "gated gateway released by cancellation",
-            )),
-        }
-    }
-}
 
 /// One text submission part.
 fn text(s: &str) -> ContentPart {
@@ -151,26 +71,25 @@ fn request(key: &str, parts: Vec<ContentPart>) -> SubmitRequest {
 /// the busy guard. The single model call pins accept-once.
 ///
 /// This proves accept-once + dedup-before-busy, **not** a data race:
-/// `SessionHandle::submit` has no await point, and the dedup lookup and the
-/// `by_key` insert share one `Mutex` acquisition, so accept-once is structural
+/// `SessionHandle::submit` is synchronous, and the dedup lookup and the
+/// `submit_keys` insert share one `Mutex` acquisition, so accept-once is structural
 /// (a single lock hold) rather than something two tasks race for. The
 /// `tokio::join!` below only interleaves at the task boundary; it cannot
 /// create a torn read the lock forbids.
 #[tokio::test]
 async fn a3_repeated_same_key_submits_accept_once_and_dedup_before_busy() {
-    let gateway = GatedGateway::new("only-once");
+    let gateway = GatedGateway::new("only-once", false);
     let (_session, handle) = session_with("a3-once", gateway.clone(), SessionConfig::default());
     let parts = vec![text("hello")];
 
     let original = handle
         .submit(request("k", parts.clone()))
-        .await
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
 
     let (retry_a, retry_b) = tokio::join!(
-        handle.submit(request("k", parts.clone())),
-        handle.submit(request("k", parts.clone())),
+        async { handle.submit(request("k", parts.clone())) },
+        async { handle.submit(request("k", parts.clone())) },
     );
     assert_eq!(
         retry_a.expect("the retry resolves to the original receipt"),
@@ -200,24 +119,22 @@ async fn a3_repeated_same_key_submits_accept_once_and_dedup_before_busy() {
 /// request leaves the active work untouched.
 #[tokio::test]
 async fn a3_same_key_different_args_conflicts() {
-    let gateway = GatedGateway::new("done");
+    let gateway = GatedGateway::new("done", false);
     let (_session, handle) = session_with("a3-conflict", gateway.clone(), SessionConfig::default());
     let parts = vec![text("one")];
 
     let original = handle
         .submit(request("key", parts.clone()))
-        .await
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
-    let running = handle.observe(&original.work).await.unwrap();
+    let running = handle.observe(&original.work).unwrap();
 
     let conflict = handle
         .submit(request("key", vec![text("two")]))
-        .await
         .expect_err("same key, different parts is a conflict");
     assert_eq!(conflict, SessionError::Conflict);
 
-    let after = handle.observe(&original.work).await.unwrap();
+    let after = handle.observe(&original.work).unwrap();
     assert_eq!(
         after.revision, running.revision,
         "a rejected submit must not touch the active work"
@@ -235,14 +152,12 @@ async fn a3_same_key_different_args_conflicts() {
     assert_eq!(
         handle
             .submit(request("key", vec![text("two")]))
-            .await
             .expect_err("the argument mismatch persists"),
         SessionError::Conflict
     );
     assert_eq!(
         handle
             .submit(request("key", parts))
-            .await
             .expect("the original key + args still resolve"),
         original
     );
@@ -257,19 +172,17 @@ async fn a3_same_key_different_args_conflicts() {
 /// is accepted once the slot frees, and the new work gets a fresh identity.
 #[tokio::test]
 async fn a3_busy_rejection_does_not_consume_the_request_key() {
-    let gateway = GatedGateway::new("first");
+    let gateway = GatedGateway::new("first", false);
     let (_session, handle) = session_with("a3-key", gateway.clone(), SessionConfig::default());
 
     let first = handle
         .submit(request("first", vec![text("a")]))
-        .await
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
 
     let retry_parts = vec![text("b")];
     let busy = handle
         .submit(request("retry", retry_parts.clone()))
-        .await
         .expect_err("a competing submit is busy");
     assert_eq!(
         busy,
@@ -289,10 +202,11 @@ async fn a3_busy_rejection_does_not_consume_the_request_key() {
         WorkState::Finished
     );
 
-    // The rejected key was never consumed, so it submits cleanly now.
+    // The rejected key was never consumed, so it submits cleanly now. The
+    // one-shot gate needs a fresh release for the second work's model call.
+    gateway.release();
     let accepted = handle
         .submit(request("retry", retry_parts))
-        .await
         .expect("the previously rejected key is still free");
     assert_ne!(
         accepted.work, first.work,
@@ -316,7 +230,6 @@ async fn a3_invalid_input_does_not_consume_the_request_key() {
 
     let invalid = handle
         .submit(request("ik", vec![]))
-        .await
         .expect_err("empty parts are rejected");
     assert!(
         matches!(invalid, SessionError::InvalidInput(_)),
@@ -325,7 +238,6 @@ async fn a3_invalid_input_does_not_consume_the_request_key() {
 
     let accepted = handle
         .submit(request("ik", vec![text("hello")]))
-        .await
         .expect("the previously rejected key is still free");
     let done = handle
         .wait(&accepted.work, Duration::from_secs(5))
@@ -349,16 +261,15 @@ async fn a3_invalid_input_does_not_consume_the_request_key() {
 /// observation untouched.
 #[tokio::test]
 async fn a4_running_work_is_busy_and_stays_observable() {
-    let gateway = GatedGateway::new("final");
+    let gateway = GatedGateway::new("final", false);
     let (_session, handle) = session_with("a4-busy", gateway.clone(), SessionConfig::default());
 
     let active = handle
         .submit(request("w1", vec![text("one")]))
-        .await
         .expect("an idle session accepts the work");
     gateway.wait_entered().await;
 
-    let observed = handle.observe(&active.work).await.unwrap();
+    let observed = handle.observe(&active.work).unwrap();
     assert_eq!(observed.work, active.work);
     assert_eq!(observed.state, WorkState::Running);
     assert!(
@@ -370,7 +281,6 @@ async fn a4_running_work_is_busy_and_stays_observable() {
 
     let busy = handle
         .submit(request("w2", vec![text("two")]))
-        .await
         .expect_err("one active work per conversation, no queue");
     assert_eq!(
         busy,
@@ -379,7 +289,7 @@ async fn a4_running_work_is_busy_and_stays_observable() {
         }
     );
 
-    let after = handle.observe(&active.work).await.unwrap();
+    let after = handle.observe(&active.work).unwrap();
     assert_eq!(after.state, WorkState::Running);
     assert_eq!(
         after.revision, observed.revision,
@@ -406,7 +316,7 @@ async fn a4_running_work_is_busy_and_stays_observable() {
 /// stays observable.
 #[tokio::test]
 async fn a4_tiny_capacity_exceeds_only_when_idle_and_keeps_retained_observable() {
-    let gateway = GatedGateway::new("first");
+    let gateway = GatedGateway::new("first", false);
     let config = SessionConfig {
         retained_work_capacity: 1,
         work_deadline: None,
@@ -415,13 +325,11 @@ async fn a4_tiny_capacity_exceeds_only_when_idle_and_keeps_retained_observable()
 
     let retained = handle
         .submit(request("c1", vec![text("one")]))
-        .await
         .expect("the first work fits the capacity");
     gateway.wait_entered().await;
 
     let busy = handle
         .submit(request("c2", vec![text("two")]))
-        .await
         .expect_err("the busy guard is checked before capacity");
     assert_eq!(
         busy,
@@ -440,12 +348,11 @@ async fn a4_tiny_capacity_exceeds_only_when_idle_and_keeps_retained_observable()
 
     let over = handle
         .submit(request("c3", vec![text("three")]))
-        .await
         .expect_err("the registry is at capacity");
     assert_eq!(over, SessionError::CapacityExceeded);
 
     // Capacity exhaustion does not hide the retained result.
-    let observed = handle.observe(&retained.work).await.unwrap();
+    let observed = handle.observe(&retained.work).unwrap();
     assert_eq!(observed.state, WorkState::Finished);
     assert!(matches!(
         observed.finished,

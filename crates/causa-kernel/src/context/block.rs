@@ -44,7 +44,7 @@ impl TextPayload {
 
 /// A model-issued tool call. call_id is the kernel-generated causal key;
 /// any provider-issued identifier rides on BlockMeta::provider_call_id.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallPayload {
     /// Kernel-generated causal key pairing results to this call (unique
     /// within a single turn); provider-issued identifiers ride on

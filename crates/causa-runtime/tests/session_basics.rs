@@ -42,7 +42,6 @@ async fn submit_text(handle: &SessionHandle, key: &str, text: &str) -> causa_run
             request_key: key.into(),
             parts: vec![ContentPart::Text(TextPayload::new(text))],
         })
-        .await
         .expect("an idle session accepts the work")
 }
 
@@ -50,7 +49,7 @@ async fn submit_text(handle: &SessionHandle, key: &str, text: &str) -> causa_run
 /// surfaces as a failure rather than a hang.
 async fn await_running(handle: &SessionHandle, work: &WorkRef) {
     for _ in 0..2_000 {
-        let observation = handle.observe(work).await.expect("work is known");
+        let observation = handle.observe(work).expect("work is known");
         if observation.state == WorkState::Running {
             return;
         }
@@ -304,7 +303,6 @@ async fn a2_two_works_get_distinct_refs_and_the_first_stays_observable() {
     // switching the session's "current" work does not displace the old one.
     let first_again = handle
         .observe(&first.work)
-        .await
         .expect("the older work stays readable");
     assert_eq!(first_again.state, WorkState::Finished);
     assert_eq!(
@@ -337,7 +335,6 @@ async fn a2_two_works_get_distinct_refs_and_the_first_stays_observable() {
     assert_eq!(
         handle
             .observe(&first.work)
-            .await
             .expect("retained after the second finishes")
             .state,
         WorkState::Finished

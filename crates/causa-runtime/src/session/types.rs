@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use causa_kernel::{ContentPart, ConversationId, ModelOutput, TurnId, TurnSnapshot};
 
-use crate::driver::TurnInterruption;
+use crate::driver::{Continuation, TurnInterruption};
 
 /// Identity of one accepted work: the conversation plus the turn id the
 /// session assigned at acceptance.
@@ -76,7 +76,41 @@ pub enum FinishedKind {
         /// work's material is verifiable without reading the
         /// (completed-only) history, which deliberately excludes it.
         facts: TurnSnapshot,
+        /// The paused [`Continuation`] retained when a `Paused` work was
+        /// cancelled; `None` for a runner-produced interruption. A cancelled
+        /// work is terminal and not resumable — the continuation is retained
+        /// for inspection.
+        continuation: Option<Continuation>,
     },
+}
+
+/// What a [`cancel`](crate::session::SessionHandle::cancel) actually did to
+/// the work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// The work was still executing and its own control token was fired; the
+    /// terminal state is published when the runner returns (a completion that
+    /// wins the race keeps its result).
+    Signalled,
+    /// The work was paused and was terminated in place with no new external
+    /// call, retaining its committed facts, continuation, and cause.
+    Stopped,
+    /// The work was already `Finished`/`Faulted`; its result was not
+    /// rewritten.
+    AlreadyTerminal,
+}
+
+/// Acceptance receipt for a cancel — the work it targeted and what the cancel
+/// did to it.
+///
+/// Recovery mirror of [`WorkReceipt`]: retrying the same `request_key` resolves
+/// to this receipt without signalling or terminating anything again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelReceipt {
+    /// The work the cancel targeted.
+    pub work: WorkRef,
+    /// What the cancel actually did; see [`CancelOutcome`].
+    pub outcome: CancelOutcome,
 }
 
 /// One submission: the caller-scoped idempotency key plus the new task's
@@ -106,7 +140,8 @@ pub struct SubmitRequest {
 pub struct WorkReceipt {
     /// The work the session accepted.
     pub work: WorkRef,
-    /// The work's revision at acceptance (always `0`: the `Accepted` state).
+    /// The work's revision at acceptance: `0` for a fresh submit; the paused
+    /// revision for a resume.
     pub accepted_revision: u64,
 }
 
@@ -205,6 +240,24 @@ pub enum SessionError {
     /// The submitted input is unusable (e.g. empty parts).
     #[error("invalid submit input: {0}")]
     InvalidInput(String),
+    /// The resume named a revision that is not the work's current paused
+    /// revision.
+    #[error("stale revision for work {work:?}: expected {expected}, actual {actual}")]
+    StaleRevision {
+        /// The work whose paused revision was named.
+        work: WorkRef,
+        /// The revision the caller believed was current.
+        expected: u64,
+        /// The work's actual current paused revision.
+        actual: u64,
+    },
+    /// The work is not in a resumable (`Paused`) state.
+    #[error("work is not paused and cannot be resumed: {0:?}")]
+    NotPaused(WorkRef),
+    /// The driver rejected the resume request; nothing executed and the paused
+    /// material is unchanged.
+    #[error("invalid resume request: {0}")]
+    InvalidResume(String),
     /// The owner has been dropped (or the session closed); no new work is
     /// accepted. Retained results remain readable.
     #[error("session is closed and accepts no new work")]

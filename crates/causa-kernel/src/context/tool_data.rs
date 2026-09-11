@@ -62,7 +62,7 @@ pub enum ToolResultStatus {
 }
 
 /// Optional observability sidecar on a tool output; never part of pairing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutputMeta {
     /// Wall-clock duration of the execution, if measured.
     pub duration_ms: Option<u64>,
@@ -84,7 +84,7 @@ pub enum Truncation {
 }
 
 /// What a tool returned, as recorded by the tool door.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutput {
     /// The observation payload; after middle truncation this is a JSON
     /// string (head + notice + tail) regardless of the original shape.
@@ -116,7 +116,7 @@ impl ToolOutput {
 /// The result fact for one tool call: the paired call id, terminal status,
 /// and the output. Committed through the tool door; pairing against the
 /// committed call block is kernel-enforced.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResultPayload {
     /// The kernel-generated id of the call this result answers.
     pub call_id: ToolCallId,
@@ -133,7 +133,7 @@ pub struct ToolResultPayload {
 
 /// Pointer to a tool output persisted out-of-band (e.g. a spilled oversized
 /// observation), kept on the result instead of the full content.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     /// Store-assigned handle for retrieving the artifact.
     pub id: String,
@@ -146,7 +146,7 @@ pub struct ArtifactRef {
 }
 
 /// What an artifact holds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactKind {
     /// The complete, untruncated tool output.
     FullOutput,

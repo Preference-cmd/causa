@@ -93,6 +93,24 @@ Planned as **0.1.0** — the release gate is functional completeness
   active work's stop token. Execution is one `tokio::spawn` worker per
   accepted work holding an `Arc` of a private session core — no `JoinHandle`,
   no reference cycle, and exactly one writable `ConversationState`.
+- **`causa-runtime` session resume / cancel / shutdown**: `SessionHandle::resume`
+  continues a paused work after validating its current paused revision and the
+  request against the continuation — a rejected request executes nothing and
+  leaves the paused material untouched, a terminal work is `NotPaused`, a
+  wrong revision is `StaleRevision`, a rejected request is `InvalidResume`, and
+  a same-key repeat returns the original `WorkReceipt` without re-executing,
+  while the same key with a different decision or injection is `Conflict`.
+  `SessionHandle::cancel` fires the target work's own control token (each work
+  has an independent token, so a completion that races the cancel keeps its
+  result) or terminates a paused work in place, retaining its
+  committed facts and continuation (`FinishedKind::Interrupted.continuation`);
+  a terminal work reports `AlreadyTerminal` and its result is not rewritten,
+  and a same-key retry is stable. `Session::shutdown` stops acceptance, winds
+  the running work down, and keeps retrievable results and paused material
+  readable through surviving handles. The optional
+  `SessionConfig::work_deadline` is stored per work and preserved across a
+  pause, so a resume continues under the same absolute bound rather than a
+  fresh one.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
   protocols, with transport timeouts and classified error mapping.
 - **`causa-extension`** — `DynamicToolSource` adapters; the default `mcp`
