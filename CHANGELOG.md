@@ -71,10 +71,33 @@ Planned as **0.1.0** — the release gate is functional completeness
   exponential backoff, tool batch dispatch (dedup / allow / deny filter
   chain), streaming, approval pause with recoverable interruption, and
   `ContextEvent` projections for UI / observability consumers.
+- **`causa-runtime` session coordination**: the new `session` module adds
+  one `Session` owner per conversation plus cloneable `SessionHandle`s
+  (`id` / `submit` / `observe` / `wait`) over an assembled `TurnRunner` +
+  `TurnRunOptions`. `Session::new` accepts only an idle `ConversationState`
+  and never calls the model; a rejected construction returns every by-value
+  input (state, runner, options, config) in `SessionBuildRejection`. One work
+  is active at a time (no queue, no steering, no implicit approval): `submit`
+  on a busy session is `SessionError::Busy` naming the active `WorkRef`. Each
+  work gets a fresh `TurnId` at acceptance that is never reused, plus a local
+  `request_key` dedup table (same key + parts → the original `WorkReceipt`;
+  same key, different parts → `Conflict`; rejected submits do not consume the
+  key), and an explicit `SessionConfig::retained_work_capacity` (default 256)
+  bounding the registry; an optional `SessionConfig::work_deadline` is measured
+  from acceptance and wired into the work's `RunControl`. Completed turns
+  commit into history; interrupted ones retain their real aborted facts (a
+  `TurnSnapshot`) and cause outside the completed-only history; paused ones
+  retain the complete `ConversationOutcome` for a later explicit resume. A
+  worker panic or runner rejection is published as `Faulted` and the session
+  refuses new work, while dropping the owner closes acceptance and fires the
+  active work's stop token. Execution is one `tokio::spawn` worker per
+  accepted work holding an `Arc` of a private session core — no `JoinHandle`,
+  no reference cycle, and exactly one writable `ConversationState`.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
   protocols, with transport timeouts and classified error mapping.
-- **`causa-mcp`** — MCP client (`McpToolSource`) over stdio, Streamable
-  HTTP, and in-process I/O; tools namespaced `mcp_{server}_{tool}` into
+- **`causa-extension`** — `DynamicToolSource` adapters; the default `mcp`
+  feature provides the MCP client (`McpToolSource`) over stdio, Streamable
+  HTTP, and in-process I/O, namespacing tools `mcp_{server}_{tool}` into
   the executor with `tools/list_changed` cache invalidation.
 - Kernel-face prompt caching: `CacheDirective` rides every model
   request — the Anthropic translation renders three-anchor
@@ -136,29 +159,6 @@ Planned as **0.1.0** — the release gate is functional completeness
   shape is unchanged — a private runtime DTO writes and reads the old
   `{result, policy}` entries (fixed action for unknown entries,
   canonical `Stop` otherwise), so existing pause material round-trips.
-- **`causa-runtime` — single-session coordination**: the new `session`
-  module adds one `Session` owner per conversation plus cloneable
-  `SessionHandle`s (`id` / `submit` / `observe` / `wait`) over an assembled
-  `TurnRunner` + `TurnRunOptions`. `Session::new` accepts only an idle
-  `ConversationState` and never calls the model; a rejected construction
-  returns every by-value input (state, runner, options, config) in
-  `SessionBuildRejection`. One work is active at a time (no queue, no
-  steering, no implicit approval): `submit` on a busy session is
-  `SessionError::Busy` naming the active `WorkRef`. Each work gets
-  a fresh `TurnId` at acceptance that is never reused, plus a local
-  `request_key` dedup table (same key + parts → the original `WorkReceipt`;
-  same key, different parts → `Conflict`; rejected submits do not consume the
-  key), and an explicit `SessionConfig::retained_work_capacity` (default 256)
-  bounding the registry; an optional `SessionConfig::work_deadline` is measured
-  from acceptance and wired into the work's `RunControl`. Completed turns
-  commit into history; interrupted ones retain their real aborted facts (a
-  `TurnSnapshot`) and cause outside the completed-only history; paused ones
-  retain the complete `ConversationOutcome` for a later explicit resume. A
-  worker panic or runner rejection is published as `Faulted` and the session
-  refuses new work, while dropping the owner closes acceptance and fires the
-  active work's stop token. Execution is one `tokio::spawn` worker per
-  accepted work holding an `Arc` of a private session core — no `JoinHandle`,
-  no reference cycle, and exactly one writable `ConversationState`.
 
 ### Removed
 
