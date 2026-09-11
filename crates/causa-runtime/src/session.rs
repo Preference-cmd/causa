@@ -17,9 +17,10 @@
 //!   `Paused`, `submit` returns [`SessionError::Busy`] naming it.
 //! - Stable identity: each work gets a fresh `TurnId` at acceptance, never
 //!   reused, even after an interrupt.
-//! - Local request-key dedup, checked before the busy guard: same key and parts
-//!   returns the original [`WorkReceipt`], same key with different parts is
-//!   [`SessionError::Conflict`], and a rejected submit keeps the key free.
+//! - Local request-key dedup, checked before the busy and closed guards: same
+//!   key and parts returns the original [`WorkReceipt`] (even after the owner
+//!   closed), same key with different parts is [`SessionError::Conflict`], and
+//!   a rejected submit keeps the key free.
 //! - Bounded retention: [`SessionConfig::retained_work_capacity`] bounds the
 //!   registry; finished results stay observable across later works.
 //! - One writable state: it moves into the worker task while a work runs.

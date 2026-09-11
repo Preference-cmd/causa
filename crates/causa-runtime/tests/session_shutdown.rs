@@ -3,9 +3,9 @@
 //! `Session::shutdown` stops acceptance and then waits for the running work to
 //! wind down: it returns only once the worker has published its terminal state,
 //! and it leaves retrievable results and paused material readable through
-//! surviving handles. A fresh submit after shutdown is `Closed`; a faulted work
-//! is never replayed; a repeat shutdown is harmless; an idle shutdown returns at
-//! once.
+//! surviving handles. A fresh submit after shutdown is `Closed`; an accepted
+//! request key still replays its original receipt; a faulted work is never
+//! replayed; a repeat shutdown is harmless; an idle shutdown returns at once.
 //!
 //! Reuses the shared `common` fixtures; every test runs offline.
 
@@ -16,12 +16,12 @@ use std::time::Duration;
 
 use causa_kernel::ConversationId;
 use causa_runtime::{
-    ConversationState, FinishedKind, Session, SessionConfig, SessionError, TurnInterruption,
-    TurnRunOptions, WaitEnd, WorkState,
+    CancelOutcome, ConversationState, FinishedKind, Session, SessionConfig, SessionError,
+    TurnInterruption, TurnRunOptions, WaitEnd, WorkState,
 };
 use common::{
     EchoTool, GatedGateway, PanickingGateway, PausingInteraction, RecordingGateway, approve,
-    awaiting_echo, idle_session, runner_with, session_req, tooluse_output,
+    awaiting_echo, endturn_output, idle_session, runner_with, session_req, tooluse_output,
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -328,4 +328,125 @@ async fn after_shutdown_resume_and_cancel_are_closed_but_paused_material_stays_r
         .expect("waiting a retained pause is still observable");
     assert_eq!(waited.end, WaitEnd::ReachedState);
     assert_eq!(waited.observation.state, WorkState::Paused);
+}
+
+// ---- shutdown keeps accepted request keys replayable -----------------------
+
+#[tokio::test]
+async fn after_shutdown_a_same_key_submit_replays_its_receipt() {
+    let gateway = RecordingGateway::scripted(vec![Ok(endturn_output("done"))]);
+    let session = idle_session("shutdown-replay", gateway.clone());
+    let handle = session.handle();
+
+    let receipt = handle
+        .submit(session_req("k1", "hello"))
+        .expect("an idle session accepts the work");
+    handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .expect("the work is observable");
+
+    session.shutdown().await;
+
+    // Shutdown deletes no acceptance record: the accepted key still resolves to
+    // its original receipt, a different argument set is still a conflict, and
+    // a key that was never accepted is refused.
+    assert_eq!(
+        handle
+            .submit(session_req("k1", "hello"))
+            .expect("the accepted key replays after shutdown"),
+        receipt
+    );
+    assert_eq!(
+        handle.submit(session_req("k1", "elsewhere")),
+        Err(SessionError::Conflict)
+    );
+    assert_eq!(
+        handle.submit(session_req("k2", "new")),
+        Err(SessionError::Closed)
+    );
+}
+
+#[tokio::test]
+async fn after_shutdown_accepted_resume_and_cancel_keys_replay() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("approval?", "echo", serde_json::json!({}))),
+        Ok(endturn_output("done")),
+    ]);
+    let options = TurnRunOptions {
+        interaction: Arc::new(PausingInteraction),
+        ..Default::default()
+    };
+    let session = Session::new(
+        ConversationState::new(ConversationId("shutdown-replay-controls".into())),
+        Arc::new(runner_with(gateway.clone(), vec![Arc::new(EchoTool)])),
+        options,
+        SessionConfig::default(),
+    )
+    .expect("an empty state is an idle session base");
+    let handle = session.handle();
+
+    let receipt = handle
+        .submit(session_req("p", "approve me"))
+        .expect("an idle session accepts the work");
+    let paused = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .expect("the accepted work is observable");
+    assert_eq!(paused.observation.state, WorkState::Paused);
+
+    // Accept one resume (key "r1"), let it complete, then cancel the now
+    // terminal work (key "c1") so both key tables hold a record.
+    let resumed = handle
+        .resume(
+            &receipt.work,
+            paused.observation.revision,
+            "r1".into(),
+            approve(vec![awaiting_echo()]),
+        )
+        .expect("the covering decision resumes the pause");
+    let done = handle
+        .wait(&resumed.work, Duration::from_secs(5))
+        .await
+        .expect("the resumed work is observable");
+    assert_eq!(done.observation.state, WorkState::Finished);
+    let cancelled = handle
+        .cancel(&resumed.work, "c1".into())
+        .expect("the terminal work reports already-terminal");
+    assert_eq!(cancelled.outcome, CancelOutcome::AlreadyTerminal);
+
+    session.shutdown().await;
+
+    // Both accepted keys replay their receipts after shutdown; fresh keys are
+    // still refused.
+    assert_eq!(
+        handle
+            .resume(
+                &receipt.work,
+                paused.observation.revision,
+                "r1".into(),
+                approve(vec![awaiting_echo()]),
+            )
+            .expect("the accepted resume key replays"),
+        resumed
+    );
+    assert_eq!(
+        handle
+            .cancel(&resumed.work, "c1".into())
+            .expect("the accepted cancel key replays"),
+        cancelled
+    );
+    assert_eq!(
+        handle.resume(
+            &receipt.work,
+            paused.observation.revision,
+            "r2".into(),
+            approve(vec![awaiting_echo()]),
+        ),
+        Err(SessionError::Closed)
+    );
+    assert_eq!(
+        handle.cancel(&resumed.work, "c2".into()),
+        Err(SessionError::Closed)
+    );
 }

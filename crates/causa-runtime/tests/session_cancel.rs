@@ -5,21 +5,24 @@
 //! A paused work is `Stopped` with its committed facts and its continuation
 //! retained; a running work is signalled and ends `Interrupted`; a terminal
 //! work is `AlreadyTerminal` and its result is not rewritten; a same-key retry
-//! resolves to the identical receipt; a foreign ref is `NotFound`; and a
-//! completion that races the cancel keeps its own result. Shared fixtures come
-//! from `tests/common`.
+//! resolves to the identical receipt; a foreign ref is `NotFound`; a
+//! completion that races the cancel keeps its own result; and a cancel that
+//! lands while the host's approval gate is deciding wins over the pause.
+//! Shared fixtures come from `tests/common`.
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use causa_kernel::{ConversationId, TurnId};
 use causa_runtime::{
-    CancelOutcome, FinishedKind, SessionError, TurnInterruption, WaitEnd, WorkRef, WorkState,
+    CancelOutcome, ConversationState, FinishedKind, Session, SessionConfig, SessionError,
+    TurnInterruption, TurnRunOptions, WaitEnd, WorkRef, WorkState,
 };
 use common::{
-    GatedGateway, RecordingGateway, endturn_output, idle_session, paused_work, session_req,
-    tooluse_output,
+    EchoTool, GatedGateway, GatedPauseInteraction, RecordingGateway, endturn_output, idle_session,
+    paused_work, runner_with, session_req, tooluse_output,
 };
 
 // ---- helpers ----------------------------------------------------------------
@@ -403,4 +406,79 @@ async fn cancel_same_key_for_another_work_conflicts_before_not_found() {
         Err(SessionError::Conflict) => {}
         other => panic!("expected Conflict for a reused cancel key, got {other:?}"),
     }
+}
+
+// ---- cancel vs the approval gate -------------------------------------------
+
+#[tokio::test]
+async fn cancel_racing_the_approval_gate_wins_over_the_pause() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("approval?", "echo", serde_json::json!({}))),
+        Ok(endturn_output("never reached")),
+    ]);
+    let interaction = GatedPauseInteraction::new();
+    let options = TurnRunOptions {
+        interaction: interaction.clone(),
+        ..Default::default()
+    };
+    let session = Session::new(
+        ConversationState::new(ConversationId("cancel-pause-race".into())),
+        Arc::new(runner_with(gateway.clone(), vec![Arc::new(EchoTool)])),
+        options,
+        SessionConfig::default(),
+    )
+    .expect("an empty state is an idle session base");
+    let handle = session.handle();
+
+    let receipt = handle
+        .submit(session_req("r1", "hold"))
+        .expect("an idle session accepts the work");
+    interaction.wait_entered().await;
+
+    // The cancel lands while the host's gate is parked: the slot is Running.
+    let signalled = handle
+        .cancel(&receipt.work, "c1".into())
+        .expect("the running work is cancellable");
+    assert_eq!(signalled.outcome, CancelOutcome::Signalled);
+
+    // The host now returns its Pause decision; the fired token must win, or
+    // the work would come back Paused after its cancel was accepted.
+    interaction.release();
+    let finished = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .expect("the work is observable");
+    assert_eq!(finished.end, WaitEnd::ReachedState);
+    assert_eq!(finished.observation.state, WorkState::Finished);
+    match &finished.observation.finished {
+        Some(FinishedKind::Interrupted {
+            cause,
+            continuation,
+            ..
+        }) => {
+            assert_eq!(*cause, TurnInterruption::ExplicitCancellation);
+            assert!(
+                continuation.is_some(),
+                "the paused continuation is retained for inspection"
+            );
+        }
+        other => panic!("expected the pause to be cancelled, got {other:?}"),
+    }
+    assert_eq!(
+        gateway.recorded().len(),
+        1,
+        "the cancelled pause dispatched no tool and made no second model call"
+    );
+
+    // The receipt stays stable on a same-key retry; a fresh key sees terminal.
+    assert_eq!(
+        handle
+            .cancel(&receipt.work, "c1".into())
+            .expect("the same key stays valid"),
+        signalled
+    );
+    let fresh = handle
+        .cancel(&receipt.work, "c2".into())
+        .expect("a fresh key on a terminal work");
+    assert_eq!(fresh.outcome, CancelOutcome::AlreadyTerminal);
 }

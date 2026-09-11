@@ -278,19 +278,20 @@ impl SessionCore {
         request: SubmitRequest,
     ) -> Result<WorkReceipt, SessionError> {
         let mut inner = self.lock();
-        if inner.closed {
-            return Err(SessionError::Closed);
-        }
-        // Local dedup is checked before the busy guard: a retry of a lost
-        // receipt must resolve to the original receipt even while the work
-        // runs. A key that was never accepted (because a submit was rejected)
-        // is absent here, so fixing a rejected submit keeps the key free.
+        // Local dedup is checked before the busy and closed guards: a retry of
+        // a lost receipt must resolve to the original receipt even while the
+        // work runs and after the session closed. A key that was never accepted
+        // (because a submit was rejected) is absent here, so fixing a rejected
+        // submit keeps the key free.
         if let Some(record) = inner.submit_keys.get(&request.request_key) {
             return if record.parts == request.parts {
                 Ok(record.receipt.clone())
             } else {
                 Err(SessionError::Conflict)
             };
+        }
+        if inner.closed {
+            return Err(SessionError::Closed);
         }
         if let Some(error) = inner.slot.admission_error(&self.id) {
             return Err(error);
@@ -399,13 +400,10 @@ impl SessionCore {
         request: ResumeRequest,
     ) -> Result<WorkReceipt, SessionError> {
         let mut inner = self.lock();
-        if inner.closed {
-            return Err(SessionError::Closed);
-        }
-        // Local dedup is checked before the state guards: a retry of a lost
-        // receipt must resolve to the original receipt. A key accepted for a
-        // different work, revision, or request is a conflict, not a second
-        // execution.
+        // Local dedup is checked before the state and closed guards: a retry of
+        // a lost receipt must resolve to the original receipt even after the
+        // session closed. A key accepted for a different work, revision, or
+        // request is a conflict, not a second execution.
         if let Some(record) = inner.resume_keys.get(&request_key) {
             return if &record.work == work
                 && record.revision == expected_revision
@@ -415,6 +413,9 @@ impl SessionCore {
             } else {
                 Err(SessionError::Conflict)
             };
+        }
+        if inner.closed {
+            return Err(SessionError::Closed);
         }
         if work.conversation_id != self.id {
             return Err(SessionError::NotFound(work.clone()));
@@ -499,17 +500,18 @@ impl SessionCore {
         request_key: String,
     ) -> Result<CancelReceipt, SessionError> {
         let mut inner = self.lock();
-        if inner.closed {
-            return Err(SessionError::Closed);
-        }
-        // Local dedup: a retry of a lost receipt resolves to the original
-        // receipt without signalling or terminating anything again.
+        // Local dedup is checked before the closed guard: a retry of a lost
+        // receipt resolves to the original receipt without signalling or
+        // terminating anything again, even after the session closed.
         if let Some(record) = inner.cancel_keys.get(&request_key) {
             return if &record.work == work {
                 Ok(record.receipt.clone())
             } else {
                 Err(SessionError::Conflict)
             };
+        }
+        if inner.closed {
+            return Err(SessionError::Closed);
         }
         if work.conversation_id != self.id || !inner.works.contains_key(work) {
             return Err(SessionError::NotFound(work.clone()));
@@ -716,26 +718,77 @@ impl SessionCore {
     /// cause publicly and stays out of history, `Paused` retains the complete
     /// outcome.
     ///
-    /// The commit/abort runs before the lock is taken — it works on the
-    /// owned state the worker handed back, so the registry is never held
-    /// while facts validate.
+    /// The `Completed` / `Interrupted` commit/abort runs before the lock is
+    /// taken — it works on the owned state the worker handed back, so the
+    /// registry is never held while facts validate. The `Paused` arm is the
+    /// exception: its verdict depends on the work's own stop token, so the
+    /// token check and the install share one lock hold — a cancel that already
+    /// fired wins over the pause, and a cancel that has not fired yet will see
+    /// `Paused` and stop it in place, so the pause can never slip past a
+    /// cancel.
     fn publish_outcome(&self, work: &WorkRef, outcome: ConversationOutcome) {
         let ConversationOutcome {
             mut state,
             result,
             trace,
         } = outcome;
+        if matches!(result, TurnResult::Paused { .. }) {
+            let TurnResult::Paused { continuation } = result else {
+                unreachable!("matched above");
+            };
+            let mut inner = self.lock();
+            let cancelled = matches!(
+                &inner.slot,
+                Slot::Running { work: active, token } if active == work && token.is_cancelled()
+            );
+            let (slot, kind, finished, fault) = if cancelled {
+                match state.abort_turn(work.turn_id.clone()) {
+                    Ok(facts) => (
+                        Slot::Idle(state),
+                        WorkState::Finished,
+                        Some(FinishedKind::Interrupted {
+                            cause: TurnInterruption::ExplicitCancellation,
+                            facts: facts.snapshot(),
+                            continuation: Some(continuation),
+                        }),
+                        None,
+                    ),
+                    Err(error) => {
+                        let reason =
+                            format!("abort_turn rejected the cancelled paused turn: {error}");
+                        (
+                            Slot::Faulted {
+                                reason: reason.clone(),
+                            },
+                            WorkState::Faulted,
+                            None,
+                            Some(reason),
+                        )
+                    }
+                }
+            } else {
+                (
+                    Slot::Paused(ConversationOutcome {
+                        state,
+                        result: TurnResult::Paused { continuation },
+                        trace,
+                    }),
+                    WorkState::Paused,
+                    None,
+                    None,
+                )
+            };
+            inner.slot = slot;
+            update(&mut inner, work, |entry| {
+                entry.state = kind;
+                entry.finished = finished;
+                entry.fault = fault;
+            });
+            drop(inner);
+            self.bump_epoch();
+            return;
+        }
         let (slot, kind, finished, fault) = match result {
-            TurnResult::Paused { continuation } => (
-                Slot::Paused(ConversationOutcome {
-                    state,
-                    result: TurnResult::Paused { continuation },
-                    trace,
-                }),
-                WorkState::Paused,
-                None,
-                None,
-            ),
             TurnResult::Completed { final_output } => match state.commit(work.turn_id.clone()) {
                 Ok(_) => (
                     Slot::Idle(state),
@@ -778,6 +831,7 @@ impl SessionCore {
                     )
                 }
             },
+            TurnResult::Paused { .. } => unreachable!("the paused arm returned above"),
         };
         let mut inner = self.lock();
         inner.slot = slot;

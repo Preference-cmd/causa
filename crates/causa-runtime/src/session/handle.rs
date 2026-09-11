@@ -19,8 +19,8 @@ use super::types::{
 ///
 /// Handles never own the lifecycle: dropping the last handle does not close
 /// the session, and after the owner is dropped they can still read retained
-/// observations while new submissions are refused with
-/// [`SessionError::Closed`].
+/// observations and replay an accepted `request_key` to its original
+/// receipt, while new submissions are refused with [`SessionError::Closed`].
 #[derive(Clone)]
 pub struct SessionHandle {
     pub(super) core: Arc<SessionCore>,
@@ -47,7 +47,7 @@ impl SessionHandle {
     /// worker. Rejections (busy, conflict, capacity, invalid input, closed,
     /// faulted) leave no accepted work behind and do not consume the request
     /// key. Idempotent on `request_key` + parts: a repeat returns the original
-    /// receipt without executing again.
+    /// receipt without executing again, even once the owner has closed.
     ///
     /// Synchronous: admission never blocks on the runner. Spawning the worker
     /// still requires a Tokio runtime context.
@@ -108,7 +108,8 @@ impl SessionHandle {
     /// work's current paused revision, [`SessionError::Busy`] while another work
     /// owns the conversation, [`SessionError::InvalidResume`] when the driver
     /// rejects the request, [`SessionError::Conflict`] on a key reuse with
-    /// different arguments, and [`SessionError::Closed`] after shutdown.
+    /// different arguments, and [`SessionError::Closed`] for a request that is
+    /// not a replay after shutdown.
     pub fn resume(
         &self,
         work: &WorkRef,
@@ -135,7 +136,8 @@ impl SessionHandle {
     /// [`SessionError::NotFound`] for a foreign, unknown, or already-cleared
     /// ref, [`SessionError::Busy`] while another work owns the conversation,
     /// [`SessionError::Conflict`] on a key reuse with a different work, and
-    /// [`SessionError::Closed`] after shutdown.
+    /// [`SessionError::Closed`] for a request that is not a replay after
+    /// shutdown.
     pub fn cancel(
         &self,
         work: &WorkRef,

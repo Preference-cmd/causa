@@ -125,6 +125,55 @@ impl TurnInteraction for PausingInteraction {
     }
 }
 
+/// A `TurnInteraction` that parks inside `decide_batch` until the test
+/// releases it, then returns `Pause` — so a cancel can deterministically land
+/// while the host's approval gate is deciding.
+pub struct GatedPauseInteraction {
+    /// One permit per `decide_batch` entry, so the test knows the gate is
+    /// parked there rather than merely reached.
+    entered: tokio::sync::Semaphore,
+    /// One permit per `release()`, consumed by the parked `decide_batch`.
+    release: tokio::sync::Semaphore,
+}
+
+impl GatedPauseInteraction {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: tokio::sync::Semaphore::new(0),
+            release: tokio::sync::Semaphore::new(0),
+        })
+    }
+
+    /// Wait until `decide_batch` has been entered. Bounded so a regression
+    /// fails loudly instead of hanging the suite.
+    pub async fn wait_entered(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.entered.acquire())
+            .await
+            .expect("the gated interaction is entered within 5s")
+            .expect("the entry semaphore stays open")
+            .forget();
+    }
+
+    /// Let the parked `decide_batch` return its `Pause`.
+    pub fn release(&self) {
+        self.release.add_permits(1);
+    }
+}
+
+#[async_trait]
+impl TurnInteraction for GatedPauseInteraction {
+    async fn decide_batch(&self, _calls: &[ToolCallPayload]) -> BatchDecision {
+        self.entered.add_permits(1);
+        let permit = self
+            .release
+            .acquire()
+            .await
+            .expect("the release semaphore stays open");
+        permit.forget();
+        BatchDecision::Pause { deadline: None }
+    }
+}
+
 /// A session with no interaction seam over `id`, driving `gateway` with the
 /// default config — work runs straight through the driver.
 pub fn idle_session(id: &str, gateway: Arc<dyn ModelGateway>) -> Session {

@@ -259,7 +259,9 @@ pub enum SessionError {
     #[error("invalid resume request: {0}")]
     InvalidResume(String),
     /// The owner has been dropped (or the session closed); no new work is
-    /// accepted. Retained results remain readable.
+    /// accepted. Retained results remain readable, and a same-key replay of an
+    /// already-accepted request still returns its original receipt — only a
+    /// new request is rejected.
     #[error("session is closed and accepts no new work")]
     Closed,
     /// The worker faulted; the session refuses new work until the harness
