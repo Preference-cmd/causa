@@ -26,9 +26,10 @@
 //! - One writable state: it moves into the worker task while a work runs.
 //! - `Completed` commits into history; `Interrupted` keeps the real facts plus
 //!   cause and stays out of history; `Paused` keeps the complete outcome for an
-//!   explicit `resume`.
-//! - A panic or runner rejection publishes [`WorkState::Faulted`] with the
-//!   reason and refuses new work — never a work stuck `Running`.
+//!   explicit `resume`. Observations include an independent copy of its
+//!   [`crate::driver::PausePoint`] and the revision needed to decide it.
+//! - A panic, runner rejection, or dropped worker publishes
+//!   [`WorkState::Faulted`] with the reason and refuses new work.
 //! - `resume` continues a paused work after validating the work's paused
 //!   revision and the request; a rejected request executes nothing and leaves
 //!   the paused material untouched. `cancel` fires the work's own control token
@@ -45,6 +46,9 @@
 //! # Runtime
 //!
 //! [`SessionHandle::submit`] spawns the worker on the ambient Tokio runtime.
+//! If that runtime drops the task, even before its first poll, surviving
+//! handles observe `Faulted` and the owner can still shut down. The lost
+//! task's complete execution material cannot be recovered by this mechanism.
 //!
 //! # Layout
 //!

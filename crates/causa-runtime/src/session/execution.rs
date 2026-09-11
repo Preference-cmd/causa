@@ -702,6 +702,9 @@ impl SessionCore {
     /// terminal, so a fault can never look like a permanent `Running`.
     fn mark_faulted(&self, work: &WorkRef, reason: String) {
         let mut inner = self.lock();
+        if !matches!(&inner.slot, Slot::Running { work: active, .. } if active == work) {
+            return;
+        }
         inner.slot = Slot::Faulted {
             reason: reason.clone(),
         };
@@ -873,6 +876,15 @@ fn observation(
         work: work.clone(),
         revision: entry.revision,
         state: entry.state,
+        paused: match &inner.slot {
+            Slot::Paused(outcome) if paused_turn_id(outcome) == work.turn_id => {
+                let TurnResult::Paused { continuation } = &outcome.result else {
+                    unreachable!("a paused slot holds a paused result");
+                };
+                Some(continuation.pause_point.clone())
+            }
+            _ => None,
+        },
         finished: entry.finished.clone(),
         fault: entry.fault.clone(),
     })
@@ -892,21 +904,55 @@ fn update(inner: &mut Inner, work: &WorkRef, mutate: impl FnOnce(&mut WorkEntry)
 /// lock), so it faults with the caller's message rather than dropping the
 /// material; a panic is caught and faulted the same way.
 ///
-/// Holds `Arc<SessionCore>` (never a `JoinHandle`) so the session can forget
-/// the task and no strong reference cycle forms.
-async fn supervise(
+/// The guard is built before the future is spawned, so even a runtime that
+/// drops the task before its first poll publishes a fault. It holds no
+/// `JoinHandle` and creates no reference cycle.
+fn supervise(
     core: Arc<SessionCore>,
     work: WorkRef,
     panic_label: &'static str,
     drive: impl std::future::Future<Output = Result<ConversationOutcome, String>>,
-) {
-    match AssertUnwindSafe(drive).catch_unwind().await {
-        Ok(Ok(outcome)) => core.publish_outcome(&work, outcome),
-        Ok(Err(reason)) => core.mark_faulted(&work, reason),
-        Err(payload) => core.mark_faulted(
-            &work,
-            format!("{panic_label} panicked: {}", panic_message(&*payload)),
-        ),
+) -> impl std::future::Future<Output = ()> {
+    let mut guard = WorkerGuard {
+        core,
+        work,
+        armed: true,
+    };
+    async move {
+        match AssertUnwindSafe(drive).catch_unwind().await {
+            Ok(Ok(outcome)) => guard.core.publish_outcome(&guard.work, outcome),
+            Ok(Err(reason)) => guard.core.mark_faulted(&guard.work, reason),
+            Err(payload) => guard.core.mark_faulted(
+                &guard.work,
+                format!("{panic_label} panicked: {}", panic_message(&*payload)),
+            ),
+        }
+        guard.disarm();
+    }
+}
+
+/// Publishes task cancellation even when the executor never polls it again.
+/// No complete outcome is available once the task loses its owned state.
+struct WorkerGuard {
+    core: Arc<SessionCore>,
+    work: WorkRef,
+    armed: bool,
+}
+
+impl WorkerGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.core.mark_faulted(
+                &self.work,
+                "worker task dropped before publishing its outcome".into(),
+            );
+        }
     }
 }
 

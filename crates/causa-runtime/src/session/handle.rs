@@ -61,7 +61,9 @@ impl SessionHandle {
 
     /// Read one work's current published state.
     ///
-    /// Never blocks on the runner and never mutates the work.
+    /// A paused observation includes the prepared calls needed to construct
+    /// a resume decision, copied from the same revision. Never blocks on the
+    /// runner and never mutates the work.
     ///
     /// # Errors
     ///

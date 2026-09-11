@@ -114,6 +114,130 @@ async fn history_len_seen_by_probe(
 
 // ---- validation happens before any execution ------------------------------
 
+/// Rewrites runtime-generated arguments before the approval pause; the host
+/// must use the observed prepared calls rather than the model's draft.
+struct RewriteApproval;
+
+#[async_trait]
+impl causa_runtime::ToolUseHook for RewriteApproval {
+    async fn apply(
+        &self,
+        mut calls: Vec<causa_kernel::ToolCallPayload>,
+        ctx: &causa_runtime::HookCtx<'_>,
+    ) -> causa_runtime::HookOutcome {
+        for call in &mut calls {
+            call.arguments = serde_json::json!({
+                "hook_round": ctx.round_id.0,
+                "draft": call.arguments,
+            });
+        }
+        causa_runtime::HookOutcome::passthrough(calls)
+    }
+}
+
+#[tokio::test]
+async fn observed_pause_drives_dynamic_approval_and_keeps_revision_isolation() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output(
+            "first",
+            "echo",
+            serde_json::json!({"path":"a.rs"}),
+        )),
+        Ok(tooluse_output(
+            "second",
+            "echo",
+            serde_json::json!({"path":"b.rs"}),
+        )),
+        Ok(endturn_output("done")),
+    ]);
+    let (echo, executions) = CountingEcho::new();
+    let runner = causa_runtime::TurnRunner::with_hook(
+        gateway.clone(),
+        Arc::new(causa_runtime::ToolExecutor::from_vec(vec![echo])),
+        Arc::new(RewriteApproval),
+    );
+    let session = Session::new(
+        ConversationState::new(ConversationId("observed-approval".into())),
+        Arc::new(runner),
+        TurnRunOptions {
+            interaction: Arc::new(common::PausingInteraction),
+            ..Default::default()
+        },
+        SessionConfig::default(),
+    )
+    .unwrap();
+    let handle = session.handle();
+    let (receipt, first) = submit_to_pause(&handle, "submit").await;
+    let Some(causa_runtime::PausePoint::AwaitingApproval { mut prepared, .. }) = first.paused
+    else {
+        panic!("the observation must describe the approval pause");
+    };
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(prepared.awaiting[0].arguments["hook_round"], 0);
+    let first_calls = prepared.awaiting.clone();
+    prepared.awaiting[0].arguments = serde_json::json!({"tampered":true});
+    let Some(causa_runtime::PausePoint::AwaitingApproval {
+        prepared: retained, ..
+    }) = handle.observe(&receipt.work).unwrap().paused
+    else {
+        panic!("the pause is still observable");
+    };
+    assert_eq!(
+        retained.awaiting, first_calls,
+        "observation copies cannot edit the pause"
+    );
+    handle
+        .resume(
+            &receipt.work,
+            first.revision,
+            "approve-first".into(),
+            approve(retained.awaiting),
+        )
+        .unwrap();
+    let second = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .unwrap()
+        .observation;
+    assert!(second.revision > first.revision);
+    let Some(causa_runtime::PausePoint::AwaitingApproval { prepared, .. }) = second.paused else {
+        panic!("the next batch has its own pause");
+    };
+    assert_ne!(prepared.awaiting[0].call_id, first_calls[0].call_id);
+    assert_eq!(prepared.awaiting[0].arguments["hook_round"], 1);
+    let decision = approve(prepared.awaiting);
+    assert!(matches!(
+        handle.resume(
+            &receipt.work,
+            first.revision,
+            "approve-second".into(),
+            decision.clone()
+        ),
+        Err(SessionError::StaleRevision { .. })
+    ));
+    handle
+        .resume(
+            &receipt.work,
+            second.revision,
+            "approve-second".into(),
+            decision,
+        )
+        .unwrap();
+    let done = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .unwrap()
+        .observation;
+    assert!(matches!(
+        done.finished,
+        Some(FinishedKind::Completed { .. })
+    ));
+    assert!(done.paused.is_none());
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(gateway.recorded().len(), 3);
+    session.shutdown().await;
+}
+
 #[tokio::test]
 async fn resume_with_wrong_revision_is_rejected_untouched() {
     let gateway = RecordingGateway::scripted(vec![

@@ -145,6 +145,13 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 ### Changed
 
+- **Session pause observations**: `WorkObservation` gains a required
+  `paused: Option<PausePoint>` field in the unreleased Rust API (update
+  struct literals). `observe` and `wait` return the hook-prepared approval
+  calls and pause description with the same revision, so hosts can build
+  resume requests without retaining a separate callback-side copy. Mutating
+  the observation does not edit the session's retained pause. Existing wire
+  shapes are unchanged.
 - **`causa-runtime` session handle API**: the session work filed under Added
   above changed the shapes Phase A introduced, still inside the unreleased
   0.1.0 — `SessionHandle::submit` and `observe` are synchronous now (drop the
@@ -223,6 +230,10 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 ### Fixed
 
+- Session workers now publish `Faulted` if the hosting runtime drops their
+  task, including an accepted submission or resume not yet polled. Retained
+  handles no longer report a permanently running work, and `shutdown` can
+  complete after the original runtime has exited.
 - Protocol translation resolves tool result ids through a
   `(turn_id, call_id)` map instead of a bare `call_id` map: two turns
   calling the same tool with the same arguments keep their own provider

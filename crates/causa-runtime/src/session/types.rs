@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use causa_kernel::{ContentPart, ConversationId, ModelOutput, TurnId, TurnSnapshot};
 
-use crate::driver::{Continuation, TurnInterruption};
+use crate::driver::{Continuation, PausePoint, TurnInterruption};
 
 /// Identity of one accepted work: the conversation plus the turn id the
 /// session assigned at acceptance.
@@ -158,6 +158,14 @@ pub struct WorkObservation {
     pub revision: u64,
     /// The current management state.
     pub state: WorkState,
+    /// Why the work paused, including the hook-prepared calls awaiting a
+    /// decision. Present exactly when `state` is [`WorkState::Paused`].
+    ///
+    /// This is an owned copy from the same observation as `revision`;
+    /// changing it does not change the retained pause. Use its awaiting
+    /// calls to construct a [`crate::resume::ResumeRequest`] and pass this
+    /// revision to `resume`, which rejects decisions for an older pause.
+    pub paused: Option<PausePoint>,
     /// The terminal result when `state` is [`WorkState::Finished`]; `None`
     /// otherwise.
     pub finished: Option<FinishedKind>,
