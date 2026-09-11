@@ -66,7 +66,7 @@ fn request(key: &str, parts: Vec<ContentPart>) -> SubmitRequest {
 
 // ---- request-key idempotency -----------------------------------------------------------------------
 
-///repeated same-key submits accept once, and both retries resolve to the
+/// repeated same-key submits accept once, and both retries resolve to the
 /// original receipt even while the slot is busy — dedup is checked *before*
 /// the busy guard. The single model call pins accept-once.
 ///
@@ -114,7 +114,7 @@ async fn a3_repeated_same_key_submits_accept_once_and_dedup_before_busy() {
     );
 }
 
-///the same key with different parts is `Conflict`, both while the work
+/// the same key with different parts is `Conflict`, both while the work
 /// runs (dedup precedes the busy guard) and after it finishes. The rejected
 /// request leaves the active work untouched.
 #[tokio::test]
@@ -168,7 +168,7 @@ async fn a3_same_key_different_args_conflicts() {
     );
 }
 
-///a `Busy` rejection does not consume the request key — the very same key
+/// a `Busy` rejection does not consume the request key — the very same key
 /// is accepted once the slot frees, and the new work gets a fresh identity.
 #[tokio::test]
 async fn a3_busy_rejection_does_not_consume_the_request_key() {
@@ -221,7 +221,7 @@ async fn a3_busy_rejection_does_not_consume_the_request_key() {
     assert_eq!(gateway.calls(), 2);
 }
 
-///an invalid submit (empty parts) is rejected without consuming the key
+/// an invalid submit (empty parts) is rejected without consuming the key
 /// and without leaving an active slot behind.
 #[tokio::test]
 async fn a3_invalid_input_does_not_consume_the_request_key() {
@@ -256,7 +256,7 @@ async fn a3_invalid_input_does_not_consume_the_request_key() {
 
 // ---- the one-active-work contract -----------------------------------------------------------------------
 
-///a gated gateway keeps the work `Running`; a competing submit is `Busy`
+/// a gated gateway keeps the work `Running`; a competing submit is `Busy`
 /// naming that work, and the rejected submit leaves the existing work's
 /// observation untouched.
 #[tokio::test]
@@ -310,7 +310,7 @@ async fn a4_running_work_is_busy_and_stays_observable() {
     assert_eq!(gateway.calls(), 1);
 }
 
-///`retained_work_capacity` is explicit. While the single retained slot is
+/// `retained_work_capacity` is explicit. While the single retained slot is
 /// busy the busy guard wins (still no queue); once the slot frees but the
 /// registry is full, a new submit is `CapacityExceeded` and the retained work
 /// stays observable.

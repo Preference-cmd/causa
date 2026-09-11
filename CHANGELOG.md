@@ -135,6 +135,13 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 ### Changed
 
+- **`causa-runtime` session handle API**: the session work filed under Added
+  above changed the shapes Phase A introduced, still inside the unreleased
+  0.1.0 — `SessionHandle::submit` and `observe` are synchronous now (drop the
+  `.await`), `FinishedKind::Interrupted` gained the required `continuation`
+  field, and `SessionError` gained the `StaleRevision` / `NotPaused` /
+  `InvalidResume` variants. The `resume` / `cancel` operations,
+  `CancelOutcome` / `CancelReceipt`, and `Session::shutdown` are new.
 - Brand: **Causa** (formerly Archy) — every crate renamed to `causa-*`;
   project pages live under the Project inceptae domain.
 - **Reference budget & interaction ownership**: `FramePolicy`,
