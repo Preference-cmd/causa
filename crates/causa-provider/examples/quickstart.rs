@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ports out, driver in: the executor holds the tools, the gateway
     // adapter talks to the provider, the runner loops the turn.
     let executor = Arc::new(ToolExecutor::from_vec(vec![Arc::new(WordCount)]));
-    // Media (Slice 6.5): inject the host's asset table so fact-level
+    // Media: inject the host's asset table so fact-level
     // media references resolve to inline payloads at render time. The
     // table is prefetched before the turn; misses degrade to a
     // deterministic text placeholder.

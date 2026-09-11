@@ -11,8 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Fold a parent deadline and a timeout into the effective deadline: the
 /// earlier of the two, where "no parent"/"no timeout" each leave the other
-/// side in force. Public since Slice 12: external drivers (the canonical
-/// one lives in causa_runtime) narrow turn deadlines into attempt
+/// side in force. External drivers narrow turn deadlines into attempt
 /// deadlines through this fold.
 pub fn effective_deadline(parent: Option<Instant>, timeout: Option<Duration>) -> Option<Instant> {
     let from_timeout = timeout.map(|t| Instant::now() + t);
@@ -33,10 +32,9 @@ pub struct AttemptControl {
     deadline: Option<Instant>,
 }
 impl AttemptControl {
-    /// Public since Slice 12: external drivers (the canonical one lives in
-    /// causa_runtime) build attempt controls directly — e.g. through the
-    /// `causa_runtime::control::RunControl::for_attempt` chain or from a
-    /// bare token.
+    /// Builds an attempt control. External drivers construct these directly
+    /// — e.g. through the `causa_runtime::control::RunControl::for_attempt`
+    /// chain or from a bare token.
     pub fn new(cancellation: CancellationToken, deadline: Option<Instant>) -> Self {
         Self {
             cancellation,
@@ -86,13 +84,9 @@ pub enum ControlError {
 }
 impl CallControl {
     /// Build a `CallControl` from a cancellation token and an optional
-    /// duration-based deadline. Useful for tests and for external
-    /// callers that need to construct the type without going through
-    /// `AttemptControl::for_call`.
-    ///
-    /// Production call sites in the staged driver continue to use
-    /// `AttemptControl::for_call`, which folds the parent attempt
-    /// deadline in.
+    /// duration-based deadline. Prefer `AttemptControl::for_call`, which
+    /// folds the parent attempt deadline in; this constructor is for tests
+    /// and callers that cannot go through it.
     pub fn new(cancellation: CancellationToken, call_timeout: Option<Duration>) -> Self {
         let deadline = call_timeout.map(|d| Instant::now() + d);
         Self {

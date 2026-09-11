@@ -1,10 +1,7 @@
-//! Session-aggregate acceptance — facts and order. Graduated from the
-//! kernel's conversation suite in Slice 6.5 together with the aggregate
-//! itself (`ConversationState` is runtime vocabulary now): commit/seal/
-//! abort discipline, merged views, validated replay, and the paused-state
-//! round-trip. The runner-entry coverage lives in
-//! `conversation_entries.rs`; these tests play the host's stamping role
-//! via `seal_turn` directly.
+//! Session-aggregate acceptance — facts and order: commit/seal/abort
+//! discipline, merged views, validated replay, and the paused-state
+//! round-trip. The runner-entry coverage lives in `conversation_entries.rs`;
+//! these tests play the host's stamping role via `seal_turn` directly.
 
 mod common;
 
@@ -22,7 +19,7 @@ fn conv() -> ConversationState {
     ConversationState::new(ConversationId("conv-1".into()))
 }
 
-/// Backward-compat shim: keep the historical test call sites readable.
+/// Shorthand for the common commit-a-completed-turn call site.
 fn commit_completed(state: &mut ConversationState, turn_id: &str) {
     commit_sealed(state, turn_id, SealedResult::Completed);
 }
@@ -40,8 +37,8 @@ fn commit_is_exactly_once_and_assigns_sequence() {
     let entry = c.commit(TurnId::new("t1")).unwrap();
     assert_eq!(entry.sequence.0, 0);
     assert_eq!(entry.snapshot.turn_id.0, "t1");
-    // The snapshot itself carries no session order (Slice 6.5): the
-    // entry is the only place a sequence exists.
+    // The snapshot itself carries no session order: the entry is the only
+    // place a sequence exists.
     let wire = serde_json::to_string(&entry.snapshot).unwrap();
     assert!(!wire.contains("turn_sequence"), "{wire}");
     // Repeated commit: the active slot is empty, so rejection lands on
@@ -306,7 +303,7 @@ fn from_history_rejects_non_monotonic_sequences() {
 }
 
 /// A duplicate turn id across two entries must not silently collapse into
-/// one history (Slice 6.5 replay validation).
+/// one history.
 #[test]
 fn from_history_rejects_duplicate_turn_ids() {
     let live = build_two_turn_history();
@@ -435,7 +432,7 @@ fn paused_state_round_trip_preserves_open_active_and_stamp() {
     ));
 }
 
-// ---- shared history, independent executions (Slice 6.5 acceptance) ----------
+// ---- shared history, independent executions ---------------------------------
 
 /// Two independent executions replay the same read-only history and each
 /// begin their own turn: separate active slots, no fact pollution across

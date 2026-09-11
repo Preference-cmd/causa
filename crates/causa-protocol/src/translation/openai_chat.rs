@@ -1,10 +1,8 @@
 //! OpenAI Chat Completions translation for the context kernel.
 //!
-//! Kernel-native translation face (Slice 3): pure functions from
-//! [`causa_kernel::ContextFrame`] to a Chat Completions request
-//! body and back to [`causa_kernel::ModelOutput`].
-//! Transport-free; the reqwest adapter in `causa-provider` owns
-//! HTTP.
+//! Pure functions from [`causa_kernel::ContextFrame`] to a Chat
+//! Completions request body and back to [`causa_kernel::ModelOutput`].
+//! Transport-free; the reqwest adapter in `causa-provider` owns HTTP.
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
 //! text joining, tool id pairing, observation stringification) lives in
@@ -454,7 +452,7 @@ mod tests {
 
     #[test]
     fn adjacent_assistant_texts_join_into_one_message() {
-        // P1-1: assistant text runs coalesce across calls too — the wire
+        // Assistant text runs coalesce across calls too — the wire
         // carries assistant content as a single string.
         let f = frame(vec![
             text(0, "first", None),
@@ -608,7 +606,7 @@ mod tests {
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
     }
 
-    // --- media (Slice 6.5) --------------------------------------------------
+    // --- media -------------------------------------------------------------
 
     use causa_kernel::MediaRef;
 

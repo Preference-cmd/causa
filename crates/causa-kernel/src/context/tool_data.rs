@@ -57,7 +57,7 @@ pub enum ToolResultStatus {
     TimedOut,
     /// No outcome was observed (e.g. the call-deadline backstop fired);
     /// whether the turn continues is the harness's unknown-outcome
-    /// configuration, not tool vocabulary (Slice 13).
+    /// configuration, not tool vocabulary.
     UnknownOutcome,
 }
 
@@ -126,8 +126,7 @@ pub struct ToolResultPayload {
     pub output: ToolOutput,
     /// Media artifacts attached to this result — references only; the
     /// bytes live in the host's asset store, resolved provider-side at
-    /// render time. Serde-additive: snapshots from before Slice 6.5
-    /// default to empty.
+    /// render time. Serde-additive: absent media defaults to empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media: Vec<crate::context::block::MediaRef>,
 }

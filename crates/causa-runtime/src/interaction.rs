@@ -1,7 +1,7 @@
 //! `TurnInteraction` port — the single host↔driver interaction boundary
-//! during a turn (batch decisions and steering injection added by Slice 7).
-//! Slice 13 moved the port here from the kernel: when it fires is reference
-//! driver policy, so the contract lives with its only consumer.
+//! during a turn (batch decisions and steering injection). When it fires is
+//! reference driver policy, so the contract lives with its only consumer
+//! (the driver) rather than in the kernel.
 //!
 //! One port with default no-ops replaces per-entry callback channels:
 //! entry signatures never grow interaction parameters, and new
@@ -27,7 +27,7 @@ pub trait TurnInteraction: Send + Sync {
     /// present the partial-then-reset flow.
     async fn on_delta(&self, _round_id: RoundId, _delta: &StreamDelta) {}
 
-    /// Batch decision gate (Slice 7): called after the tool-use hook has
+    /// Batch decision gate: called after the tool-use hook has
     /// filtered the model-emitted batch and before executor dispatch.
     /// Default [`BatchDecision::Proceed`] — the literal absence of
     /// opinion. Returning [`BatchDecision::Pause`] suspends the turn
@@ -41,7 +41,7 @@ pub trait TurnInteraction: Send + Sync {
         BatchDecision::Proceed
     }
 
-    /// Steering inputs (Slice 7), pulled by the driver at every round
+    /// Steering inputs, pulled by the driver at every round
     /// boundary before the frame materializes; each non-empty entry is
     /// appended to the active turn with the `user.steering` source label
     /// and the next model round sees it. Default: empty (zero-cost
@@ -52,7 +52,7 @@ pub trait TurnInteraction: Send + Sync {
     }
 }
 
-/// The driver's action for a tool-use batch (Slice 7).
+/// The driver's action for a tool-use batch.
 #[derive(Debug, Clone)]
 pub enum BatchDecision {
     /// Dispatch the batch to the executor unchanged.

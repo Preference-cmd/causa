@@ -17,10 +17,10 @@
 //! committed turn; `from_history` validates strict sequence monotonicity
 //! on load.
 //!
-//! Slice 6.5 shapes:
+//! Wire shapes:
 //! - the store persists **`HistoryEntry`** records (`sequence` + `snapshot`)
-//!   — the snapshot itself carries no session order anymore;
-//! - the load path migrates **pre-6.5 files** that embedded
+//!   — the snapshot itself carries no session order;
+//! - the load path migrates **legacy files** that embedded
 //!   `turn_sequence` inside the snapshot by extracting it into the entry;
 //! - one turn's message mixes text and a `MediaRef`: facts carry the
 //!   reference only, never bytes.
@@ -143,8 +143,8 @@ impl ConversationStore for FsConversationStore {
 
 /// Load one history file, accepting both wire shapes:
 ///
-/// - **current** (Slice 6.5): `{"sequence": N, "snapshot": {...}}`;
-/// - **pre-6.5 legacy**: the old DTO embedded `turn_sequence` inside the
+/// - **current**: `{"sequence": N, "snapshot": {...}}`;
+/// - **legacy format**: the old DTO embedded `turn_sequence` inside the
 ///   snapshot itself — extract it into the entry, never drop the order.
 fn load_entry(bytes: &[u8]) -> Result<HistoryEntry, ConversationStoreError> {
     if let Ok(entry) = serde_json::from_slice::<HistoryEntry>(bytes) {
@@ -233,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     let (mut state, _) = run_turn(&runner, state, "turn-2", "and again").await?;
 
-    // Slice 6.5: a turn whose message mixes text and a media reference.
+    // A turn whose message mixes text and a media reference.
     // Facts carry the reference only; the bytes live in the host's asset
     // store and resolve provider-side at render time.
     state.begin_turn(TurnId::new("turn-media"))?;
@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    /// The legacy migration path: a pre-6.5 file (turn_sequence embedded
+    /// The legacy migration path: an old file (turn_sequence embedded
     /// in the snapshot) loads into an entry that keeps both the order and
     /// the facts.
     #[test]

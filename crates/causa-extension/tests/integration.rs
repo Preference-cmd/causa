@@ -1,6 +1,6 @@
-//! Slice 10 integration tests: an in-process rmcp server fixture served
-//! over a duplex pipe, exercised through `McpToolSource`, the executor's
-//! dynamic registry, and a full kernel turn (`TurnRunner` untouched).
+//! Integration tests: an in-process rmcp server fixture served over a
+//! duplex pipe, exercised through `McpToolSource`, the executor's dynamic
+//! registry, and a full kernel turn (`TurnRunner` untouched).
 
 use async_trait::async_trait;
 use causa_extension::McpToolSource;
@@ -173,7 +173,7 @@ fn init_tracing() {
     });
 }
 
-// ---- Phase B: stdio-shape semantics over in-process transport -------------------
+// ---- stdio-shape semantics over in-process transport ----------------------------
 
 #[tokio::test]
 async fn lists_tools_under_the_server_namespace() {
@@ -272,7 +272,7 @@ async fn cancellation_maps_to_cancelled() {
     server.cancel().await.expect("server stop");
 }
 
-// ---- Phase D: list_changed -------------------------------------------------------
+// ---- list_changed ---------------------------------------------------------------
 
 #[tokio::test]
 async fn list_changed_bumps_the_version_and_refreshes_the_listing() {
@@ -330,7 +330,7 @@ async fn list_changed_bumps_the_version_and_refreshes_the_listing() {
     running.cancel().await.expect("server stop");
 }
 
-// ---- Phase A: executor aggregation ----------------------------------------------
+// ---- executor aggregation -------------------------------------------------------
 
 /// A source that always fails to list — for the skip-without-interrupt
 /// guarantee.
@@ -526,7 +526,7 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
     server.cancel().await.expect("server stop");
 }
 
-// ---- acceptance: full kernel turn through the MCP source -------------------------
+// ---- full kernel turn through the MCP source ------------------------------------
 
 struct ScriptedGateway {
     outputs: std::sync::Mutex<Vec<ModelOutput>>,
@@ -645,7 +645,7 @@ async fn kernel_turn_completes_through_the_mcp_source() {
     server.cancel().await.expect("server stop");
 }
 
-// ---- Phase C: Streamable HTTP transport -------------------------------------------
+// ---- Streamable HTTP transport --------------------------------------------------
 
 /// Serve the fixture behind a real axum server (rmcp `StreamableHttpService`)
 /// on an ephemeral loopback port. Returns the client source and every
@@ -747,7 +747,7 @@ async fn http_transport_injects_the_static_bearer_token() {
         .expect("close");
 }
 
-// ---- media ingest (Slice 6.5) ---------------------------------------------------
+// ---- media ingest ---------------------------------------------------------------
 
 /// A fixture whose one tool returns an image content block.
 #[derive(Clone)]

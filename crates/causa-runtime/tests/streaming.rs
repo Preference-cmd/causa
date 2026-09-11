@@ -1,6 +1,6 @@
-//! Streaming driver tests (Slice 6): `run_streaming` /
+//! Streaming driver tests: `run_streaming` /
 //! `run_in_conversation_streaming` through scripted streaming gateways,
-//! plus the shared retry-backoff behavior (Phase E).
+//! plus the shared retry-backoff behavior.
 
 mod common;
 
@@ -38,7 +38,7 @@ fn collector_for(ctx: &TurnContext) -> Arc<StreamEventCollector> {
     Arc::new(StreamEventCollector::new(ctx.turn_id(), None))
 }
 
-// ---- Phase D: driver streaming ------------------------------------------------
+// ---- driver streaming ---------------------------------------------------------
 
 #[tokio::test]
 async fn streaming_run_completes_and_observes_text_deltas() {
@@ -336,7 +336,7 @@ async fn project_streaming_turn_interleaves_deltas_with_dispatches() {
     }
 }
 
-// ---- Phase E: backoff -----------------------------------------------------------
+// ---- backoff --------------------------------------------------------------------
 
 #[tokio::test]
 async fn backoff_delays_increase_and_respect_the_cap() {

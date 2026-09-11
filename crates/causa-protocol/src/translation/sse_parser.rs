@@ -10,14 +10,14 @@
 use std::mem;
 
 /// Default per-event data size cap (1 MB). Protects against unbounded
-/// memory growth from a malicious or stuck provider. Doubles as the
-/// cap for the line buffer (R2-02): a stream with no newline must not
-/// grow `buffer` without bound either.
+/// memory growth from a malicious or stuck provider. Also caps the line
+/// buffer: a stream with no newline must not grow `buffer` without
+/// bound either.
 const DEFAULT_MAX_EVENT_DATA_BYTES: usize = 1024 * 1024;
 
-/// Extra buffer headroom beyond the data cap (R2-02): room for the
-/// `data: ` prefix, the line terminator, and a multi-line event's
-/// inter-line data before the per-event truncation path takes over.
+/// Extra buffer headroom beyond the data cap: room for the `data: `
+/// prefix, the line terminator, and a multi-line event's inter-line data
+/// before the per-event truncation path takes over.
 const LINE_HEADROOM: usize = 128;
 
 /// A parsed SSE event.
@@ -47,8 +47,8 @@ pub struct SseParser {
     has_data: bool,
     bom_checked: bool,
     max_event_data_bytes: usize,
-    /// Set when the line buffer grew past the cap (R2-02): the stream
-    /// is malformed (e.g. no newline ever arrives). Callers must check
+    /// Set when the line buffer grew past the cap: the stream is
+    /// malformed (e.g. no newline ever arrives). Callers must check
     /// [`SseParser::overflowed`] after each `feed`/`flush` and treat the
     /// stream as failed.
     overflowed: bool,
@@ -75,13 +75,13 @@ impl SseParser {
     }
 
     /// Create a parser with a custom per-event data size cap. Also caps
-    /// the unterminated-line buffer (R2-02).
+    /// the unterminated-line buffer.
     pub fn with_max_event_data_bytes(mut self, limit: usize) -> Self {
         self.max_event_data_bytes = limit;
         self
     }
 
-    /// Whether the input exceeded the buffer cap (R2-02). Once set, the
+    /// Whether the input exceeded the buffer cap. Once set, the
     /// parser ignores further input; the transport should fail the
     /// stream rather than synthesize events from truncated data.
     pub fn overflowed(&self) -> bool {
@@ -105,13 +105,13 @@ impl SseParser {
         };
 
         self.buffer.push_str(data);
-        // R2-02: a stream that never delivers a newline must not grow
-        // the buffer without bound. The threshold leaves headroom for
-        // one full `data:` line (prefix + newline) so a legitimate
-        // event up to the data cap is handled by the per-event
-        // truncation path below instead of failing the stream.
-        // Fail-closed: mark the stream overflowed and drop the buffer
-        // (the transport terminates).
+        // A stream that never delivers a newline must not grow the
+        // buffer without bound. The threshold leaves headroom for one
+        // full `data:` line (prefix + newline) so a legitimate event up
+        // to the data cap is handled by the per-event truncation path
+        // below instead of failing the stream. Fail-closed: mark the
+        // stream overflowed and drop the buffer (the transport
+        // terminates).
         if self.buffer.len() > self.max_event_data_bytes + LINE_HEADROOM {
             self.overflowed = true;
             self.buffer.clear();
@@ -166,9 +166,9 @@ impl SseParser {
         }
         // A buffer that still holds lines never saw the terminating
         // blank line — e.g. `"data: a\ndata: b"` where `feed` consumed
-        // line 1 and left line 2 pending (R2-02). Re-feed the tail as
-        // if the stream ended with a blank line so every line is
-        // consumed; the last `data` line must not be dropped.
+        // line 1 and left line 2 pending. Re-feed the tail as if the
+        // stream ended with a blank line so every line is consumed; the
+        // last `data` line must not be dropped.
         if !self.buffer.is_empty() {
             let mut remaining = mem::take(&mut self.buffer);
             if !remaining.ends_with('\n') {
@@ -271,8 +271,8 @@ mod tests {
 
     #[test]
     fn flush_keeps_trailing_lines_without_blank_line() {
-        // R2-02: "data: a\ndata: b" without a terminating blank line
-        // must emit both lines as one event, not drop the second.
+        // "data: a\ndata: b" without a terminating blank line must emit
+        // both lines as one event, not drop the second.
         let mut p = SseParser::new();
         let evs = p.feed("data: a\ndata: b");
         assert!(evs.is_empty(), "no blank line yet");
@@ -296,10 +296,10 @@ mod tests {
 
     #[test]
     fn unterminated_line_buffer_overflow_fails_closed() {
-        // R2-02: a stream that never delivers a newline must not grow
-        // the buffer without bound; the parser flags overflow and
-        // refuses further input. The threshold is data cap + line
-        // headroom, so the payload must exceed both.
+        // A stream that never delivers a newline must not grow the
+        // buffer without bound; the parser flags overflow and refuses
+        // further input. The threshold is data cap + line headroom, so
+        // the payload must exceed both.
         let mut p = SseParser::new().with_max_event_data_bytes(16);
         p.feed(&format!("data: {}", "x".repeat(200)));
         assert!(p.overflowed(), "no-newline stream exceeds the cap");

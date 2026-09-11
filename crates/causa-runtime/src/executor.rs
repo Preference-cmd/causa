@@ -1,6 +1,6 @@
 //! Tool batch dispatch — dedup-then-parallel execution with panic isolation,
 //! call-deadline backstop, and token-limit truncation with artifact spill.
-//! Also the tool-catalog composition point (Slice 10): static Rust tools
+//! Also the tool-catalog composition point: static Rust tools
 //! and dynamic sources (`DynamicToolSource`, e.g. MCP servers) merge into
 //! one dispatch path; the driver only consumes the assembled surface.
 
@@ -31,7 +31,7 @@ struct DynamicEntry {
     cache: std::sync::Mutex<(u64, Vec<ToolDefinition>)>,
 }
 
-/// Dynamic-source registry failures (Slice 10).
+/// Dynamic-source registry failures.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolRegistryError {
     /// A dynamic source with this id is already registered.
@@ -93,7 +93,7 @@ impl ToolExecutor {
         }
     }
 
-    /// Register a dynamic tool source (Slice 10). Its current listing
+    /// Register a dynamic tool source. Its current listing
     /// enters [`ToolExecutor::tool_surface`], and dispatch routes exactly
     /// the names that listing advertised (listing membership — naming is
     /// the source's own business); a name already present in the static
@@ -245,9 +245,8 @@ impl ToolExecutor {
         token_counter: Option<Arc<dyn TokenCounter>>,
         effective_limits: ToolOutputLimits,
     ) -> ToolResultPayload {
-        // Observability baseline (Slice 6.6): one `agent.tool` span per
-        // dispatch, name and id only. Entered per poll via `Instrument`,
-        // so the future stays `Send`.
+        // One `agent.tool` span per dispatch, name and id only. Entered
+        // per poll via `Instrument`, so the future stays `Send`.
         let span = tracing::info_span!(
             "agent.tool",
             tool_name = %payload.tool_name,
@@ -298,7 +297,7 @@ impl ToolExecutor {
         let store_ref: Option<&dyn ArtifactStore> =
             store.as_deref().map(|s| s as &dyn ArtifactStore);
 
-        // Panic isolation (Task level) plus call-deadline backstop: a tool that
+        // Panic isolation plus call-deadline backstop: a tool that
         // neither returns nor observes CallControl still yields a structured
         // UnknownOutcome instead of hanging the turn.
         let fut = {
@@ -342,7 +341,7 @@ impl ToolExecutor {
             if let Some(counter) = &token_counter {
                 counter.estimate_value(value)
             } else {
-                // The driver's fallback opinion — single home in `defaults` (7.4).
+                // The driver's fallback opinion — single home in `defaults`.
                 crate::defaults::placeholder_token_estimate_value(value)
             }
         };

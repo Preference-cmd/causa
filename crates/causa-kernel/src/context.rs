@@ -6,10 +6,10 @@
 //! transparent data plus controlled transitions; they never call out to
 //! behavior. Ports live in `crate::ports`; the canonical consumer of both
 //! lives in `causa-runtime`. Session aggregation (single active slot,
-//! completed-only history, commit-time ordering) is runtime vocabulary since
-//! Slice 6.5 — `ConversationState` and the store port live there now; the
-//! kernel keeps the facts (`TurnContext` / `TurnSnapshot`) and the shared
-//! `merged_frame` projection.
+//! completed-only history, commit-time ordering) is runtime vocabulary;
+//! `ConversationState` and the store port live there, while the kernel keeps
+//! the facts (`TurnContext` / `TurnSnapshot`) and the shared `merged_frame`
+//! projection.
 
 pub mod block;
 pub mod ids;

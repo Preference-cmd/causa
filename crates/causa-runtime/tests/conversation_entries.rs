@@ -1,7 +1,6 @@
-//! Conversation-entry driver tests — the dual-entry acceptance set from
-//! the kernel's conversation suite, graduated with the driver itself
-//! (Slice 12). The fact-machine tests (commit/seal/replay) stay in the
-//! kernel; these exercise the `run` / `run_in_conversation` entries.
+//! Conversation-entry driver tests — the dual-entry acceptance set. The
+//! fact-machine tests (commit/seal/replay) stay in the kernel; these
+//! exercise the `run` / `run_in_conversation` entries.
 
 mod common;
 
@@ -14,8 +13,8 @@ use causa_runtime::{
     TurnRunOptions, WindowBudget,
 };
 
-/// Acceptance #1: both entries run the same state machine — same input
-/// sequence yields the same terminal result, round count, and facts.
+/// Both entries run the same state machine — same input sequence yields
+/// the same terminal result, round count, and facts.
 #[tokio::test]
 async fn dual_entries_share_one_state_machine() {
     let runner = runner_with(
@@ -56,7 +55,7 @@ async fn dual_entries_share_one_state_machine() {
     assert_eq!(conv.state.version().0, 2);
 }
 
-/// Acceptance #13: caller bugs fail fast at the entry, before the machine.
+/// Caller bugs fail fast at the entry, before the machine.
 #[tokio::test]
 async fn conversation_entry_rejects_missing_or_sealed_active() {
     let runner = runner_with(
@@ -83,9 +82,9 @@ async fn conversation_entry_rejects_missing_or_sealed_active() {
     ));
 }
 
-/// Acceptance #16: the conversation entry is inert to `options.frame` — a
-/// compacting policy that would empty a single-turn frame leaves the merged
-/// frame lossless (the model still sees every block).
+/// The conversation entry is inert to `options.frame` — a compacting policy
+/// that would empty a single-turn frame still leaves the merged frame lossless
+/// (the model sees every block).
 #[tokio::test]
 async fn conversation_entry_is_inert_to_frame_policy() {
     let gateway = RecordingGateway::repeating_last(vec![Ok(endturn_output("done"))]);

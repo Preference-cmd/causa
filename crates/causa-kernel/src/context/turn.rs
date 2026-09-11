@@ -1,4 +1,4 @@
-//! TurnContext / ContextFrame / TurnSnapshot — Slice 1 single-turn fact machine.
+//! TurnContext / ContextFrame / TurnSnapshot — the turn fact machine.
 use crate::context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, TextPayload, ToolCallPayload,
 };
@@ -13,20 +13,19 @@ use std::collections::{HashMap, HashSet};
 // --- TurnContext <-> TurnSnapshot serde bridge -----------------------------
 //
 // `TurnContext` is the in-memory mutable fact machine; it does not derive
-// `Serialize` because a live active turn is not a stable wire payload
-// (Slice 1.5 §5.6). But once a turn is sealed, `TurnContext::snapshot()`
-// returns an immutable `TurnSnapshot` projection that IS `Serialize`.
+// `Serialize` because a live active turn is not a stable wire payload. Once
+// a turn is sealed, `TurnContext::snapshot()` returns an immutable
+// `TurnSnapshot` projection that IS `Serialize`.
 //
 // These helpers let `TurnOutcome` and `ConversationState` derive
-// `Serialize, Deserialize` directly, while routing only the
-// `TurnContext` fields through this projection via
-// `#[serde(with = "turn_context_as_snapshot")]`. On the wire the
-// field looks like a `TurnSnapshot`; on reload it rebuilds a sealed
-// `TurnContext` via `from_validated_blocks`.
+// `Serialize, Deserialize` directly, while routing only the `TurnContext`
+// fields through this projection via
+// `#[serde(with = "turn_context_as_snapshot")]`. On the wire the field
+// looks like a `TurnSnapshot`; on reload it rebuilds a sealed `TurnContext`
+// via `from_validated_blocks`.
 
-// Public since Slice 12: the canonical driver lives outside the kernel
-// (causa_runtime), so the serde bridge it serializes `TurnOutcome` with
-// is part of the external-driver contract surface.
+// The canonical driver lives outside the kernel (causa_runtime), so this
+// serde bridge is part of the external-driver contract surface.
 /// Serde bridge: a `TurnContext` is serialized as its immutable
 /// `TurnSnapshot` projection and rebuilt from that shape on load. The wire
 /// representation of the field is always a `TurnSnapshot`.
@@ -57,8 +56,8 @@ pub mod turn_context_as_snapshot {
 
 /// Serde bridge for `Option<TurnContext>` fields (the session aggregate's
 /// active slot): `Some` serializes as the snapshot projection, `None` as
-/// null. Public since Slice 6.5 — the session aggregate lives in
-/// `causa-runtime` and serializes its active slot through this bridge.
+/// null. The session aggregate lives in `causa-runtime` and serializes its
+/// active slot through this bridge.
 pub mod option_turn_context_as_snapshot {
     use super::*;
 
@@ -188,9 +187,8 @@ impl OrderedBlocks {
 /// `append_tool_results`) plus `seal`; there is no second `&mut` seam —
 /// fields are private by design. The only projection the fact machine offers
 /// is the lossless `frame()`; policy-shaped materialization lives in
-/// `causa_runtime::budget::FramePolicy::materialize` (runtime, since Slice
-/// 13), so context never depends on harness policy and never awaits
-/// behavior.
+/// `causa_runtime::budget::FramePolicy::materialize`, so context never
+/// depends on harness policy and never awaits behavior.
 pub struct TurnContext {
     turn_id: TurnId,
     blocks: OrderedBlocks,
@@ -471,8 +469,8 @@ impl TurnContext {
 
     /// Terminal lifecycle transition, owned by the driver: seal when the turn
     /// is over. Sealed turns reject every append operation; the kernel
-    /// guarantees no post-terminal mutation. (Conversation-level history
-    /// eligibility is a Slice 2 driver stamp, not this marker.)
+    /// guarantees no post-terminal mutation. Conversation-level history
+    /// eligibility is a driver stamp, not this marker.
     pub fn seal(&mut self) {
         self.lifecycle = TurnLifecycle::Sealed;
     }
@@ -540,10 +538,9 @@ impl TurnContext {
 
     /// The structural validation behind `from_validated_blocks`, callable
     /// without constructing a throwaway machine — replay paths validate
-    /// snapshots in place. Public since Slice 6.5: the runtime's session
-    /// replay (`ConversationState::from_history`) validates committed
-    /// snapshots through this entry, so every reload path shares one
-    /// validator.
+    /// snapshots in place. The runtime's session replay
+    /// (`ConversationState::from_history`) also validates committed snapshots
+    /// through this entry, so every reload path shares one validator.
     pub fn validate_blocks(turn_id: &TurnId, blocks: &[ContextBlock]) -> Result<(), ContextError> {
         // validate monotonic sequence and turn_id matching
         for (idx, b) in blocks.iter().enumerate() {
@@ -600,7 +597,7 @@ impl TurnContext {
     /// Projects the current state into an immutable `TurnSnapshot` — the
     /// canonical wire shape for persistence. Session ordering is NOT part of
     /// the snapshot: the runtime's session aggregate assigns the
-    /// `HistoryEntry` sequence at commit (Slice 6.5).
+    /// `HistoryEntry` sequence at commit.
     pub fn snapshot(&self) -> TurnSnapshot {
         TurnSnapshot {
             turn_id: self.turn_id.clone(),
@@ -619,7 +616,7 @@ fn default_sealed() -> bool {
 /// for a persisted turn (a live `TurnContext` is never serialized directly).
 /// The snapshot describes the record itself only: identity, blocks, fact
 /// version, and write lifecycle. Session ordering lives in the runtime's
-/// `HistoryEntry`, not here (Slice 6.5).
+/// `HistoryEntry`, not here.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnSnapshot {
     /// Identity of the snapshotted turn.
@@ -628,12 +625,10 @@ pub struct TurnSnapshot {
     pub blocks: OrderedBlocks,
     /// The turn's `ContextVersion` at snapshot time.
     pub source_version: ContextVersion,
-    /// Whether the turn was sealed when snapshotted. Slice 7: a *paused*
-    /// turn snapshots as `false` so a persisted conversation reloads with
-    /// the active turn still open and resumable. Serde-additive: payloads
-    /// from before Slice 7 lack the field and default to `true`, which is
-    /// exactly the old invariant (only sealed turns were ever snapshotted
-    /// through a wire path).
+    /// Whether the turn was sealed when snapshotted. A *paused* turn
+    /// snapshots as `false` so a persisted conversation reloads with the
+    /// active turn still open and resumable. Serde-additive: an absent field
+    /// defaults to `true` (only sealed turns have a wire snapshot).
     #[serde(default = "default_sealed")]
     pub sealed: bool,
 }
@@ -641,10 +636,10 @@ pub struct TurnSnapshot {
 /// Shared lossless merged materialization over committed history plus the
 /// active turn — the single semantics both the runtime's
 /// `ConversationState::frame()` and any external conversation driver's
-/// merged-view entry use. Public since Slice 12; the session aggregate that
-/// calls it lives in `causa-runtime` (Slice 6.5), but the projection itself
-/// is common frame vocabulary and stays with the facts. No reordering, no
-/// dedup, no trimming; nothing is written back.
+/// merged-view entry use. The session aggregate that calls it lives in
+/// `causa-runtime`, but the projection itself is common frame vocabulary and
+/// stays with the facts. No reordering, no dedup, no trimming; nothing is
+/// written back.
 pub fn merged_frame(
     conversation_id: &ConversationId,
     history: &[TurnSnapshot],

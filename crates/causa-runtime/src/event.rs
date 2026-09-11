@@ -1,5 +1,5 @@
-//! `ContextEvent` projection — Slice 4 §6 Phase C (framework events), reworked by
-//! the 2026-09-02 thermo-nuclear review.
+//! `ContextEvent` projection — a turn's facts projected into a sequence for
+//! UI, observability, and audit consumers.
 //!
 //! Events are a **projection** of a turn's facts (`TurnContext` +
 //! `TurnResult` + `TurnTrace`) into a sequence that consumers (UI,
@@ -30,21 +30,19 @@
 //! - **Not persistent**: nothing in this module touches the workspace
 //!   store. Consumers persist what they need.
 //! - **No harness dependency**: this module is `Send + Sync`-pure and
-//!   does not depend on `agent-harness` (frozen legacy).
-//! - **No `AgentEvent` reuse**: `reimagine_agent_harness::AgentEvent`
-//!   is frozen and out of scope; if a host needs to bridge to it,
-//!   do so with a one-off `From<ContextEvent> for AgentEvent` adapter
-//!   in the host crate, not here.
+//!   depends on no harness crate.
+//! - **No `AgentEvent` reuse**: `AgentEvent` is out of scope; a host that
+//!   needs to bridge to it does so with a one-off
+//!   `From<ContextEvent> for AgentEvent` adapter in the host crate, not
+//!   here.
 //!
 //! ## Serialization
 //!
-//! `ContextEvent` is serde-derived for IPC delivery to host UIs and
-//! audit pipelines (Slice 5A Phase C). The embedded driver outcome types
-//! (`TurnResult`, `TurnTrace`) carry their own serde derives; their
-//! serde **shapes** are a load-bearing wire contract for this module —
-//! see the wire-contract note on `crate::driver::TurnOutcome` — even
-//! though the Rust item paths moved layers (kernel internal/ → this
-//! crate) in Slice 12.
+//! `ContextEvent` is serde-derived for IPC delivery to host UIs and audit
+//! pipelines. The embedded driver outcome types (`TurnResult`, `TurnTrace`)
+//! carry their own serde derives; their serde **shapes** are a load-bearing
+//! wire contract for this module — see the wire-contract note on
+//! `crate::driver::TurnOutcome`.
 
 use std::collections::HashMap;
 
@@ -61,12 +59,12 @@ use causa_kernel::{
 /// Every variant shares the routing envelope (`conversation_id`,
 /// `turn_id`); the variant-specific payload lives in `kind`.
 ///
-/// `conversation_id` is `Option<ConversationId>` because the Slice 1
-/// `TurnRunner::run` entry does not carry a `ConversationState`. The
-/// Slice 2 `run_in_conversation` entry does; the host constructs the
-/// event with `Some(id)` when projecting from a `ConversationOutcome`,
-/// and `None` for the bare `TurnOutcome` path. Subscribers that care
-/// about cross-conversation routing key on `Some`.
+/// `conversation_id` is `Option<ConversationId>` because the bare
+/// `TurnRunner::run` entry does not carry a `ConversationState`; the
+/// `run_in_conversation` entry does. The host constructs the event with
+/// `Some(id)` when projecting from a `ConversationOutcome`, and `None` for
+/// the bare `TurnOutcome` path. Subscribers that care about
+/// cross-conversation routing key on `Some`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextEvent {
     /// Routing key for conversation-scoped consumers; skipped on the
@@ -110,9 +108,9 @@ pub enum ContextEventKind {
         /// The full `TurnTrace` (rounds, totals).
         trace: TurnTrace,
     },
-    // — Slice 6: streaming-delta variants (the `project_streaming_turn`
-    // path; mutually exclusive with the batch `project_turn` sequence for
-    // the same turn). `conversation_id` / `turn_id` ride the envelope.
+    // Streaming-delta variants (the `project_streaming_turn` path; mutually
+    // exclusive with the batch `project_turn` sequence for the same turn).
+    // `conversation_id` / `turn_id` ride the envelope.
     /// One model text increment in round `round_id`.
     TextDelta {
         /// The round the increment belongs to.
@@ -230,7 +228,7 @@ fn committed_calls(
         .collect()
 }
 
-// --- Slice 6: streaming projection -------------------------------------------
+// --- streaming projection ----------------------------------------------------
 
 /// A collecting [`TurnInteraction`] — the bridge between a live streaming
 /// turn and the `ContextEvent` sequence. Wire it through
@@ -629,7 +627,7 @@ mod tests {
         }
     }
 
-    // -- Slice 5A Phase C: ContextEvent JSON round-trip ---------------------
+    // -- ContextEvent JSON round-trip -------------------------------------
 
     #[test]
     fn round_trip_turn_started_no_conversation() {
@@ -756,7 +754,7 @@ mod tests {
         }
     }
 
-    // -- Slice 6: streaming-variant serialization pins ----------------------
+    // -- streaming-variant serialization pins ------------------------------
 
     #[test]
     fn round_trip_streaming_delta_variants() {

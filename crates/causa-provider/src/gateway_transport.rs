@@ -1,8 +1,8 @@
-//! Shared transport plumbing for kernel `ModelGateway` adapters (Slice 3).
+//! Shared transport plumbing for kernel `ModelGateway` adapters.
 //!
 //! Owns the two adapter-wide concerns the per-protocol gateways must not
-//! duplicate: control-plane wiring (`send_with_control`) and the Slice 3
-//! error mapping table (`ModelInvokeErrorKind` is the closed vocabulary the
+//! duplicate: control-plane wiring (`send_with_control`) and the error
+//! mapping table (`ModelInvokeErrorKind` is the closed vocabulary the
 //! kernel's `RetryPolicy` interprets):
 //!
 //! | Source                                  | Kind            |
@@ -33,10 +33,9 @@ use serde_json::Value;
 /// including long tool observations.
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Baseline transport timeouts for the default client, matching the
-/// frozen `ReqwestBackend` precedent (connect 10s, total 120s). A
-/// per-request attempt deadline replaces the total timeout when present;
-/// the connect baseline always applies.
+/// Baseline transport timeouts for the default client (connect 10s,
+/// total 120s). A per-request attempt deadline replaces the total timeout
+/// when present; the connect baseline always applies.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -126,7 +125,7 @@ pub(crate) async fn send_with_control(
 /// loop covers chunked bodies with no declared length. Mid-body network
 /// failures surface through the transport table (body error →
 /// `Transient`); an over-cap body or non-UTF-8 payload is `Permanent`
-/// (§4 row: the provider produced an unusable response).
+/// (the provider produced an unusable response).
 async fn read_bounded(
     mut response: reqwest::Response,
 ) -> Result<(StatusCode, String), ModelInvokeError> {
@@ -163,8 +162,8 @@ fn oversize_error(len: usize) -> ModelInvokeError {
 
 /// Turn a raw response into a [`ModelOutput`]: non-2xx through the error
 /// table, 2xx JSON-syntax failures as `Permanent`, then the
-/// protocol-specific body parser (whose own schema failures already
-/// surface as `Permanent` — §4 row "2xx response body parse failure → Permanent").
+/// protocol-specific body parser (whose own schema failures also surface
+/// as `Permanent`).
 pub(crate) fn finish_response<F>(
     status: StatusCode,
     text: &str,
@@ -201,7 +200,7 @@ fn map_status_error(status: StatusCode, body: &str, provider: &str) -> ModelInvo
     let kind = match status.as_u16() {
         408 | 429 | 500..=599 => ModelInvokeErrorKind::Transient,
         400 | 422 => ModelInvokeErrorKind::InvalidRequest,
-        // 401 / 403 / 404 and everything else (§4 "everything else" row).
+        // 401 / 403 / 404 and everything else.
         _ => ModelInvokeErrorKind::Permanent,
     };
     ModelInvokeError::new(

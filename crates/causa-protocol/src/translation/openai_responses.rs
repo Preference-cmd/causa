@@ -1,10 +1,8 @@
 //! OpenAI Responses API translation for the context kernel.
 //!
-//! Kernel-native translation face (Slice 3): pure functions from
-//! [`causa_kernel::ContextFrame`] to a Responses API request
-//! body and back to [`causa_kernel::ModelOutput`].
-//! Transport-free; the reqwest adapter in `causa-provider` owns
-//! HTTP.
+//! Pure functions from [`causa_kernel::ContextFrame`] to a Responses API
+//! request body and back to [`causa_kernel::ModelOutput`]. Transport-free;
+//! the reqwest adapter in `causa-provider` owns HTTP.
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
 //! text joining, tool id pairing, observation stringification) lives in
@@ -542,7 +540,7 @@ mod tests {
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
     }
 
-    // --- media (Slice 6.5) --------------------------------------------------
+    // --- media -------------------------------------------------------------
 
     use causa_kernel::MediaRef;
 

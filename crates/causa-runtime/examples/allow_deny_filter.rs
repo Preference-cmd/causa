@@ -1,11 +1,8 @@
 //! Allow / deny examples for `ToolUseHook` filters.
 //!
-//! The same shapes as the filters in
-//! `crates/agent-stack/agent-runtime/src/filter.rs`, written here as
-//! runnable examples: a custom policy implements the kernel's
-//! `ToolUseHook` directly and joins a `FilterChain`. The kernel defaults
-//! to `PassthroughHook`; dedup / kill-switch / approval are host
-//! concerns and live here, not in the kernel.
+//! A custom policy implements the kernel's `ToolUseHook` directly and joins
+//! a `FilterChain`. The kernel defaults to `PassthroughHook`; dedup /
+//! kill-switch / approval are host concerns and live here, not in the kernel.
 
 use async_trait::async_trait;
 use causa_kernel::{ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus};

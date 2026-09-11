@@ -1,7 +1,6 @@
-//! Wiremock-driven integration tests for the OpenAI kernel gateways
-//! (Slice 3 Phase C) — structurally the same acceptance coverage as
-//! `anthropic_gateway.rs` (Phase B), exercised through both the Chat
-//! Completions and Responses call paths.
+//! Wiremock-driven integration tests for the OpenAI kernel gateways —
+//! structurally the same coverage as `anthropic_gateway.rs`, exercised
+//! through both the Chat Completions and Responses call paths.
 
 use std::time::{Duration, Instant};
 

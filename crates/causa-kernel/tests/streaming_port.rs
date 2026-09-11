@@ -1,7 +1,6 @@
-//! Streaming-port tests (Slice 6 Phase A): the `ModelGateway::stream`
-//! default degeneration and `completed_model_stream`. (The
-//! `TurnInteraction` contract moved to `causa-runtime` in Slice 13 — its
-//! tests live there now.)
+//! Streaming-port tests: the `ModelGateway::stream` default degeneration
+//! and `completed_model_stream`. (The `TurnInteraction` contract lives in
+//! `causa-runtime`; its tests live there.)
 
 use async_trait::async_trait;
 use causa_kernel::{

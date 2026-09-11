@@ -1,4 +1,4 @@
-//! Recoverable-interruption tests (Slice 7, reworked by Slice 6.5): the
+//! Recoverable-interruption tests: the
 //! pause gate (`TurnInteraction::decide_batch` → `TurnResult::Paused`),
 //! the resume entries (`TurnRunner::resume` / `resume_turn` consuming the
 //! complete paused outcome + `ResumeRequest`), continuation validation,
@@ -491,7 +491,7 @@ async fn resumed_trace_appends_rounds_and_keeps_totals() {
     assert!(resumed.trace.rounds[0].tool_batch.is_some());
 }
 
-/// Acceptance: trimming or clearing the trace must not change where the
+/// Trimming or clearing the trace must not change where the
 /// resume continues or what it may spend — rounds and counts live in the
 /// continuation only.
 #[tokio::test]
@@ -530,7 +530,7 @@ async fn trimmed_trace_does_not_change_resume_rounds_or_counts() {
 
 // ---- prepared hook work survives the pause --------------------------------------
 
-/// Acceptance: the hook rejects `danger` and rewrites `echo`; the gate
+/// The hook rejects `danger` and rewrites `echo`; the gate
 /// pauses; the host approves. The saved rejections commit verbatim under
 /// the original ids, only the saved-and-approved arguments execute, the
 /// hook is never re-run, and every batch item lands exactly once.
@@ -1099,7 +1099,7 @@ async fn lowered_round_budget_stops_before_the_batch_executes() {
 
 // ---- media facts survive a pause/resume ------------------------------------------
 
-/// Acceptance: a paused outcome whose facts carry a media reference
+/// A paused outcome whose facts carry a media reference
 /// round-trips through JSON (the host's checkpoint document) and resumes;
 /// the reference is the only media content anywhere on the wire — the
 /// continuation carries no bytes and no duplicate fact snapshot.
@@ -1175,7 +1175,7 @@ async fn pending_inputs_are_pulled_at_round_boundaries() {
     assert!(text_facts(&out.context).contains(&"focus on the config file".to_string()));
 }
 
-// ---- Decision 7: saved unknown actions survive resumes (Slice 13) ---------------
+// ---- saved unknown actions survive resumes --------------------------------------
 
 /// Rejects `unk` with a precomputed UnknownOutcome result pinned to
 /// Continue and admits every other call.

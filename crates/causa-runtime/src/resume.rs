@@ -1,6 +1,6 @@
-//! `resume_turn` — the continuation half of a paused turn (Slice 7,
-//! reworked by Slice 6.5): both resume entries consume the **complete
-//! paused outcome** plus a request that carries only what is new.
+//! `resume_turn` — the continuation half of a paused turn: both resume
+//! entries consume the **complete paused outcome** plus a request that
+//! carries only what is new.
 //!
 //! A pause suspends a turn between the tool-use gate and executor
 //! dispatch (or, for steering, before the next model round). Everything
@@ -9,8 +9,8 @@
 //! [`Continuation`]; the trace is observational and may be trimmed
 //! freely. The decision vocabulary is deliberately not new: approve /
 //! reject / rewrite are the three constructions of the existing
-//! `HookOutcome` (Slice 12 Decision 4), so `decide_batch`'s pause and
-//! `resume_turn`'s release are two halves of one gate.
+//! `HookOutcome`, so `decide_batch`'s pause and `resume_turn`'s release
+//! are two halves of one gate.
 //!
 //! Validation runs before anything executes: a rejected request returns
 //! the untouched paused material in [`ResumeRejection`] — no model call,
@@ -30,9 +30,9 @@ use crate::driver::{
 };
 use crate::hook::HookOutcome;
 
-/// The resume payload (Slice 7, reworked by Slice 6.5): only what is NEW
-/// at resume time. The host passes the complete paused outcome — the
-/// single checkpoint — plus this request.
+/// The resume payload: only what is NEW at resume time. The host passes
+/// the complete paused outcome — the single checkpoint — plus this
+/// request.
 pub struct ResumeRequest {
     /// The new decision for the calls still awaiting approval: approve =
     /// `HookOutcome::passthrough(awaiting)`, reject = all-rejected,
@@ -220,11 +220,11 @@ pub(crate) fn validate_continuation(
                     "decision does not cover every awaiting call: missing {missing:?}"
                 ));
             }
-            // Decision 7 rule 1: the new decision's explicit unknown-outcome
-            // entries may only pin calls among its own precomputed results
-            // whose status is UnknownOutcome — no foreign ids, no
-            // duplicates, no actions on decided results. Entries may be
-            // omitted; the driver resolves those through its configuration.
+            // The new decision's explicit unknown-outcome entries may only
+            // pin calls among its own precomputed results whose status is
+            // UnknownOutcome — no foreign ids, no duplicates, no actions on
+            // decided results. Entries may be omitted; the driver resolves
+            // those through its configuration.
             let rejected_unknown: HashSet<&ToolCallId> = decision
                 .rejected
                 .iter()

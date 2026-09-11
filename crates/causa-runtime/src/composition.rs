@@ -1,6 +1,6 @@
 //! Composition layer — adapters bridging kernel ports into each other.
 //!
-//! Slice 10: [`ToolBridge`] adapts a `(DynamicToolSource, ToolDefinition)`
+//! [`ToolBridge`] adapts a `(DynamicToolSource, ToolDefinition)`
 //! pair into a plain [`Tool`]. It is the executor's dynamic-dispatch
 //! adapter (`ToolExecutor::execute_with_limits` wraps a dynamic call in a
 //! bridge so it runs the same static path as a local tool) and the
@@ -23,10 +23,10 @@ use causa_kernel::{
 /// maps invoke errors onto structured results: a timeout or cancellation
 /// is `UnknownOutcome` (the call may have run server-side), an
 /// out-of-catalog name is `Rejected`, unavailability and protocol
-/// failures are `Failed` with a model-readable message. Since Slice 13
-/// (Decision 6) the bridge returns the recorded result only — what an
-/// `UnknownOutcome` result does next is the caller's configuration (the
-/// executor resolves it; a standalone bridge consumer chooses).
+/// failures are `Failed` with a model-readable message. The bridge returns
+/// the recorded result only — what an `UnknownOutcome` result does next is
+/// the caller's configuration (the executor resolves it; a standalone
+/// bridge consumer chooses).
 ///
 /// Snapshot semantics: the [`ToolDefinition`] is fixed at construction —
 /// listing changes after bridging are not picked up. For live catalogs

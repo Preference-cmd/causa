@@ -7,9 +7,7 @@
 //! `ContextFrame → provider wire body` rendering and `wire response →
 //! ModelOutput` parsing for the context kernel's `ModelGateway` seam
 //! (`anthropic`, `openai_chat`, `openai_responses`, sharing one policy
-//! walk in `context_frame`). The former frozen harness-shaped face
-//! (`request` / `response` / `tools` / `listing` / `streaming` / `params`
-//! / `files`) was relocated to `reimagine-agent-legacy-stack`.
+//! walk in `context_frame`).
 //!
 //! # `BlockMeta::source` vocabulary
 //!

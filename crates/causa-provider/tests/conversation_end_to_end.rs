@@ -1,10 +1,10 @@
-//! Slice 3 Phase D — scripted end-to-end: the kernel's
-//! `run_in_conversation` drives the real `AnthropicMessagesGateway`
-//! against a local wiremock double through two tool round trips.
+//! Scripted end-to-end: `run_in_conversation` drives the real
+//! `AnthropicMessagesGateway` against a local wiremock double through two
+//! tool round trips.
 //!
-//! This is the full Slice 3 path in one test: ContextFrame rendering →
-//! HTTP → response parsing → driver rounds → tool execution → fact
-//! commit → next-round frame.
+//! The full path in one test: ContextFrame rendering → HTTP → response
+//! parsing → driver rounds → tool execution → fact commit → next-round
+//! frame.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -142,7 +142,7 @@ async fn run_in_conversation_completes_two_tool_round_trips_over_http() {
             .is_sealed()
     );
 
-    // P1-5: the scripted responder ignores request bodies, so the pairing
+    // The scripted responder ignores request bodies, so the pairing
     // round trip is pinned by inspecting what actually went over the wire.
     // Each round's frame must carry the PRIOR round's tool result with the
     // matching provider id — a broken pairing map would fail here.

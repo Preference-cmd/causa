@@ -1,9 +1,8 @@
-//! Wiremock-driven integration tests for `AnthropicMessagesGateway`
-//! (Slice 3 Phase B).
+//! Wiremock-driven integration tests for `AnthropicMessagesGateway`.
 //!
-//! Coverage targets the Slice 3 acceptance rows: the §4 error mapping
-//! table (every row), cancellation and deadline behavior, and the
-//! end-to-end `invoke` returning a complete kernel `ModelOutput`.
+//! Coverage: the error mapping table (every row), cancellation and
+//! deadline behavior, and the end-to-end `invoke` returning a complete
+//! kernel `ModelOutput`.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -128,7 +127,7 @@ async fn invoke_round_trips_complete_model_output() {
     assert_eq!((usage.input_tokens, usage.output_tokens), (3, 2));
 }
 
-// --- acceptance: §4 error mapping table, every row --------------------------
+// --- error mapping table, every row -----------------------------------------
 
 async fn status_case(status: u16, expected: ModelInvokeErrorKind, error_body: Value) {
     let server = MockServer::start().await;
@@ -165,7 +164,7 @@ async fn http_error_rows_map_to_their_kinds() {
     status_case(401, ModelInvokeErrorKind::Permanent, auth_body.clone()).await;
     status_case(403, ModelInvokeErrorKind::Permanent, auth_body.clone()).await;
     status_case(404, ModelInvokeErrorKind::Permanent, auth_body).await;
-    // §4 "其余" row: any undocumented status is Permanent
+    // fallback row: any undocumented status is Permanent
     status_case(
         409,
         ModelInvokeErrorKind::Permanent,
@@ -185,7 +184,7 @@ async fn http_error_rows_map_to_their_kinds() {
 #[tokio::test]
 async fn oversized_response_body_is_permanent_not_oom() {
     // A response over the transport cap must abort before buffering the
-    // whole payload (P1-2). Content-Length is present here, so the header
+    // whole payload. Content-Length is present here, so the header
     // path rejects without reading.
     let server = MockServer::start().await;
     let body = "x".repeat(33 * 1024 * 1024);
@@ -204,7 +203,7 @@ async fn oversized_response_body_is_permanent_not_oom() {
         "got {e}"
     );
     assert!(e.message.contains("too large"), "message: {}", e.message);
-    // far below the old unbounded-read cost; the reject happens early
+    // the reject happens early, without reading the whole body
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "took {:?}",
@@ -401,7 +400,7 @@ async fn invoke_emits_the_agent_http_span() {
     );
 }
 
-// ---- media resolution (Slice 6.5) -----------------------------------------------
+// ---- media resolution -----------------------------------------------------------
 
 use causa_kernel::{ContentPart, MediaRef};
 use causa_protocol::translation::media::MediaPayload;

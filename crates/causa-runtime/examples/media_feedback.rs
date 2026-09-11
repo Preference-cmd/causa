@@ -1,4 +1,4 @@
-//! Offline media closed loop (Slice 6.5): a tool produces an image, the
+//! Offline media closed loop: a tool produces an image, the
 //! host's asset store ingests the bytes, and only a `MediaRef` rides the
 //! facts — the next model round's frame carries the reference, and a
 //! snapshot round-trip preserves it. Rendering-side resolution (bytes →

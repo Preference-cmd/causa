@@ -3,10 +3,6 @@
 //! but a shared module must live in a subdirectory. Each test target
 //! compiles its own copy, so fixtures used by only some targets would trip
 //! dead_code.
-//!
-//! Driver-side fixtures (gateways, tools, runner helpers) graduated to
-//! `agent-runtime/tests/common` with the driver stack (Slice 12); the
-//! kernel keeps only what fact tests need.
 
 #![allow(dead_code)]
 

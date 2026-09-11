@@ -1,23 +1,21 @@
 //! The session aggregate — `ConversationState`, its ordering vocabulary,
-//! and the `ConversationStore` archive port. Migrated here from the kernel
-//! in Slice 6.5 (Context / harness separation, first batch): the single
-//! active slot, completed-only history admission, and commit-time sequence
-//! assignment are *reference-harness* decisions, not fact-layer invariants,
-//! so they live with the reference driver. The kernel keeps the facts
+//! and the `ConversationStore` archive port. The single active slot,
+//! completed-only history admission, and commit-time sequence assignment
+//! are *reference-harness* decisions, not fact-layer invariants, so they
+//! live with the reference driver. The kernel keeps the facts
 //! ([`causa_kernel::TurnContext`] / [`causa_kernel::TurnSnapshot`]), the
 //! validated recovery entries, and the shared [`causa_kernel::merged_frame`]
 //! projection; it never depends back on this crate.
 //!
-//! ## Snapshot vs. session entry (Slice 6.5)
+//! ## Snapshot vs. session entry
 //!
 //! A [`causa_kernel::TurnSnapshot`] describes one record only — identity,
 //! blocks, fact version, write lifecycle. Session ordering lives in
 //! [`HistoryEntry`] (`sequence` + `snapshot`), assigned exactly once by
-//! [`ConversationState::commit`]. Old wire payloads that embedded
-//! `turn_sequence` inside the snapshot are migrated by extracting the
-//! sequence into the entry (the persistence example carries the reference
-//! recipe); a bare snapshot alone promises fact recovery, never a
-//! resumable execution checkpoint.
+//! [`ConversationState::commit`]. A bare snapshot alone promises fact
+//! recovery, never a resumable execution checkpoint. Legacy payloads that
+//! embedded `turn_sequence` inside the snapshot are migrated by extracting it
+//! into the entry (the persistence example carries the recipe).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -27,10 +25,9 @@ use causa_kernel::{
 };
 
 /// Position of a committed turn within a session's history, assigned
-/// exactly once by [`ConversationState::commit`]. Migrated from the kernel
-/// with the session aggregate (Slice 6.5): the ordering *rule* — completed
-/// turns only, dense sequence at commit — is reference-harness policy, not
-/// a fact-layer invariant.
+/// exactly once by [`ConversationState::commit`]. The ordering *rule* —
+/// completed turns only, dense sequence assigned at commit — is
+/// reference-harness policy, not a fact-layer invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TurnSequence(pub u64);
 
@@ -49,7 +46,7 @@ impl ConversationVersion {
 /// active turn. Marker only — the rich cause stays with the caller via the
 /// runner's `TurnResult` (`TurnInterruption` is driver vocabulary and must not enter the facts layer).
 ///
-/// `Paused` (Slice 7) stamps a turn that is *not* sealed: the active
+/// `Paused` stamps a turn that is *not* sealed: the active
 /// `TurnContext` stays open so `resume_turn` can continue it. `commit`
 /// rejects a Paused stamp (`TurnPaused`) — only `abort_turn` (host gives
 /// up) or a resumed completion/commit may close the slot.
@@ -61,16 +58,14 @@ pub enum SealedResult {
     /// The turn was cut short. Seals the turn, but `commit` rejects it —
     /// only `abort_turn` closes the slot.
     Interrupted,
-    /// The turn is suspended but *not* sealed (Slice 7): the active
-    /// `TurnContext` stays open for `resume_turn`; `commit` rejects it
-    /// with `TurnPaused`.
+    /// The turn is suspended but *not* sealed: the active `TurnContext`
+    /// stays open for `resume_turn`; `commit` rejects it with `TurnPaused`.
     Paused,
 }
 
 /// One committed session entry: the snapshot plus the session order the
-/// record was admitted at. Slice 6.5 moved `turn_sequence` out of the
-/// snapshot itself — the record describes only its own facts; the session
-/// owns the order.
+/// record was admitted at. The record describes only its own facts; the
+/// session owns the order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     /// The `TurnSequence` `commit` assigned to this record.
@@ -130,9 +125,9 @@ pub enum ConversationError {
 /// - `seal_turn` is the only stamping path — for `Completed`/`Interrupted`
 ///   it seals the active `TurnContext` and records the outcome in one step
 ///   (invariant `sealed_result ∈ {Completed, Interrupted} ⇒ active.is_sealed()`);
-///   for `Paused` (Slice 7) it records the stamp while the active
-///   `TurnContext` stays open, so a later `resume_turn` can continue it
-///   (invariant `sealed_result == Paused ⇒ active` is open);
+///   for `Paused` it records the stamp while the active `TurnContext` stays
+///   open, so a later `resume_turn` can continue it (invariant
+///   `sealed_result == Paused ⇒ active` is open);
 /// - `commit` is the exactly-once transition into history: it alone assigns
 ///   the `TurnSequence` (as a [`HistoryEntry`]), rejects anything not
 ///   sealed-and-`Completed` (`Paused` gets the dedicated `TurnPaused`
@@ -149,7 +144,7 @@ pub enum ConversationError {
 pub struct ConversationState {
     conversation_id: ConversationId,
     /// Committed history in `TurnSequence` order — entries, not bare
-    /// snapshots, since Slice 6.5 (the order is session vocabulary).
+    /// snapshots (the order is session vocabulary).
     history: Vec<HistoryEntry>,
     /// The sealed active turn at handoff. Serialized through the
     /// `option_turn_context_as_snapshot` adapter (see
@@ -165,8 +160,8 @@ pub struct ConversationState {
 
 /// Wire-shaped field carrier for [`ConversationState`]: the exact derived
 /// shape the `Serialize` derive emits, kept in one place so the manual
-/// `Deserialize` impl below cannot drift from it. The wire shape itself is
-/// unchanged — this only adds load-time validation.
+/// `Deserialize` impl below cannot drift from it. It adds load-time
+/// validation; the wire shape is unchanged.
 #[derive(Deserialize)]
 struct ConversationStateFields {
     conversation_id: ConversationId,
@@ -301,9 +296,8 @@ impl ConversationState {
 
     /// The only stamping path. `Completed`/`Interrupted` seal the active
     /// `TurnContext` and record the outcome atomically; `Paused` records
-    /// the stamp while the turn stays open (Slice 7 — the driver-owned
-    /// counterpart of `TurnContext::seal`, deliberately withheld for
-    /// resumable pauses).
+    /// the stamp while the turn stays open — the driver-owned counterpart
+    /// of `TurnContext::seal`, deliberately withheld for resumable pauses.
     pub fn seal_turn(
         &mut self,
         turn_id: causa_kernel::TurnId,
@@ -397,9 +391,9 @@ impl ConversationState {
     /// Lossless merged view: committed history (sequence ascending,
     /// blocks in BlockSequence order) followed by the active turn's blocks,
     /// under the Conversation scope identity. Sync and policy-free by
-    /// design — budget, selection and compaction over the merged view are
-    /// Slice 5 territory and orchestrate through the policy layer, never
-    /// mutate facts. The only failure source is a missing active turn.
+    /// design — budget, selection and compaction over the merged view
+    /// orchestrate through the policy layer and never mutate facts. The
+    /// only failure source is a missing active turn.
     pub fn frame(&self, round_id: RoundId) -> Result<ContextFrame, ConversationError> {
         let active = match &self.active_turn {
             Some(active) => active,
@@ -416,10 +410,8 @@ impl ConversationState {
 
     /// Borrow-split for a conversation driver's consume/return flow: the
     /// conversation id and committed history are read while the active
-    /// turn is driven mutably. Public since Slice 12 — this is the exact
-    /// seam any external conversation driver needs. Stamping still goes
-    /// through the public `seal_turn` afterwards, so no second `&mut`
-    /// seam exists.
+    /// turn is driven mutably. Stamping still goes through the public
+    /// `seal_turn` afterwards, so no second `&mut` seam exists.
     pub fn runner_parts(
         &mut self,
     ) -> (&ConversationId, Vec<TurnSnapshot>, Option<&mut TurnContext>) {
@@ -432,12 +424,10 @@ impl ConversationState {
 
     /// Validated replay path: rebuild a session from committed history
     /// entries. The active slot starts empty (live paths never enter
-    /// here); `ConversationVersion` resets to zero (replay is a fresh load —
-    /// cross-persistence version semantics are Slice 5). Validation runs
-    /// the shared `validate_history` closed set — any violation maps to
-    /// `ConversationError::InvalidSequence` so callers never touch
-    /// `ContextError`. `source_version` is accepted as a recorded fact — it
-    /// counts fact commits and is not derivable from the blocks.
+    /// here); `ConversationVersion` resets to zero (replay is a fresh load).
+    /// Validation runs the shared `validate_history` closed set — any
+    /// violation maps to `ConversationError::InvalidSequence` so callers
+    /// never touch `ContextError`.
     pub fn from_history(
         conversation_id: ConversationId,
         entries: Vec<HistoryEntry>,
@@ -476,9 +466,9 @@ impl ConversationState {
 
     /// Canonical-path invariant: a `Completed`/`Interrupted` stamp exists
     /// only while the active turn is sealed; a `Paused` stamp exists only
-    /// while it is open (Slice 7). Enforced by construction (`seal_turn`
-    /// seals exactly when it does not stamp `Paused`; every other path
-    /// only clears). Commit does not rely on this — it checks both facts
+    /// while it is open. Enforced by construction (`seal_turn` seals
+    /// exactly when it does not stamp `Paused`; every other path only
+    /// clears). Commit does not rely on this — it checks both facts
     /// defensively.
     fn assert_stamp_invariant(&self) {
         debug_assert!(match self.sealed_result {
@@ -492,13 +482,12 @@ impl ConversationState {
 }
 
 /// Persist one session's committed history as [`HistoryEntry`] records —
-/// the archive convenience port of the reference harness. Migrated from the
-/// kernel in Slice 6.5 with the session aggregate: it is a session-archive
-/// contract (completed-turn history), not a cross-harness capability, and
-/// it is **not** wired into `commit` — the host's harness calls
-/// `save_entry` after `ConversationState::commit`, keeping persistence
-/// policy (batch writes, compression, fsync cadence, retry strategy)
-/// host-owned.
+/// the archive convenience port of the reference harness. It is a
+/// session-archive contract (completed-turn history), not a cross-harness
+/// capability, and it is **not** wired into `commit` — the host's harness
+/// calls `save_entry` after `ConversationState::commit`, keeping
+/// persistence policy (batch writes, compression, fsync cadence, retry
+/// strategy) host-owned.
 ///
 /// Full paused outcomes are NOT stored through this port: the host saves
 /// them in its own checkpoint document (fact state + continuation can live

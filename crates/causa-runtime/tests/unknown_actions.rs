@@ -1,4 +1,4 @@
-//! Decision 6/7/8 behavior tests (Slice 13 Phase G): the recorded result
+//! Unknown-action behavior tests: the recorded result
 //! and the continuation action are separate — actions resolve through
 //! host configuration and explicit per-call decisions by the ACTUAL
 //! executed name, never a tool declaration, the draft's name, or a value
@@ -372,7 +372,7 @@ async fn reject_entries_may_be_omitted_and_resolve_through_the_config() {
     assert_eq!(results[0].status, ToolResultStatus::UnknownOutcome);
 }
 
-// ---- output retention by executed name (Decision 8) ----------------------------
+// ---- output retention by executed name -----------------------------------------
 
 /// The per-name override is the chosen limit — it wins over the fallback
 /// even when LARGER — resolved by the executed name before dispatch.

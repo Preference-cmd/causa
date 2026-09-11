@@ -1,13 +1,12 @@
 //! `DynamicToolSource` port — the seam external tool catalogs (MCP
 //! servers, plugin hosts) fill in so their tools can enter the model's
-//! `ToolSurface` next to local Rust tools (Slice 10).
+//! `ToolSurface` next to local Rust tools.
 //!
-//! The port stays in the kernel by the Slice 12 criterion: it is the
-//! contract surface third parties implement against the facts crate alone
-//! (`causa-extension` implements it with only this crate as dependency,
-//! exactly as `causa-provider` implements `ModelGateway`). The aggregation
-//! and dispatch logic that *consumes* the port lives in
-//! `causa_runtime`'s executor.
+//! It is a kernel contract: third parties implement it against the facts
+//! crate alone (`causa-extension` depends only on this crate, exactly as
+//! `causa-provider` implements `ModelGateway`). The aggregation and
+//! dispatch logic that *consumes* the port lives in `causa_runtime`'s
+//! executor.
 
 use async_trait::async_trait;
 

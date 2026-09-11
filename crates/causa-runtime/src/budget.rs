@@ -1,8 +1,8 @@
 //! Reference frame-materialization policy — window budget, compaction seam,
-//! token counter, and the canonical [`FramePolicy`] carrier. Slice 13 moved
-//! these here from the kernel: they are the reference harness's budget
-//! opinions, not fact-layer invariants. A custom harness composes the
-//! kernel's lossless projection (`TurnContext::frame`) differently.
+//! token counter, and the canonical [`FramePolicy`] carrier. These are the
+//! reference harness's budget opinions, not fact-layer invariants. A custom
+//! harness composes the kernel's lossless projection (`TurnContext::frame`)
+//! differently.
 //!
 //! The policy orchestrates materialization itself: the fact machine offers
 //! only the lossless projection and never awaits behavior, so compaction

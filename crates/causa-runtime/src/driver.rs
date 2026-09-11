@@ -1,8 +1,6 @@
 //! The reference driver — retry scheduling, tool batch dispatch, artifact
-//! spill, control plumbing, and trace construction. Graduated from the
-//! kernel's staged `internal/` perimeter by Slice 12: the kernel is facts
-//! and contracts only; the canonical consumer of those contracts lives
-//! here, one layer up.
+//! spill, control plumbing, and trace construction. The canonical consumer
+//! of the kernel's contracts lives here, one layer up.
 use crate::budget::FramePolicy;
 use crate::config::TurnRunOptions;
 use crate::config::UnknownOutcomePolicy;
@@ -122,10 +120,10 @@ pub enum TurnInterruption {
         reason: String,
     },
     /// The model stopped on the token ceiling; the driver dispatches this
-    /// before applying, so no blocks persist (§5.6).
+    /// before applying, so no blocks persist.
     ModelMaxTokens,
     /// The model refused; the driver dispatches this before applying, so
-    /// no blocks persist (§5.6).
+    /// no blocks persist.
     ModelRefusal,
 }
 
@@ -250,10 +248,9 @@ pub enum TurnResult {
         /// Why the turn was interrupted.
         cause: TurnInterruption,
     },
-    /// Resumable suspension (Slice 7) — not a terminal state: the turn's
-    /// facts stay open in the outcome's `context` / `state` (the single
-    /// fact source — Slice 6.5 removed the duplicated snapshot from this
-    /// variant), the prepared batch is neither executed nor rejected, and
+    /// Resumable suspension — not a terminal state: the turn's facts stay
+    /// open in the outcome's `context` / `state` (the single fact source),
+    /// the prepared batch is neither executed nor rejected, and
     /// `resume_turn` / `TurnRunner::resume` continue the same turn from
     /// the [`Continuation`].
     Paused {
@@ -263,32 +260,30 @@ pub enum TurnResult {
     },
 }
 
-/// The hook-prepared work an approval pause checkpoints (Slice 6.5,
-/// reworked by Slice 13 Decision 7): the hook has already filtered /
-/// rejected / rewritten the model-emitted batch, and those decisions
-/// cannot be re-derived on resume — they are saved, not re-run. The
-/// original payloads remain derivable from the committed tool-call blocks
-/// (fact identity); the independent rewrite and rejections live here as
-/// serializable data.
+/// The hook-prepared work an approval pause checkpoints: the hook has
+/// already filtered / rejected / rewritten the model-emitted batch, and
+/// those decisions cannot be re-derived on resume — they are saved, not
+/// re-run. The original payloads remain derivable from the committed
+/// tool-call blocks (fact identity); the independent rewrite and rejections
+/// live here as serializable data.
 ///
-/// Since Decision 6/7 the checkpoint stores recorded results plus the
-/// unknown-outcome actions fixed at pause time, not result envelopes: a
-/// tool's recorded result is a fact, and what an `UnknownOutcome` result
-/// does next is harness configuration. [`unknown_decisions`](Self::unknown_decisions)
+/// The checkpoint stores recorded results plus the unknown-outcome actions
+/// fixed at pause time, not result envelopes: a tool's recorded result is
+/// a fact, and what an `UnknownOutcome` result does next is harness
+/// configuration. [`unknown_decisions`](Self::unknown_decisions)
 /// must exactly cover the saved results whose status is `UnknownOutcome`
 /// — no extra, missing, or duplicate entries — and a resume may never
 /// recompute them through new configuration.
 ///
 /// # Wire compatibility
 ///
-/// The serialized shape is unchanged from Slice 6.5: `rejected` is written
-/// as `[{result, policy}]` through a private runtime DTO — the policy is
-/// the fixed decision for `UnknownOutcome` entries and the canonical
-/// `Stop` for every other status (whose policy never participated in
-/// execution). Deserialization reads the same shape (both fields
-/// required), drops the policy of non-unknown entries, and rejects any
-/// decision set that does not exactly cover the saved `UnknownOutcome`
-/// results — earlier formats without prepared work still fail loudly.
+/// `rejected` is written as `[{result, policy}]` through a private runtime
+/// DTO — the policy is the fixed decision for `UnknownOutcome` entries and
+/// the canonical `Stop` for every other status (whose policy never
+/// participated in execution). Deserialization reads the same shape (both
+/// fields required), drops the policy of non-unknown entries, and rejects
+/// any decision set that does not exactly cover the saved `UnknownOutcome`
+/// results; earlier formats without prepared work still fail loudly.
 pub struct PreparedApproval {
     /// Calls the hook admitted — arguments possibly rewritten — in model
     /// draft order. These are what still await the host's decision at
@@ -323,10 +318,9 @@ impl Clone for PreparedApproval {
     }
 }
 
-/// Private wire shape for one checkpointed rejection: the old
-/// `{result, policy}` envelope. Not part of the public API — the public
-/// in-memory structure separates the recorded result from the saved
-/// action (Decision 6/7).
+/// Private wire shape for one checkpointed rejection: the `{result, policy}`
+/// envelope. Not part of the public API — the public in-memory structure
+/// separates the recorded result from the saved action.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RejectedWire {
     result: ToolResultPayload,
@@ -442,8 +436,8 @@ impl<'de> serde::Deserialize<'de> for PreparedApproval {
 /// Where a turn paused. The reference driver currently emits only the
 /// approval position; the steering position exists so hosts that suspend
 /// before a model round produce a continuation the same resume machinery
-/// consumes (Decision 6.2: the pause point and the round together define
-/// the next step — never free-floating `Option`s).
+/// consumes (the pause point and the round together define the next step —
+/// never free-floating `Option`s).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum PausePoint {
@@ -463,7 +457,7 @@ pub enum PausePoint {
     PausedForSteering,
 }
 
-/// The single continuation of a paused turn (Slice 6.5): everything
+/// The single continuation of a paused turn: everything
 /// resuming needs beyond the paused outcome's fact state, the runner, the
 /// new options, and the new control. Rounds and quotas are read from here
 /// — never from the trace, which is observational and may be trimmed
@@ -508,14 +502,13 @@ pub struct TurnOutcome {
     pub trace: TurnTrace,
 }
 
-// Wire-contract note (Slice 5A, 2026-09-02 review): `TurnResult`,
-// `TurnOutcome`, `ConversationOutcome` and the `TurnTrace` family are
-// embedded in `agent_runtime::event::ContextEvent` and delivered over
-// IPC. Since Slice 12 their Rust item paths live in this crate
-// (graduated from the kernel's staged perimeter) and may move between
-// layers without notice — but their serde shapes are a load-bearing
-// external contract and must not change without a breaking migration of
-// the event wire format. `tests/serialization.rs` pins the shapes.
+// Wire-contract note: `TurnResult`, `TurnOutcome`, `ConversationOutcome`
+// and the `TurnTrace` family are embedded in `causa_runtime::event::ContextEvent`
+// and delivered over IPC. Their Rust item paths live in this crate and may
+// move between layers without notice — but their serde shapes are a
+// load-bearing external contract and must not change without a breaking
+// migration of the event wire format. `tests/serialization.rs` pins the
+// shapes.
 
 /// The conversation entry's counterpart to [`TurnOutcome`]: consume/return —
 /// the state comes back with the active turn sealed inside and its outcome
@@ -539,8 +532,8 @@ pub struct ConversationOutcome {
 enum FrameSource<'a> {
     /// Policy-shaped materialization over the active turn (Turn scope).
     Turn(&'a FramePolicy),
-    /// Lossless merged view (Conversation scope) — policy-inert in Slice 2;
-    /// conversation-level budget/compaction is Slice 5.
+    /// Lossless merged view (Conversation scope) — the frame policy is
+    /// deliberately inert here.
     Conversation {
         conversation_id: &'a ConversationId,
         history: &'a [TurnSnapshot],
@@ -556,11 +549,11 @@ pub(crate) enum ModelPhase {
     Stream,
 }
 
-/// Continuation payload for a resumed turn (Slice 7, reworked by Slice
-/// 6.5): the validated continuation plus the new decision, consumed once
-/// by `drive_from`'s prologue. Built by the public resume entries after
-/// validation; rounds, counts, prepared work, and queued inputs all come
-/// from the [`Continuation`] — the trace rides along as observation only.
+/// Continuation payload for a resumed turn: the validated continuation plus
+/// the new decision, consumed once by `drive_from`'s prologue. Built by the
+/// public resume entries after validation; rounds, counts, prepared work,
+/// and queued inputs all come from the [`Continuation`] — the trace rides
+/// along as observation only.
 pub(crate) struct ResumeState {
     /// The paused turn's continuation (pause position, round, counts,
     /// prepared work, queued inputs).
@@ -588,7 +581,7 @@ enum BatchWork {
 /// action is already fixed — a checkpoint entry, an explicit host
 /// decision, or an executed `UnknownOutcome` (resolved by the executed
 /// name at dispatch time). `None` resolves through the turn's
-/// unknown-outcome configuration by the batch's tool name (Decision 6);
+/// unknown-outcome configuration by the batch's tool name;
 /// results with any other status never consume an action.
 #[derive(Debug, Clone)]
 struct PrecomputedResult {
@@ -658,8 +651,8 @@ impl TurnRunner {
             hook,
         }
     }
-    /// Slice 1 entry, unchanged in shape: frames materialize from the active
-    /// turn alone (Turn scope, policy-shaped).
+    /// Frames materialize from the active turn alone (Turn scope,
+    /// policy-shaped).
     pub async fn run(
         &self,
         context: TurnContext,
@@ -707,7 +700,7 @@ impl TurnRunner {
         }
     }
 
-    /// Slice 6 entry: the streaming twin of [`TurnRunner::run`]. The model
+    /// The streaming twin of [`TurnRunner::run`]. The model
     /// phase consumes provider deltas — each one forwarded to
     /// `options.interaction.on_delta` — instead of a single batch result;
     /// retry bookkeeping, tool dispatch, traces, and sealing are the same
@@ -730,10 +723,9 @@ impl TurnRunner {
             .await
     }
 
-    /// Slice 2 entry: frames materialize as the lossless merged view over
-    /// committed history plus the active turn (Conversation scope — the
-    /// `options.frame` policy is deliberately inert here; conversation-level
-    /// budget/compaction is Slice 5). Consume/return: the state comes back
+    /// Frames materialize as the lossless merged view over committed history
+    /// plus the active turn (Conversation scope — the `options.frame` policy
+    /// is deliberately inert here). Consume/return: the state comes back
     /// with the active turn sealed and outcome-stamped; the host then calls
     /// `commit` (Completed) or `abort_turn` (Interrupted).
     pub async fn run_in_conversation(
@@ -746,7 +738,7 @@ impl TurnRunner {
             .await
     }
 
-    /// Slice 6 entry: the streaming twin of [`TurnRunner::run_in_conversation`]
+    /// The streaming twin of [`TurnRunner::run_in_conversation`]
     /// — same consume/return contract and entry gates, delta-driven model
     /// phase. `options.frame` stays deliberately inert here.
     pub async fn run_in_conversation_streaming(
@@ -759,8 +751,8 @@ impl TurnRunner {
             .await
     }
 
-    /// Slice 7, reworked by Slice 6.5: continue a paused conversation
-    /// turn. The continuation half of `run_in_conversation` — same
+    /// Continue a paused conversation turn. The continuation half of
+    /// `run_in_conversation` — same
     /// consume/return contract; the free function
     /// `crate::resume::resume_turn` is the public face: it validates the
     /// complete paused outcome (stamp, open turn, continuation-vs-facts,
@@ -774,12 +766,12 @@ impl TurnRunner {
         resume: ResumeState,
     ) -> Result<ConversationOutcome, ConversationError> {
         // Resumes continue in batch phase: the facts are complete, and a
-        // streaming continuation is future work (see the Slice 7 note).
+        // streaming continuation is future work.
         self.drive_conversation(state, options, ctrl, ModelPhase::Batch, Some(resume))
             .await
     }
 
-    /// Slice 7, reworked by Slice 6.5: continue a paused bare turn — the
+    /// Continue a paused bare turn — the
     /// continuation half of [`TurnRunner::run`]/[`TurnRunner::run_streaming`].
     /// Consumes the **complete paused outcome** plus the new
     /// [`ResumeRequest`](crate::resume::ResumeRequest) (decision + inject);
@@ -847,9 +839,9 @@ impl TurnRunner {
         phase: ModelPhase,
         resume: Option<ResumeState>,
     ) -> Result<ConversationOutcome, ConversationError> {
-        // Observability baseline (Slice 6.6): one `agent.turn` span per
-        // entry, ids and scope only — never message content. The span is
-        // entered per poll via `Instrument`, so the future stays `Send`.
+        // One `agent.turn` span per entry, ids and scope only — never
+        // message content. The span is entered per poll via `Instrument`,
+        // so the future stays `Send`.
         let scope = if resume.is_some() {
             "conversation.resume"
         } else if matches!(phase, ModelPhase::Stream) {
@@ -1103,8 +1095,8 @@ impl TurnRunner {
                     // unanswered tool calls of this turn, in block order —
                     // the model-emitted draft order the results pair into.
                     let draft = unanswered_tool_calls(active);
-                    // Decision 7 rule 3: checkpoint entries commit verbatim
-                    // with their fixed actions; only the awaiting calls are
+                    // Checkpoint entries commit verbatim with their fixed
+                    // actions; only the awaiting calls are
                     // newly decided. New precomputed rejections use the
                     // host's explicit entries, else resolve through the
                     // current configuration by the batch name.
@@ -1151,12 +1143,12 @@ impl TurnRunner {
         // surface (the `TurnInvocation` baseline); every later round
         // boundary re-snapshots the runner's executor, so catalog changes
         // — including ones this turn's own tool calls triggered — reach the
-        // next request (Slice 10's per-round refresh, consumed here).
-        // Retries within one round reuse that round's snapshot.
+        // next request. Retries within one round reuse that round's
+        // snapshot.
         let first_model_round = round;
 
         loop {
-            // Steering (Slice 7): resume-time injections first, then the
+            // Steering: resume-time injections first, then the
             // round-boundary pull. Both append with the `user.steering`
             // source label; the next model round sees them.
             if !pending_inject.is_empty() {
@@ -1250,10 +1242,10 @@ impl TurnRunner {
             } else {
                 self.executor.tool_surface().await
             };
-            // Observability baseline (Slice 6.6): the round span covers the
-            // bounded retry loop; spans are entered per poll via
-            // `Instrument`, so the future stays `Send`. Fields carry ids
-            // and names only — never frame content or arguments.
+            // The round span covers the bounded retry loop; spans are
+            // entered per poll via `Instrument`, so the future stays `Send`.
+            // Fields carry ids and names only — never frame content or
+            // arguments.
             let round_span = tracing::debug_span!(
                 "agent.round",
                 turn_id = %invocation.turn_id.0,
@@ -1415,7 +1407,7 @@ impl TurnRunner {
                 applied_block_ids: vec![],
                 tool_batch: None,
             });
-            // MaxTokens / Refusal never persist blocks (§5.6); they carry their
+            // MaxTokens / Refusal never persist blocks; they carry their
             // own dedicated interruption causes, so dispatch before apply.
             // This is driver policy: the canonical append_model_output would
             // happily record them as facts.
@@ -1515,7 +1507,7 @@ impl TurnRunner {
                             outcome.unknown_decisions,
                         )
                     };
-                    // Slice 7: the second gate — the host's batch decision.
+                    // The second gate — the host's batch decision.
                     // Default `Proceed`; `Pause` suspends the turn with the
                     // model-emitted batch as `pending_calls`, before any
                     // execution or rejection lands in the facts.
@@ -1528,7 +1520,7 @@ impl TurnRunner {
                             // re-admits a rejected call. The outcome's
                             // context is the single fact source — no
                             // duplicated snapshot rides on the variant.
-                            // Decision 7 rule 2: the checkpoint fixes the
+                            // The checkpoint fixes the
                             // actual action for every prepared
                             // UnknownOutcome — the explicit hook entry if
                             // given, else the turn's current configuration
@@ -1735,7 +1727,7 @@ impl TurnRunner {
                         .for_call(options.execution.call_timeout);
                     let store = options.execution.artifact_store.clone();
                     let tc = options.execution.token_counter.clone();
-                    // Decision 8: the effective per-call output limit is
+                    // The effective per-call output limit is
                     // resolved by the ACTUAL executed name (post hook /
                     // rewrite / resume decision) before dispatch; the
                     // executor never consults the tool object.
@@ -1745,7 +1737,7 @@ impl TurnRunner {
                         .get(&payload.tool_name)
                         .copied()
                         .unwrap_or(options.execution.tool_output_limits);
-                    // Decision 6: an executed UnknownOutcome's action
+                    // An executed UnknownOutcome's action
                     // resolves by the executed name, not the draft's.
                     let name = payload.tool_name.clone();
                     let exec = self.executor.clone();
@@ -1814,7 +1806,7 @@ impl TurnRunner {
             .iter()
             .map(|p| (p.call_id.clone(), p.tool_name.clone()))
             .collect();
-        // Decision 6: resolve every remaining unknown-outcome action through
+        // Resolve every remaining unknown-outcome action through
         // the turn policy, keyed by the batch's tool name for the call
         // (precomputed entries were never executed, so the batch name is
         // their actual name). Explicit / checkpoint-fixed actions win.
@@ -1873,7 +1865,7 @@ impl TurnRunner {
                 reason: e.to_string(),
             });
         }
-        // UnknownOutcome action (Decision 6): Stop interrupts after the real
+        // UnknownOutcome action: Stop interrupts after the real
         // result is committed, Continue proceeds to the next round — it
         // never re-runs the call, rewrites the result into a success, or
         // cancels sibling calls; parent should_stop is checked at the next

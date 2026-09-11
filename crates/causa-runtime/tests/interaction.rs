@@ -1,7 +1,6 @@
-//! Interaction-port tests — the `TurnInteraction` contract moved here from
-//! the kernel (Slice 13): the seam's only consumer is the reference driver,
-//! so the contract rides with the runtime. Default methods are no-ops, and
-//! a host implementation only overrides what it observes.
+//! Interaction-port tests — the `TurnInteraction` contract lives with the
+//! runtime because the reference driver is its only consumer. Default
+//! methods are no-ops; a host implementation overrides only what it observes.
 
 use async_trait::async_trait;
 use causa_kernel::{RoundId, StreamDelta};

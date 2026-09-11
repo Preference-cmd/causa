@@ -24,7 +24,7 @@ pub struct RetryPolicy {
     /// always are). Default `false`.
     pub retry_timeouts: bool,
     /// Backoff base before the first retry, in milliseconds. `0` = no
-    /// backoff (the pre-Slice-6 behavior: retry immediately).
+    /// backoff (retry immediately).
     pub backoff_base_ms: u64,
     /// Backoff ceiling, in milliseconds.
     pub backoff_max_ms: u64,
@@ -142,12 +142,12 @@ pub struct TurnPolicy {
 }
 
 /// Reference-harness vocabulary for the action taken after an
-/// `UnknownOutcome` tool result is committed (Slice 13 Decision 6). It is
-/// configuration and saved host-decision data, not tool vocabulary and not
-/// a fact: the recorded result is committed verbatim either way, `Stop`
-/// merely interrupts the turn before the next model call, and `Continue`
-/// only allows the next round — it never re-runs the call, never rewrites
-/// the result into a success, and never cancels sibling calls.
+/// `UnknownOutcome` tool result is committed. It is configuration and saved
+/// host-decision data, not tool vocabulary and not a fact: the recorded
+/// result is committed verbatim either way, `Stop` merely interrupts the
+/// turn before the next model call, and `Continue` only allows the next
+/// round — it never re-runs the call, never rewrites the result into a
+/// success, and never cancels sibling calls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnknownOutcomePolicy {
     /// Treat the unknown outcome as unsafe: the turn interrupts rather
@@ -163,9 +163,7 @@ pub enum UnknownOutcomePolicy {
 /// per-tool-name overrides. Resolution is by the **actual executed tool
 /// name** (post hook / rewrite / resume decision, full namespace for
 /// dynamic tools) — never the original model draft's name, and never read
-/// out of a result body. An explicit override wins over the default even
-/// when a tool used to declare the opposite; hosts migrating a removed
-/// `Tool::unknown_outcome_policy` declaration place it here.
+/// out of a result body. An explicit override wins over the default.
 #[derive(Debug, Clone, Default)]
 pub struct UnknownOutcomeConfig {
     /// The action for `UnknownOutcome` results whose tool has no explicit
@@ -186,8 +184,8 @@ impl UnknownOutcomeConfig {
     }
 }
 /// Per-call truncation thresholds for tool outputs — the explicit
-/// truncation effect hosts opt into (Slice 13 Decision 8: output retention
-/// is harness configuration, not a tool declaration).
+/// truncation effect hosts opt into (output retention is harness
+/// configuration, not a tool declaration).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolOutputLimits {
     /// Maximum estimated tokens a tool result may carry before it gets
@@ -218,8 +216,7 @@ pub struct ExecutionOptions {
     /// Per-tool-name limit overrides, keyed by the actual executed tool
     /// name (full namespace name for dynamic tools). A name not yet
     /// present in a dynamic catalog may still be configured here; the
-    /// entry applies once that name executes. Hosts migrating a removed
-    /// `Tool::output_limits` declaration place it here.
+    /// entry applies once that name executes.
     pub tool_output_limits_overrides: std::collections::HashMap<String, ToolOutputLimits>,
     /// Where a truncated output's full bytes are spilled as an artifact;
     /// `None` = truncate without a retrievable original.

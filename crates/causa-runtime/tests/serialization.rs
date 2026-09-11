@@ -1,4 +1,4 @@
-//! Serialization round-trip tests for outcome types (Slice 5A Phase A).
+//! Serialization round-trip tests for outcome types.
 //!
 //! Verifies that the kernel's terminal outcome values (TurnResult,
 //! TurnOutcome, ConversationOutcome, and ConversationState) survive a
@@ -84,8 +84,8 @@ fn turn_outcome_round_trip_preserves_snapshot() {
     context
         .append_input(TextPayload::new("user said hi"), "user")
         .expect("append input");
-    // Slice 7: the wire preserves sealedness. Terminal outcomes carry a
-    // sealed context; the round-trip must restore it as sealed.
+    // The wire preserves sealedness: terminal outcomes carry a sealed
+    // context, and the round-trip must restore it sealed.
     context.seal();
     let outcome = TurnOutcome {
         context,
@@ -105,10 +105,9 @@ fn turn_outcome_round_trip_preserves_snapshot() {
     assert_eq!(restored.context.blocks().len(), 1);
 }
 
-/// Slice 7, reworked by Slice 6.5: a paused outcome carries the open
-/// context plus the single continuation — the round-trip restores both.
-/// The Paused variant carries NO snapshot of its own: the outcome's
-/// `context` is the only fact source.
+/// A paused outcome carries the open context plus the single continuation —
+/// the round-trip restores both. The Paused variant carries NO snapshot of
+/// its own: the outcome's `context` is the only fact source.
 #[test]
 fn turn_outcome_paused_round_trip_preserves_open_context_and_continuation() {
     let mut context = TurnContext::new(turn_id("t-paused"));
@@ -200,11 +199,10 @@ fn pause_point_tags_are_pinned() {
     );
 }
 
-/// Slice 6.5 migration: pre-continuation pause payloads (snapshot +
-/// reason riding on the variant) do NOT transparently convert — the old
-/// shape discarded the hook's prepared work, so no equivalent
-/// continuation can be constructed. Deserialization is the explicit
-/// rejection point.
+/// Pre-continuation pause payloads (snapshot + reason riding on the
+/// variant) do NOT transparently convert — that shape discarded the hook's
+/// prepared work, so no equivalent continuation can be constructed.
+/// Deserialization is the explicit rejection point.
 #[test]
 fn pre_continuation_paused_payloads_are_explicitly_rejected() {
     let old = json!({
@@ -351,7 +349,7 @@ fn model_stop_reason_serialization_is_stable() {
     assert_eq!(restored, ModelStopReason::EndTurn);
 }
 
-// ---- Slice 13 Decision 7: the {result, policy} checkpoint wire ------------------
+// ---- the {result, policy} checkpoint wire --------------------------------------
 
 use causa_kernel::{ToolCallId, ToolOutput, ToolResultPayload, ToolResultStatus};
 use causa_runtime::{UnknownDecision, UnknownOutcomePolicy};

@@ -1,7 +1,6 @@
 //! Driver-stack tests — the reference driver, config axes, executor
-//! dispatch, cancellation, and traces. Graduated from context-kernel's
-//! staged suite with the driver itself (Slice 12); they exercise the
-//! runtime wiring, not the kernel contract.
+//! dispatch, cancellation, and traces. They exercise the runtime wiring,
+//! not the kernel contract.
 
 mod common;
 
@@ -294,11 +293,9 @@ async fn parent_cancellation_interrupted() {
 }
 
 // ---------------------------------------------------------------------------
-// Alignment coverage (2026-08-28 review): acceptance gaps + regressions
+// Alignment coverage: acceptance gaps + regressions
 
-// ---------------------------------------------------------------------------
-
-// [P2 acceptance #10] max_retries = 0 → initial attempt only
+// max_retries = 0 → initial attempt only
 
 #[tokio::test]
 async fn max_retries_zero_does_single_attempt() {
@@ -325,7 +322,7 @@ async fn max_retries_zero_does_single_attempt() {
     assert_eq!(gw.recorded().len(), 1);
 }
 
-// [P2 acceptance #13] turn deadline exceeded → TurnDeadlineExceeded
+// turn deadline exceeded → TurnDeadlineExceeded
 
 #[tokio::test]
 async fn turn_deadline_yields_deadline_exceeded() {
@@ -347,7 +344,7 @@ async fn turn_deadline_yields_deadline_exceeded() {
     assert_eq!(gw.recorded().len(), 0);
 }
 
-// [P2 acceptance #13] non-retryable model failure → Interrupted with round trace
+// non-retryable model failure → Interrupted with round trace
 
 #[tokio::test]
 async fn non_retryable_error_records_round_trace() {
@@ -373,7 +370,7 @@ async fn non_retryable_error_records_round_trace() {
     assert!(out.context.is_sealed());
 }
 
-// [P0 regression] cross-batch identical call must not collide (proposal §5.3 recovery path)
+// cross-batch identical call must not collide
 
 #[tokio::test]
 async fn cross_batch_identical_call_does_not_collide() {
@@ -405,7 +402,7 @@ async fn cross_batch_identical_call_does_not_collide() {
     assert_ne!(call_ids[0], call_ids[1], "round-salted ids must differ");
 }
 
-// [P1 regression] MaxTokens / Refusal reach their dedicated interruption causes
+// MaxTokens / Refusal reach their dedicated interruption causes
 
 #[tokio::test]
 async fn max_tokens_and_refusal_yield_dedicated_causes_without_blocks() {
@@ -443,7 +440,7 @@ async fn max_tokens_and_refusal_yield_dedicated_causes_without_blocks() {
     }
 }
 
-// [P3 acceptance #14] UnknownOutcomePolicy::Continue → append result and continue
+// UnknownOutcomePolicy::Continue → append result and continue
 
 #[tokio::test]
 async fn unknown_outcome_continue_continues_turn() {
@@ -472,8 +469,8 @@ async fn unknown_outcome_continue_continues_turn() {
         Ok(endturn_output("done")),
     ]);
     let runner = runner_with(gw, vec![Arc::new(UnknownContinueTool)]);
-    // Decision 6: the Continue action moved from the tool declaration to
-    // the host's unknown-outcome configuration, keyed by the executed name.
+    // The Continue action is host configuration, keyed by the executed
+    // tool name — not a tool declaration.
     let mut unknown_outcome = UnknownOutcomeConfig::default();
     unknown_outcome
         .overrides
@@ -492,7 +489,7 @@ async fn unknown_outcome_continue_continues_turn() {
     ));
 }
 
-// [P3 §6.1.1] hung tool: executor call-deadline backstop yields UnknownOutcome;
+// hung tool: executor call-deadline backstop yields UnknownOutcome;
 // Stop policy interrupts the turn.
 
 #[tokio::test]
@@ -533,7 +530,7 @@ async fn hung_tool_stop_policy_interrupts_with_unknown_outcome() {
     assert_eq!(batch.calls[0].status, ToolResultStatus::UnknownOutcome);
 }
 
-// [P3 §6.1.1] hung tool with Continue declaration → backstop UnknownOutcome is
+// hung tool with Continue policy → backstop UnknownOutcome is
 // committed and the turn proceeds to the next round.
 
 #[tokio::test]
@@ -579,7 +576,7 @@ async fn hung_tool_continue_policy_still_completes() {
     assert_eq!(out.trace.rounds.len(), 2);
 }
 
-// [P3 acceptance #14] parallel batch: one failing call does not abort the others
+// parallel batch: one failing call does not abort the others
 
 #[tokio::test]
 async fn parallel_batch_partial_failure_does_not_abort() {
@@ -608,7 +605,7 @@ async fn parallel_batch_partial_failure_does_not_abort() {
     assert!(statuses.contains(&ToolResultStatus::Failed));
 }
 
-// [§6.1.1] completion_order reflects real completion, not submission order
+// completion_order reflects real completion, not submission order
 
 #[tokio::test]
 async fn completion_order_reflects_real_completion() {
@@ -657,7 +654,7 @@ async fn completion_order_reflects_real_completion() {
     assert!(batch.calls[1].duration_ms < batch.calls[0].duration_ms);
 }
 
-// [P1 Phase 1] append_model_output validation branches
+// append_model_output validation branches
 
 #[tokio::test]
 async fn max_tool_calls_interrupt_records_total() {
@@ -685,7 +682,7 @@ async fn max_tool_calls_interrupt_records_total() {
     assert!(out.trace.rounds[0].tool_batch.is_none());
 }
 
-// ---- Phase C: frame policy is driver-owned; evaluation stays canonical ----
+// ---- frame policy is driver-owned; evaluation stays canonical ----
 
 #[tokio::test]
 async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
@@ -733,7 +730,7 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     ));
 }
 
-// ---- Phase D boundary: artifact failure and loss-free fidelity ----
+// ---- artifact failure and loss-free fidelity ----
 
 struct FailingStore;
 #[async_trait::async_trait]
@@ -784,7 +781,7 @@ async fn artifact_store_failure_still_truncates_without_artifact() {
     }
 }
 
-// ---- truncation budget (2026-09-05 assessment F2) --------------------------------
+// ---- truncation budget -----------------------------------------------------------
 //
 // The retained head+tail must be sized against the DECLARED limit — notice
 // and JSON-string wrapping included — so the committed content re-estimates
@@ -846,8 +843,8 @@ fn fallback_estimate(value: &serde_json::Value) -> usize {
 
 #[tokio::test]
 async fn truncation_reduces_output_and_reestimates_within_the_limit() {
-    // The 2026-09-05 probe: a 4k-byte observation under a small limit grew
-    // instead of shrinking, because head+tail covered the whole original.
+    // A 4k-byte observation under a small limit must shrink, not grow;
+    // head+tail covering the whole original would grow it.
     let original = json!({"echo": {"text": "a".repeat(4000)}});
     let before = serde_json::to_string(&original).unwrap().len();
     let result = truncated_echo(json!({"text": "a".repeat(4000)}), 100, None).await;
@@ -899,7 +896,7 @@ async fn tiny_budget_leaves_the_notice_as_the_floor() {
 
 #[tokio::test]
 async fn completed_output_carries_reasoning_and_usage_unchanged() {
-    // gate 12: reasoning signature + rich usage survive the staged driver losslessly
+    // reasoning signature + rich usage survive the driver losslessly
     let final_output = ModelOutput {
         response: ModelResponse {
             text: TextPayload::new("final"),
@@ -975,7 +972,7 @@ async fn hook_that_drops_a_call_interrupts_as_invariant_violation() {
     );
 }
 
-// ---- per-round tool-surface refresh (2026-09-05 assessment F4) --------------------
+// ---- per-round tool-surface refresh ------------------------------------------------
 
 #[tokio::test]
 async fn dynamic_catalog_refreshes_between_model_rounds() {
@@ -1038,8 +1035,8 @@ async fn dynamic_catalog_refreshes_between_model_rounds() {
 
 #[tokio::test]
 async fn truncation_never_touches_result_media_references() {
-    // Slice 6.5: media travels beside the output content; the textual
-    // truncator shrinks the content and must leave the references alone.
+    // media travels beside the output content; the textual truncator
+    // shrinks the content and must leave the references alone.
     struct ImagingTool;
     #[async_trait::async_trait]
     impl Tool for ImagingTool {

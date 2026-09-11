@@ -2,9 +2,9 @@
 //! execution vocabulary they share with drivers: definitions and call
 //! context. Recorded facts (results, outputs, artifacts) live in
 //! `crate::context::tool_data`; batch dispatch lives in `causa-runtime`'s
-//! executor. Since Slice 13 (Decision 6) a tool returns its recorded
-//! result and nothing else — unknown-outcome continuation and output
-//! retention are reference-harness configuration, not tool declarations.
+//! executor. A tool returns its recorded result and nothing else —
+//! unknown-outcome continuation and output retention are reference-harness
+//! configuration, not tool declarations.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

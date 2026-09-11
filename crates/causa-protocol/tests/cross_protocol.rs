@@ -1,4 +1,4 @@
-//! Slice 3 Phase D — cross-protocol semantic equivalence.
+//! Cross-protocol semantic equivalence.
 //!
 //! One kernel scenario (two conversation turns with a tool round trip)
 //! rendered through the Anthropic Messages, OpenAI Chat Completions, and
@@ -7,10 +7,10 @@
 //! match the expected literal — covering role sequence, system position,
 //! and tool pairing (`call_id → provider id → tool_use_id` round trip).
 //!
-//! Slice 6.5: `ConversationState` (the session aggregate) lives in
-//! `causa-runtime`; this test tree stays kernel-only and materializes the
-//! merged projection directly through `merged_frame` over sealed turn
-//! snapshots — the same projection the session aggregate produces.
+//! `ConversationState` (the session aggregate) lives in `causa-runtime`;
+//! this test tree stays kernel-only and materializes the merged projection
+//! directly through `merged_frame` over sealed turn snapshots — the same
+//! projection the session aggregate produces.
 
 use causa_kernel::{
     ContextFrame, ConversationId, GenerationOptions, InvocationId, ModelRef, ModelResponse,

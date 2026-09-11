@@ -1,10 +1,9 @@
 //! Anthropic Messages translation for the context kernel.
 //!
-//! This is the kernel-native translation face (Slice 3): pure functions
-//! from [`causa_kernel::ContextFrame`] to an Anthropic
+//! Pure functions from [`causa_kernel::ContextFrame`] to an Anthropic
 //! Messages request body, and from an Anthropic Messages response body
-//! back to [`causa_kernel::ModelOutput`]. Transport-free —
-//! the reqwest adapter in `causa-provider` owns HTTP.
+//! back to [`causa_kernel::ModelOutput`]. Transport-free — the reqwest
+//! adapter in `causa-provider` owns HTTP.
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
 //! text joining, tool id pairing, observation stringification) lives in
@@ -709,7 +708,7 @@ mod tests {
         assert!(msgs[0]["content"][0].get("cache_control").is_some());
     }
 
-    // --- media (Slice 6.5) --------------------------------------------------
+    // --- media -------------------------------------------------------------
 
     fn resolved(reference: &str) -> MediaSet {
         let mut m = MediaSet::new();

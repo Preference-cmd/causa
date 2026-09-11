@@ -3,9 +3,9 @@
 //! this is the only shape media takes on the render path, built by the
 //! gateway's injected resolver (causa-provider) right before translation.
 //!
-//! This slice renders `image/*` to the wire (Anthropic `image` blocks,
-//! Chat `image_url`, Responses `input_image`); any other media type —
-//! and every unresolvable reference — degrades to a deterministic text
+//! It renders `image/*` to the wire (Anthropic `image` blocks, Chat
+//! `image_url`, Responses `input_image`); any other media type — and
+//! every unresolvable reference — degrades to a deterministic text
 //! placeholder, decided once in the shared walk.
 
 use std::collections::HashMap;

@@ -1,4 +1,4 @@
-//! `mcp` — first-class MCP client for the agent-stack (Slice 10).
+//! `mcp` — a first-class MCP client.
 //!
 //! Wraps the official Rust SDK [`rmcp`](https://docs.rs/rmcp) so external
 //! MCP servers' tools enter the kernel's `ToolSurface` next to local Rust
@@ -55,10 +55,9 @@
 //! # Safety notes
 //!
 //! External tools are an injection surface: their output is model-visible
-//! input and their effects are host-executed. Hosts should keep the Slice
-//! 7 approval gate (`causa_runtime::TurnInteraction::decide_batch`) in
-//! front of
-//! dynamic-source batches, exactly as for local tools.
+//! input and their effects are host-executed. Hosts should keep the
+//! approval gate (`causa_runtime::TurnInteraction::decide_batch`) in
+//! front of dynamic-source batches, exactly as for local tools.
 #![deny(unsafe_code)]
 
 use async_trait::async_trait;
@@ -310,9 +309,9 @@ impl DynamicToolSource for McpToolSource {
 
 impl McpToolSource {
     /// The shared invoke body: `store` is the host's artifact store for
-    /// media ingest (Slice 6.5) — with one, MCP image content is
-    /// persisted and returned as [`MediaRef`]s on the result; without
-    /// one, images degrade to placeholder text exactly as before.
+    /// media ingest — with one, MCP image content is persisted and
+    /// returned as [`MediaRef`]s on the result; without one, images
+    /// degrade to placeholder text.
     async fn invoke_inner(
         &self,
         call: &ToolCallPayload,

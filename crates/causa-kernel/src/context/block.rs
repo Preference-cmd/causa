@@ -5,7 +5,7 @@
 //! provenance (BlockMeta). Provider-specific role assignment (system /
 //! user / assistant / tool) is the renderer's job, not the kernel's.
 //!
-//! Content vocabulary is **Parts** (frozen 2026-09-04, Slice 6.5): one
+//! Content vocabulary is **Parts**: one
 //! logical message's mixed content commits as one block of ordered
 //! [`ContentPart`]s — the block is the fact atom (identity, sequence,
 //! single version bump, pairing invariant), the part is the content
@@ -75,8 +75,8 @@ pub struct ContextBlock {
 /// they appear only in resolved render payloads (provider side).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaRef {
-    /// IANA media type; this slice renders only `image/*` to the wire,
-    /// anything else degrades to a deterministic text placeholder.
+    /// IANA media type; only `image/*` renders to the wire, anything else
+    /// degrades to a deterministic text placeholder.
     pub media_type: String,
     /// Host-side asset reference (workspace asset id / content-addressed
     /// hash). The kernel never interprets it; the host's resolver does.

@@ -418,10 +418,10 @@ fn fidelity_fields_are_serde_additive() {
     assert_eq!(legacy_call.call_id.0, "echo:abcd1234:0");
 }
 
-// ---- Phase D boundary: compaction projection identity ----
-// The budget/compaction policy moved to `causa-runtime` (Slice 13); the
-// projection-identity test lives with it in `causa-runtime/tests/budget.rs`.
-// What stays here is the fact-machine side: the lossless frame is a pure
+// ---- compaction projection identity ----
+// The budget/compaction policy lives in `causa-runtime`; the
+// projection-identity test is in `causa-runtime/tests/budget.rs`. What
+// stays here is the fact-machine side: the lossless frame is a pure
 // function of the committed facts.
 
 #[tokio::test]
@@ -497,7 +497,7 @@ fn context_block_serde_format_is_flat_with_content() {
     // No legacy kind field.
     assert!(!blocks_json.contains("\"kind\""));
     // Content with shape + value; the value is the ordered parts list
-    // (Parts frozen 2026-09-04, Slice 6.5 — no legacy text tag remains).
+    // (no legacy text tag remains).
     assert!(!blocks_json.contains("\"shape\":\"text\""));
     assert!(blocks_json.contains(
         "\"content\":{\"shape\":\"parts\",\"value\":[{\"part\":\"text\",\"value\":\"sys\"}]}"
@@ -512,7 +512,7 @@ fn context_block_serde_format_is_flat_with_content() {
     assert!(matches!(restored[1].content, BlockContent::Parts(_)));
 }
 
-// ---- Phase F: door contracts ------------------------------------------------
+// ---- door contracts ---------------------------------------------------------
 
 #[test]
 fn foreign_invocation_is_rejected() {
@@ -650,12 +650,12 @@ fn tool_results_commit_in_call_order_regardless_of_submission_order() {
     assert_eq!(c.version(), ContextVersion(2));
 }
 
-// ---- Slice 2 Phase B: scope-driven frame identity ---------------------------
+// ---- scope-driven frame identity ----------------------------------------------
 
 #[test]
 fn frame_id_from_scope_matches_deterministic_for_turn_scope() {
-    // The Turn branch of from_scope must replicate the historical preimage
-    // byte-for-byte so no pre-Slice-2 frame id changes.
+    // The Turn branch of from_scope must replicate the legacy preimage
+    // byte-for-byte, so existing frame ids stay stable.
     let scope = FrameScope::Turn {
         turn_id: turn_id("t1"),
         source_version: ContextVersion(7),
@@ -673,7 +673,7 @@ fn frame_id_from_scope_matches_deterministic_for_turn_scope() {
     );
 }
 
-// ---- Slice 6.5: Parts vocabulary, media references, append_parts ---------------
+// ---- Parts vocabulary, media references, append_parts --------------------------
 
 use causa_kernel::MediaRef;
 
@@ -794,7 +794,7 @@ fn tool_result_media_is_serde_additive_both_ways() {
         media: Vec::new(),
     };
     assert!(!serde_json::to_string(&empty).unwrap().contains("media"));
-    // ...and a pre-6.5 snapshot without the field defaults to empty.
+    // ...and a snapshot without the field defaults to empty.
     let old = json!({
         "call_id": "c1",
         "status": "Succeeded",

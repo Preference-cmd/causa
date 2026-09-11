@@ -1,33 +1,28 @@
 //! causa-kernel — ContextBlock conversation kernel.
-//! No dependency on reimagine-core / app-host / Tauri / agent-harness.
+//! No dependency on a host application, a UI shell, or another agent framework.
 //!
-//! # Layering (Slice 12: the kernel is facts + contracts, nothing else)
+//! # Layering (the kernel is facts + contracts, nothing else)
 //!
 //! - **`context`** — the external rule interface: exactly what the fact
 //!   machine stores and validates — block content shapes, the turn state
 //!   machine and its deterministic projections, and ids. Session-level
 //!   vocabulary (the `ConversationState` aggregate, its eligibility stamp,
-//!   ordering, and the conversation store port) is runtime territory since
-//!   Slice 6.5; the kernel keeps the facts (`TurnContext` / `TurnSnapshot`),
-//!   the validated recovery entries, and the shared `merged_frame`
-//!   projection.
+//!   ordering, and the conversation store port) is runtime territory; the
+//!   kernel keeps the facts (`TurnContext` / `TurnSnapshot`), the validated
+//!   recovery entries, and the shared `merged_frame` projection.
 //! - **`ports`** — the behavior seams external implementors fill in, each
 //!   self-contained: `ModelGateway` (request params, result envelope,
 //!   transport error), `Tool` + `ArtifactStore` (definitions, execution
 //!   context, outcome policy, limits), `DynamicToolSource`, control planes. A
 //!   type belongs here iff it is the contract surface third parties
-//!   implement or call against; the kernel itself consumes none of it.
-//!   The reference budget/compaction seam and the host↔driver interaction
-//!   seam are the reference harness's opinions, not cross-harness
-//!   contracts — they moved to `causa-runtime` in Slice 13 (the
-//!   conversation-persistence port moved with the session aggregate in
-//!   Slice 6.5).
+//!   implement or call against; the kernel itself consumes none of it. The
+//!   reference budget/compaction and host↔driver interaction seams are the
+//!   reference harness's opinions, not cross-harness contracts, and live in
+//!   `causa-runtime`.
 //!
-//! The reference driver, executor, hook seam, config axes, and run
-//! control that once lived in a staged perimeter inside this crate
-//! graduated to `causa-runtime` (Slice 12). Anything left here
-//! is either a fact or a contract; both are load-bearing and neither is
-//! staged.
+//! The reference driver, executor, hook seam, config axes, and run control
+//! live in `causa-runtime`. Anything left here is either a fact or a
+//! contract; both are load-bearing.
 //!
 //! The physical modules are private; every re-export below is the entire
 //! public contract. Nothing else is a cross-crate commitment.

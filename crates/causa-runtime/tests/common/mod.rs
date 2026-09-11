@@ -1,12 +1,8 @@
-//! Shared fixtures for the agent-runtime test split. `mod.rs` is required
+//! Shared fixtures for the runtime test split. `mod.rs` is required
 //! here: Cargo auto-discovers `tests/*.rs` as standalone targets, but a
 //! shared module must live in a subdirectory. Each test target compiles
 //! its own copy, so fixtures used by only some targets would trip
 //! dead_code.
-//!
-//! Graduated from context-kernel's test fixtures (Slice 12) together with
-//! the driver stack they exercise; the kernel keeps only fact-machine
-//! fixtures now.
 
 #![allow(dead_code)]
 
@@ -178,8 +174,7 @@ impl ModelGateway for RecordingGateway {
     }
 }
 
-/// Minimal scripted gateway — consumes canned outputs in order. The
-/// former `FakeGateway` of the kernel's staged fakes module (Slice 12).
+/// Minimal scripted gateway — consumes canned outputs in order.
 pub struct FakeGateway {
     pub outputs: Mutex<Vec<Result<ModelOutput, ModelInvokeErrorKind>>>,
 }
@@ -213,8 +208,8 @@ impl ModelGateway for FakeGateway {
 
 // ---- test-only dedup hook -----------------------------------------------------
 //
-// The framework's `DedupFilter` lives in the lib, but these integration
-// targets pin the historical dedup behavior independently of it.
+// The framework's `DedupFilter` lives in the lib; these integration
+// targets pin dedup behavior independently of it.
 
 pub struct TestDedupHook;
 
@@ -250,9 +245,8 @@ impl causa_runtime::ToolUseHook for TestDedupHook {
     }
 }
 
-/// Like `runner_with`, but with the test dedup hook installed.
-/// Only for tests that want the historical dedup behavior;
-/// normal callers compose filters explicitly via the framework layer.
+/// Like `runner_with`, but with the test dedup hook installed. Normal
+/// callers compose filters explicitly via the framework layer.
 pub fn runner_with_dedup(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) -> TurnRunner {
     TurnRunner::with_hook(
         gateway,
@@ -310,9 +304,8 @@ impl Tool for FailTool {
     }
 }
 
-/// Returns `UnknownOutcome` — its continuation action is the host's
-/// unknown-outcome configuration now (Slice 13 removed the tool-side
-/// declaration).
+/// Returns `UnknownOutcome` — its continuation action comes from the host's
+/// unknown-outcome configuration, not a tool declaration.
 pub struct UnknownStopTool;
 
 #[async_trait]
@@ -349,7 +342,7 @@ impl Compaction for DropAllCompaction {
     }
 }
 
-// ---- streaming fixtures (Slice 6) ----------------------------------------------
+// ---- streaming fixtures --------------------------------------------------------
 
 /// One scripted `stream()` call: either the call itself fails
 /// (transport-level, mapped like `invoke` errors) or it yields a delta

@@ -1,13 +1,11 @@
-//! The tool-use filter seam (Slice 4 Phase A, graduated from the kernel's
-//! staged perimeter by Slice 12).
+//! The tool-use filter seam.
 //!
 //! `ToolUseHook` is THE extension point for the tool-use batch between
 //! model output and tool dispatch: `TurnRunner` calls it here, and the
 //! concrete filter policies (`DedupFilter`, `DenyAllFilter`,
 //! `FilterChain`) in this crate implement it directly. Defining the trait
 //! next to both its consumer (the driver) and its policies (the filters)
-//! closes the Phase E split where this crate re-exported a kernel-staged
-//! type it was the sole real consumer of.
+//! keeps the seam, its only consumer, and its implementations together.
 //!
 //! ## Minimum invariant, not a policy
 //!
@@ -33,7 +31,7 @@ use causa_kernel::{CallControl, ConversationId, RoundId, ToolCallId, ToolCallPay
 // the facts crate alone. The hook's sole consumer is this crate's driver,
 // so the contract lives with the driver.
 
-/// One explicit per-call unknown-outcome decision (Slice 13 Decision 7) —
+/// One explicit per-call unknown-outcome decision —
 /// host decision / checkpoint data attached to a precomputed result whose
 /// status is `UnknownOutcome`, not a result envelope: the recorded result
 /// is committed verbatim either way. Where a decision set is a *new* host
@@ -55,7 +53,7 @@ pub struct UnknownDecision {
 /// Context supplied to every hook invocation.
 ///
 /// `control: &CallControl` exposes the bounded attempt / call cancellation
-/// so a filter can `select!` on user-approval responses (Slice 4 §4 B3).
+/// so a filter can `select!` on user-approval responses.
 #[derive(Debug)]
 pub struct HookCtx<'a> {
     /// The turn whose batch is being filtered.
@@ -76,13 +74,11 @@ pub struct HookCtx<'a> {
 /// reject the entry with `UnpairedToolResult`. `to_execute` may rewrite
 /// `arguments` (open `FilterResult` — approval can rewrite, defer, split).
 ///
-/// Since Slice 13 (Decision 7) `rejected` carries the recorded results
-/// only. A host precomputing an `UnknownOutcome` result may pin its
-/// continuation action in `unknown_decisions` — the per-call migration
-/// position of the removed `Tool::unknown_outcome_policy` declaration;
-/// entries may be omitted and the driver then resolves through its
-/// unknown-outcome configuration by the executed tool name. Rejections
-/// with any other status take no action and need no entry.
+/// `rejected` carries the recorded results only. A host precomputing an
+/// `UnknownOutcome` result may pin its continuation action in
+/// `unknown_decisions`; entries may be omitted and the driver then resolves
+/// through its unknown-outcome configuration by the executed tool name.
+/// Rejections with any other status take no action and need no entry.
 pub struct HookOutcome {
     /// Calls that pass the hook and reach the executor (arguments may
     /// have been rewritten).

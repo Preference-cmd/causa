@@ -24,5 +24,5 @@ tracing = { workspace = true }
 causa-runtime = { path = "../causa-runtime", version = "0.1" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"
-# `agent.http` span assertions (Slice 6.6)
+# `agent.http` span assertions
 tracing-subscriber = { workspace = true }

@@ -1,10 +1,11 @@
 //! Kernel `ModelGateway` adapters for Anthropic Messages and OpenAI Chat/Responses.
 //!
-//! Slice 3.5 F1: three `ModelGateway` adapters collapsed into the param-type
-//! `KernelHttpGateway<C: KernelGatewayConfig>`. Each protocol's wire differences
-//! (path, auth headers, render/parse) live in its `KernelGatewayConfig` impl;
-//! the shared reqwest transport, error mapping, and control-plane wiring are
-//! generic over `C` and reuse `crate::gateway_transport`.
+//! Three `ModelGateway` adapters over the param-type
+//! `KernelHttpGateway<C: KernelGatewayConfig>`. Each protocol's wire
+//! differences (path, auth headers, render/parse) live in its
+//! `KernelGatewayConfig` impl; the shared reqwest transport, error
+//! mapping, and control-plane wiring are generic over `C` and reuse
+//! `crate::gateway_transport`.
 
 use async_trait::async_trait;
 use causa_kernel::{
@@ -29,11 +30,10 @@ use crate::media::MediaResolver;
 
 /// Protocol-specific rendering, parsing, and auth decoration for a kernel gateway.
 ///
-/// Mirrors the config-typed pattern of `BackendProvider<C: ProviderConfig>`:
-/// the per-protocol quirks (endpoint, path, header shape, render/parse) are
-/// isolated here so the transport loop is written once. `media` is the
-/// resolution table the gateway built from its injected resolver — the
-/// config passes it through to the pure renderer.
+/// The per-protocol quirks (endpoint, path, header shape, render/parse)
+/// are isolated here so the transport loop is written once. `media` is
+/// the resolution table the gateway built from its injected resolver —
+/// the config passes it through to the pure renderer.
 pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
     fn render(&self, request: &ModelRequest, media: &MediaSet) -> Result<Value, ModelInvokeError>;
     fn parse(&self, value: &Value) -> Result<ModelOutput, ModelInvokeError>;
@@ -164,10 +164,10 @@ impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
 /// `causa_protocol::translation` composed with the shared error
 /// mapping table and control-plane wiring from `crate::gateway_transport`.
 ///
-/// Media (Slice 6.5): an optional host-injected [`MediaResolver`] turns
-/// the frame's fact-level references into inline payloads right before
-/// rendering — batch and stream share one resolution pass. Without a
-/// resolver, every reference degrades to its text placeholder.
+/// Media: an optional host-injected [`MediaResolver`] turns the frame's
+/// fact-level references into inline payloads right before rendering —
+/// batch and stream share one resolution pass. Without a resolver, every
+/// reference degrades to its text placeholder.
 pub struct KernelHttpGateway<C: KernelGatewayConfig> {
     core: GatewayCore,
     api_key: String,
@@ -232,8 +232,8 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
         self
     }
 
-    /// Inject the media resolver (Slice 6.5): the host's asset table the
-    /// gateway consults for every media reference in the frame.
+    /// Inject the media resolver: the host's asset table the gateway
+    /// consults for every media reference in the frame.
     pub fn with_media_resolver(mut self, resolver: Arc<dyn MediaResolver>) -> Self {
         self.media_resolver = Some(resolver);
         self
@@ -305,9 +305,9 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
         request: &ModelRequest,
         control: &AttemptControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
-        // Observability baseline (Slice 6.6): ids and names only — never
-        // arguments, message bodies, or API keys. The span is entered per
-        // poll via `Instrument` so the boxed future stays `Send`.
+        // Observability baseline: ids and names only — never arguments,
+        // message bodies, or API keys. The span is entered per poll via
+        // `Instrument` so the boxed future stays `Send`.
         let span = tracing::debug_span!("agent.http", provider = C::PROVIDER, path = C::PATH);
         async {
             // A frame the renderer rejects never reaches the wire. Media
@@ -326,7 +326,7 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
     }
 }
 
-/// Public type aliases preserve the pre-3.5 names.
+/// Public type aliases for the three protocols.
 pub type AnthropicMessagesGateway = KernelHttpGateway<AnthropicGatewayConfig>;
 pub type OpenAiChatCompletionsGateway = KernelHttpGateway<OpenAiChatGatewayConfig>;
 pub type OpenAiResponsesGateway = KernelHttpGateway<OpenAiResponsesGatewayConfig>;

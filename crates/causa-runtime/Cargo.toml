@@ -29,5 +29,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sy
 tempfile = { workspace = true }
 # driver tests hash fixture payloads; blake3 stays out of the lib itself
 blake3 = "1"
-# tracing-span tests capture the driver's span baseline (Slice 6.6)
+# tracing-span tests capture the driver's span baseline
 tracing-subscriber = { workspace = true }

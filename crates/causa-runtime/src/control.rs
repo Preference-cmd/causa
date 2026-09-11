@@ -1,7 +1,7 @@
-//! Turn-level run control — the staged driver's bundling of the shared
+//! Turn-level run control — the driver's bundling of the shared
 //! cancellation token and the turn deadline. No port signature consumes this
-//! type (the gateway takes `AttemptControl`, tools take `CallControl`), which
-//! is why it lives in the staged perimeter rather than `ports`.
+//! type (the gateway takes `AttemptControl`, tools take `CallControl`), so it
+//! lives here rather than in the kernel's `ports`.
 
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;

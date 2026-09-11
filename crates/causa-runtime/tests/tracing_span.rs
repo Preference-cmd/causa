@@ -1,4 +1,4 @@
-//! Tracing-baseline tests (Slice 6.6): the driver emits the
+//! Tracing-baseline tests: the driver emits the
 //! `agent.turn` / `agent.round` / `agent.attempt` / `agent.tool` span
 //! hierarchy with id-and-name fields — observable through a capturing
 //! subscriber, never carrying message payloads.

@@ -1,5 +1,4 @@
-//! Standalone executor evidence (Slice 13 Phase B.3, extended by
-//! Decision 6/8 in Phases E–H): tools execute directly through
+//! Standalone executor evidence: tools execute directly through
 //! `ToolExecutor::execute_with_limits` — no `TurnRunner`, no
 //! `ConversationState`, no session — with the same result pairing, error
 //! mapping, and limit semantics the reference driver gets. The executor
@@ -152,10 +151,9 @@ async fn bridged_dynamic_tool_executes_and_maps_errors() {
     assert_eq!(result.status, ToolResultStatus::Rejected);
 }
 
-/// Decision 8: the last argument IS the per-call limit — the executor
-/// never consults the tool object anymore. A standalone caller passes
-/// exactly the limit it wants (the runner resolves fallback vs
-/// per-tool-name override before dispatch).
+/// The last argument IS the per-call limit — the executor never consults
+/// the tool object. A standalone caller passes exactly the limit it wants
+/// (the runner resolves fallback vs per-tool-name override before dispatch).
 #[tokio::test]
 async fn the_passed_limit_is_the_effective_limit() {
     // 4k bytes under a 100-token limit truncates…

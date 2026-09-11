@@ -1,8 +1,7 @@
-//! Projection-independence evidence (Slice 13 Phase B.1): hosts select,
-//! rewrite, and inject on *copies* of the kernel's lossless projection, and
-//! two independent records can consume one shared read-only history without
-//! polluting each other or the shared input. Kernel-only — no reference
-//! driver, no runtime types.
+//! Projection-independence evidence: hosts select, rewrite, and inject on
+//! *copies* of the kernel's lossless projection, and two independent records
+//! can consume one shared read-only history without polluting each other or
+//! the shared input. Kernel-only — no reference driver, no runtime types.
 
 use causa_kernel::{
     AppliedModelOutput, BlockContent, BlockId, BlockMeta, BlockSequence, ContentPart, ContextBlock,

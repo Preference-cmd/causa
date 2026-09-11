@@ -4,7 +4,7 @@
 //! ## One trait, one seam
 //!
 //! This crate defines `ToolUseHook` (the seam `TurnRunner::with_hook`
-//! consumes, since Slice 12 alongside the driver itself) and the concrete
+//! consumes, alongside the driver itself) and the concrete
 //! policies below. Filters implement that trait directly — there is no
 //! second extension trait and no alias layer. The default is
 //! `PassthroughHook` (no opinion); dedup / kill-switch / approval are

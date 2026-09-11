@@ -1,9 +1,8 @@
-//! Second-driver existence proof (Slice 1.5 gates 8 and 11): a minimal
-//! single-shot agent loop — one model invocation, no tools — assembled ONLY
-//! from the public root facade. The kernel exposes facts and ports; this
-//! file must compile and run without the framework layer
-//! (`causa-runtime`'s `TurnRunner`) and without any private
-//! module path.
+//! Second-driver existence proof: a minimal single-shot agent loop — one
+//! model invocation, no tools — assembled ONLY from the public root facade.
+//! The kernel exposes facts and ports; this file must compile and run
+//! without the framework layer (`causa-runtime`'s `TurnRunner`) and without
+//! any private module path.
 
 use causa_kernel::{
     AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion,

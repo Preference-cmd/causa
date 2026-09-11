@@ -1,7 +1,6 @@
-//! Reference budget tests — the frame-materialization policy moved here
-//! from the kernel (Slice 13): it is the reference harness's opinion over
-//! the kernel's lossless projection, so its contract rides with the
-//! runtime. What stays in the kernel is the fact-machine side: the
+//! Reference budget tests — the frame-materialization policy is the
+//! reference harness's opinion over the kernel's lossless projection, so
+//! it lives with the runtime. The kernel keeps the fact-machine side: the
 //! lossless `TurnContext::frame` is a pure function of the committed facts.
 
 mod common;

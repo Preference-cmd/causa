@@ -75,7 +75,7 @@ pub enum FrameScope {
         active_turn_id: TurnId,
         /// The active turn's `ContextVersion`. History snapshots are
         /// immutable; their session ordering lives in the runtime's
-        /// `HistoryEntry` (Slice 6.5). Within one round the
+        /// `HistoryEntry`. Within one round the
         /// (conversation_id, active_turn_id, source_version) triple is
         /// constant, so it pins the frame input.
         source_version: ContextVersion,
@@ -90,8 +90,8 @@ pub struct FrameId(pub String);
 impl FrameId {
     /// Scope-driven deterministic derivation — the canonical entry. The Turn
     /// branch replicates the historical preimage byte-for-byte
-    /// (`turn|version|round`, colon-separated) so every pre-Slice-2 frame id
-    /// is unchanged.
+    /// (`turn|version|round`, colon-separated) so historical frame ids are
+    /// unchanged.
     pub fn from_scope(scope: &FrameScope, round_id: RoundId) -> Self {
         let input = match scope {
             FrameScope::Turn {
@@ -111,8 +111,7 @@ impl FrameId {
         Self(hex[..16].to_string())
     }
 
-    /// Turn-scope thin wrapper — the historical entry, kept for Slice 1
-    /// call sites and pinned equal to `from_scope(Turn)` by test.
+    /// Turn-scope thin wrapper, pinned equal to `from_scope(Turn)` by test.
     pub fn deterministic(
         turn_id: &TurnId,
         source_version: ContextVersion,

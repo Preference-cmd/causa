@@ -1,49 +1,44 @@
 //! Shared policy walk over kernel `ContextFrame`s (crate-internal).
 //!
-//! The three protocol renderers (`anthropic`, `openai_chat`,
-//! `openai_responses`) share one normalization pass; this module owns it
-//! so the policy cannot drift between protocols. The walk applies every
-//! renderer-independent decision exactly once:
+//! The three renderers (`anthropic`, `openai_chat`, `openai_responses`)
+//! share one normalization pass; this module owns it so the policy cannot
+//! drift between protocols. The walk applies every renderer-independent
+//! decision exactly once:
 //!
 //! - Wire-role assignment from the `BlockMeta::source` vocabulary (the
-//!   table lives in the [`super`] module docs — it is public contract).
+//!   table in the [`super`] docs is public contract).
 //! - Empty text is not conversation content: an empty `Text` part is
 //!   dropped, and a Parts block left with nothing renders nothing
-//!   (mirroring the kernel model door's own commit policy; the host
-//!   door can commit them).
+//!   (mirroring the kernel model door's commit policy; the host door can
+//!   commit them).
 //! - Two-tier adjacency. Part boundaries inside one Parts block are
-//!   meaningful and preserved to the wire (adjacent `Text` parts render
-//!   as separate content blocks). Block boundaries are envelope-only:
-//!   same-role text meeting across a block seam joins with `\n` (the
-//!   anti-drift rule), and only at the seam — the join is attempted for
-//!   a block's FIRST text emission only.
+//!   preserved to the wire (adjacent `Text` parts render as separate
+//!   content blocks). Block boundaries are envelope-only: same-role text
+//!   meeting across a block seam joins with `\n`, and only at the seam —
+//!   the join is attempted for a block's FIRST text emission only.
 //! - Media: each [`MediaRef`] resolves through the caller's
-//!   [`MediaSet`]. A resolved `image/*` payload renders inline — but
-//!   only in user position (no protocol accepts assistant- or
-//!   system-authored input images); anything else — missing
-//!   resolution, non-image type, empty payload, non-user role —
-//!   degrades to the deterministic text placeholder
-//!   `[media: {type} {reference}]`. The decision is made once, here,
-//!   never per-renderer.
+//!   [`MediaSet`]. A resolved `image/*` payload renders inline, but only
+//!   in user position (no protocol accepts assistant- or system-authored
+//!   input images); anything else — missing resolution, non-image type,
+//!   empty payload, non-user role — degrades to the deterministic text
+//!   placeholder `[media: {type} {reference}]`. The decision is made
+//!   once, here, never per-renderer.
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
 //!   the kernel `call_id` for synthetic calls the provider never named;
-//!   the same rule resolves tool result ids through the frame's
-//!   `(turn_id, call_id) → wire id` map (pre-pass, so order never
-//!   matters). The turn id scopes the key because `ToolCallId` is only
-//!   unique within one turn — two turns may reuse the same id for the
-//!   same `(tool, arguments)` call, and each turn's result must keep
-//!   its own wire id. An unpaired result falls back to its own kernel
-//!   `call_id`; the provider rejects the orphan at HTTP time — the
-//!   loud failure path.
+//!   tool result ids resolve through the frame's `(turn_id, call_id) →
+//!   wire id` map (pre-pass, so order never matters). The turn id scopes
+//!   the key because `ToolCallId` is unique only within one turn — two
+//!   turns may reuse an id, and each turn's result keeps its own wire id.
+//!   An unpaired result falls back to its own kernel `call_id`; the
+//!   provider rejects the orphan at HTTP time (the loud failure path).
 //! - Tool result media travels on the result segment in result order;
 //!   whether it embeds (Anthropic) or hoists (OpenAI-family) is the
 //!   emitter's call. Non-string tool observations serialize to a string.
 //!
 //! Emitters then map the ordered [`Segment`] list to per-protocol wire
 //! shapes (message grouping, content block shapes, argument encoding,
-//! error flags). Rendering stays deterministic: the walk is
-//! single-pass over an ordered list and no hash-map iteration reaches
-//! the output.
+//! error flags). Rendering stays deterministic: the walk is single-pass
+//! over an ordered list and no hash-map iteration reaches the output.
 
 use std::collections::HashMap;
 
