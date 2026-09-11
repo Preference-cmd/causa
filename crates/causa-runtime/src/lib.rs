@@ -1,8 +1,7 @@
 //! causa-runtime — the framework layer over the context kernel.
 //!
-//! Since Slice 12 this crate owns the canonical driver stack that was once
-//! staged inside the kernel's `internal/` perimeter; the kernel itself is
-//! facts (`context`) + contracts (`ports`) only.
+//! The kernel is facts (`context`) + contracts (`ports`) only; the driver
+//! stack lives here.
 //!
 //! - **Driver stack** (`driver`, `executor`, `hook`, `config`, `control`):
 //!   `TurnRunner` orchestrates turns over the kernel's ports —
@@ -11,21 +10,25 @@
 //! - **Reference budget & interaction** (`budget`, `interaction`): the
 //!   frame-materialization policy (`FramePolicy`, window budget,
 //!   compaction, token counting) and the host↔driver `TurnInteraction`
-//!   seam — moved here from the kernel in Slice 13 because they are the
-//!   reference harness's opinions, not fact-layer invariants. A custom
-//!   harness composes the kernel's lossless `TurnContext::frame`
+//!   seam — the reference harness's opinions, not fact-layer invariants. A
+//!   custom harness composes the kernel's lossless `TurnContext::frame`
 //!   differently.
 //! - **Session aggregate** (`conversation`): `ConversationState` (single
 //!   active slot, completed-only history, commit-time `TurnSequence` as
 //!   `HistoryEntry`), the `SealedResult` stamp, and the `ConversationStore`
-//!   archive port — migrated here from the kernel in Slice 6.5. These are
-//!   reference-harness decisions, not fact-layer invariants; a custom
-//!   harness composes the kernel facts differently.
+//!   archive port. These are reference-harness decisions, not fact-layer
+//!   invariants; a custom harness composes the kernel facts differently.
+//! - **Session coordination** (`session`): one [`Session`] owner per
+//!   conversation drives accepted work through the assembled [`TurnRunner`]
+//!   — cloneable [`SessionHandle`]s submit / observe / wait, one active work
+//!   at a time, per-work `TurnId`s assigned at acceptance and never reused,
+//!   local `request_key` dedup, explicit retained-work capacity, and an
+//!   observable `Faulted` state. Only the single-session closed loop is
+//!   implemented; `resume` / `cancel` / checkpointing are out of scope.
 //! - **Tool-use filters** (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`,
 //!   `FilterChain`) implement this crate's `ToolUseHook` directly — the
-//!   trait, its consumer, and its policies share one crate (the Phase E
-//!   re-export split is closed). The default is `PassthroughHook` (no
-//!   opinion); composition and policy are opt-in.
+//!   trait, its consumer, and its policies share one crate. The default is
+//!   `PassthroughHook` (no opinion); composition and policy are opt-in.
 //! - **Events** (`ContextEvent` / `project_turn`) project a finished turn's
 //!   facts (`TurnContext` + `TurnResult` + `TurnTrace`) into an IPC-ready
 //!   event sequence for UI / observability / audit consumers.
@@ -34,16 +37,16 @@
 //! requires only `causa-kernel`; this crate is required to *use the
 //! reference driver*, not to fill the kernel's ports.
 //!
-//! # Reference-harness usage paths (Slice 13)
+//! # Reference-harness usage paths
 //!
 //! Everything here is optional; the four responsibilities a host can adopt
 //! independently:
 //!
 //! 1. **Reference execution** — [`TurnRunner`] plus its config
 //!    ([`TurnRunOptions`], policy axes), resume ([`resume_turn`]), hook
-//!    seam, and the migrated reference budget ([`FramePolicy`]) and
-//!    interaction ([`TurnInteraction`]) seams. The defaults are this
-//!    crate's documented opinions, not fact-layer invariants.
+//!    seam, and the reference budget ([`FramePolicy`]) and interaction
+//!    ([`TurnInteraction`]) seams. The defaults are this crate's documented
+//!    opinions, not fact-layer invariants.
 //! 2. **Standalone tool execution** — [`ToolExecutor::execute_with_limits`]
 //!    runs one call (panic isolation, deadline backstop, limit truncation,
 //!    error mapping) with no runner and no session. Its catalog cache and
@@ -57,7 +60,7 @@
 //!    projections of a finished turn for UI / audit consumers. The host
 //!    chooses what to persist; there is no separate wire model.
 //!
-//! # Driver policy surface (7.6)
+//! # Driver policy surface
 //!
 //! Every default the driver bakes in is one of two kinds — a swappable
 //! policy object, or a documented opinion. No trait seams exist for
@@ -93,15 +96,16 @@ pub mod filter;
 pub mod hook;
 pub mod interaction;
 pub mod resume;
+pub mod session;
 
-// --- reference budget & interaction (moved from the kernel, Slice 13) --------
+// --- reference budget & interaction -----------------------------------------
 pub use budget::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, FrameError, FramePolicy,
     TokenCounter, WindowBudget,
 };
 pub use interaction::{BatchDecision, TurnInteraction};
 
-// --- driver stack (graduated from context-kernel internal/, Slice 12) --------
+// --- driver stack -----------------------------------------------------------
 pub use composition::ToolBridge;
 pub use config::{
     ExecutionOptions, NoopInteraction, RetryPolicy, ToolOutputLimits, TurnInvocation, TurnLimits,
@@ -120,6 +124,10 @@ pub use driver::{
 pub use executor::{ToolExecutor, ToolRegistryError};
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook, UnknownDecision};
 pub use resume::{ResumeRejection, ResumeRequest, resume_turn};
+pub use session::{
+    FinishedKind, Session, SessionBuildRejection, SessionConfig, SessionError, SessionHandle,
+    SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
+};
 
 // --- framework policies and projections --------------------------------------
 pub use event::{
