@@ -145,7 +145,7 @@ impl Slot {
                     active: active.clone(),
                 });
             }
-            _ => return Err(SessionError::NotFound(work.clone())),
+            _ => return Err(SessionError::NotPaused(work.clone())),
         }
         // The guard above established the arm; the placeholder below is the
         // only safe-Rust way to move the aborted state out from behind
@@ -173,6 +173,32 @@ impl Slot {
     }
 }
 
+/// One accepted `submit` under its request key: the receipt plus the parts it
+/// was accepted for, so a same-key retry can be replayed or reported as
+/// `Conflict`.
+struct SubmitKey {
+    receipt: WorkReceipt,
+    parts: Vec<ContentPart>,
+}
+
+/// One accepted `resume` under its request key: the receipt plus the work,
+/// the paused revision it named, and the request it was accepted for — a
+/// same-key repeat with a different argument set is `Conflict`, not a second
+/// execution.
+struct ResumeKey {
+    receipt: WorkReceipt,
+    work: WorkRef,
+    revision: u64,
+    request: ResumeRequest,
+}
+
+/// One accepted `cancel` under its request key: the receipt plus the work it
+/// targeted.
+struct CancelKey {
+    receipt: CancelReceipt,
+    work: WorkRef,
+}
+
 /// The lock-protected registry. Request keys dedup per operation — each
 /// operation keeps its own table, so one `request_key` string may be reused
 /// across operations without colliding, and every lookup is precisely typed
@@ -180,15 +206,9 @@ impl Slot {
 struct Inner {
     slot: Slot,
     works: HashMap<WorkRef, WorkEntry>,
-    /// `submit` receipts by key, with the parts each key was accepted for.
-    submit_keys: HashMap<String, (WorkReceipt, Vec<ContentPart>)>,
-    /// `resume` receipts by key, with the work, the paused revision it
-    /// named, and the request it was accepted for — a same-key repeat with
-    /// a different decision or injection is `Conflict`, not a second
-    /// execution.
-    resume_keys: HashMap<String, (WorkReceipt, WorkRef, u64, ResumeRequest)>,
-    /// `cancel` receipts by key, with the work each key targeted.
-    cancel_keys: HashMap<String, (CancelReceipt, WorkRef)>,
+    submit_keys: HashMap<String, SubmitKey>,
+    resume_keys: HashMap<String, ResumeKey>,
+    cancel_keys: HashMap<String, CancelKey>,
     next_turn: u64,
     closed: bool,
 }
@@ -265,9 +285,9 @@ impl SessionCore {
         // receipt must resolve to the original receipt even while the work
         // runs. A key that was never accepted (because a submit was rejected)
         // is absent here, so fixing a rejected submit keeps the key free.
-        if let Some((receipt, parts)) = inner.submit_keys.get(&request.request_key) {
-            return if *parts == request.parts {
-                Ok(receipt.clone())
+        if let Some(record) = inner.submit_keys.get(&request.request_key) {
+            return if record.parts == request.parts {
+                Ok(record.receipt.clone())
             } else {
                 Err(SessionError::Conflict)
             };
@@ -327,9 +347,13 @@ impl SessionCore {
                 deadline,
             },
         );
-        inner
-            .submit_keys
-            .insert(request.request_key, (receipt.clone(), request.parts));
+        inner.submit_keys.insert(
+            request.request_key,
+            SubmitKey {
+                receipt: receipt.clone(),
+                parts: request.parts,
+            },
+        );
 
         // Exactly one writable ConversationState: move it into the worker.
         let Slot::Idle(state) = std::mem::replace(
@@ -382,14 +406,12 @@ impl SessionCore {
         // receipt must resolve to the original receipt. A key accepted for a
         // different work, revision, or request is a conflict, not a second
         // execution.
-        if let Some((receipt, recorded_work, recorded_revision, recorded_request)) =
-            inner.resume_keys.get(&request_key)
-        {
-            return if recorded_work == work
-                && *recorded_revision == expected_revision
-                && *recorded_request == request
+        if let Some(record) = inner.resume_keys.get(&request_key) {
+            return if &record.work == work
+                && record.revision == expected_revision
+                && record.request == request
             {
-                Ok(receipt.clone())
+                Ok(record.receipt.clone())
             } else {
                 Err(SessionError::Conflict)
             };
@@ -441,12 +463,12 @@ impl SessionCore {
         update(&mut inner, work, |entry| entry.state = WorkState::Running);
         inner.resume_keys.insert(
             request_key,
-            (
-                receipt.clone(),
-                work.clone(),
-                expected_revision,
-                request.clone(),
-            ),
+            ResumeKey {
+                receipt: receipt.clone(),
+                work: work.clone(),
+                revision: expected_revision,
+                request: request.clone(),
+            },
         );
         drop(inner);
         self.bump_epoch();
@@ -482,9 +504,9 @@ impl SessionCore {
         }
         // Local dedup: a retry of a lost receipt resolves to the original
         // receipt without signalling or terminating anything again.
-        if let Some((receipt, recorded)) = inner.cancel_keys.get(&request_key) {
-            return if recorded == work {
-                Ok(receipt.clone())
+        if let Some(record) = inner.cancel_keys.get(&request_key) {
+            return if &record.work == work {
+                Ok(record.receipt.clone())
             } else {
                 Err(SessionError::Conflict)
             };
@@ -501,9 +523,13 @@ impl SessionCore {
                 work: work.clone(),
                 outcome: CancelOutcome::AlreadyTerminal,
             };
-            inner
-                .cancel_keys
-                .insert(request_key, (receipt.clone(), work.clone()));
+            inner.cancel_keys.insert(
+                request_key,
+                CancelKey {
+                    receipt: receipt.clone(),
+                    work: work.clone(),
+                },
+            );
             return Ok(receipt);
         }
         // Still executing (accepted-and-not-yet-started, or running): its
@@ -521,9 +547,13 @@ impl SessionCore {
                     work: work.clone(),
                     outcome: CancelOutcome::Signalled,
                 };
-                inner
-                    .cancel_keys
-                    .insert(request_key, (receipt.clone(), work.clone()));
+                inner.cancel_keys.insert(
+                    request_key,
+                    CancelKey {
+                        receipt: receipt.clone(),
+                        work: work.clone(),
+                    },
+                );
                 return Ok(receipt);
             }
             return Err(SessionError::Busy {
@@ -545,9 +575,13 @@ impl SessionCore {
                 continuation: Some(continuation),
             });
         });
-        inner
-            .cancel_keys
-            .insert(request_key, (receipt.clone(), work.clone()));
+        inner.cancel_keys.insert(
+            request_key,
+            CancelKey {
+                receipt: receipt.clone(),
+                work: work.clone(),
+            },
+        );
         drop(inner);
         self.bump_epoch();
         Ok(receipt)
@@ -654,18 +688,12 @@ impl SessionCore {
             .send_modify(|version| *version = version.wrapping_add(1));
     }
 
-    /// Apply one work-entry mutation and wake every waiter. The single
-    /// entry-only publish path, so no caller can forget the epoch bump.
-    fn publish(&self, work: &WorkRef, mutate: impl FnOnce(&mut WorkEntry)) {
-        let mut inner = self.lock();
-        update(&mut inner, work, mutate);
-        drop(inner);
-        self.bump_epoch();
-    }
-
     /// `Accepted` → `Running`, published before the runner is polled.
     fn mark_running(&self, work: &WorkRef) {
-        self.publish(work, |entry| entry.state = WorkState::Running);
+        let mut inner = self.lock();
+        update(&mut inner, work, |entry| entry.state = WorkState::Running);
+        drop(inner);
+        self.bump_epoch();
     }
 
     /// Publish a fault: the slot becomes unusable and the work becomes
@@ -815,7 +843,7 @@ fn update(inner: &mut Inner, work: &WorkRef, mutate: impl FnOnce(&mut WorkEntry)
 async fn supervise(
     core: Arc<SessionCore>,
     work: WorkRef,
-    task: &'static str,
+    panic_label: &'static str,
     drive: impl std::future::Future<Output = Result<ConversationOutcome, String>>,
 ) {
     match AssertUnwindSafe(drive).catch_unwind().await {
@@ -823,7 +851,7 @@ async fn supervise(
         Ok(Err(reason)) => core.mark_faulted(&work, reason),
         Err(payload) => core.mark_faulted(
             &work,
-            format!("{task} panicked: {}", panic_message(&*payload)),
+            format!("{panic_label} panicked: {}", panic_message(&*payload)),
         ),
     }
 }
