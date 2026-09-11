@@ -76,6 +76,13 @@ impl Session {
     /// by-value input (`state`, `runner`, `options`, `config`) comes back in
     /// [`SessionBuildRejection`].
     ///
+    /// Every work runs through
+    /// [`TurnRunner::run_in_conversation`](crate::driver::TurnRunner::run_in_conversation),
+    /// which frames the lossless merged history plus the active turn;
+    /// `TurnRunOptions::frame` is deliberately inert on that entry (the driver
+    /// documents the same for its conversation entries), so per-work material
+    /// projection is not wired here.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionBuildRejection`] carrying

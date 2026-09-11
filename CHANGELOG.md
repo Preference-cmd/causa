@@ -110,7 +110,17 @@ Planned as **0.1.0** — the release gate is functional completeness
   readable through surviving handles. The optional
   `SessionConfig::work_deadline` is stored per work and preserved across a
   pause, so a resume continues under the same absolute bound rather than a
-  fresh one.
+  fresh one. A cancel that fires while the host's approval gate is deciding
+  wins over the pause — the runner hands back a paused outcome, but the work's
+  own token has fired, so the session ends it interrupted with the
+  continuation retained instead of publishing `Paused` — and an accepted
+  `request_key` still replays its original receipt after shutdown.
+- **Fact-payload equality**: `causa-kernel`'s `ToolCallPayload`,
+  `ToolOutputMeta`, `ToolOutput`, `ToolResultPayload`, `ArtifactRef`, and
+  `ArtifactKind`, plus the runtime's `HookOutcome` and `ResumeRequest`,
+  derive `PartialEq` (`ArtifactRef` / `ArtifactKind` also `Eq`) so a host can
+  compare recorded calls, results, and resume requests without re-serializing
+  them.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
   protocols, with transport timeouts and classified error mapping.
 - **`causa-extension`** — `DynamicToolSource` adapters; the default `mcp`
