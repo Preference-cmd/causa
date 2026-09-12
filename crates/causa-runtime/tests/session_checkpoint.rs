@@ -33,8 +33,9 @@ use std::time::Duration;
 use causa_kernel::{ContentPart, ConversationId, ModelRef, TextPayload, TurnId};
 use causa_runtime::{
     CheckpointPhase, FinishedKind, PausePoint, ResumeRequest, SESSION_CHECKPOINT_VERSION, Session,
-    SessionCheckpoint, SessionConfig, SessionConfigDescription, SessionError, SubmitRequest,
-    TurnInterruption, TurnResult, TurnRunOptions, WaitEnd, WorkRef, WorkState,
+    SessionCheckpoint, SessionConfig, SessionConfigDescription, SessionError,
+    SessionRestoreRejection, SubmitRequest, TurnInterruption, TurnResult, TurnRunOptions, WaitEnd,
+    WorkRef, WorkState,
 };
 use common::{
     EchoTool, GatedGateway, RecordingGateway, approve, awaiting_echo, endturn_output, idle_session,
@@ -400,6 +401,123 @@ async fn restore_rederives_the_remaining_deadline_instead_of_regranting() {
 
 // ---- C3: validation rejections -------------------------------------------------
 
+/// An idle checkpoint of a session whose single work completed: works holds
+/// the `Completed` entry, the phase state holds the committed history entry.
+async fn completed_checkpoint(id: &str) -> SessionCheckpoint {
+    let gateway = RecordingGateway::repeating_last(vec![Ok(endturn_output("done"))]);
+    let session = idle_session(id, gateway);
+    let handle = session.handle();
+    let receipt = handle.submit(session_req("k1", "first")).expect("accepted");
+    let _ = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    session.checkpoint().expect("exports when idle")
+}
+
+fn rejected(checkpoint: SessionCheckpoint) -> SessionRestoreRejection {
+    SessionCheckpoint::restore(
+        checkpoint,
+        Arc::new(runner_with(RecordingGateway::scripted(vec![]), Vec::new())),
+        TurnRunOptions::default(),
+        SessionConfig::default(),
+    )
+    .expect_err("the forged material is rejected")
+}
+
+#[tokio::test]
+async fn a_forged_completed_work_without_history_is_rejected() {
+    let checkpoint = completed_checkpoint("c3-history").await;
+    let mut value = serde_json::to_value(&checkpoint).unwrap();
+    // The works entry claims Completed, but its committed history entry is
+    // gone — a state no live run can reach.
+    value["phase"]["state"]["history"] = json!([]);
+    let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        rejected(tampered).error,
+        SessionError::InvalidCheckpoint(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_rolled_back_allocation_progress_is_rejected() {
+    let checkpoint = completed_checkpoint("c3-next-turn").await;
+    let mut value = serde_json::to_value(&checkpoint).unwrap();
+    // next_turn must follow every identity the envelope can see, or the
+    // next submit would re-hand out an allocated id.
+    value["next_turn"] = json!(0);
+    let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        rejected(tampered).error,
+        SessionError::InvalidCheckpoint(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_forged_paused_stamp_is_rejected() {
+    let (_, _, _, checkpoint) = paused_checkpoint("c3-stamp", SessionConfig::default()).await;
+    let mut value = serde_json::to_value(&checkpoint).unwrap();
+    // The outcome's active turn is open, so it can only be stamped Paused.
+    value["phase"]["outcome"]["state"]["sealed_result"] = json!("completed");
+    let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        rejected(tampered).error,
+        SessionError::InvalidCheckpoint(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_forged_submit_receipt_revision_is_rejected() {
+    let checkpoint = completed_checkpoint("c3-receipt").await;
+    let mut value = serde_json::to_value(&checkpoint).unwrap();
+    // A live submit receipt always records revision 0.
+    value["submit_keys"][0]["receipt"]["accepted_revision"] = json!(5);
+    let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        rejected(tampered).error,
+        SessionError::InvalidCheckpoint(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_far_future_deadline_expiry_restores_without_failing() {
+    let config = SessionConfig {
+        retained_work_capacity: 256,
+        work_deadline: Some(Duration::from_millis(250)),
+    };
+    let (_, work, revision, checkpoint) = paused_checkpoint("c3-deadline", config.clone()).await;
+    let mut value = serde_json::to_value(&checkpoint).unwrap();
+    // A deadline ~34,789 years out sits above the u64-nanosecond Instant on
+    // macOS, where the unguarded conversion used to panic mid-restore; on
+    // Linux (i64-timespec Instant) no deserializable SystemTime can
+    // overflow the conversion at all. Either way the portable behavior is
+    // the equivalence: such an expiry could never fire in this process, so
+    // restore treats it as unbounded — no panic, no rejection.
+    value["works"][0]["deadline_utc"] =
+        json!({"secs_since_epoch": 1099511627776u64, "nanos_since_epoch": 0});
+    let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
+
+    let gateway2 = RecordingGateway::scripted(vec![Ok(endturn_output("late"))]);
+    let restored = SessionCheckpoint::restore(
+        tampered,
+        Arc::new(runner_with(gateway2.clone(), Vec::new())),
+        TurnRunOptions::default(),
+        config,
+    )
+    .expect("a far-future expiry restores as an unbounded deadline");
+    let handle = restored.handle();
+    handle
+        .resume(&work, revision, "r1".into(), approve(vec![awaiting_echo()]))
+        .expect("the restored pause resumes");
+    let done = handle.wait(&work, Duration::from_secs(5)).await.unwrap();
+    assert_eq!(done.observation.state, WorkState::Finished);
+    assert_eq!(
+        gateway2.recorded().len(),
+        1,
+        "the far-future deadline dispatched normally"
+    );
+}
+
 #[tokio::test]
 async fn restore_rejects_an_unsupported_version_and_returns_the_checkpoint() {
     let (_, _, _, checkpoint) = paused_checkpoint("c3-version", SessionConfig::default()).await;
@@ -448,6 +566,22 @@ async fn restore_rejects_a_config_mismatch() {
         serde_json::to_value(&rejection.checkpoint).unwrap(),
         as_saved
     );
+
+    // A mismatch away from the model is equally visible: the exported
+    // envelope carries no call timeout, so restoring under one is the
+    // missing-configuration case.
+    let (_, _, _, checkpoint) =
+        paused_checkpoint("c4-config-timeout", SessionConfig::default()).await;
+    let mut timeout = TurnRunOptions::default();
+    timeout.execution.call_timeout = Some(Duration::from_secs(1));
+    let rejection = SessionCheckpoint::restore(
+        checkpoint,
+        Arc::new(runner_with(RecordingGateway::scripted(vec![]), Vec::new())),
+        timeout,
+        SessionConfig::default(),
+    )
+    .expect_err("a configuration the export never had is a mismatch");
+    assert!(matches!(rejection.error, SessionError::ConfigMismatch));
 }
 
 #[tokio::test]

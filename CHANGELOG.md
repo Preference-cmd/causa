@@ -151,8 +151,13 @@ Planned as **0.1.0** — the release gate is functional completeness
   `SessionCheckpoint::restore` validates the envelope version, the assembled
   configuration description (a swapped model, surface, policy, or limits is
   refused, never silently adopted), and the material's internal consistency
-  before registering; a rejection hands back the original checkpoint and the
-  by-value inputs, leaving nothing behind. Restore calls no model and no
+  before registering — a completed work must carry its committed history
+  entry (an interrupted one must not), work identities must follow the
+  conversation's allocation sequence with the saved progress past them, the
+  paused outcome must carry the `Paused` stamp, and submit receipts their
+  zero acceptance revision; a rejection hands back the original checkpoint
+  and the by-value inputs, leaving nothing behind. Restore calls no model
+  and no
   tool: it rebuilds the request-key replay tables (same key replays its
   original receipt, different arguments still conflict), continues the
   TurnId allocation from the saved progress, keeps every retained result

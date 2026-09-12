@@ -416,7 +416,10 @@ impl SessionCore {
                     state: saved.state,
                     finished: saved.finished,
                     fault: saved.fault,
-                    deadline: saved.deadline_utc.map(remaining_deadline),
+                    // `None` covers both "no deadline" and "an expiry beyond
+                    // the platform's monotonic horizon" — see
+                    // `remaining_deadline`; neither bounds the work here.
+                    deadline: saved.deadline_utc.and_then(remaining_deadline),
                 };
                 (saved.work, entry)
             })
@@ -1100,14 +1103,19 @@ fn absolute_expiry(deadline: Instant) -> SystemTime {
 }
 
 /// Rebuild the monotonic deadline from a saved absolute UTC expiry: the
-/// remaining wall-clock time from now. An expiry already in the past (or a
-/// clock that moved backwards past it) yields `now` — an elapsed deadline
-/// the driver stops on before its first dispatch.
-fn remaining_deadline(expiry: SystemTime) -> Instant {
+/// remaining wall-clock time from now. An expiry at or before the current
+/// wall clock yields `now` — an elapsed deadline the driver stops on before
+/// its first dispatch. A wall clock that moved backwards re-exposes the
+/// remaining time it hid (clock consistency across the boundary is the
+/// harness's responsibility). An expiry so far ahead that the platform's
+/// monotonic clock cannot hold it yields `None` — that deadline could never
+/// fire in this process, so restore treats it as unbounded instead of
+/// failing; nothing panics and no rejection is manufactured for it.
+pub(super) fn remaining_deadline(expiry: SystemTime) -> Option<Instant> {
     let remaining = expiry
         .duration_since(SystemTime::now())
         .unwrap_or(Duration::ZERO);
-    Instant::now() + remaining
+    Instant::now().checked_add(remaining)
 }
 
 /// Look up one work's view; unknown or foreign refs are `NotFound`.

@@ -8,18 +8,31 @@
 //! no seed, no projected materials, no per-work tool binding. When later
 //! phases extend the envelope, they must declare version compatibility or a
 //! migration rule; this format never silently guesses at unknown sections.
+//!
+//! Two trust boundaries stay with the harness, not the envelope. First,
+//! restore validates a material's *internal consistency*, not its
+//! authenticity: the works table is the sole record of an interrupted
+//! work's identity (aborted turns stay out of the completed history by
+//! design), so a hand-tampered envelope is refused only where copies inside
+//! the envelope disagree — persistence integrity is the harness's
+//! responsibility. Second, a checkpoint resumes a deliberately paused,
+//! quiescent session and promises no exactly-once across arbitrary process
+//! crashes: unsaved acceptance records, unknown external results, and a
+//! re-loaded old checkpoint gain nothing automatically.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use causa_kernel::{CacheDirective, ContentPart, ConversationId, GenerationOptions, ToolSurface};
+use causa_kernel::{
+    CacheDirective, ContentPart, ConversationId, GenerationOptions, ToolSurface, TurnId,
+};
 
 use crate::budget::WindowBudget;
 use crate::config::{
     RetryPolicy, ToolOutputLimits, TurnLimits, TurnRunOptions, UnknownOutcomeConfig,
 };
-use crate::conversation::ConversationState;
+use crate::conversation::{ConversationState, SealedResult};
 use crate::driver::{ConversationOutcome, TurnResult, TurnRunner};
 use crate::resume::ResumeRequest;
 
@@ -415,12 +428,39 @@ impl SessionCheckpoint {
                         "the paused outcome's active turn does not match the paused work".into(),
                     ));
                 }
+                if outcome.state.sealed_result() != Some(SealedResult::Paused) {
+                    return Err(invalid(
+                        "the paused outcome's active turn is not stamped Paused".into(),
+                    ));
+                }
             }
         }
+        // The committed history is the second copy of every completed turn:
+        // a Completed works entry without its history entry (or an
+        // Interrupted one with a history entry — the completed-only history
+        // can never hold an aborted turn) is a state no live run reaches.
+        let history_ids: HashSet<&TurnId> = match &self.phase {
+            CheckpointPhase::Idle { state } => state
+                .history()
+                .iter()
+                .map(|entry| &entry.snapshot.turn_id)
+                .collect(),
+            CheckpointPhase::Paused { outcome, .. } => outcome
+                .state
+                .history()
+                .iter()
+                .map(|entry| &entry.snapshot.turn_id)
+                .collect(),
+        };
         // Works: one identity each, terminal except the single paused work
         // of the paused phase. Accepted / Running / Faulted entries cannot
         // come from a legitimate export (their slot refuses to export), so
-        // they are inconsistencies rather than states to preserve.
+        // they are inconsistencies rather than states to preserve. Every
+        // identity must follow the conversation's allocation sequence, and
+        // the progress must sit past it — restore re-registers, it does not
+        // re-derive, and a rolled-back progress would re-hand out an
+        // allocated turn id.
+        let prefix = format!("{}-work-", self.conversation_id.0);
         let mut seen = HashSet::new();
         let mut paused_works = 0usize;
         for saved in &self.works {
@@ -432,6 +472,43 @@ impl SessionCheckpoint {
             }
             if !seen.insert(saved.work.turn_id.clone()) {
                 return Err(invalid(format!("duplicate work identity {:?}", saved.work)));
+            }
+            let Some(index) = saved
+                .work
+                .turn_id
+                .0
+                .strip_prefix(prefix.as_str())
+                .and_then(|suffix| suffix.parse::<u64>().ok())
+            else {
+                return Err(invalid(format!(
+                    "work {:?} was not allocated by this conversation's identity sequence",
+                    saved.work
+                )));
+            };
+            if self.next_turn <= index {
+                return Err(invalid(format!(
+                    "the allocation progress ({}) does not follow work identity {:?}",
+                    self.next_turn, saved.work
+                )));
+            }
+            match saved.finished {
+                Some(FinishedKind::Completed { .. })
+                    if !history_ids.contains(&saved.work.turn_id) =>
+                {
+                    return Err(invalid(format!(
+                        "completed work {:?} has no committed history entry",
+                        saved.work
+                    )));
+                }
+                Some(FinishedKind::Interrupted { .. })
+                    if history_ids.contains(&saved.work.turn_id) =>
+                {
+                    return Err(invalid(format!(
+                        "interrupted work {:?} also sits in the completed history",
+                        saved.work
+                    )));
+                }
+                _ => {}
             }
             match saved.state {
                 WorkState::Finished => {
@@ -488,6 +565,12 @@ impl SessionCheckpoint {
                     saved.key
                 )));
             }
+            if saved.receipt.accepted_revision != 0 {
+                return Err(invalid(format!(
+                    "submit key {:?} records a non-zero acceptance revision; a live submit always accepts at revision 0",
+                    saved.key
+                )));
+            }
             if saved.parts.is_empty() {
                 return Err(invalid(format!(
                     "submit key {:?} carries no parts",
@@ -519,7 +602,6 @@ impl SessionCheckpoint {
 mod tests {
     use super::*;
     use crate::config::TurnRunOptions;
-    use crate::conversation::SealedResult;
     use crate::driver::{Continuation, PausePoint, TurnResult, TurnTrace};
     use causa_kernel::{TextPayload, TurnId};
 
