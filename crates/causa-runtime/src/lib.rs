@@ -126,9 +126,10 @@ pub use executor::{ToolExecutor, ToolRegistryError};
 pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook, UnknownDecision};
 pub use resume::{ResumeRejection, ResumeRequest, resume_turn};
 pub use session::{
-    CancelOutcome, CancelReceipt, FinishedKind, Session, SessionBuildRejection, SessionConfig,
-    SessionError, SessionHandle, SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt,
-    WorkRef, WorkState,
+    CancelOutcome, CancelReceipt, CheckpointPhase, FinishedKind, SESSION_CHECKPOINT_VERSION,
+    SavedCancelKey, SavedResumeKey, SavedSubmitKey, SavedWork, Session, SessionBuildRejection,
+    SessionCheckpoint, SessionConfig, SessionConfigDescription, SessionError, SessionHandle,
+    SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
 };
 
 // --- framework policies and projections --------------------------------------

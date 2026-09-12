@@ -31,7 +31,7 @@ impl ModelRef {
 
 /// Sampling knobs a caller may pin for the invocation. `None` means
 /// "unspecified": renderers omit the knob and the provider default applies.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GenerationOptions {
     /// Sampling temperature; `None` leaves the provider default in force.
     pub temperature: Option<f32>,
@@ -48,7 +48,7 @@ pub struct GenerationOptions {
 
 /// The tool definitions offered to the model for one invocation; renderers
 /// turn this into the protocol's `tools` array.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolSurface {
     /// Model-facing [`ToolDefinition`]s, in offer order.
     pub definitions: Vec<ToolDefinition>,

@@ -40,7 +40,7 @@ use causa_kernel::{CallControl, ConversationId, RoundId, ToolCallId, ToolCallPay
 /// by the executed tool name. Where it is a checkpoint
 /// ([`PreparedApproval`](crate::driver::PreparedApproval)), it must
 /// exactly cover the saved `UnknownOutcome` results.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnknownDecision {
     /// The precomputed result's call id — must be one of the same
     /// decision's rejected results, and its status must be
@@ -79,7 +79,7 @@ pub struct HookCtx<'a> {
 /// `unknown_decisions`; entries may be omitted and the driver then resolves
 /// through its unknown-outcome configuration by the executed tool name.
 /// Rejections with any other status take no action and need no entry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HookOutcome {
     /// Calls that pass the hook and reach the executor (arguments may
     /// have been rewritten).

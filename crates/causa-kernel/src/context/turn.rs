@@ -189,6 +189,7 @@ impl OrderedBlocks {
 /// is the lossless `frame()`; policy-shaped materialization lives in
 /// `causa_runtime::budget::FramePolicy::materialize`, so context never
 /// depends on harness policy and never awaits behavior.
+#[derive(Clone)]
 pub struct TurnContext {
     turn_id: TurnId,
     blocks: OrderedBlocks,

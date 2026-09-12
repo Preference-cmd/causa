@@ -13,7 +13,7 @@ use causa_kernel::{ContextBlock, ContextFrame, RoundId, TurnContext};
 /// Trigger thresholds for frame materialization, in estimated tokens. A pure
 /// value: the trigger check reads only `compaction_trigger`; the full budget
 /// rides along to the compaction implementation via [`CompactionInput`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowBudget {
     /// Upper bound of the model's context window, in estimated tokens.
     /// Consulted by compaction implementations, not by the trigger check.

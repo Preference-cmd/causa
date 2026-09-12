@@ -20,7 +20,7 @@ use crate::driver::{Continuation, PausePoint, TurnInterruption};
 /// The pair of existing ids only — no separate agent/work id is introduced.
 /// An `observe` / `wait` for a ref that does not belong to the session is
 /// [`SessionError::NotFound`] (it is never routed to another conversation).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct WorkRef {
     /// The conversation the work belongs to.
     pub conversation_id: ConversationId,
@@ -33,7 +33,8 @@ pub struct WorkRef {
 /// This is the runtime's coordination vocabulary, not a kernel state machine:
 /// the actual execution result is carried by [`FinishedKind`], which reuses
 /// the driver's existing `TurnResult` vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkState {
     /// The session holds the work and its execution resources; the worker has
     /// not yet begun advancing the runner. `Accepted` does **not** mean the
@@ -59,7 +60,7 @@ pub enum WorkState {
 
 /// How a terminal work ended — the two terminal `TurnResult` shapes, kept as
 /// (or inside) the driver's own vocabulary rather than copied into new types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FinishedKind {
     /// The model ended the turn; the turn was committed into history.
     Completed {
@@ -86,7 +87,8 @@ pub enum FinishedKind {
 
 /// What a [`cancel`](crate::session::SessionHandle::cancel) actually did to
 /// the work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CancelOutcome {
     /// The work was still executing and its own control token was fired; the
     /// terminal state is published when the runner returns (a completion that
@@ -105,7 +107,7 @@ pub enum CancelOutcome {
 ///
 /// Recovery mirror of [`WorkReceipt`]: retrying the same `request_key` resolves
 /// to this receipt without signalling or terminating anything again.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CancelReceipt {
     /// The work the cancel targeted.
     pub work: WorkRef,
@@ -120,7 +122,7 @@ pub struct CancelReceipt {
 /// [`TurnContext::append_parts`](causa_kernel::TurnContext::append_parts)
 /// (source label `"user"`), exactly as the reference driver expects. There is
 /// no model/tool hot-swapping and no per-submit materials.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubmitRequest {
     /// Caller-scoped idempotency key. Repeating it with the same parts returns
     /// the original [`WorkReceipt`]; reusing it with different parts is
@@ -136,7 +138,7 @@ pub struct SubmitRequest {
 /// A receipt means *accepted*, not *completed*: the worker may not have called
 /// the model yet. It exists so a lost receipt can be recovered by retrying the
 /// same `request_key`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkReceipt {
     /// The work the session accepted.
     pub work: WorkRef,
@@ -199,7 +201,7 @@ pub struct WaitOutcome {
 }
 
 /// Session coordination configuration — not a mirror of `TurnRunOptions`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionConfig {
     /// Maximum number of works the session retains. `submit` is rejected with
     /// [`SessionError::CapacityExceeded`] at the ceiling; already-retained

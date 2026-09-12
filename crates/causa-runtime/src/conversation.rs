@@ -140,7 +140,7 @@ pub enum ConversationError {
 /// The single active slot, completed-only admission, and commit-time
 /// ordering are this crate's reference-harness defaults — a custom harness
 /// composes the kernel facts differently without touching them.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ConversationState {
     conversation_id: ConversationId,
     /// Committed history in `TurnSequence` order — entries, not bare

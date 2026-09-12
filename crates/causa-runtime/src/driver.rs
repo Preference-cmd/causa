@@ -514,7 +514,7 @@ pub struct TurnOutcome {
 /// the state comes back with the active turn sealed inside and its outcome
 /// stamped; the host then calls `commit` (Completed) or `abort_turn`
 /// (Interrupted).
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConversationOutcome {
     /// The state back from the run, its active turn sealed and
     /// outcome-stamped; the host then calls `commit` (Completed),

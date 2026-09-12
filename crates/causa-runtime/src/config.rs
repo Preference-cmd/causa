@@ -15,7 +15,7 @@ use causa_kernel::{
 
 /// Retry policy — driver-side scheduling, not a kernel fact. The retryability
 /// judgment lives here because interpreting error kinds is loop policy.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RetryPolicy {
     /// Retries allowed per model round after the first failed attempt;
     /// `0` (the default) disables retrying entirely.
@@ -74,7 +74,7 @@ impl RetryPolicy {
 
 /// Per-turn loop bounds: model rounds and dispatched tool calls. Exceeding
 /// either interrupts the turn (see [`crate::driver::TurnInterruption`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TurnLimits {
     /// Ceiling on model rounds — checked as `round >= max_model_rounds`
     /// at the top of every round. Default: 10.
@@ -164,7 +164,7 @@ pub enum UnknownOutcomePolicy {
 /// name** (post hook / rewrite / resume decision, full namespace for
 /// dynamic tools) — never the original model draft's name, and never read
 /// out of a result body. An explicit override wins over the default.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UnknownOutcomeConfig {
     /// The action for `UnknownOutcome` results whose tool has no explicit
     /// override. Default: [`UnknownOutcomePolicy::Stop`].
@@ -186,7 +186,7 @@ impl UnknownOutcomeConfig {
 /// Per-call truncation thresholds for tool outputs — the explicit
 /// truncation effect hosts opt into (output retention is harness
 /// configuration, not a tool declaration).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolOutputLimits {
     /// Maximum estimated tokens a tool result may carry before it gets
     /// truncated; [`usize::MAX`] (the default) disables truncation.

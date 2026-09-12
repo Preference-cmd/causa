@@ -121,6 +121,22 @@ Planned as **0.1.0** — the release gate is functional completeness
   derive `PartialEq` (`ArtifactRef` / `ArtifactKind` also `Eq`) so a host can
   compare recorded calls, results, and resume requests without re-serializing
   them.
+- **Session checkpoint envelope (slice 8 Phase C)**: the versioned
+  `SessionCheckpoint` save envelope on `causa-runtime::session` — a
+  `CheckpointPhase` carrying the idle state or the complete paused outcome
+  (the active state is saved once, inside the outcome), per-work `SavedWork`
+  views with the deadline as an absolute UTC expiry, the three request-key
+  replay tables (`SavedSubmitKey` / `SavedResumeKey` / `SavedCancelKey`), the
+  TurnId allocation progress, and the comparable `SessionConfigDescription`
+  (`SessionConfigDescription::of`). Persistence stays host-side — the runtime
+  ships no store. Supporting serialization is additive only:
+  `ResumeRequest`, `HookOutcome`, `UnknownDecision`, the session value
+  vocabulary (`WorkRef`, `WorkState`, `FinishedKind`, receipts,
+  `SubmitRequest`, `SessionConfig`) and the config axis types (`RetryPolicy`,
+  `TurnLimits`, `UnknownOutcomeConfig`, `ToolOutputLimits`, `WindowBudget`)
+  derive serde; `ConversationState`, `ConversationOutcome`, and the kernel's
+  `TurnContext` derive `Clone`; `ToolSurface`, `ToolDefinition`, and
+  `GenerationOptions` derive `PartialEq`. Existing wire shapes are unchanged.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
   protocols, with transport timeouts and classified error mapping.
 - **`causa-extension`** — `DynamicToolSource` adapters; the default `mcp`

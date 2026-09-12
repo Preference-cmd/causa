@@ -14,7 +14,7 @@ use crate::ports::control::CallControl;
 
 /// The model-facing description of one callable tool; renderers map it onto
 /// the protocol's tool entries (name, description, parameter schema).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// The name the model uses to invoke the tool.
     pub name: String,

@@ -53,15 +53,21 @@
 //! # Layout
 //!
 //! This root file is the index only: `types` holds the public value vocabulary,
-//! `owner` the [`Session`] anchor, `handle` the [`SessionHandle`] entry, and the
-//! private `execution` core the registry and worker. Convention is `foo.rs` +
-//! `foo/`, never `mod.rs`.
+//! `owner` the [`Session`] anchor, `handle` the [`SessionHandle`] entry, the
+//! private `execution` core the registry and worker, and `checkpoint` the
+//! versioned save envelope (`SessionCheckpoint`) its restore consumes.
+//! Convention is `foo.rs` + `foo/`, never `mod.rs`.
 
+mod checkpoint;
 mod execution;
 mod handle;
 mod owner;
 mod types;
 
+pub use checkpoint::{
+    CheckpointPhase, SESSION_CHECKPOINT_VERSION, SavedCancelKey, SavedResumeKey, SavedSubmitKey,
+    SavedWork, SessionCheckpoint, SessionConfigDescription,
+};
 pub use handle::SessionHandle;
 pub use owner::{Session, SessionBuildRejection};
 pub use types::{
