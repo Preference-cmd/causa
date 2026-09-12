@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures_util::FutureExt;
 use tokio::sync::watch;
@@ -23,6 +23,10 @@ use crate::conversation::ConversationState;
 use crate::driver::{Continuation, ConversationOutcome, TurnInterruption, TurnResult, TurnRunner};
 use crate::resume::ResumeRequest;
 
+use super::checkpoint::{
+    SESSION_CHECKPOINT_VERSION, SavedCancelKey, SavedResumeKey, SavedSubmitKey, SavedWork,
+    SessionCheckpoint, SessionConfigDescription,
+};
 use super::{
     CancelOutcome, CancelReceipt, FinishedKind, SessionConfig, SessionError, SubmitRequest,
     WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
@@ -259,6 +263,222 @@ impl SessionCore {
     /// The conversation this core owns.
     pub(super) fn conversation_id(&self) -> ConversationId {
         self.id.clone()
+    }
+
+    /// Export the versioned save envelope — the complete idle state or the
+    /// complete paused outcome, every retained work, the request-key replay
+    /// tables, the allocation progress, and the configuration description.
+    ///
+    /// Only a quiescent slot exports: an accepted / running work (a cancel
+    /// in progress included) is `Busy` and a faulted session refuses — no
+    /// complete outcome exists to save. A closed session still exports; the
+    /// envelope records `closed` so restoring it preserves the closed
+    /// acceptance state.
+    pub(super) fn checkpoint(&self) -> Result<SessionCheckpoint, SessionError> {
+        let inner = self.lock();
+        let phase = match &inner.slot {
+            Slot::Idle(state) => super::checkpoint::CheckpointPhase::Idle {
+                state: state.clone(),
+            },
+            Slot::Paused(outcome) => super::checkpoint::CheckpointPhase::Paused {
+                outcome: outcome.clone(),
+                work: WorkRef {
+                    conversation_id: self.id.clone(),
+                    turn_id: paused_turn_id(outcome),
+                },
+            },
+            Slot::Running { work, .. } => {
+                return Err(SessionError::Busy {
+                    active: work.clone(),
+                });
+            }
+            Slot::Faulted { reason } => {
+                return Err(SessionError::Faulted {
+                    reason: reason.clone(),
+                });
+            }
+        };
+        // Deterministic order: two exports of the same quiescent state
+        // produce equal envelopes, so hosts can diff or hash them.
+        let mut works: Vec<SavedWork> = inner
+            .works
+            .iter()
+            .map(|(work, entry)| SavedWork {
+                work: work.clone(),
+                revision: entry.revision,
+                state: entry.state,
+                finished: entry.finished.clone(),
+                fault: entry.fault.clone(),
+                deadline_utc: entry.deadline.map(absolute_expiry),
+            })
+            .collect();
+        works.sort_by(|a, b| a.work.turn_id.0.cmp(&b.work.turn_id.0));
+        let mut submit_keys: Vec<SavedSubmitKey> = inner
+            .submit_keys
+            .iter()
+            .map(|(key, record)| SavedSubmitKey {
+                key: key.clone(),
+                parts: record.parts.clone(),
+                receipt: record.receipt.clone(),
+            })
+            .collect();
+        submit_keys.sort_by(|a, b| a.key.cmp(&b.key));
+        let mut resume_keys: Vec<SavedResumeKey> = inner
+            .resume_keys
+            .iter()
+            .map(|(key, record)| SavedResumeKey {
+                key: key.clone(),
+                work: record.work.clone(),
+                revision: record.revision,
+                request: record.request.clone(),
+            })
+            .collect();
+        resume_keys.sort_by(|a, b| a.key.cmp(&b.key));
+        let mut cancel_keys: Vec<SavedCancelKey> = inner
+            .cancel_keys
+            .iter()
+            .map(|(key, record)| SavedCancelKey {
+                key: key.clone(),
+                work: record.work.clone(),
+                receipt: record.receipt.clone(),
+            })
+            .collect();
+        cancel_keys.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(SessionCheckpoint {
+            version: SESSION_CHECKPOINT_VERSION,
+            conversation_id: self.id.clone(),
+            phase,
+            works,
+            next_turn: inner.next_turn,
+            submit_keys,
+            resume_keys,
+            cancel_keys,
+            config: SessionConfigDescription::of(&self.options, &self.config),
+            closed: inner.closed,
+        })
+    }
+
+    /// Rebuild the core from a validated checkpoint's idle state: the saved
+    /// works, key tables, allocation progress, and closed state register
+    /// as-is — the caller (restore) validated material consistency first.
+    pub(super) fn restore_idle(
+        state: ConversationState,
+        registry: super::checkpoint::SavedRegistry,
+        runner: Arc<TurnRunner>,
+        options: TurnRunOptions,
+        config: SessionConfig,
+    ) -> Arc<Self> {
+        let id = state.conversation_id().clone();
+        Self::assemble(id, Slot::Idle(state), registry, runner, options, config)
+    }
+
+    /// Rebuild the core around a validated checkpoint's paused outcome. The
+    /// outcome keeps its open active turn and continuation; the registered
+    /// work stays `Paused` and advances only on an explicit resume.
+    pub(super) fn restore_paused(
+        outcome: ConversationOutcome,
+        registry: super::checkpoint::SavedRegistry,
+        runner: Arc<TurnRunner>,
+        options: TurnRunOptions,
+        config: SessionConfig,
+    ) -> Arc<Self> {
+        let id = outcome.state.conversation_id().clone();
+        Self::assemble(id, Slot::Paused(outcome), registry, runner, options, config)
+    }
+
+    /// The shared restore assembly: convert the envelope's records into the
+    /// live registry. Deadlines come back as the remaining time derived from
+    /// the saved absolute expiry — never the original duration.
+    fn assemble(
+        id: ConversationId,
+        slot: Slot,
+        registry: super::checkpoint::SavedRegistry,
+        runner: Arc<TurnRunner>,
+        options: TurnRunOptions,
+        config: SessionConfig,
+    ) -> Arc<Self> {
+        let super::checkpoint::SavedRegistry {
+            works,
+            submit_keys,
+            resume_keys,
+            cancel_keys,
+            next_turn,
+            closed,
+        } = registry;
+        let works = works
+            .into_iter()
+            .map(|saved| {
+                let entry = WorkEntry {
+                    revision: saved.revision,
+                    state: saved.state,
+                    finished: saved.finished,
+                    fault: saved.fault,
+                    deadline: saved.deadline_utc.map(remaining_deadline),
+                };
+                (saved.work, entry)
+            })
+            .collect();
+        let submit_keys = submit_keys
+            .into_iter()
+            .map(|saved| {
+                (
+                    saved.key,
+                    SubmitKey {
+                        receipt: saved.receipt,
+                        parts: saved.parts,
+                    },
+                )
+            })
+            .collect();
+        let resume_keys = resume_keys
+            .into_iter()
+            .map(|saved| {
+                (
+                    saved.key,
+                    ResumeKey {
+                        // The resume receipt is exactly (work, accepted
+                        // revision) — the saved pair reconstructs it without
+                        // a separate envelope field.
+                        receipt: WorkReceipt {
+                            work: saved.work.clone(),
+                            accepted_revision: saved.revision,
+                        },
+                        work: saved.work,
+                        revision: saved.revision,
+                        request: saved.request,
+                    },
+                )
+            })
+            .collect();
+        let cancel_keys = cancel_keys
+            .into_iter()
+            .map(|saved| {
+                (
+                    saved.key,
+                    CancelKey {
+                        receipt: saved.receipt,
+                        work: saved.work,
+                    },
+                )
+            })
+            .collect();
+        let (epoch, _initial_receiver) = watch::channel(0_u64);
+        Arc::new(Self {
+            id,
+            runner,
+            options,
+            config,
+            inner: Mutex::new(Inner {
+                slot,
+                works,
+                submit_keys,
+                resume_keys,
+                cancel_keys,
+                next_turn,
+                closed,
+            }),
+            epoch,
+        })
     }
 
     /// Stop accepting work and send the active work's stop signal.
@@ -857,6 +1077,34 @@ fn paused_turn_id(outcome: &ConversationOutcome) -> TurnId {
         .active_turn()
         .expect("a paused outcome keeps its active turn open")
         .turn_id()
+}
+
+/// The absolute UTC expiry of a monotonic deadline, measured against a
+/// single wall-clock anchor taken now. Monotonic deadlines have no
+/// cross-process meaning, so the envelope records the expiry and restore
+/// re-derives the remaining time from it — never re-granting the original
+/// duration. Clock consistency across the save/restore boundary is the
+/// harness's responsibility.
+fn absolute_expiry(deadline: Instant) -> SystemTime {
+    let anchor_instant = Instant::now();
+    let anchor_system = SystemTime::now();
+    let expiry = if deadline >= anchor_instant {
+        anchor_system.checked_add(deadline - anchor_instant)
+    } else {
+        anchor_system.checked_sub(anchor_instant - deadline)
+    };
+    expiry.expect("a work deadline is within SystemTime's range")
+}
+
+/// Rebuild the monotonic deadline from a saved absolute UTC expiry: the
+/// remaining wall-clock time from now. An expiry already in the past (or a
+/// clock that moved backwards past it) yields `now` — an elapsed deadline
+/// the driver stops on before its first dispatch.
+fn remaining_deadline(expiry: SystemTime) -> Instant {
+    let remaining = expiry
+        .duration_since(SystemTime::now())
+        .unwrap_or(Duration::ZERO);
+    Instant::now() + remaining
 }
 
 /// Look up one work's view; unknown or foreign refs are `NotFound`.

@@ -39,9 +39,21 @@
 //!   retains material for inspection.
 //! - Dropping the owner stops acceptance and fires the active work's
 //!   cancellation token; retained observations stay readable.
+//! - `checkpoint` exports a versioned [`SessionCheckpoint`] only from an
+//!   idle or paused session (`Busy` while a work is accepted / running,
+//!   refused once faulted; a closed session still exports, recording
+//!   `closed`). `SessionCheckpoint::restore` validates the version, the
+//!   assembled configuration description, and the material's internal
+//!   consistency before registering — a rejection hands back the original
+//!   envelope and the by-value inputs, and a successful restore calls no
+//!   model or tool. Saved request keys replay their original receipts
+//!   (different arguments still conflict), identity allocation continues
+//!   from the saved progress, and a restored pause still needs an explicit
+//!   `resume` under its remaining — never re-granted — deadline. Opening a
+//!   conversation from history stays a different operation: it rebuilds no
+//!   dedup table.
 //!
-//! Checkpoint/restore, multi-session coordination, materials, and model tools
-//! are not here.
+//! Multi-session coordination, materials, and model tools are not here.
 //!
 //! # Runtime
 //!
@@ -66,7 +78,7 @@ mod types;
 
 pub use checkpoint::{
     CheckpointPhase, SESSION_CHECKPOINT_VERSION, SavedCancelKey, SavedResumeKey, SavedSubmitKey,
-    SavedWork, SessionCheckpoint, SessionConfigDescription,
+    SavedWork, SessionCheckpoint, SessionConfigDescription, SessionRestoreRejection,
 };
 pub use handle::SessionHandle;
 pub use owner::{Session, SessionBuildRejection};

@@ -23,9 +23,12 @@
 //!   — cloneable [`SessionHandle`]s submit / observe / wait / resume / cancel,
 //!   one active work at a time, per-work `TurnId`s assigned at acceptance and
 //!   never reused, local `request_key` dedup, explicit retained-work capacity,
-//!   and an observable `Faulted` state. Only the single-session closed loop is
-//!   implemented; checkpointing / multi-session coordination / materials are
-//!   out of scope.
+//!   and an observable `Faulted` state. The material-free save loop is
+//!   implemented: an idle or paused session exports a versioned
+//!   [`SessionCheckpoint`], and `SessionCheckpoint::restore` registers it
+//!   against freshly assembled capabilities without calling the model or a
+//!   tool. Multi-session coordination and per-work materials are out of
+//!   scope.
 //! - **Tool-use filters** (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`,
 //!   `FilterChain`) implement this crate's `ToolUseHook` directly — the
 //!   trait, its consumer, and its policies share one crate. The default is
@@ -129,7 +132,8 @@ pub use session::{
     CancelOutcome, CancelReceipt, CheckpointPhase, FinishedKind, SESSION_CHECKPOINT_VERSION,
     SavedCancelKey, SavedResumeKey, SavedSubmitKey, SavedWork, Session, SessionBuildRejection,
     SessionCheckpoint, SessionConfig, SessionConfigDescription, SessionError, SessionHandle,
-    SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt, WorkRef, WorkState,
+    SessionRestoreRejection, SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt,
+    WorkRef, WorkState,
 };
 
 // --- framework policies and projections --------------------------------------

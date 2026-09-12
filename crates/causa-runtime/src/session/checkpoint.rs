@@ -9,18 +9,25 @@
 //! phases extend the envelope, they must declare version compatibility or a
 //! migration rule; this format never silently guesses at unknown sections.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use causa_kernel::{CacheDirective, ContentPart, ConversationId, GenerationOptions, ToolSurface};
 
 use crate::budget::WindowBudget;
-use crate::config::{RetryPolicy, ToolOutputLimits, TurnLimits, UnknownOutcomeConfig};
+use crate::config::{
+    RetryPolicy, ToolOutputLimits, TurnLimits, TurnRunOptions, UnknownOutcomeConfig,
+};
 use crate::conversation::ConversationState;
-use crate::driver::ConversationOutcome;
+use crate::driver::{ConversationOutcome, TurnResult, TurnRunner};
 use crate::resume::ResumeRequest;
 
-use super::types::{CancelReceipt, FinishedKind, SessionConfig, WorkReceipt, WorkRef, WorkState};
+use super::execution::SessionCore;
+use super::owner::Session;
+use super::types::{
+    CancelReceipt, FinishedKind, SessionConfig, SessionError, WorkReceipt, WorkRef, WorkState,
+};
 
 /// The envelope format version written by [`Session::checkpoint`].
 pub const SESSION_CHECKPOINT_VERSION: u32 = 1;
@@ -210,7 +217,7 @@ pub struct SessionConfigDescription {
 impl SessionConfigDescription {
     /// Describe an assembled configuration — the projection restore compares
     /// against, and the description [`Session::checkpoint`] records.
-    pub fn of(options: &crate::config::TurnRunOptions, config: &SessionConfig) -> Self {
+    pub fn of(options: &TurnRunOptions, config: &SessionConfig) -> Self {
         Self {
             model: options.invocation.model.0.clone(),
             tool_surface: options.invocation.tool_surface.clone(),
@@ -230,6 +237,279 @@ impl SessionConfigDescription {
             truncation_counter_configured: options.execution.token_counter.is_some(),
             session: config.clone(),
         }
+    }
+}
+
+/// A rejected restore: the reason plus everything the caller handed in,
+/// returned untouched — the original checkpoint included. Nothing was
+/// registered; correcting the input and retrying costs nothing.
+pub struct SessionRestoreRejection {
+    /// Why the restore was rejected.
+    pub error: SessionError,
+    /// The original checkpoint, exactly as received.
+    pub checkpoint: SessionCheckpoint,
+    /// The assembled runner, returned by value.
+    pub runner: Arc<TurnRunner>,
+    /// The assembled run options, returned by value.
+    pub options: TurnRunOptions,
+    /// The session configuration, returned by value.
+    pub config: SessionConfig,
+}
+
+/// The validated checkpoint's registry parts — the works table, the three
+/// request-key replay tables, the allocation progress, and the closed
+/// state — ready for the execution core to assemble.
+pub(super) struct SavedRegistry {
+    /// Every retained work's saved view.
+    pub works: Vec<SavedWork>,
+    /// The accepted submit requests.
+    pub submit_keys: Vec<SavedSubmitKey>,
+    /// The accepted resume requests.
+    pub resume_keys: Vec<SavedResumeKey>,
+    /// The accepted cancel requests.
+    pub cancel_keys: Vec<SavedCancelKey>,
+    /// The TurnId allocation progress.
+    pub next_turn: u64,
+    /// Whether the owner had closed the session at save time.
+    pub closed: bool,
+}
+
+impl std::fmt::Debug for SessionRestoreRejection {
+    /// `TurnRunner` carries no `Debug` impl (it holds gateway / executor
+    /// trait objects), so the rejection renders it as an opaque handle and
+    /// prints the rest.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRestoreRejection")
+            .field("error", &self.error)
+            .field("checkpoint", &self.checkpoint)
+            .field("runner", &"Arc<TurnRunner>")
+            .field("options", &self.options)
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl SessionCheckpoint {
+    /// Register this checkpoint as a live session, against a freshly
+    /// assembled configuration.
+    ///
+    /// Validation runs first and completely — the envelope version, the
+    /// configuration description against the assembled options, and the
+    /// material's internal consistency — so a rejection returns everything
+    /// by value ([`SessionRestoreRejection`]) and leaves nothing behind. A
+    /// successful restore calls no model and no tool: an idle envelope
+    /// registers as an idle session, a paused envelope registers with the
+    /// work paused on its original continuation, still requiring an explicit
+    /// [`SessionHandle::resume`](super::SessionHandle::resume). The request
+    /// keys replay their original receipts after restore; a different
+    /// work's claim on a saved key is a conflict, exactly as before the
+    /// save. Identity allocation continues from the saved progress, and
+    /// each work's remaining deadline is re-derived from its saved absolute
+    /// expiry — never re-granted in full.
+    ///
+    /// Two constructors loading the same checkpoint are the harness's
+    /// problem to avoid: the session has no global instance table, so it
+    /// cannot refuse a second owner on its own.
+    // The rejection carries the whole checkpoint plus the assembled
+    // runner / options / config back by value, which is the point of the
+    // contract — the same by-value shape `Session::new` returns.
+    #[allow(clippy::result_large_err)]
+    pub fn restore(
+        self,
+        runner: Arc<TurnRunner>,
+        options: TurnRunOptions,
+        config: SessionConfig,
+    ) -> Result<Session, SessionRestoreRejection> {
+        if let Err(error) = self.validate(&options, &config) {
+            return Err(SessionRestoreRejection {
+                error,
+                checkpoint: self,
+                runner,
+                options,
+                config,
+            });
+        }
+        let Self {
+            phase,
+            works,
+            next_turn,
+            submit_keys,
+            resume_keys,
+            cancel_keys,
+            closed,
+            ..
+        } = self;
+        let registry = SavedRegistry {
+            works,
+            submit_keys,
+            resume_keys,
+            cancel_keys,
+            next_turn,
+            closed,
+        };
+        let core = match phase {
+            CheckpointPhase::Idle { state } => {
+                SessionCore::restore_idle(state, registry, runner, options, config)
+            }
+            CheckpointPhase::Paused { outcome, .. } => {
+                SessionCore::restore_paused(outcome, registry, runner, options, config)
+            }
+        };
+        Ok(Session::from_core(core))
+    }
+
+    /// Validate the envelope completely before anything registers: version,
+    /// configuration description, and the material's internal consistency.
+    fn validate(
+        &self,
+        options: &TurnRunOptions,
+        config: &SessionConfig,
+    ) -> Result<(), SessionError> {
+        if self.version != SESSION_CHECKPOINT_VERSION {
+            return Err(SessionError::InvalidCheckpoint(format!(
+                "unsupported checkpoint version {} (this runtime writes {})",
+                self.version, SESSION_CHECKPOINT_VERSION
+            )));
+        }
+        if SessionConfigDescription::of(options, config) != self.config {
+            return Err(SessionError::ConfigMismatch);
+        }
+        let invalid = |reason: String| SessionError::InvalidCheckpoint(reason);
+        match &self.phase {
+            CheckpointPhase::Idle { state } => {
+                if *state.conversation_id() != self.conversation_id {
+                    return Err(invalid(
+                        "the idle state names a different conversation than the envelope".into(),
+                    ));
+                }
+                if state.active_turn().is_some() || state.sealed_result().is_some() {
+                    return Err(invalid(
+                        "the idle phase carries an active or sealed turn".into(),
+                    ));
+                }
+            }
+            CheckpointPhase::Paused { outcome, work } => {
+                if *outcome.state.conversation_id() != self.conversation_id {
+                    return Err(invalid(
+                        "the paused outcome names a different conversation than the envelope"
+                            .into(),
+                    ));
+                }
+                if work.conversation_id != self.conversation_id {
+                    return Err(invalid(
+                        "the paused work names a different conversation than the envelope".into(),
+                    ));
+                }
+                if !matches!(&outcome.result, TurnResult::Paused { .. }) {
+                    return Err(invalid(
+                        "the paused phase does not carry a paused result".into(),
+                    ));
+                }
+                let Some(active) = outcome.state.active_turn() else {
+                    return Err(invalid("the paused outcome has no open active turn".into()));
+                };
+                if active.turn_id() != work.turn_id {
+                    return Err(invalid(
+                        "the paused outcome's active turn does not match the paused work".into(),
+                    ));
+                }
+            }
+        }
+        // Works: one identity each, terminal except the single paused work
+        // of the paused phase. Accepted / Running / Faulted entries cannot
+        // come from a legitimate export (their slot refuses to export), so
+        // they are inconsistencies rather than states to preserve.
+        let mut seen = HashSet::new();
+        let mut paused_works = 0usize;
+        for saved in &self.works {
+            if saved.work.conversation_id != self.conversation_id {
+                return Err(invalid(format!(
+                    "work {:?} names a different conversation than the envelope",
+                    saved.work
+                )));
+            }
+            if !seen.insert(saved.work.turn_id.clone()) {
+                return Err(invalid(format!("duplicate work identity {:?}", saved.work)));
+            }
+            match saved.state {
+                WorkState::Finished => {
+                    if saved.finished.is_none() || saved.fault.is_some() {
+                        return Err(invalid(format!(
+                            "finished work {:?} carries no result or a fault",
+                            saved.work
+                        )));
+                    }
+                }
+                WorkState::Paused => {
+                    paused_works += 1;
+                    if saved.finished.is_some() || saved.fault.is_some() {
+                        return Err(invalid(format!(
+                            "paused work {:?} carries a result or a fault",
+                            saved.work
+                        )));
+                    }
+                }
+                WorkState::Accepted | WorkState::Running | WorkState::Faulted => {
+                    return Err(invalid(format!(
+                        "work {:?} is {:?}; only terminal works and the one paused work can be checkpointed",
+                        saved.work, saved.state
+                    )));
+                }
+            }
+        }
+        let paused_phase = matches!(&self.phase, CheckpointPhase::Paused { .. });
+        let expected = usize::from(paused_phase);
+        if paused_works != expected {
+            return Err(invalid(format!(
+                "the envelope registers {paused_works} paused works; the {} phase carries exactly one",
+                if paused_phase { "paused" } else { "idle" }
+            )));
+        }
+        if let CheckpointPhase::Paused { work, .. } = &self.phase {
+            let registered = self
+                .works
+                .iter()
+                .any(|saved| saved.work == *work && saved.state == WorkState::Paused);
+            if !registered {
+                return Err(invalid(
+                    "the paused phase's work is not registered as a paused work".into(),
+                ));
+            }
+        }
+        // Key tables: every receipt and target must reference a registered
+        // work, so replay after restore never invents a work.
+        let known: HashSet<&WorkRef> = self.works.iter().map(|saved| &saved.work).collect();
+        for saved in &self.submit_keys {
+            if !known.contains(&saved.receipt.work) {
+                return Err(invalid(format!(
+                    "submit key {:?} receipts an unknown work",
+                    saved.key
+                )));
+            }
+            if saved.parts.is_empty() {
+                return Err(invalid(format!(
+                    "submit key {:?} carries no parts",
+                    saved.key
+                )));
+            }
+        }
+        for saved in &self.resume_keys {
+            if !known.contains(&saved.work) {
+                return Err(invalid(format!(
+                    "resume key {:?} targets an unknown work",
+                    saved.key
+                )));
+            }
+        }
+        for saved in &self.cancel_keys {
+            if !known.contains(&saved.work) {
+                return Err(invalid(format!(
+                    "cancel key {:?} targets an unknown work",
+                    saved.key
+                )));
+            }
+        }
+        Ok(())
     }
 }
 

@@ -137,6 +137,26 @@ Planned as **0.1.0** — the release gate is functional completeness
   derive serde; `ConversationState`, `ConversationOutcome`, and the kernel's
   `TurnContext` derive `Clone`; `ToolSurface`, `ToolDefinition`, and
   `GenerationOptions` derive `PartialEq`. Existing wire shapes are unchanged.
+- **Session checkpoint / restore (slice 8 Phase C)**: `Session::checkpoint`
+  exports the versioned `SessionCheckpoint` — only from an idle or paused
+  session: an accepted / running work (a cancel in progress included)
+  reports `Busy`, a faulted session refuses (no complete outcome exists),
+  and a closed session still exports with `closed` recorded. Two exports of
+  the same quiescent state are equal (deterministic record order).
+  `SessionCheckpoint::restore` validates the envelope version, the assembled
+  configuration description (a swapped model, surface, policy, or limits is
+  refused, never silently adopted), and the material's internal consistency
+  before registering; a rejection hands back the original checkpoint and the
+  by-value inputs, leaving nothing behind. Restore calls no model and no
+  tool: it rebuilds the request-key replay tables (same key replays its
+  original receipt, different arguments still conflict), continues the
+  TurnId allocation from the saved progress, keeps every retained result
+  observable, and re-derives each work's remaining deadline from the saved
+  absolute UTC expiry — never a fresh full duration. A restored pause still
+  needs an explicit `resume` and continues its original continuation.
+  Restoring a checkpoint stays distinct from opening a conversation from
+  history, which rebuilds no dedup table. Persistence (whether and when to
+  save) stays host-side; the runtime ships no store.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
   protocols, with transport timeouts and classified error mapping.
 - **`causa-extension`** — `DynamicToolSource` adapters; the default `mcp`
@@ -175,6 +195,13 @@ Planned as **0.1.0** — the release gate is functional completeness
   field, and `SessionError` gained the `StaleRevision` / `NotPaused` /
   `InvalidResume` variants. The `resume` / `cancel` operations,
   `CancelOutcome` / `CancelReceipt`, and `Session::shutdown` are new.
+- **`causa-runtime` session checkpoint surface**: `SessionError` gained the
+  `ConfigMismatch` and `InvalidCheckpoint` variants (breaking for exhaustive
+  matches) — restore refuses a checkpoint whose configuration description
+  does not match the freshly assembled options, or whose material is
+  inconsistent (unsupported version, an unregistered paused work, a receipt
+  referencing an unknown work, an impossible state). The rejection carries
+  the original checkpoint and the by-value inputs back.
 - Brand: **Causa** (formerly Archy) — every crate renamed to `causa-*`;
   project pages live under the Project inceptae domain.
 - **Reference budget & interaction ownership**: `FramePolicy`,

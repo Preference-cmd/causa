@@ -281,4 +281,15 @@ pub enum SessionError {
         /// The retained fault reason.
         reason: String,
     },
+    /// The checkpoint's configuration description does not match the freshly
+    /// assembled options: restore refuses rather than resuming under a
+    /// swapped model, tool surface, policy, or limits.
+    #[error("checkpoint configuration does not match the assembled options")]
+    ConfigMismatch,
+    /// The checkpoint is not usable by this runtime: an unsupported envelope
+    /// version, or internally inconsistent material (an unregistered paused
+    /// work, a receipt referencing an unknown work, an impossible state).
+    /// The rejection carries the original checkpoint back untouched.
+    #[error("invalid session checkpoint: {0}")]
+    InvalidCheckpoint(String),
 }
