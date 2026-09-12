@@ -298,8 +298,11 @@ impl SessionCore {
                 });
             }
         };
-        // Deterministic order: two exports of the same quiescent state
-        // produce equal envelopes, so hosts can diff or hash them.
+        // Deterministic record order: two exports of the same quiescent
+        // state list their records identically. The envelopes still differ
+        // whenever any retained work carries a deadline — each export
+        // re-anchors that work's absolute expiry to the export moment — so
+        // byte equality only holds for deadline-free states.
         let mut works: Vec<SavedWork> = inner
             .works
             .iter()

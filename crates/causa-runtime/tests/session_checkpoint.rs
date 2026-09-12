@@ -285,11 +285,8 @@ async fn restore_replays_a_resume_key_without_reexecuting() {
     assert_eq!(done.observation.state, WorkState::Finished);
 
     let checkpoint = session.checkpoint().expect("exports when idle");
-    let restored = restore(
-        checkpoint,
-        RecordingGateway::scripted(vec![Ok(endturn_output("unused"))]),
-        SessionConfig::default(),
-    );
+    let replay_gateway = RecordingGateway::scripted(vec![Ok(endturn_output("unused"))]);
+    let restored = restore(checkpoint, replay_gateway.clone(), SessionConfig::default());
     let handle = restored.handle();
 
     // The same key with the same request replays the original resume
@@ -298,6 +295,10 @@ async fn restore_replays_a_resume_key_without_reexecuting() {
         .resume(&work, revision, "r1".into(), request.clone())
         .expect("the resume key replays");
     assert_eq!(replay, resumed);
+    assert!(
+        replay_gateway.recorded().is_empty(),
+        "the replay resumed nothing"
+    );
     // The same key with a different request is a conflict.
     let conflicting = ResumeRequest {
         decision: request.decision.clone(),
@@ -307,6 +308,10 @@ async fn restore_replays_a_resume_key_without_reexecuting() {
         handle.resume(&work, revision, "r1".into(), conflicting),
         Err(SessionError::Conflict)
     ));
+    assert!(
+        replay_gateway.recorded().is_empty(),
+        "the conflict resumed nothing either"
+    );
     assert_eq!(
         handle.observe(&work).unwrap().state,
         WorkState::Finished,
@@ -481,6 +486,7 @@ async fn restore_rejects_inconsistent_material_and_returns_the_checkpoint() {
     let checkpoint = session.checkpoint().unwrap();
     let mut value = serde_json::to_value(&checkpoint).unwrap();
     value["works"] = json!([]);
+    let as_saved = value.clone();
     let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
     let rejection = SessionCheckpoint::restore(
         tampered,
@@ -493,11 +499,16 @@ async fn restore_rejects_inconsistent_material_and_returns_the_checkpoint() {
         rejection.error,
         SessionError::InvalidCheckpoint(_)
     ));
+    assert_eq!(
+        serde_json::to_value(&rejection.checkpoint).unwrap(),
+        as_saved
+    );
 
     // (c) the paused outcome's active turn does not match its registered work
     let (_, _, _, checkpoint) = paused_checkpoint("c4-material-c", SessionConfig::default()).await;
     let mut value = serde_json::to_value(&checkpoint).unwrap();
     value["phase"]["work"]["turn_id"] = json!("c4-material-c-work-99");
+    let as_saved = value.clone();
     let tampered: SessionCheckpoint = serde_json::from_value(value).unwrap();
     let rejection = SessionCheckpoint::restore(
         tampered,
@@ -510,6 +521,10 @@ async fn restore_rejects_inconsistent_material_and_returns_the_checkpoint() {
         rejection.error,
         SessionError::InvalidCheckpoint(_)
     ));
+    assert_eq!(
+        serde_json::to_value(&rejection.checkpoint).unwrap(),
+        as_saved
+    );
 }
 
 // ---- C4: from-history distinction, persistence ---------------------------------

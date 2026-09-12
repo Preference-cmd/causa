@@ -115,8 +115,10 @@ pub struct SavedWork {
     /// The work's revision at save time; restore continues the sequence
     /// from here, so a caller's pre-save revision stays meaningful.
     pub revision: u64,
-    /// The work's state at save time — `Paused` only in the paused phase
-    /// payload's work; `Accepted` / `Running` cannot be checkpointed.
+    /// The work's state at save time — `Paused` only for the paused phase
+    /// payload's work. `Accepted` / `Running` / `Faulted` cannot be
+    /// checkpointed (their slots refuse to export), so a legitimate
+    /// envelope carries only terminal states and the one paused work.
     pub state: WorkState,
     /// The terminal result when the work is `Finished`.
     pub finished: Option<FinishedKind>,

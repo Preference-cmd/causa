@@ -60,7 +60,11 @@ pub enum WorkState {
 
 /// How a terminal work ended — the two terminal `TurnResult` shapes, kept as
 /// (or inside) the driver's own vocabulary rather than copied into new types.
+/// Serialized snake_case, matching the envelope's other enums (`WorkState`,
+/// `CancelOutcome`) rather than the driver's `TurnResult` casing — the
+/// envelope is its own wire shape.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FinishedKind {
     /// The model ended the turn; the turn was committed into history.
     Completed {

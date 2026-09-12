@@ -131,18 +131,23 @@ Planned as **0.1.0** — the release gate is functional completeness
   (`SessionConfigDescription::of`). Persistence stays host-side — the runtime
   ships no store. Supporting serialization is additive only:
   `ResumeRequest`, `HookOutcome`, `UnknownDecision`, the session value
-  vocabulary (`WorkRef`, `WorkState`, `FinishedKind`, receipts,
-  `SubmitRequest`, `SessionConfig`) and the config axis types (`RetryPolicy`,
-  `TurnLimits`, `UnknownOutcomeConfig`, `ToolOutputLimits`, `WindowBudget`)
-  derive serde; `ConversationState`, `ConversationOutcome`, and the kernel's
-  `TurnContext` derive `Clone`; `ToolSurface`, `ToolDefinition`, and
-  `GenerationOptions` derive `PartialEq`. Existing wire shapes are unchanged.
+  vocabulary (`WorkRef`, `WorkState`, `CancelOutcome`, `FinishedKind`,
+  `WorkReceipt`, `CancelReceipt`, `SubmitRequest`, `SessionConfig`) and the
+  config axis types (`RetryPolicy`, `TurnLimits`, `UnknownOutcomeConfig`,
+  `ToolOutputLimits`, `WindowBudget`) derive serde; `ConversationState`,
+  `ConversationOutcome`, and the kernel's `TurnContext` derive `Clone`;
+  `ToolSurface`, `ToolDefinition`, and `GenerationOptions` derive
+  `PartialEq`, and the runtime's `RetryPolicy`, `TurnLimits`,
+  `UnknownOutcomeConfig`, and `WindowBudget` derive `PartialEq` (`Eq` for
+  `WindowBudget`) so the configuration description can be compared by
+  value. Existing wire shapes are unchanged.
 - **Session checkpoint / restore (slice 8 Phase C)**: `Session::checkpoint`
   exports the versioned `SessionCheckpoint` — only from an idle or paused
   session: an accepted / running work (a cancel in progress included)
   reports `Busy`, a faulted session refuses (no complete outcome exists),
-  and a closed session still exports with `closed` recorded. Two exports of
-  the same quiescent state are equal (deterministic record order).
+  and a closed session still exports with `closed` recorded. Record order
+  is deterministic; two exports differ only in each work's re-anchored
+  absolute deadline, so byte equality holds only for deadline-free states.
   `SessionCheckpoint::restore` validates the envelope version, the assembled
   configuration description (a swapped model, surface, policy, or limits is
   refused, never silently adopted), and the material's internal consistency
@@ -155,8 +160,13 @@ Planned as **0.1.0** — the release gate is functional completeness
   absolute UTC expiry — never a fresh full duration. A restored pause still
   needs an explicit `resume` and continues its original continuation.
   Restoring a checkpoint stays distinct from opening a conversation from
-  history, which rebuilds no dedup table. Persistence (whether and when to
-  save) stays host-side; the runtime ships no store.
+  history, which rebuilds no dedup table. A checkpoint supports resuming a
+  deliberately paused, quiescent session — it promises no exactly-once
+  across arbitrary process crashes: unsaved acceptance records, unknown
+  external results, and a re-loaded old checkpoint gain nothing
+  automatically, and a harness needing crash recovery wires that itself.
+  Persistence (whether and when to save) stays host-side; the runtime ships
+  no store.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
   protocols, with transport timeouts and classified error mapping.
 - **`causa-extension`** — `DynamicToolSource` adapters; the default `mcp`
