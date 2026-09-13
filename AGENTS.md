@@ -23,6 +23,8 @@ crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on
 .github/workflows/publish.yml  # manual dispatch ONLY — never `cargo publish` by hand
 .github/scripts/check-dependency-directions.sh  # layering guard, runs in CI
 CHANGELOG.md               # Keep a Changelog; wire-serde breaks bump minor + flag at top
+website/                   # Astro Starlight docs site (its own pnpm project + workflow)
+scripts/                   # proposal verifier and repo helpers (not published)
 ```
 
 User-facing feature map on the facade:
@@ -33,6 +35,23 @@ User-facing feature map on the facade:
 | `features = ["full"]` | + extensions (MCP) |
 | `default-features = false` | kernel only (offline audit / minimal embed) |
 | `default-features = false, features = ["runtime"]` | kernel + offline driver |
+
+## Fact sources
+
+Before asserting a fact about the repo, read it here — never from memory:
+
+| fact | authoritative source |
+|---|---|
+| crate set, version, edition, MSRV | `Cargo.toml` `[workspace.package]` |
+| facade feature selection | `crates/causa/Cargo.toml` `[features]` |
+| driver policy surface and defaults | the policy table atop `crates/causa-runtime/src/lib.rs` |
+| example names and offline / key / server needs | the doc comment atop `crates/*/examples/*.rs` |
+| release state and wire-shape breaks | `CHANGELOG.md` |
+| CI jobs and gates | `.github/workflows/ci.yml`, `.github/scripts/` |
+
+When a crate, feature, or test command changes, update every copy:
+`README.md` (crates + feature tables), `website/src/content/docs/crates.mdx`,
+and this file together.
 
 ## Commands
 
@@ -54,9 +73,8 @@ Toolchain: stable for dev, MSRV **1.96** pinned by CI (`cargo check
 `rust-version` or add a dependency without a reason stated in the commit.
 
 Tests run offline: provider tests use `wiremock`, MCP tests use
-in-process fixtures. Examples needing live keys/servers (`quickstart`,
-`mcp_tools`) are documented in `README.md` — do not "fix" them to run in
-CI.
+in-process fixtures. Examples needing live keys or servers (`quickstart`,
+`mcp_tools`) are listed in `README.md` — do not "fix" them to run in CI.
 
 ## Layering (machine-enforced)
 
@@ -97,11 +115,11 @@ rendering) — bare `causa` false-positives on `causa-*` names.
 ## Conventions
 
 - `#![deny(unsafe_code)]` everywhere; `#![deny(missing_docs)]` on
-  library targets. Public API without docs fails CI-adjacent checks
-  (`publish --dry-run`) — write docs first, not after.
+  library targets. The `Publish` workflow's dry-run fails on public API
+  without docs — write docs first, not after.
 - Crate docs (`src/lib.rs`) state the layer contract and the policy
-  surface; keep the README's publish-set table in sync when crates or
-  features change.
+  surface; keep the README's crates table and facade feature table in sync
+  when crates or features change (see Fact sources).
 - Naming: `causa-*` packages, `causa_*` imports, `McpToolSource`-style
   adapter names. Inherited workspace metadata (`version`, `edition`,
   `authors`, `license`, `repository`) — never per-crate values.
