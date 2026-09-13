@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+pub mod coordinator;
+
 use async_trait::async_trait;
 use causa_kernel::{
     AttemptControl, CallControl, ContentPart, ContextFrame, ConversationId, ModelGateway,
