@@ -134,13 +134,3 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   `pub mod` only for nested surfaces (`ports`, `context`).
 - Commit style: Conventional Commits (`feat:`, `fix:`, `refactor!:`,
   `chore:`, `docs:`). One logical change per commit.
-
-## Workflow
-
-- Small work: commit directly to `main` and open a PR.
-- Non-trivial behavior / architecture / contract change: open an issue
-  or discussion first describing the goal and the observable acceptance
-  criteria, then implement.
-- Release gate: functional completeness (multimodal I/O + subagents).
-  Publishing is the manual `Publish` workflow in dependency order,
-  facade last — never `cargo publish` by hand.

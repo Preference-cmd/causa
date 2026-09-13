@@ -22,6 +22,8 @@ Cargo.lock.orig
 # ----- Machine-local agent workflow (path-imported by Reimagine) -----
 .agents/
 /scripts/
+AGENTS.local.md
+CLAUDE.local.md
 
 # ----- Editor / OS -----
 .vscode/*
