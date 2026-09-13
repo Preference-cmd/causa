@@ -22,7 +22,7 @@ and `--no-default-features` is kernel-only.
 | `causa` | facade over the family |
 | `causa-kernel` | facts + contracts: conversation kernel and ports, no I/O |
 | `causa-protocol` | wire-protocol translation (Anthropic / OpenAI Chat / OpenAI Responses) |
-| `causa-runtime` | reference driver: turn loop, tool dispatch, streaming, pause/resume, session coordination and checkpoint, unknown-outcome & output-retention config |
+| `causa-runtime` | optional, reference components: execution stack (turn loop, tool dispatch, streaming, pause/resume, session coordination and checkpoint), policy components (budget, interaction, unknown-outcome & output-retention config) |
 | `causa-provider` | reqwest adapters for the `ModelGateway` port |
 | `causa-extension` | extension adapters (`mcp` feature: MCP client) |
 

@@ -1,7 +1,7 @@
 [package]
 name = "causa-runtime"
 version.workspace = true
-description = "Causa runtime — reference driver (turn loop, tool dispatch, streaming, approval pause/resume)"
+description = "Causa runtime — optional components: execution stack (turn loop, dispatch, streaming, pause/resume, session)"
 repository.workspace = true
 readme = "../../README.md"
 keywords = ["agent", "llm", "tools", "streaming", "driver"]

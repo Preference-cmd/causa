@@ -7,8 +7,8 @@
 //! implement or call against; the kernel itself consumes none of it — the
 //! canonical consumer (driver, executor) lives in `causa-runtime`. The
 //! conversation-persistence, budget/compaction, and host↔driver interaction
-//! seams are the reference harness's opinions, not cross-harness
-//! capabilities, and live in `causa-runtime`.
+//! seams are that crate's component opinions, not cross-host capabilities,
+//! and live in `causa-runtime`.
 
 pub mod control;
 pub mod gateway;

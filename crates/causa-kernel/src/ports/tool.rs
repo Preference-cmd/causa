@@ -3,7 +3,7 @@
 //! context. Recorded facts (results, outputs, artifacts) live in
 //! `crate::context::tool_data`; batch dispatch lives in `causa-runtime`'s
 //! executor. A tool returns its recorded result and nothing else —
-//! unknown-outcome continuation and output retention are reference-harness
+//! unknown-outcome continuation and output retention are runtime-component
 //! configuration, not tool declarations.
 
 use async_trait::async_trait;
@@ -79,7 +79,7 @@ pub trait ArtifactStore: Send + Sync {
 /// The tool port: one callable tool the model can invoke. Implementations
 /// live outside the kernel; the driver's executor dispatches them. A tool
 /// returns only its recorded result — whether an `UnknownOutcome` result
-/// may continue the turn and how output is retained are reference-harness
+/// may continue the turn and how output is retained are runtime-component
 /// configuration (`causa_runtime`), not tool declarations.
 #[async_trait]
 pub trait Tool: Send + Sync {

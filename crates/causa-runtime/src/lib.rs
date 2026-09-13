@@ -1,23 +1,26 @@
-//! causa-runtime — the framework layer over the context kernel.
+//! causa-runtime — optional components over the context kernel.
 //!
-//! The kernel is facts (`context`) + contracts (`ports`) only; the driver
-//! stack lives here.
+//! The kernel is facts (`context`) + contracts (`ports`) only. This crate
+//! is a set of optional, reference components on top of them: adopt the
+//! execution stack, take a single piece, or read them as a reference and
+//! build your own. Each component documents the policy it bakes in and what
+//! adopting it brings along.
 //!
 //! - **Driver stack** (`driver`, `executor`, `hook`, `config`, `control`):
 //!   `TurnRunner` orchestrates turns over the kernel's ports —
 //!   retry scheduling, tool batch dispatch, artifact spill, traces, and
 //!   run control.
-//! - **Reference budget & interaction** (`budget`, `interaction`): the
+//! - **Budget & interaction components** (`budget`, `interaction`): the
 //!   frame-materialization policy (`FramePolicy`, window budget,
 //!   compaction, token counting) and the host↔driver `TurnInteraction`
-//!   seam — the reference harness's opinions, not fact-layer invariants. A
-//!   custom harness composes the kernel's lossless `TurnContext::frame`
+//!   seam — the component's documented opinions, not fact-layer invariants.
+//!   A custom host composes the kernel's lossless `TurnContext::frame`
 //!   differently.
 //! - **Session aggregate** (`conversation`): `ConversationState` (single
 //!   active slot, completed-only history, commit-time `TurnSequence` as
 //!   `HistoryEntry`), the `SealedResult` stamp, and the `ConversationStore`
-//!   archive port. These are reference-harness decisions, not fact-layer
-//!   invariants; a custom harness composes the kernel facts differently.
+//!   archive port. These are component decisions, not fact-layer invariants;
+//!   a custom host composes the kernel facts differently.
 //! - **Session coordination** (`session`): one [`Session`] owner per
 //!   conversation drives accepted work through the assembled [`TurnRunner`]
 //!   — cloneable [`SessionHandle`]s submit / observe / wait / resume / cancel,
@@ -38,33 +41,39 @@
 //!   event sequence for UI / observability / audit consumers.
 //!
 //! Implementation-side note: implementing a `ModelGateway` or a `Tool`
-//! requires only `causa-kernel`; this crate is required to *use the
-//! reference driver*, not to fill the kernel's ports.
+//! requires only `causa-kernel`; this crate exists to *use the optional
+//! execution components*, not to fill the kernel's ports.
 //!
-//! # Reference-harness usage paths
+//! # Optional components
 //!
-//! Everything here is optional; the four responsibilities a host can adopt
-//! independently:
+//! Everything here is optional, and each piece is offered as a reference:
+//! adopt it whole, or read it and build your own. The four responsibilities
+//! below are how the crate is organized — not a promise about how finely it
+//! can be split. What adopting a piece brings along is noted as cost, not as
+//! a contract.
 //!
-//! 1. **Reference execution** — [`TurnRunner`] plus its config
+//! 1. **Execution stack** — [`TurnRunner`] plus its config
 //!    ([`TurnRunOptions`], policy axes), resume ([`resume_turn`]), hook
-//!    seam, and the reference budget ([`FramePolicy`]) and interaction
-//!    ([`TurnInteraction`]) seams. The defaults are this crate's documented
-//!    opinions, not fact-layer invariants.
-//! 2. **Standalone tool execution** — [`ToolExecutor::execute_with_limits`]
-//!    runs one call (panic isolation, deadline backstop, limit truncation,
-//!    error mapping) with no runner and no session. Its catalog cache and
-//!    static-name priority are executor policies, documented at the impl
-//!    site.
-//! 3. **Optional reference session** — [`ConversationState`] owns the
-//!    single-active slot, completed-only history, and commit ordering
-//!    (`HistoryEntry`). A host with different session needs composes
-//!    kernel facts directly.
-//! 4. **Optional observation** — traces and [`ContextEvent`] are
-//!    projections of a finished turn for UI / audit consumers. The host
-//!    chooses what to persist; there is no separate wire model.
+//!    seam, the budget ([`FramePolicy`]) and interaction
+//!    ([`TurnInteraction`]) components, and the session owner
+//!    ([`Session`] / [`SessionHandle`] / [`SessionCheckpoint`]).
+//!    Adopting it brings those policy components along; the defaults they
+//!    bake in are documented in the policy table below, not fact-layer
+//!    invariants.
+//! 2. **Tool execution** — [`ToolExecutor::execute_with_limits`] runs one
+//!    call (panic isolation, deadline backstop, limit truncation, error
+//!    mapping) with no runner and no session; adopting it also brings the
+//!    config and budget vocabulary. Its catalog cache and static-name
+//!    priority are executor policies, documented at the impl site.
+//! 3. **Session aggregate** — [`ConversationState`] owns the single-active
+//!    slot, completed-only history, and commit ordering ([`HistoryEntry`]).
+//!    A host with different session needs composes kernel facts directly.
+//! 4. **Observation** — traces and [`ContextEvent`] are projections of a
+//!    finished turn for UI / audit consumers; reading them brings the
+//!    execution stack along. The host chooses what to persist; there is no
+//!    separate wire model.
 //!
-//! # Driver policy surface
+//! # Policy surface
 //!
 //! Every default the driver bakes in is one of two kinds — a swappable
 //! policy object, or a documented opinion. No trait seams exist for

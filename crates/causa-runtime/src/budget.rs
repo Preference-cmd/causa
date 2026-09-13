@@ -1,7 +1,7 @@
 //! Reference frame-materialization policy — window budget, compaction seam,
-//! token counter, and the canonical [`FramePolicy`] carrier. These are the
-//! reference harness's budget opinions, not fact-layer invariants. A custom
-//! harness composes the kernel's lossless projection (`TurnContext::frame`)
+//! token counter, and the canonical [`FramePolicy`] carrier. These are this
+//! component's budget opinions, not fact-layer invariants. A custom host
+//! composes the kernel's lossless projection (`TurnContext::frame`)
 //! differently.
 //!
 //! The policy orchestrates materialization itself: the fact machine offers
@@ -102,7 +102,7 @@ pub enum FrameError {
 }
 
 /// Carrier of the frame-materialization policy: trigger budget, optional
-/// compaction, optional token counter. A reference-harness value assembled
+/// compaction, optional token counter. A runtime value assembled
 /// from port instances — the driver builds and owns it, and it orchestrates
 /// materialization itself, using only the fact machine's public accessors.
 /// Placeholder semantics stay frame-local and non-persisting.

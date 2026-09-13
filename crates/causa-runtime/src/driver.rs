@@ -1,4 +1,4 @@
-//! The reference driver — retry scheduling, tool batch dispatch, artifact
+//! The execution stack here — retry scheduling, tool batch dispatch, artifact
 //! spill, control plumbing, and trace construction. The canonical consumer
 //! of the kernel's contracts lives here, one layer up.
 use crate::budget::FramePolicy;
@@ -382,7 +382,7 @@ impl<'de> serde::Deserialize<'de> for PreparedApproval {
                 });
             }
             // Non-unknown entries' policy was never consumed by the
-            // reference driver; it is dropped on load and re-canonicalized
+            // execution stack; it is dropped on load and re-canonicalized
             // to Stop on write.
             rejected.push(entry.result);
         }
@@ -433,7 +433,7 @@ impl<'de> serde::Deserialize<'de> for PreparedApproval {
     }
 }
 
-/// Where a turn paused. The reference driver currently emits only the
+/// Where a turn paused. The execution stack currently emits only the
 /// approval position; the steering position exists so hosts that suspend
 /// before a model round produce a continuation the same resume machinery
 /// consumes (the pause point and the round together define the next step —
@@ -613,7 +613,7 @@ fn attach_decisions(
         .collect()
 }
 
-/// The reference driver over the kernel's ports: frame materialization,
+/// The execution stack over the kernel's ports: frame materialization,
 /// bounded model retry, tool batch dispatch through the hook and
 /// interaction seams, run control plumbing, and trace construction.
 pub struct TurnRunner {

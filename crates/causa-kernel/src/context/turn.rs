@@ -445,7 +445,7 @@ impl TurnContext {
     /// Lossless canonical projection: the committed facts, ordered, with the
     /// deterministic frame identity. Frame-materialization policy (budget,
     /// compaction) is NOT applied here — the fact machine never awaits
-    /// behavior; the reference driver materializes policy-shaped frames
+    /// behavior; the execution stack materializes policy-shaped frames
     /// through `causa_runtime::budget::FramePolicy::materialize`, which
     /// replaces only this frame's block list.
     pub fn frame(&self, round_id: RoundId) -> ContextFrame {

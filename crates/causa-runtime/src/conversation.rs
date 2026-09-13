@@ -1,8 +1,8 @@
 //! The session aggregate — `ConversationState`, its ordering vocabulary,
 //! and the `ConversationStore` archive port. The single active slot,
 //! completed-only history admission, and commit-time sequence assignment
-//! are *reference-harness* decisions, not fact-layer invariants, so they
-//! live with the reference driver. The kernel keeps the facts
+//! are this component's decisions, not fact-layer invariants, so they live
+//! with the execution stack. The kernel keeps the facts
 //! ([`causa_kernel::TurnContext`] / [`causa_kernel::TurnSnapshot`]), the
 //! validated recovery entries, and the shared [`causa_kernel::merged_frame`]
 //! projection; it never depends back on this crate.
@@ -26,8 +26,8 @@ use causa_kernel::{
 
 /// Position of a committed turn within a session's history, assigned
 /// exactly once by [`ConversationState::commit`]. The ordering *rule* —
-/// completed turns only, dense sequence assigned at commit — is
-/// reference-harness policy, not a fact-layer invariant.
+/// completed turns only, dense sequence assigned at commit — is this
+/// component's policy, not a fact-layer invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TurnSequence(pub u64);
 
@@ -138,8 +138,8 @@ pub enum ConversationError {
 ///   may be reused.
 ///
 /// The single active slot, completed-only admission, and commit-time
-/// ordering are this crate's reference-harness defaults — a custom harness
-/// composes the kernel facts differently without touching them.
+/// ordering are this component's defaults — a custom host composes the
+/// kernel facts differently without touching them.
 #[derive(Clone, Serialize)]
 pub struct ConversationState {
     conversation_id: ConversationId,
@@ -482,9 +482,9 @@ impl ConversationState {
 }
 
 /// Persist one session's committed history as [`HistoryEntry`] records —
-/// the archive convenience port of the reference harness. It is a
-/// session-archive contract (completed-turn history), not a cross-harness
-/// capability, and it is **not** wired into `commit` — the host's harness
+/// the archive convenience port this component offers. It is a
+/// session-archive contract (completed-turn history), not a cross-host
+/// capability, and it is **not** wired into `commit` — the host
 /// calls `save_entry` after `ConversationState::commit`, keeping
 /// persistence policy (batch writes, compression, fsync cadence, retry
 /// strategy) host-owned.

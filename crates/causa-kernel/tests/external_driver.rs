@@ -61,9 +61,9 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
     };
 
     // The external loop: project the lossless frame directly (the kernel
-    // has no budget policy — that is reference-harness territory), invoke
+    // has no budget policy — that is runtime-component territory), invoke
     // the model through the gateway port, apply the output as facts, and
-    // seal the turn — no reference driver involved.
+    // seal the turn — no runtime involved.
     let frame = context.frame(RoundId(0));
     let invocation = InvocationId {
         turn_id: context.turn_id(),

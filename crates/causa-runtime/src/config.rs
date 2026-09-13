@@ -136,12 +136,12 @@ pub struct TurnPolicy {
     pub limits: TurnLimits,
     /// Per-model-attempt budget; `None` = unbounded attempt.
     pub attempt_timeout: Option<Duration>,
-    /// What the reference driver does after committing an `UnknownOutcome`
+    /// What the execution stack does after committing an `UnknownOutcome`
     /// tool result — see [`UnknownOutcomeConfig`]. Default: stop the turn.
     pub unknown_outcome: UnknownOutcomeConfig,
 }
 
-/// Reference-harness vocabulary for the action taken after an
+/// Component vocabulary for the action taken after an
 /// `UnknownOutcome` tool result is committed. It is configuration and saved
 /// host-decision data, not tool vocabulary and not a fact: the recorded
 /// result is committed verbatim either way, `Stop` merely interrupts the
@@ -242,7 +242,7 @@ impl std::fmt::Debug for ExecutionOptions {
     }
 }
 
-/// The reference driver's input: the four configuration axes plus the
+/// The execution stack's input: the four configuration axes plus the
 /// single interaction seam. External assemblers may build any of them
 /// independently; `Default` yields the placeholder/noop wiring.
 #[derive(Clone)]

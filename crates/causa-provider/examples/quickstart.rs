@@ -13,7 +13,7 @@
 //!
 //! The shape is the whole framework: fill the kernel's ports (a
 //! `ModelGateway` adapter from `causa-provider`, a local `Tool`), hand
-//! them to the reference driver, and drive one turn. The driver loops
+//! them to the execution stack, and drive one turn. The driver loops
 //! model rounds and tool dispatch until the model ends the turn.
 
 use async_trait::async_trait;

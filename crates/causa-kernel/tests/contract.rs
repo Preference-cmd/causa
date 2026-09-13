@@ -1,5 +1,5 @@
 //! Contract tests -- canonical facts, validated transitions, deterministic
-//! projections, and fact fidelity. No reference driver involved; every
+//! projections, and fact fidelity. No runtime involved; every
 //! import comes from the public root facade.
 
 mod common;

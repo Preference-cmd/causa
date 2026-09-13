@@ -1,4 +1,4 @@
-//! Driver-stack tests — the reference driver, config axes, executor
+//! Driver-stack tests — the execution stack, config axes, executor
 //! dispatch, cancellation, and traces. They exercise the runtime wiring,
 //! not the kernel contract.
 

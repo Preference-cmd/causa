@@ -1,5 +1,5 @@
 //! Interaction-port tests — the `TurnInteraction` contract lives with the
-//! runtime because the reference driver is its only consumer. Default
+//! runtime because the execution stack is its only consumer. Default
 //! methods are no-ops; a host implementation overrides only what it observes.
 
 use async_trait::async_trait;

@@ -1,6 +1,6 @@
 //! `TurnInteraction` port — the single host↔driver interaction boundary
 //! during a turn (batch decisions and steering injection). When it fires is
-//! reference driver policy, so the contract lives with its only consumer
+//! execution-stack policy, so the contract lives with its only consumer
 //! (the driver) rather than in the kernel.
 //!
 //! One port with default no-ops replaces per-entry callback channels:

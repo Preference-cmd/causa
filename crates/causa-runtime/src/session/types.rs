@@ -124,7 +124,7 @@ pub struct CancelReceipt {
 ///
 /// The parts commit as one fact block through
 /// [`TurnContext::append_parts`](causa_kernel::TurnContext::append_parts)
-/// (source label `"user"`), exactly as the reference driver expects. There is
+/// (source label `"user"`), exactly as the execution stack expects. There is
 /// no model/tool hot-swapping and no per-submit materials.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubmitRequest {

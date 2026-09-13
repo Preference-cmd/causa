@@ -6,7 +6,7 @@
 //! | feature | re-export | pulls |
 //! |---|---|---|
 //! | _(always on)_ | [`kernel`] | facts + ports, no I/O |
-//! | `runtime` | [`runtime`] | reference driver (turn loop, dispatch) |
+//! | `runtime` | [`runtime`] | optional components (turn loop, dispatch) |
 //! | `protocol` | [`protocol`] | wire-protocol translation (no transport) |
 //! | `providers` | [`providers`] | reqwest gateways (implies `protocol`) |
 //! | `extension-mcp` | `extension` | MCP client (implies `mcp` adapter) |

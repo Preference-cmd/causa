@@ -17,10 +17,10 @@
 //!   type belongs here iff it is the contract surface third parties
 //!   implement or call against; the kernel itself consumes none of it. The
 //!   reference budget/compaction and host↔driver interaction seams are the
-//!   reference harness's opinions, not cross-harness contracts, and live in
+//!   runtime components' opinions, not cross-host contracts, and live in
 //!   `causa-runtime`.
 //!
-//! The reference driver, executor, hook seam, config axes, and run control
+//! The execution stack, executor, hook seam, config axes, and run control
 //! live in `causa-runtime`. Anything left here is either a fact or a
 //! contract; both are load-bearing.
 //!

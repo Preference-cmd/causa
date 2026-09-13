@@ -1,5 +1,5 @@
 //! One owner per conversation: the session aggregate that accepts work and
-//! drives it through the reference driver.
+//! drives it through the execution stack.
 //!
 //! A [`Session`] owns one
 //! [`ConversationState`](crate::conversation::ConversationState) plus an

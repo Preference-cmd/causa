@@ -20,7 +20,7 @@ Planned as **0.1.0** — the release gate is functional completeness
   self-contained behavior ports (`ModelGateway`, `Tool`,
   `DynamicToolSource`, `CallControl`, budget seams). Zero I/O;
   `#![deny(missing_docs)]`.
-- **Context / harness separation**: the session aggregate moved from the
+- **Context / component separation**: the session aggregate moved from the
   kernel to `causa-runtime` —
   `ConversationState` (single active slot, completed-only history,
   commit-time ordering), `SealedResult`, `TurnSequence`,
@@ -67,7 +67,7 @@ Planned as **0.1.0** — the release gate is functional completeness
   --example media_feedback`.
 - **`causa-protocol`** — kernel-native wire translation for Anthropic
   Messages, OpenAI Chat Completions, and OpenAI Responses.
-- **`causa-runtime`** — the reference driver: bounded model retry with
+- **`causa-runtime`** — the execution stack: bounded model retry with
   exponential backoff, tool batch dispatch (dedup / allow / deny filter
   chain), streaming, approval pause with recoverable interruption, and
   `ContextEvent` projections for UI / observability consumers.
@@ -169,7 +169,7 @@ Planned as **0.1.0** — the release gate is functional completeness
   deliberately paused, quiescent session — it promises no exactly-once
   across arbitrary process crashes: unsaved acceptance records, unknown
   external results, and a re-loaded old checkpoint gain nothing
-  automatically, and a harness needing crash recovery wires that itself.
+  automatically, and a host needing crash recovery wires that itself.
   Persistence (whether and when to save) stays host-side; the runtime ships
   no store.
 - **`causa-provider`** — reqwest `ModelGateway` adapters for the three
@@ -222,8 +222,8 @@ Planned as **0.1.0** — the release gate is functional completeness
 - **Reference budget & interaction ownership**: `FramePolicy`,
   `WindowBudget`, `FrameError`, `Compaction`, `CompactionInput`,
   `CompactionOutput`, `CompactionError`, `TokenCounter`,
-  `TurnInteraction`, and `BatchDecision` are the reference harness's
-  opinions, not cross-harness kernel contracts — they moved from
+  `TurnInteraction`, and `BatchDecision` are runtime-component opinions,
+  not cross-host kernel contracts — they moved from
   `causa-kernel` to `causa-runtime` (new `budget` / `interaction`
   modules with explicit root re-exports; no kernel re-export or reverse
   alias remains). `FramePolicy::materialize` now composes the public
@@ -237,7 +237,7 @@ Planned as **0.1.0** — the release gate is functional completeness
   recorded `ToolResultPayload` only, and `DynamicToolSource::invoke` /
   `invoke_with_store` return `Result<ToolResultPayload,
   ToolExecutionError>` — what an `UnknownOutcome` result does next and
-  how much output to retain are reference-harness configuration, not
+  how much output to retain are runtime-component configuration, not
   declarations on the capability. The action lives in
   `TurnPolicy.unknown_outcome` (`UnknownOutcomeConfig`: a `Stop` default
   plus per-executed-name overrides — the name after hook / rewrite /

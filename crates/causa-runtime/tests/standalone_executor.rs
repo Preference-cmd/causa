@@ -1,7 +1,7 @@
 //! Standalone executor evidence: tools execute directly through
 //! `ToolExecutor::execute_with_limits` — no `TurnRunner`, no
 //! `ConversationState`, no session — with the same result pairing, error
-//! mapping, and limit semantics the reference driver gets. The executor
+//! mapping, and limit semantics the execution stack gets. The executor
 //! returns the recorded result only; the unknown-outcome action is the
 //! caller's configuration.
 

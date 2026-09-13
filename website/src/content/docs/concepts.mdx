@@ -16,13 +16,16 @@ description: Facts, ports, driver — how Causa is layered and why.
   seams, stores. A type lives in `ports` iff someone outside the kernel
   implements or calls it.
 
-## The driver is a reference harness with visible defaults
+## causa-runtime is a set of optional components
 
-`causa-runtime` drives the kernel: the turn loop, tool dispatch, streaming
-deltas, pause/resume, and the session aggregate (`ConversationState` /
-`ConversationStore`). Every policy is a config object or a documented opinion
-in one policy table in the runtime `lib.rs` — no trait seams for
-single-implementation policies.
+`causa-runtime` holds the reference components you can adopt: the
+execution stack (turn loop, tool dispatch, streaming, pause/resume), the
+session aggregate (`ConversationState` / `ConversationStore`) and
+session owner (`Session` / `SessionHandle` / checkpoint), and the policy
+components (budget, interaction). Everything is optional, and each piece is
+offered as a reference: adopt it whole, or read it and build your own. What
+adopting a piece brings along is documented as cost — not a promise about
+how finely the crate can be split.
 
 Key mechanisms:
 
@@ -30,7 +33,7 @@ Key mechanisms:
   (`BatchDecision::Pause`) and resume with the withheld verdict
   (`resume_turn`); approve / reject / rewrite are one `HookOutcome`
   vocabulary, so pausing and releasing are two halves of one mechanism.
-- **Unknown-outcome / output-retention config** — how the driver treats
+- **Unknown-outcome / output-retention config** — how the execution stack treats
   ambiguous tool results and how much output it keeps are explicit settings,
   not folklore.
 
@@ -48,7 +51,7 @@ kernel <- extension
 - `causa-provider` — reqwest `ModelGateway` adapters (implies protocol).
 - `causa-extension` — `DynamicToolSource` adapters (`mcp` feature via the
   official `rmcp` SDK, client role only).
-- `causa` — the facade. Kernel always on; defaults add runtime + providers,
+- `causa` — the facade. Kernel always on; defaults add the runtime components + providers,
   `full` adds extensions.
 
 The layering is **machine-enforced, not review-enforced**: CI runs a

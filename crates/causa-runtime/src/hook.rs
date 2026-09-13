@@ -117,7 +117,7 @@ impl HookOutcome {
     }
 }
 
-/// The reference harness's tool-use filter seam.
+/// The tool-use filter seam this component exposes.
 ///
 /// Filters in `causa_runtime::filter` (`FilterChain` and friends)
 /// implement this trait. The driver calls `hook.apply(calls, ctx).await`
