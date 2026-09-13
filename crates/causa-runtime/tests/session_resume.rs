@@ -29,6 +29,73 @@ use common::{
 
 // ---- local fixtures --------------------------------------------------------
 
+/// Receipt lookups neither consume a key nor mutate work, including after close.
+#[tokio::test]
+async fn resume_receipt_lookup_is_read_only_and_survives_close() {
+    let (tool, executions) = CountingEcho::new();
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("pause", "echo", serde_json::json!({}))),
+        Ok(endturn_output("done")),
+    ]);
+    let session = pausing_session(
+        "receipt-query",
+        gateway.clone(),
+        vec![tool],
+        SessionConfig::default(),
+    );
+    let handle = session.handle();
+    let (receipt, paused) = submit_to_pause(&handle, "submit").await;
+    let request = approve(vec![awaiting_echo()]);
+    assert_eq!(
+        handle
+            .resume_receipt(&receipt.work, paused.revision, "resume", &request)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        handle.observe(&receipt.work).unwrap().revision,
+        paused.revision
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    let accepted = handle
+        .resume(
+            &receipt.work,
+            paused.revision,
+            "resume".into(),
+            request.clone(),
+        )
+        .unwrap();
+    let finished = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(finished.observation.state, WorkState::Finished);
+    session.shutdown().await;
+    let before = serde_json::to_value(session.checkpoint().unwrap()).unwrap();
+    assert_eq!(
+        handle
+            .resume_receipt(&receipt.work, paused.revision, "resume", &request)
+            .unwrap(),
+        Some(accepted)
+    );
+    assert_eq!(
+        handle.resume_receipt(&receipt.work, paused.revision + 1, "resume", &request),
+        Err(SessionError::Conflict)
+    );
+    assert_eq!(
+        handle
+            .resume_receipt(&receipt.work, paused.revision, "unused", &request)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        serde_json::to_value(session.checkpoint().unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(gateway.recorded().len(), 2);
+}
+
 /// The shared `echo` tool plus an execution counter, so a test can prove the
 /// tool ran exactly once across a pause and its resume.
 struct CountingEcho {

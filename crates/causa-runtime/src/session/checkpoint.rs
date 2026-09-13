@@ -25,7 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use causa_kernel::{
-    CacheDirective, ContentPart, ConversationId, GenerationOptions, ToolSurface, TurnId,
+    CacheDirective, ContentPart, ConversationId, GenerationOptions, ToolSurface, TurnContext,
+    TurnId,
 };
 
 use crate::budget::WindowBudget;
@@ -415,11 +416,11 @@ impl SessionCheckpoint {
                         "the paused work names a different conversation than the envelope".into(),
                     ));
                 }
-                if !matches!(&outcome.result, TurnResult::Paused { .. }) {
+                let TurnResult::Paused { continuation } = &outcome.result else {
                     return Err(invalid(
                         "the paused phase does not carry a paused result".into(),
                     ));
-                }
+                };
                 let Some(active) = outcome.state.active_turn() else {
                     return Err(invalid("the paused outcome has no open active turn".into()));
                 };
@@ -433,6 +434,8 @@ impl SessionCheckpoint {
                         "the paused outcome's active turn is not stamped Paused".into(),
                     ));
                 }
+                crate::resume::validate_continuation_facts(continuation, active)
+                    .map_err(invalid)?;
             }
         }
         // The committed history is the second copy of every completed turn:
@@ -491,7 +494,7 @@ impl SessionCheckpoint {
                     self.next_turn, saved.work
                 )));
             }
-            match saved.finished {
+            match &saved.finished {
                 Some(FinishedKind::Completed { .. })
                     if !history_ids.contains(&saved.work.turn_id) =>
                 {
@@ -500,13 +503,21 @@ impl SessionCheckpoint {
                         saved.work
                     )));
                 }
-                Some(FinishedKind::Interrupted { .. })
-                    if history_ids.contains(&saved.work.turn_id) =>
-                {
-                    return Err(invalid(format!(
-                        "interrupted work {:?} also sits in the completed history",
-                        saved.work
-                    )));
+                Some(FinishedKind::Interrupted { facts, .. }) => {
+                    if history_ids.contains(&saved.work.turn_id) {
+                        return Err(invalid(format!(
+                            "interrupted work {:?} also sits in the completed history",
+                            saved.work
+                        )));
+                    }
+                    if facts.turn_id != saved.work.turn_id {
+                        return Err(invalid(format!(
+                            "interrupted work {:?} carries facts from another turn",
+                            saved.work
+                        )));
+                    }
+                    TurnContext::validate_blocks(&facts.turn_id, facts.blocks.as_slice())
+                        .map_err(|error| invalid(error.to_string()))?;
                 }
                 _ => {}
             }
@@ -557,6 +568,18 @@ impl SessionCheckpoint {
         }
         // Key tables: every receipt and target must reference a registered
         // work, so replay after restore never invents a work.
+        validate_unique_keys(
+            "submit",
+            self.submit_keys.iter().map(|saved| saved.key.as_str()),
+        )?;
+        validate_unique_keys(
+            "resume",
+            self.resume_keys.iter().map(|saved| saved.key.as_str()),
+        )?;
+        validate_unique_keys(
+            "cancel",
+            self.cancel_keys.iter().map(|saved| saved.key.as_str()),
+        )?;
         let known: HashSet<&WorkRef> = self.works.iter().map(|saved| &saved.work).collect();
         for saved in &self.submit_keys {
             if !known.contains(&saved.receipt.work) {
@@ -593,9 +616,31 @@ impl SessionCheckpoint {
                     saved.key
                 )));
             }
+            if saved.receipt.work != saved.work {
+                return Err(invalid(format!(
+                    "cancel key {:?} receipts a different work than its target",
+                    saved.key
+                )));
+            }
         }
         Ok(())
     }
+}
+
+/// Each operation has its own key namespace, with one saved record per key.
+fn validate_unique_keys<'a>(
+    operation: &str,
+    keys: impl Iterator<Item = &'a str>,
+) -> Result<(), SessionError> {
+    let mut seen = HashSet::new();
+    for key in keys {
+        if !seen.insert(key) {
+            return Err(SessionError::InvalidCheckpoint(format!(
+                "duplicate {operation} request key {key:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

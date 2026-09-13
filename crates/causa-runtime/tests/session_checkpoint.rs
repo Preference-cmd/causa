@@ -425,6 +425,156 @@ fn rejected(checkpoint: SessionCheckpoint) -> SessionRestoreRejection {
     .expect_err("the forged material is rejected")
 }
 
+/// Check the persistence path and the complete by-value rejection together.
+fn assert_invalid_checkpoint_returns_material(checkpoint: SessionCheckpoint) {
+    let saved = serde_json::to_value(&checkpoint).unwrap();
+    let checkpoint = serde_json::from_value(saved.clone()).unwrap();
+    let rejection = rejected(checkpoint);
+    assert!(matches!(
+        rejection.error,
+        SessionError::InvalidCheckpoint(_)
+    ));
+    assert_eq!(serde_json::to_value(rejection.checkpoint).unwrap(), saved);
+}
+
+/// Populate all three independent request-key tables using the same key.
+async fn checkpoint_with_all_request_keys() -> SessionCheckpoint {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("first pause", "echo", json!({}))),
+        Ok(tooluse_output("second pause", "echo", json!({}))),
+    ]);
+    let session = pausing_session(
+        "c-review-keys",
+        gateway,
+        vec![Arc::new(EchoTool)],
+        SessionConfig::default(),
+    );
+    let handle = session.handle();
+    let (receipt, paused) = submit_to_pause(&handle, "same-key").await;
+    handle
+        .resume(
+            &receipt.work,
+            paused.revision,
+            "same-key".into(),
+            approve(vec![awaiting_echo()]),
+        )
+        .unwrap();
+    let paused_again = handle
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(paused_again.observation.state, WorkState::Paused);
+    handle.cancel(&receipt.work, "same-key".into()).unwrap();
+    session.checkpoint().unwrap()
+}
+
+#[tokio::test]
+async fn restore_rejects_duplicate_request_keys_in_each_table() {
+    let checkpoint = checkpoint_with_all_request_keys().await;
+    for table in ["submit_keys", "resume_keys", "cancel_keys"] {
+        let mut saved = serde_json::to_value(&checkpoint).unwrap();
+        let rows = saved[table].as_array_mut().unwrap();
+        rows.push(rows[0].clone());
+        assert_invalid_checkpoint_returns_material(serde_json::from_value(saved).unwrap());
+    }
+}
+
+#[tokio::test]
+async fn restore_rejects_conflicting_submit_key_records() {
+    let mut checkpoint = checkpoint_with_all_request_keys().await;
+    let mut duplicate = checkpoint.submit_keys[0].clone();
+    duplicate.parts = session_req("unused", "different input").parts;
+    checkpoint.submit_keys.push(duplicate);
+    assert_invalid_checkpoint_returns_material(checkpoint);
+}
+
+#[tokio::test]
+async fn restore_preserves_same_key_across_operations_and_cancel_replay() {
+    let checkpoint = checkpoint_with_all_request_keys().await;
+    let submit = checkpoint.submit_keys[0].clone();
+    let resume = checkpoint.resume_keys[0].clone();
+    let cancel = checkpoint.cancel_keys[0].clone();
+    let checkpoint = serde_json::from_value(serde_json::to_value(checkpoint).unwrap()).unwrap();
+    let gateway = RecordingGateway::scripted(vec![]);
+    let session = restore(checkpoint, gateway.clone(), SessionConfig::default());
+    let handle = session.handle();
+    assert_eq!(
+        handle
+            .submit(SubmitRequest {
+                request_key: submit.key,
+                parts: submit.parts
+            })
+            .unwrap(),
+        submit.receipt,
+    );
+    let receipt = handle
+        .resume(&resume.work, resume.revision, resume.key, resume.request)
+        .unwrap();
+    assert_eq!(receipt.work, resume.work);
+    assert_eq!(receipt.accepted_revision, resume.revision);
+    assert_eq!(
+        handle.cancel(&cancel.work, cancel.key).unwrap(),
+        cancel.receipt
+    );
+    assert!(gateway.recorded().is_empty());
+}
+
+#[tokio::test]
+async fn restore_rejects_a_cancel_receipt_for_another_work() {
+    let mut checkpoint = checkpoint_with_all_request_keys().await;
+    checkpoint.cancel_keys[0].receipt.work.turn_id = TurnId::new("foreign-work");
+    assert_invalid_checkpoint_returns_material(checkpoint);
+}
+
+#[tokio::test]
+async fn restore_rejects_inconsistent_paused_material() {
+    let (_, _, _, original) = paused_checkpoint("c-review-paused", SessionConfig::default()).await;
+    for case in ["steering", "missing_call", "duplicate_call", "sealed"] {
+        let mut checkpoint = original.clone();
+        let CheckpointPhase::Paused { outcome, .. } = &mut checkpoint.phase else {
+            unreachable!()
+        };
+        let TurnResult::Paused { continuation } = &mut outcome.result else {
+            unreachable!()
+        };
+        match case {
+            "steering" => continuation.pause_point = PausePoint::PausedForSteering,
+            "sealed" => outcome.state.active_turn_mut().unwrap().seal(),
+            _ => {
+                let PausePoint::AwaitingApproval { prepared, .. } = &mut continuation.pause_point
+                else {
+                    unreachable!()
+                };
+                if case == "missing_call" {
+                    prepared.awaiting.clear();
+                } else {
+                    prepared.awaiting.push(prepared.awaiting[0].clone());
+                }
+            }
+        }
+        assert_invalid_checkpoint_returns_material(checkpoint);
+    }
+}
+
+#[tokio::test]
+async fn restore_rejects_interrupted_facts_from_another_turn() {
+    let mut checkpoint = checkpoint_with_all_request_keys().await;
+    let Some(FinishedKind::Interrupted { facts, .. }) = &mut checkpoint.works[0].finished else {
+        unreachable!()
+    };
+    facts.turn_id = TurnId::new("foreign-turn");
+    assert_invalid_checkpoint_returns_material(checkpoint);
+}
+
+#[tokio::test]
+async fn restore_rejects_invalid_blocks_in_interrupted_facts() {
+    let checkpoint = checkpoint_with_all_request_keys().await;
+    let mut saved = serde_json::to_value(checkpoint).unwrap();
+    saved["works"][0]["finished"]["interrupted"]["facts"]["blocks"][0]["id"]["turn_id"] =
+        json!("foreign-turn");
+    assert_invalid_checkpoint_returns_material(serde_json::from_value(saved).unwrap());
+}
+
 #[tokio::test]
 async fn a_forged_completed_work_without_history_is_rejected() {
     let checkpoint = completed_checkpoint("c3-history").await;

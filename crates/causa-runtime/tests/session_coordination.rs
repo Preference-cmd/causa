@@ -51,6 +51,177 @@ fn json(checkpoint: &SessionCheckpoint) -> serde_json::Value {
     serde_json::to_value(checkpoint).expect("the envelope serializes")
 }
 
+/// A later work enters the capacity accounting when the coordinator resumes it.
+#[tokio::test]
+async fn d3_resuming_a_later_work_counts_toward_capacity() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output(
+            "first work paused",
+            "echo",
+            serde_json::json!({}),
+        )),
+        Ok(endturn_output("first work finished")),
+        Ok(tooluse_output(
+            "second work paused",
+            "echo",
+            serde_json::json!({}),
+        )),
+        Ok(endturn_output("second work finished")),
+    ]);
+    let mut profiles = Profiles::new();
+    profiles.insert("a", Profile::pausing(gateway, vec![Arc::new(EchoTool)]));
+    profiles.insert(
+        "b",
+        Profile::completing(RecordingGateway::scripted(vec![Ok(endturn_output("b"))])),
+    );
+    let coordinator = harness(cfg(1, 2), profiles);
+    let first = coordinator
+        .create(CreateRequest::root("a", "first", parts("first"), "a"))
+        .unwrap();
+    let first_paused = coordinator
+        .wait(&first.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(first_paused.observation.state, WorkState::Paused);
+    let first_resume = coordinator
+        .resume(
+            &first.work,
+            first_paused.observation.revision,
+            "resume-first",
+            approve(vec![awaiting_echo()]),
+        )
+        .unwrap();
+    let finished = coordinator
+        .wait(&first.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(finished.observation.state, WorkState::Finished);
+    let next = coordinator
+        .route(&first.work)
+        .unwrap()
+        .submit(session_req("next", "next"))
+        .unwrap();
+    let paused = coordinator
+        .wait(&next.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(paused.observation.state, WorkState::Paused);
+    coordinator
+        .resume(
+            &next.work,
+            paused.observation.revision,
+            "resume-next",
+            approve(vec![awaiting_echo()]),
+        )
+        .unwrap();
+    // No await on this current-thread runtime: admission has marked the work
+    // Running, and its worker cannot finish before the capacity assertion.
+    assert_eq!(
+        coordinator.observe(&next.work).unwrap().state,
+        WorkState::Running
+    );
+    assert_eq!(
+        coordinator
+            .resume(
+                &first.work,
+                first_paused.observation.revision,
+                "resume-first",
+                approve(vec![awaiting_echo()]),
+            )
+            .unwrap(),
+        first_resume,
+        "replaying the earlier work must not replace the currently counted work",
+    );
+    let other = CreateRequest::root("b", "other", parts("other"), "b");
+    assert_eq!(
+        coordinator.create(other.clone()),
+        Err(CoordinatorError::CapacityExceeded)
+    );
+    let finished = coordinator
+        .wait(&next.work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(finished.observation.state, WorkState::Finished);
+    coordinator
+        .create(other)
+        .expect("completion frees capacity without consuming the refused key");
+    assert_eq!(
+        coordinator.depth_of(&first.work),
+        Some(0),
+        "capacity tracking preserves the original creation relation"
+    );
+    coordinator.shutdown().await;
+}
+
+/// Replaying an accepted resume consumes no capacity, even after another pause.
+#[tokio::test]
+async fn d3_resume_replays_before_checking_capacity() {
+    let a = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("first pause", "echo", serde_json::json!({}))),
+        Ok(tooluse_output(
+            "second pause",
+            "echo",
+            serde_json::json!({}),
+        )),
+    ]);
+    let gate = GatedGateway::new("b", true);
+    let mut profiles = Profiles::new();
+    profiles.insert("a", Profile::pausing(a.clone(), vec![Arc::new(EchoTool)]));
+    profiles.insert("b", Profile::completing(gate.clone()));
+    let coordinator = harness(cfg(1, 2), profiles);
+    let work = coordinator
+        .create(CreateRequest::root("a", "a", parts("a"), "a"))
+        .unwrap()
+        .work;
+    let paused = coordinator
+        .wait(&work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let revision = paused.observation.revision;
+    let request = approve(vec![awaiting_echo()]);
+    let original = coordinator
+        .resume(&work, revision, "resume", request.clone())
+        .unwrap();
+    let paused_again = coordinator
+        .wait(&work, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(paused_again.observation.state, WorkState::Paused);
+    coordinator
+        .create(CreateRequest::root("b", "b", parts("b"), "b"))
+        .unwrap();
+    gate.wait_entered().await;
+    assert_eq!(
+        coordinator
+            .resume(&work, revision, "resume", request.clone())
+            .unwrap(),
+        original
+    );
+    assert_eq!(
+        coordinator.resume(&work, revision + 1, "resume", request.clone()),
+        Err(CoordinatorError::Session(SessionError::Conflict))
+    );
+    assert_eq!(
+        coordinator.resume(
+            &work,
+            paused_again.observation.revision,
+            "new-resume",
+            request
+        ),
+        Err(CoordinatorError::CapacityExceeded)
+    );
+    assert_eq!(
+        coordinator.observe(&work).unwrap().revision,
+        paused_again.observation.revision
+    );
+    assert_eq!(
+        a.recorded().len(),
+        2,
+        "replay and refusals execute no further model calls"
+    );
+    coordinator.shutdown().await;
+}
+
 /// The minimal consumer gate: the create / route / observe / wait / shutdown
 /// signatures compile and the closed loop runs before the acceptance suite.
 #[tokio::test]

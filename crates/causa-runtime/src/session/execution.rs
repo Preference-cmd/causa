@@ -217,6 +217,29 @@ struct Inner {
     closed: bool,
 }
 
+impl Inner {
+    /// Query the accepted resume record without attempting new admission.
+    fn resume_receipt(
+        &self,
+        work: &WorkRef,
+        expected_revision: u64,
+        request_key: &str,
+        request: &ResumeRequest,
+    ) -> Result<Option<WorkReceipt>, SessionError> {
+        let Some(record) = self.resume_keys.get(request_key) else {
+            return Ok(None);
+        };
+        if &record.work == work
+            && record.revision == expected_revision
+            && &record.request == request
+        {
+            Ok(Some(record.receipt.clone()))
+        } else {
+            Err(SessionError::Conflict)
+        }
+    }
+}
+
 /// The shared coordination core. Handles hold `Arc<SessionCore>`; the worker
 /// holds one too (never a `JoinHandle`), so no strong reference cycle forms and
 /// the worker's terminal publish still lands after the owner is dropped.
@@ -630,15 +653,10 @@ impl SessionCore {
         // a lost receipt must resolve to the original receipt even after the
         // session closed. A key accepted for a different work, revision, or
         // request is a conflict, not a second execution.
-        if let Some(record) = inner.resume_keys.get(&request_key) {
-            return if &record.work == work
-                && record.revision == expected_revision
-                && record.request == request
-            {
-                Ok(record.receipt.clone())
-            } else {
-                Err(SessionError::Conflict)
-            };
+        if let Some(receipt) =
+            inner.resume_receipt(work, expected_revision, &request_key, &request)?
+        {
+            return Ok(receipt);
         }
         if inner.closed {
             return Err(SessionError::Closed);
@@ -712,6 +730,18 @@ impl SessionCore {
         };
         tokio::spawn(supervise(core, work.clone(), "resume worker", drive));
         Ok(receipt)
+    }
+
+    /// Read the existing resume receipt using the same comparison as admission.
+    pub(super) fn resume_receipt(
+        &self,
+        work: &WorkRef,
+        expected_revision: u64,
+        request_key: &str,
+        request: &ResumeRequest,
+    ) -> Result<Option<WorkReceipt>, SessionError> {
+        self.lock()
+            .resume_receipt(work, expected_revision, request_key, request)
     }
 
     /// Cancel one work: fire its own stop token while it runs, or terminate a

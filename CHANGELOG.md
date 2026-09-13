@@ -15,6 +15,10 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 ### Added
 
+- **Session resume receipt lookup**: `SessionHandle::resume_receipt` reads
+  an accepted resume receipt, reports conflicting arguments, or returns
+  `None` without starting work. Hosts can resolve retries before applying
+  capacity limits while Session remains the sole owner of the replay table.
 - **`causa-kernel`** — the facts layer: ContextBlock conversation fact
   machine, turn state machine with deterministic projections, and the
   self-contained behavior ports (`ModelGateway`, `Tool`,
@@ -288,6 +292,17 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 ### Fixed
 
+- **Session checkpoint consistency (slice 8 Phase C)**: restore rejects
+  duplicate keys within each request table, cancel receipts whose work
+  differs from their target, paused continuations inconsistent with the
+  active facts, and interrupted snapshots with mismatched turn identities
+  or invalid blocks. Rejections return the original material before any
+  registration; continuation/fact checks are shared with resume.
+- **Coordinator capacity and replay (slice 8 Phase D harness)**: resuming
+  a later work updates the reference used for capacity accounting without
+  changing the original creation relation. Accepted resume receipts replay
+  before the capacity gate, and replaying an older work does not replace
+  the currently counted work.
 - Session workers now publish `Faulted` if the hosting runtime drops their
   task, including an accepted submission or resume not yet polled. Retained
   handles no longer report a permanently running work, and `shutdown` can

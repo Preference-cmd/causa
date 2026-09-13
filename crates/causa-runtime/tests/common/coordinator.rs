@@ -41,11 +41,15 @@
 //!   `create`, or move assembly out of the lock first: proposal §7 forbids
 //!   holding the global management lock across assembly that reaches outside
 //!   the coordinator.
-//! - Capacity counts coordinator-admitted works only. Direct `SessionHandle`
+//! - Capacity counts works admitted by `create` or a new coordinator `resume`.
+//!   Resuming a later work updates the counted reference for that session;
+//!   replaying an old receipt leaves the counted reference unchanged.
+//!   Direct `SessionHandle`
 //!   use — including handles handed out by [`Coordinator::handle`] /
 //!   [`Coordinator::route`] — bypasses it by design (proposal §7: a caller
 //!   that does not use the coordinator needs no capacity gate). A host that
-//!   wants every work counted must admit it through `create`.
+//!   wants every running admission counted must use `create` / coordinator
+//!   `resume`; submitting a new work through a handle still bypasses the gate.
 //! - After collective shutdown the coordinator refuses `resume` with
 //!   [`CoordinatorError::Closed`], same-key replays included, so nothing new
 //!   can be accepted inside the wind-down window. The session's own replay
@@ -245,9 +249,11 @@ impl PartialEq for CoordinatorError {
 struct Entry {
     request: CreateRequest,
     depth: u32,
-    /// The work this create admitted; the capacity unit and the trusted parent
-    /// anchor for later children.
+    /// The work this create admitted; the trusted parent anchor for children.
     work: WorkRef,
+    /// The latest work admitted here, observed for capacity without copying
+    /// the session's execution state. A receipt replay never changes it.
+    capacity_work: WorkRef,
     /// The original receipt, replayed for a same-key retry.
     receipt: WorkReceipt,
     /// The lifecycle owner, kept so collective shutdown can settle it.
@@ -376,6 +382,7 @@ impl Coordinator {
             Entry {
                 depth,
                 work: receipt.work.clone(),
+                capacity_work: receipt.work.clone(),
                 receipt: receipt.clone(),
                 session: Arc::new(session),
                 handle,
@@ -446,11 +453,12 @@ impl Coordinator {
             .map_err(CoordinatorError::Session)
     }
 
-    /// Continue a paused work, re-applying for run capacity first.
+    /// Continue a paused work, replaying accepted receipts before applying
+    /// run capacity to new admissions.
     ///
-    /// A capacity refusal returns before the session is called, so the work
-    /// stays paused and the resume key is not consumed. Once the coordinator
-    /// has been shut down, resume is refused with
+    /// A capacity refusal returns before `SessionHandle::resume` is called,
+    /// so the work stays paused and the resume key is not consumed. Once the
+    /// coordinator has been shut down, resume is refused with
     /// [`CoordinatorError::Closed`] — a same-key replay included — so no new
     /// acceptance can slip into the wind-down window; the session's own replay
     /// stays reachable through a `SessionHandle`.
@@ -465,7 +473,7 @@ impl Coordinator {
         request_key: &str,
         request: ResumeRequest,
     ) -> Result<WorkReceipt, CoordinatorError> {
-        let table = self
+        let mut table = self
             .table
             .lock()
             .expect("the coordinator table is never poisoned");
@@ -476,6 +484,13 @@ impl Coordinator {
         if table.closed {
             return Err(CoordinatorError::Closed);
         }
+        if let Some(receipt) = entry
+            .handle
+            .resume_receipt(work, expected_revision, request_key, &request)
+            .map_err(CoordinatorError::Session)?
+        {
+            return Ok(receipt);
+        }
         match entry.handle.observe(work) {
             Ok(observation) if observation.state == WorkState::Paused => {
                 if Self::in_use(&table) >= self.config.max_parallel {
@@ -485,10 +500,16 @@ impl Coordinator {
             Ok(_) => {}
             Err(error) => return Err(CoordinatorError::Session(error)),
         }
-        entry
+        let receipt = entry
             .handle
             .resume(work, expected_revision, request_key.to_string(), request)
-            .map_err(CoordinatorError::Session)
+            .map_err(CoordinatorError::Session)?;
+        table
+            .by_conversation
+            .get_mut(&work.conversation_id)
+            .expect("the held table lock preserves the entry")
+            .capacity_work = work.clone();
+        Ok(receipt)
     }
 
     /// Export one held session's save envelope (observation helper for tests).
@@ -563,7 +584,7 @@ impl Coordinator {
         table
             .by_conversation
             .values()
-            .filter(|entry| match entry.handle.observe(&entry.work) {
+            .filter(|entry| match entry.handle.observe(&entry.capacity_work) {
                 Ok(observation) => {
                     matches!(observation.state, WorkState::Accepted | WorkState::Running)
                 }

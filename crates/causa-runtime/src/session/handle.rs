@@ -123,6 +123,30 @@ impl SessionHandle {
             .resume(work, expected_revision, request_key, request)
     }
 
+    /// Read the receipt of an already-accepted resume without starting work.
+    ///
+    /// Hosts can resolve a retry before applying their own capacity gate.
+    /// `Some` is the original receipt for exactly these arguments; `None`
+    /// means this session has not accepted the key. Neither outcome changes
+    /// the work, consumes the key, nor requires a paused or open session.
+    /// A missing record does not reserve admission: a later [`Self::resume`]
+    /// still performs its atomic replay and state checks.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Conflict`] if this key was accepted with a different
+    /// work, paused revision, or request.
+    pub fn resume_receipt(
+        &self,
+        work: &WorkRef,
+        expected_revision: u64,
+        request_key: &str,
+        request: &ResumeRequest,
+    ) -> Result<Option<WorkReceipt>, SessionError> {
+        self.core
+            .resume_receipt(work, expected_revision, request_key, request)
+    }
+
     /// Cancel one work.
     ///
     /// Fires the work's own control token while it runs — a completion that
