@@ -29,11 +29,33 @@
 //! across a model call, a tool call, or a child work. Lock order is
 //! coordinator-table → session-core, one-way; a session never calls back here.
 //!
+//! Contract notes:
+//!
+//! - `create` enforces the harness's `ConversationId` uniqueness (proposal
+//!   §13.4): a second create for a registered conversation is refused with
+//!   [`CoordinatorError::ConversationExists`] instead of replacing the live
+//!   session. A next work for an existing session goes through its handle.
+//! - The assembly function runs synchronously **inside** the admission lock,
+//!   so it must not perform external reads or call back into the coordinator.
+//!   Phase E's material preparation must pre-resolve what it needs before
+//!   `create`, or move assembly out of the lock first: proposal §7 forbids
+//!   holding the global management lock across assembly that reaches outside
+//!   the coordinator.
+//! - Capacity counts coordinator-admitted works only. Direct `SessionHandle`
+//!   use — including handles handed out by [`Coordinator::handle`] /
+//!   [`Coordinator::route`] — bypasses it by design (proposal §7: a caller
+//!   that does not use the coordinator needs no capacity gate). A host that
+//!   wants every work counted must admit it through `create`.
+//! - After collective shutdown the coordinator refuses `resume` with
+//!   [`CoordinatorError::Closed`], same-key replays included, so nothing new
+//!   can be accepted inside the wind-down window. The session's own replay
+//!   table stays reachable through a `SessionHandle`; the cross-session
+//!   `create` replay (the D2 contract) is still served.
+//!
 //! Out of scope by phase boundary: persisting the create table (F5),
 //! model-facing tool wrappers and call-id pairing (F-tool), per-work materials
 //! (E), and context editing (Q). Holding sessions here does not publish a
-//! `SessionManager`, and direct `SessionHandle` use bypasses these capacity
-//! checks by design (proposal §7).
+//! `SessionManager`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -148,6 +170,10 @@ pub enum CoordinatorError {
     Conflict,
     /// The coordinator was shut down and this is not a same-key replay.
     Closed,
+    /// A session is already registered for the conversation. A create never
+    /// replaces a live session (proposal §13.4: the harness guarantees one
+    /// owner per `ConversationId`); a next work goes through its handle.
+    ConversationExists(ConversationId),
     /// The finite run capacity is exhausted (checked before assembly).
     CapacityExceeded,
     /// The trusted depth ceiling would be exceeded.
@@ -196,9 +222,20 @@ impl PartialEq for CoordinatorError {
                     actual: d,
                 },
             ) => a == c && b == d,
+            (Self::ConversationExists(a), Self::ConversationExists(b)) => a == b,
             (Self::Build(a), Self::Build(b)) => a.error == b.error,
             (Self::Session(a), Self::Session(b)) => a == b,
-            _ => false,
+            // Every remaining pairing is unequal. Naming each current variant
+            // keeps the match exhaustive: a new variant fails to compile until
+            // it states its own equality, instead of silently comparing false.
+            (Self::Conflict | Self::Closed | Self::CapacityExceeded, _)
+            | (Self::ConversationExists(_), _)
+            | (Self::DepthExceeded { .. }, _)
+            | (Self::UnknownParent(_), _)
+            | (Self::UnknownConversation(_), _)
+            | (Self::ConversationMismatch { .. }, _)
+            | (Self::Build(_), _)
+            | (Self::Session(_), _) => false,
         }
     }
 }
@@ -255,6 +292,11 @@ impl Coordinator {
     /// initial `submit` all happen under the coordination lock with no await
     /// point, so concurrent same-key creates admit exactly one work.
     ///
+    /// A conversation is owned by at most one session: a create for a
+    /// registered `ConversationId` is refused with
+    /// [`CoordinatorError::ConversationExists`] instead of replacing the live
+    /// owner.
+    ///
     /// # Errors
     ///
     /// See [`CoordinatorError`]; every refusal leaves no session, no work, and
@@ -280,6 +322,11 @@ impl Coordinator {
 
         if table.closed {
             return Err(CoordinatorError::Closed);
+        }
+        if table.by_conversation.contains_key(&request.conversation_id) {
+            return Err(CoordinatorError::ConversationExists(
+                request.conversation_id.clone(),
+            ));
         }
         let depth = match &request.origin {
             CreateOrigin::Root => 0,
@@ -402,9 +449,11 @@ impl Coordinator {
     /// Continue a paused work, re-applying for run capacity first.
     ///
     /// A capacity refusal returns before the session is called, so the work
-    /// stays paused and the resume key is not consumed. A closed coordinator
-    /// delegates, letting the session replay an already-accepted resume or
-    /// report its own [`SessionError::Closed`].
+    /// stays paused and the resume key is not consumed. Once the coordinator
+    /// has been shut down, resume is refused with
+    /// [`CoordinatorError::Closed`] — a same-key replay included — so no new
+    /// acceptance can slip into the wind-down window; the session's own replay
+    /// stays reachable through a `SessionHandle`.
     ///
     /// # Errors
     ///
@@ -424,16 +473,17 @@ impl Coordinator {
             .by_conversation
             .get(&work.conversation_id)
             .ok_or_else(|| CoordinatorError::UnknownConversation(work.conversation_id.clone()))?;
-        if !table.closed {
-            match entry.handle.observe(work) {
-                Ok(observation) if observation.state == WorkState::Paused => {
-                    if Self::in_use(&table) >= self.config.max_parallel {
-                        return Err(CoordinatorError::CapacityExceeded);
-                    }
+        if table.closed {
+            return Err(CoordinatorError::Closed);
+        }
+        match entry.handle.observe(work) {
+            Ok(observation) if observation.state == WorkState::Paused => {
+                if Self::in_use(&table) >= self.config.max_parallel {
+                    return Err(CoordinatorError::CapacityExceeded);
                 }
-                Ok(_) => {}
-                Err(error) => return Err(CoordinatorError::Session(error)),
             }
+            Ok(_) => {}
+            Err(error) => return Err(CoordinatorError::Session(error)),
         }
         entry
             .handle
@@ -554,6 +604,12 @@ impl Profile {
             pause_on_tool_use: true,
             config: SessionConfig::default(),
         }
+    }
+
+    /// Replace the tool capability set.
+    pub fn with_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
+        self.tools = tools;
+        self
     }
 
     /// Replace the session coordination configuration.

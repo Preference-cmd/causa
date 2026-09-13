@@ -16,15 +16,16 @@ use std::time::Duration;
 
 use causa_kernel::{ContentPart, ConversationId, TextPayload, TurnId};
 use causa_runtime::{
-    CancelOutcome, FinishedKind, SessionCheckpoint, SessionError, WaitEnd, WorkRef, WorkState,
+    CancelOutcome, ConversationState, FinishedKind, SessionCheckpoint, SessionConfig, SessionError,
+    TurnInterruption, TurnRunOptions, WaitEnd, WorkRef, WorkState,
 };
 use common::coordinator::{
     Coordinator, CoordinatorConfig, CoordinatorError, CreateOrigin, CreateRequest, Profile,
-    Profiles, profile_factory,
+    Profiles, SessionParts, profile_factory,
 };
 use common::{
-    EchoTool, GatedGateway, RecordingGateway, approve, awaiting_echo, endturn_output, session_req,
-    tooluse_output,
+    EchoTool, GatedGateway, RecordingGateway, SlowGateway, approve, awaiting_echo, endturn_output,
+    runner_with, session_req, tooluse_output,
 };
 
 /// One text part, the shape create requests carry.
@@ -642,8 +643,18 @@ async fn d3_waiters_do_not_hold_the_coordination_lock() {
         let coordinator = Arc::clone(&coordinator);
         let work = a.work.clone();
         tokio::spawn(async move {
+            // Poll the wait at least once before announcing entry: in a
+            // lock-holding implementation the guard is already held at that
+            // point, so the probe cannot race an unpolled task.
+            let waiting = coordinator.wait(&work, Duration::from_secs(5));
+            let mut waiting = std::pin::pin!(waiting);
+            std::future::poll_fn(|cx| {
+                let _ = waiting.as_mut().poll(cx);
+                std::task::Poll::Ready(())
+            })
+            .await;
             let _ = entered_tx.send(());
-            coordinator.wait(&work, Duration::from_secs(5)).await
+            waiting.await
         })
     };
     entered_rx.await.expect("the waiter started");
@@ -930,9 +941,11 @@ async fn d4_shutdown_collects_every_held_session() {
     let paused =
         RecordingGateway::scripted(vec![Ok(tooluse_output("p", "echo", serde_json::json!({})))]);
     let done = RecordingGateway::scripted(vec![Ok(endturn_output("done"))]);
+    let running_gate = GatedGateway::new("running", true);
     let mut profiles = Profiles::new();
     profiles.insert("paused", Profile::pausing(paused, vec![Arc::new(EchoTool)]));
     profiles.insert("done", Profile::completing(done));
+    profiles.insert("running", Profile::completing(running_gate.clone()));
     let coordinator = harness(cfg(4, 2), profiles);
 
     let paused_request = CreateRequest::root("cp", "kp", parts("p"), "paused");
@@ -953,7 +966,16 @@ async fn d4_shutdown_collects_every_held_session() {
         .await
         .expect("observable");
 
+    // One work is still running when the collective shutdown starts: it must
+    // be cancelled and collected, not left behind.
+    let running_receipt = coordinator
+        .create(CreateRequest::root("cr", "kr", parts("r"), "running"))
+        .expect("admitted");
+    running_gate.wait_entered().await;
+
     let paused_handle = coordinator.route(&paused_receipt.work).expect("routed");
+    let done_handle = coordinator.route(&done_receipt.work).expect("routed");
+    let running_handle = coordinator.route(&running_receipt.work).expect("routed");
     coordinator.shutdown().await;
 
     // New work is refused...
@@ -980,9 +1002,281 @@ async fn d4_shutdown_collects_every_held_session() {
         paused_handle.submit(session_req("later", "x")),
         Err(SessionError::Closed)
     );
+    assert_eq!(
+        done_handle.submit(session_req("later-done", "x")),
+        Err(SessionError::Closed),
+        "the finished session is collected too"
+    );
+    // The work that was still running when shutdown started was wound down.
+    let running_observation = running_handle
+        .observe(&running_receipt.work)
+        .expect("readable");
+    assert!(
+        matches!(
+            running_observation.state,
+            WorkState::Finished | WorkState::Faulted
+        ),
+        "the collective shutdown settles a running work: {:?}",
+        running_observation.state
+    );
+    assert_eq!(
+        running_handle.submit(session_req("later-running", "x")),
+        Err(SessionError::Closed)
+    );
     assert!(
         coordinator.checkpoint(&ConversationId("cd".into())).is_ok(),
         "a finished session still exports after shutdown"
     );
-    assert_eq!(coordinator.session_count(), 2);
+    assert_eq!(coordinator.session_count(), 3);
+}
+
+// ---- review fixes: closed-path, uniqueness, and the remaining D4 clauses ---
+
+#[tokio::test]
+async fn d1_a_mismatched_assembly_is_refused() {
+    // A harness that assembles a state for another conversation must be
+    // refused before anything is registered.
+    let coordinator = Arc::new(Coordinator::new(cfg(2, 2), |_request: &CreateRequest| {
+        SessionParts {
+            state: ConversationState::new(ConversationId("other".into())),
+            runner: Arc::new(runner_with(
+                RecordingGateway::scripted(vec![Ok(endturn_output("done"))]),
+                Vec::new(),
+            )),
+            options: TurnRunOptions::default(),
+            config: SessionConfig::default(),
+        }
+    }));
+
+    let mismatch = CoordinatorError::ConversationMismatch {
+        expected: ConversationId("c1".into()),
+        actual: ConversationId("other".into()),
+    };
+    let error = coordinator
+        .create(CreateRequest::root("c1", "k1", parts("x"), "done"))
+        .expect_err("a state for another conversation is refused");
+    assert_eq!(error, mismatch);
+    assert_eq!(coordinator.session_count(), 0, "nothing is registered");
+    // The refusal did not consume the key: the same request reaches the same
+    // guard again instead of replaying.
+    assert_eq!(
+        coordinator.create(CreateRequest::root("c1", "k1", parts("x"), "done")),
+        Err(mismatch)
+    );
+}
+
+#[tokio::test]
+async fn d4_child_deadline_is_configured_by_the_harness_and_independent() {
+    let parent = RecordingGateway::scripted(vec![Ok(endturn_output("parent done"))]);
+    let mut profiles = Profiles::new();
+    profiles.insert("parent", Profile::completing(parent));
+    profiles.insert(
+        "child-with-deadline",
+        Profile::completing(Arc::new(SlowGateway))
+            .with_tools(vec![Arc::new(EchoTool)])
+            .with_config(SessionConfig {
+                work_deadline: Some(Duration::from_millis(50)),
+                ..SessionConfig::default()
+            }),
+    );
+    let coordinator = harness(cfg(2, 2), profiles);
+
+    // The parent runs with no deadline of its own and completes normally.
+    let parent_receipt = coordinator
+        .create(CreateRequest::root("cp", "kp", parts("p"), "parent"))
+        .expect("admitted");
+    let parent_done = coordinator
+        .wait(&parent_receipt.work, Duration::from_secs(5))
+        .await
+        .expect("observable");
+    assert!(matches!(
+        parent_done.observation.finished,
+        Some(FinishedKind::Completed { .. })
+    ));
+
+    // The child carries the harness-configured per-work deadline (proposal
+    // §9: the harness configures it; it is not inherited from the parent or
+    // from a wait), so the slow round ends by that deadline.
+    let child_receipt = coordinator
+        .create(CreateRequest::child(
+            "cc",
+            "kc",
+            parts("c"),
+            "child-with-deadline",
+            &parent_receipt.work,
+        ))
+        .expect("admitted");
+    let child_done = coordinator
+        .wait(&child_receipt.work, Duration::from_secs(5))
+        .await
+        .expect("observable");
+    match child_done.observation.finished {
+        Some(FinishedKind::Interrupted { cause, .. }) => assert_eq!(
+            cause,
+            TurnInterruption::TurnDeadlineExceeded,
+            "the child's own work deadline interrupts the slow round"
+        ),
+        other => panic!("the child deadline must interrupt the slow round, got {other:?}"),
+    }
+
+    // The parent's own result is untouched by the child's deadline.
+    assert!(matches!(
+        coordinator
+            .observe(&parent_receipt.work)
+            .expect("observable")
+            .finished,
+        Some(FinishedKind::Completed { .. })
+    ));
+    coordinator.shutdown().await;
+}
+
+#[tokio::test]
+async fn d4_a_duplicate_conversation_id_is_refused() {
+    let gateway = RecordingGateway::repeating_last(vec![Ok(endturn_output("done"))]);
+    let mut profiles = Profiles::new();
+    profiles.insert("done", Profile::completing(gateway));
+    let coordinator = harness(cfg(2, 2), profiles);
+
+    let first = coordinator
+        .create(CreateRequest::root("c1", "k1", parts("one"), "done"))
+        .expect("admitted");
+    let duplicate = coordinator.create(CreateRequest::root("c1", "k2", parts("two"), "done"));
+    assert_eq!(
+        duplicate,
+        Err(CoordinatorError::ConversationExists(ConversationId(
+            "c1".into()
+        )))
+    );
+    assert_eq!(
+        coordinator.session_count(),
+        1,
+        "a create never replaces a live session"
+    );
+
+    // The first session is untouched and still routable.
+    let waited = coordinator
+        .wait(&first.work, Duration::from_secs(5))
+        .await
+        .expect("observable");
+    assert_eq!(waited.observation.state, WorkState::Finished);
+    coordinator.shutdown().await;
+}
+
+#[tokio::test]
+async fn d4_resume_is_refused_once_the_coordinator_is_closed() {
+    let gateway =
+        RecordingGateway::scripted(vec![Ok(tooluse_output("p", "echo", serde_json::json!({})))]);
+    let mut profiles = Profiles::new();
+    profiles.insert(
+        "paused",
+        Profile::pausing(gateway, vec![Arc::new(EchoTool)]),
+    );
+    let coordinator = harness(cfg(2, 2), profiles);
+
+    let receipt = coordinator
+        .create(CreateRequest::root("cp", "kp", parts("p"), "paused"))
+        .expect("admitted");
+    let paused = coordinator
+        .wait(&receipt.work, Duration::from_secs(5))
+        .await
+        .expect("observable");
+    assert_eq!(paused.observation.state, WorkState::Paused);
+
+    coordinator.shutdown().await;
+
+    // A new acceptance cannot slip into a closed coordinator, and the paused
+    // material is unchanged.
+    assert_eq!(
+        coordinator.resume(
+            &receipt.work,
+            paused.observation.revision,
+            "ra",
+            approve(vec![awaiting_echo()]),
+        ),
+        Err(CoordinatorError::Closed)
+    );
+    let handle = coordinator.route(&receipt.work).expect("routed");
+    assert_eq!(
+        handle.observe(&receipt.work).expect("readable").state,
+        WorkState::Paused
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d4_creates_racing_a_shutdown_are_either_collected_or_refused() {
+    // A gated work keeps the collective shutdown in flight while other
+    // creates race it: every attempt is either refused, or admitted and then
+    // collected by that same shutdown.
+    let gate = GatedGateway::new("running", true);
+    let done = RecordingGateway::scripted(vec![Ok(endturn_output("done"))]);
+    let mut profiles = Profiles::new();
+    profiles.insert("running", Profile::completing(gate.clone()));
+    profiles.insert("done", Profile::completing(done));
+    let coordinator = harness(cfg(8, 2), profiles);
+
+    let running = coordinator
+        .create(CreateRequest::root("cr", "kr", parts("r"), "running"))
+        .expect("admitted");
+    gate.wait_entered().await;
+
+    let shutdown = {
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move { coordinator.shutdown().await })
+    };
+
+    let barrier = Arc::new(Barrier::new(4));
+    let mut racers = Vec::new();
+    for index in 0..4 {
+        let coordinator = Arc::clone(&coordinator);
+        let barrier = Arc::clone(&barrier);
+        racers.push(tokio::task::spawn_blocking(move || {
+            barrier.wait();
+            let id = format!("cx{index}");
+            let key = format!("kx{index}");
+            coordinator
+                .create(CreateRequest::root(&id, &key, parts("x"), "done"))
+                .map(|receipt| (id, receipt.work))
+        }));
+    }
+
+    shutdown.await.expect("the shutdown task joins");
+    let mut admitted = 0;
+    for racer in racers {
+        match racer.await.expect("the blocking task joins") {
+            Ok((id, work)) => {
+                admitted += 1;
+                let handle = coordinator
+                    .handle(&ConversationId(id.clone()))
+                    .expect("an admitted racer is a registered session");
+                assert_eq!(
+                    handle.submit(session_req("later", "x")),
+                    Err(SessionError::Closed),
+                    "the same shutdown collects every admitted racer"
+                );
+                assert!(
+                    handle.observe(&work).is_ok(),
+                    "its work stays observable after the collective close"
+                );
+            }
+            Err(error) => assert_eq!(
+                error,
+                CoordinatorError::Closed,
+                "a create that loses the race is refused, not silently dropped"
+            ),
+        }
+    }
+    assert_eq!(
+        coordinator.session_count(),
+        1 + admitted,
+        "every admitted racer is registered and collected"
+    );
+    let running_observation = coordinator.observe(&running.work).expect("readable");
+    assert!(
+        matches!(
+            running_observation.state,
+            WorkState::Finished | WorkState::Faulted
+        ),
+        "the running work was wound down: {:?}",
+        running_observation.state
+    );
 }
