@@ -12,6 +12,7 @@ Cargo.lock.orig
 
 # ----- Local shells / env managers -----
 .direnv/
+.zcode/
 
 # ----- Local environment / secrets -----
 .env
