@@ -1,0 +1,56 @@
+---
+title: Getting started
+description: Add Causa to a Rust project and run your first turn.
+---
+
+## Add the dependency
+
+```toml
+# Default: kernel + runtime + providers (Anthropic / OpenAI adapters).
+cargo add causa
+
+# Everything, including MCP extension adapters:
+cargo add causa --features full
+
+# Kernel only — offline audit / minimal embed, no I/O:
+cargo add causa --no-default-features
+
+# Kernel + offline driver, no network adapters:
+cargo add causa --no-default-features --features runtime
+```
+
+Requires Rust **1.96+** (the workspace MSRV), edition 2024, Tokio.
+
+## Run one turn
+
+The canonical shape — fill the kernel's ports, hand them to the driver,
+drive one turn:
+
+```text
+ANTHROPIC_API_KEY=sk-ant-... cargo run --example quickstart -p causa-provider
+```
+
+The `quickstart` example wires a `ModelGateway` adapter from
+`causa-provider` and a local `Tool`, then runs a single turn. It lives in
+`causa-provider` on purpose: the runtime must never depend on the edge
+adapters it drives, so anything composing both sides belongs to the adapter
+crate. In your own host you compose freely.
+
+## No API key? Run offline
+
+Most in-tree examples use a scripted stub gateway and run with no network:
+
+```text
+cargo run --example conversation_persistence -p causa-runtime
+cargo run --example streaming_print -p causa-runtime
+cargo run --example approval_pause_resume -p causa-runtime
+cargo run --example media_feedback -p causa-runtime
+```
+
+See [Examples](/examples/) for what each one demonstrates.
+
+## Next steps
+
+- [Concepts](/concepts/) — the facts / driver / adapter split and the layering rules.
+- [Crates](/crates/) — the six crates and the feature matrix.
+- [docs.rs/crate/causa](https://docs.rs/causa) — full API reference (the site never duplicates signatures; the API is pre-0.1 and moves fast).

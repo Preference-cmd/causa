@@ -1,0 +1,16 @@
+# deps + build output
+node_modules/
+dist/
+
+# Astro content cache (collections, modules, build data)
+.astro/
+
+# Cloudflare local state: dev sessions, deploy metadata
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# logs + typecheck + coverage droppings
+*.log
+*.tsbuildinfo
+coverage/

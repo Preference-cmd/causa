@@ -2,6 +2,16 @@
 target/
 **/*.rs.bk
 Cargo.lock.orig
+*.pdb
+*.orig
+*.rej
+*.log
+
+# ----- JS tooling (website/) ----- 
+.pnpm-store/
+
+# ----- Local shells / env managers -----
+.direnv/
 
 # ----- Local environment / secrets -----
 .env
@@ -17,4 +27,5 @@ Cargo.lock.orig
 !.vscode/extensions.json
 .idea/
 .DS_Store
+._*
 *.sw?

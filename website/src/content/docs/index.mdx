@@ -1,0 +1,105 @@
+---
+title: Causa
+description: A small, principled agent kernel for Rust — facts, ports, driver. Add it with cargo add causa and run your first turn in minutes.
+template: splash
+hero:
+  tagline: derive, don't drift.
+  image:
+    html: '<div style="font: 700 5rem/1 monospace;">C.</div>'
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/Preference-cmd/causa
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import LayerDiagram from '../../components/LayerDiagram.astro';
+import CtaBand from '../../components/CtaBand.astro';
+
+[![CI](https://github.com/Preference-cmd/causa/actions/workflows/ci.yml/badge.svg)](https://github.com/Preference-cmd/causa/actions) [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://github.com/Preference-cmd/causa) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](https://github.com/Preference-cmd/causa)
+
+**Causa is a small, principled agent kernel for Rust** — facts, ports, driver.
+The kernel carries facts and contracts and nothing else: no I/O, no transport,
+no policy. Anything the host didn't opt into doesn't happen.
+
+<div class="not-content flex flex-wrap gap-2 font-mono text-sm opacity-80">
+  <span class="rounded-full border px-3 py-1">facts, not magic</span>
+  <span class="rounded-full border px-3 py-1">visible defaults</span>
+  <span class="rounded-full border px-3 py-1">adapters, not opinions</span>
+</div>
+
+## Run your first turn
+
+```toml
+# Default entry: kernel + runtime + providers.
+cargo add causa
+```
+
+```bash
+# One turn, one local tool, one real provider round-trip:
+ANTHROPIC_API_KEY=sk-ant-... cargo run --example quickstart -p causa-provider
+
+# No key? These run fully offline:
+cargo run --example conversation_persistence -p causa-runtime
+```
+
+[Follow the getting-started guide →](/getting-started/)
+
+## Why Causa
+
+<CardGrid>
+  <Card title="Facts, not magic" icon="document">
+    The kernel is a conversation fact machine plus the behavior ports third
+    parties implement against (`ModelGateway`, `Tool`, stores). Pure,
+    offline, auditable — the layer CI forbids from touching I/O.
+  </Card>
+  <Card title="A driver with visible defaults" icon="setting">
+    Turn loop, tool dispatch, streaming, pause/resume, unknown-outcome and
+    output-retention policy: config objects and one documented table.
+    Swappable, never hidden, never a trait seam for a single policy.
+  </Card>
+  <Card title="Adapters, not opinions" icon="puzzle">
+    Providers translate wire protocols; extensions translate tool sources.
+    They never decide. Stores, counters, and exporters live in hosts and
+    examples — never in the publish set.
+  </Card>
+</CardGrid>
+
+## How it's layered
+
+<LayerDiagram />
+
+The rule is simple: nothing depends upward, and the kernel depends on
+nothing. [Read the concepts →](/concepts/)
+
+## What's inside
+
+| crate | role |
+| ----- | ---- |
+| `causa` | facade — kernel always on, defaults add runtime + providers |
+| `causa-kernel` | facts + contracts, no I/O |
+| `causa-runtime` | reference driver: turns, dispatch, streaming, pause/resume |
+| `causa-protocol` | pure Anthropic / OpenAI Chat / Responses translation |
+| `causa-provider` | reqwest `ModelGateway` adapters |
+| `causa-extension` | `mcp` feature: MCP client tool sources |
+
+Need everything? `cargo add causa --features full`. Auditing offline?
+`--no-default-features` is kernel-only. [Full crate guide →](/crates/)
+
+## Learn by running
+
+- **Persist a conversation** across restarts — `cargo run --example conversation_persistence -p causa-runtime`
+- **Stream a turn** delta by delta — `cargo run --example streaming_print -p causa-runtime`
+- **Pause for approval, then resume** with the verdict — `cargo run --example approval_pause_resume -p causa-runtime`
+
+[All examples →](/examples/)
+
+<CtaBand />
+
+> **Status: pre-0.1.** Expect breaking changes without notice. The 0.1 gate
+> is functional completeness: multimodal I/O and subagents.
+> [Status & changelog →](/status/)

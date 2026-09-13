@@ -1,0 +1,58 @@
+---
+title: Concepts
+description: Facts, ports, driver — how Causa is layered and why.
+---
+
+## The kernel carries facts and contracts — nothing else
+
+`causa-kernel` has no I/O, no transport, no policy. It holds:
+
+- **Facts** (`context`): the conversation fact machine — blocks, turn state,
+  deterministic projections. One logical message's mixed content commits as one
+  fact block (`append_parts`); media travels as cheap durable `MediaRef`
+  references whose bytes live only in the host's asset store.
+- **Contracts** (`ports`): the seams third parties implement or call against —
+  `ModelGateway`, `Tool`, `DynamicToolSource`, `CallControl`, budget
+  seams, stores. A type lives in `ports` iff someone outside the kernel
+  implements or calls it.
+
+## The driver is a reference harness with visible defaults
+
+`causa-runtime` drives the kernel: the turn loop, tool dispatch, streaming
+deltas, pause/resume, and the session aggregate (`ConversationState` /
+`ConversationStore`). Every policy is a config object or a documented opinion
+in one policy table in the runtime `lib.rs` — no trait seams for
+single-implementation policies.
+
+Key mechanisms:
+
+- **Pause/resume** — a tool batch can suspend behind a human decision
+  (`BatchDecision::Pause`) and resume with the withheld verdict
+  (`resume_turn`); approve / reject / rewrite are one `HookOutcome`
+  vocabulary, so pausing and releasing are two halves of one mechanism.
+- **Unknown-outcome / output-retention config** — how the driver treats
+  ambiguous tool results and how much output it keeps are explicit settings,
+  not folklore.
+
+## Edge crates are adapters, not opinions
+
+```text
+kernel <- protocol <- provider
+kernel <- runtime
+kernel <- extension
+(*, extension) <- causa (facade; depended on by none)
+```
+
+- `causa-protocol` — pure wire-protocol translation (Anthropic / OpenAI Chat /
+  OpenAI Responses). No transport, no driver.
+- `causa-provider` — reqwest `ModelGateway` adapters (implies protocol).
+- `causa-extension` — `DynamicToolSource` adapters (`mcp` feature via the
+  official `rmcp` SDK, client role only).
+- `causa` — the facade. Kernel always on; defaults add runtime + providers,
+  `full` adds extensions.
+
+The layering is **machine-enforced, not review-enforced**: CI runs a
+dependency-direction guard on every push, and `causa-kernel` can never depend
+on transport, policy, or any sibling crate. Reference implementations of ports
+(stores, counters, exporters) live in examples or hosts — never in the publish
+set.

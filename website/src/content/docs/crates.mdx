@@ -1,0 +1,36 @@
+---
+title: Crates
+description: The six Causa crates and how to select them.
+---
+
+`cargo add causa` is the default entry; the family crates stay published for
+fine-grained use. All six version in lockstep at `0.x`, dual-licensed
+`MIT OR Apache-2.0`.
+
+## Roles
+
+| crate | role |
+| ----- | ---- |
+| `causa` | facade over the family |
+| `causa-kernel` | facts + contracts: conversation kernel and ports, no I/O |
+| `causa-protocol` | wire-protocol translation (Anthropic / OpenAI Chat / OpenAI Responses) |
+| `causa-runtime` | reference driver: turn loop, tool dispatch, streaming, pause/resume, unknown-outcome & output-retention config |
+| `causa-provider` | reqwest adapters for the `ModelGateway` port |
+| `causa-extension` | extension adapters (`mcp` feature: MCP client) |
+
+## Feature selection
+
+| selection | gets |
+| --------- | ---- |
+| `causa = "0.1"` (default) | kernel + runtime + providers |
+| `features = ["full"]` | + extensions (MCP) |
+| `default-features = false` | kernel only (offline audit / minimal embed) |
+| `default-features = false, features = ["runtime"]` | kernel + offline driver |
+
+A provider renders through the protocol crate, so `providers` implies
+`protocol` — you never enable a transport without its translation.
+Extensions stay opt-in because `rmcp` is a heavier dependency that offline
+hosts should not pay for.
+
+Full API docs for every crate: [docs.rs/crate/causa](https://docs.rs/causa)
+(built with `all-features`).

@@ -1,0 +1,12 @@
+# pnpm 12 refuses to install while postinstall scripts are undecided
+# (ERR_PNPM_IGNORED_BUILDS). These three are the build's own toolchain:
+# esbuild bundles, sharp processes images, workerd powers wrangler dev.
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true
+# pnpm 12 rejects lockfile entries published within its default release-age
+# window. Our exact pins + lockfile are already the determinism mechanism,
+# and the age gate would randomly break CI for up to a day after routine
+# dep bumps — so it stays off for this docs site.
+minimumReleaseAge: 0

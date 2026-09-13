@@ -1,0 +1,30 @@
+---
+title: Examples
+description: In-tree examples — what each one shows and how to run it.
+---
+
+> The API is pre-0.1 and moves fast — the in-tree examples are the source of
+> truth for current shapes, not prose. `cargo test --workspace` also
+> compiles every example, so they never drift.
+
+## Needs a key or a server
+
+| example | shows | run |
+| ------- | ----- | --- |
+| `quickstart` (`-p causa-provider`) | one turn + a local tool + a real provider round-trip | `ANTHROPIC_API_KEY=… cargo run --example quickstart -p causa-provider` |
+| `mcp_tools` (`-p causa-extension`) | stdio + Streamable HTTP MCP servers into the executor | needs an MCP server (see the example header) |
+
+## Runs offline
+
+| example | shows | run |
+| ------- | ----- | --- |
+| `conversation_persistence` | multi-turn + `FsConversationStore` + reload across restart; the canonical `begin_turn → append_parts → run_in_conversation → commit → save_entry` loop | `cargo run --example conversation_persistence -p causa-runtime` |
+| `streaming_print` | streaming deltas via `TurnInteraction::on_delta` | `cargo run --example streaming_print -p causa-runtime` |
+| `approval_pause_resume` | `decide_batch` pause + `resume_turn` with the withheld verdict | `cargo run --example approval_pause_resume -p causa-runtime` |
+| `allow_deny_filter` | `ToolUseHook` filter chains: dedup / kill-switch / approval as host policy | `cargo run --example allow_deny_filter -p causa-runtime` |
+| `media_feedback` | offline media closed loop: bytes stay in the host asset store, only `MediaRef` rides the facts | `cargo run --example media_feedback -p causa-runtime` |
+
+Browse them on GitHub:
+[causa-runtime/examples](https://github.com/Preference-cmd/causa/tree/main/crates/causa-runtime/examples),
+[provider](https://github.com/Preference-cmd/causa/tree/main/crates/causa-provider/examples),
+[extension](https://github.com/Preference-cmd/causa/tree/main/crates/causa-extension/examples).

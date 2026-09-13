@@ -1,0 +1,26 @@
+{
+  "name": "causa-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "deploy": "astro build && wrangler deploy",
+    "cf:dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "14.3.1",
+    "@astrojs/starlight": "0.42.0",
+    "@tailwindcss/vite": "4.3.3",
+    "astro": "7.3.2",
+    "sharp": "^0.34.0",
+    "tailwindcss": "4.3.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "wrangler": "4.131.1"
+  }
+}

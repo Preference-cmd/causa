@@ -1,0 +1,11 @@
+{
+  // Minimal config: @astrojs/cloudflare fills in the worker entrypoint
+  // and the static-assets directory at build time.
+  // Rename the worker here if you like; the dashboard URL follows it.
+  "name": "causa-site",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  }
+}

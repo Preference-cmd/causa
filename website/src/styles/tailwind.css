@@ -1,0 +1,16 @@
+/* Tailwind v4 entry for the docs site.
+ *
+ * Only theme tokens + utilities are imported — preflight (the global
+ * reset) is deliberately left out so Starlight's own design system keeps
+ * working. Use utilities for layout/typography in custom components and
+ * MDX; keep component-level overrides in custom.css.
+ *
+ * Design tokens live in @theme below so custom values stay in one place.
+ */
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
