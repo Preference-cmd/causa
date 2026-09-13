@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Preference"]
-description = "Causa — principled agent kernel building blocks for Rust (facts, ports, driver)"
+description = "Causa — a minimal context kernel for Rust agents (facts, ports, adapters)"
 repository = "https://github.com/Preference-cmd/causa"
 license = "MIT OR Apache-2.0"
 

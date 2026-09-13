@@ -4,9 +4,9 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://github.com/Preference-cmd/causa)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](https://github.com/Preference-cmd/causa)
 
-> derive, don't drift.
+> There is no harness.
 
-**A small, principled agent kernel for Rust** — facts, ports, driver.
+**A minimal context kernel for Rust agents** — facts in the kernel, behavior in yours.
 
 ```bash
 cargo add causa

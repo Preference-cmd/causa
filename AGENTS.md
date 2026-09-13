@@ -1,11 +1,11 @@
 # AGENTS.md — Causa
 
-> `derive, don't drift.` This file is the agent entry point for the Causa
-> monorepo. `CLAUDE.md` is a symlink to this file — edit here only.
+> The agent entry point for the Causa monorepo. `CLAUDE.md` is a symlink to
+> this file — edit here only.
 
-**Causa** is a small, principled agent kernel for Rust: facts, ports,
-driver. One Cargo workspace, six crates, lockstep versioned at `0.x`.
-Dual-licensed `MIT OR Apache-2.0`.
+**Causa** is a minimal context kernel for Rust agents: it holds the facts,
+your code holds the behavior. One Cargo workspace, six crates, lockstep
+versioned at `0.x`. Dual-licensed `MIT OR Apache-2.0`.
 
 ## Layout
 

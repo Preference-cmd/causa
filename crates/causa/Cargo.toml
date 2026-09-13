@@ -1,7 +1,7 @@
 [package]
 name = "causa"
 version.workspace = true
-description = "Causa — principled agent kernel for Rust (facade over the causa-* family)"
+description = "Causa — a minimal context kernel for Rust agents (facade over the causa-* family)"
 repository.workspace = true
 readme = "../../README.md"
 keywords = ["agent", "llm", "conversation", "tools", "streaming"]
