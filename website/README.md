@@ -27,9 +27,11 @@ Pushes to `main` touching `website/**` deploy via
 
 - `CLOUDFLARE_API_TOKEN` — a Cloudflare API token with
   **Workers Scripts: Edit** (and **Workers Routes** if a custom domain /
-  route is attached). No account ID secret needed: it is pinned in
-  `wrangler.jsonc`… unless you fork — then set `CLOUDFLARE_ACCOUNT_ID`
-  or edit the file.
+  route is attached). The checked-in `wrangler.jsonc` does not pin an
+  account ID, and the workflow passes only the token to Wrangler. Ensure
+  that token identifies the intended deployment account. If your setup
+  needs an explicit account ID, configure it before deploying; there is no
+  repository-provided account selection to inherit when forking.
 
 Manual deploy:
 

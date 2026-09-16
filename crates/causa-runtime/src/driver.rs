@@ -782,6 +782,9 @@ impl TurnRunner {
     /// counts, prepared hook work, and queued inputs all come from the
     /// outcome's [`Continuation`]: a trimmed or empty trace changes
     /// nothing, and lower limits stop the turn before external execution.
+    // Rejection returns the complete paused material by value, matching
+    // resume_turn and the Session construction contract.
+    #[allow(clippy::result_large_err)]
     pub async fn resume(
         &self,
         outcome: TurnOutcome,

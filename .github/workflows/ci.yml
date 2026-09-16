@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,3 +66,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: bash .github/scripts/check-dependency-directions.sh
+      - run: python3 .github/scripts/check-module-layout.py
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
+
+  release-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test release refusal and retry behavior
+        run: python3 -m unittest discover -s .github/scripts -p 'test_release.py'
+      - name: Feature matrix
+        run: |
+          cargo check -p causa --locked
+          cargo check -p causa --no-default-features --locked
+          cargo check -p causa --features full --locked
+          cargo check -p causa-extension --no-default-features --locked
+      - name: API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked

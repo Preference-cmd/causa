@@ -179,7 +179,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "causa"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "causa-extension",
  "causa-kernel",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "causa-extension"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "causa-kernel"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "causa-protocol"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "causa-kernel",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "causa-provider"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "causa-kernel",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "causa-runtime"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "blake3",

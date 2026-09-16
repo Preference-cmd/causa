@@ -3,15 +3,19 @@
 All notable changes to the Causa crate family are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-During the 0.x series, breaking changes to the wire serde shapes
-(`ContextEvent` / `TurnResult` / `TurnTrace` family) bump the **minor**
-version and are flagged at the top of the release notes — those shapes are a
-load-bearing external contract pinned by `causa-runtime` serialization tests.
+During the experimental `0.0.x` series, patch releases may break Rust API
+and wire-serde compatibility. Breaking changes and migration notes appear
+at the top of each release. Starting with `0.1.0`, breaking wire changes
+(`ContextEvent` / `TurnResult` / `TurnTrace` family) bump the **minor** version.
+Checkpoint schema versions are validated independently of package versions;
+incompatible saved material is rejected.
 
-## [Unreleased]
+## [0.0.1] - 2026-09-16
 
-Planned as **0.1.0** — the release gate is functional completeness
-(multimodal I/O and subagents).
+The first experimental release of all six crates, with `causa` as the default
+entry. This is a working development snapshot with unstable APIs and serialized
+formats. **0.1.0** retains the functional completeness gate (multimodal I/O and
+subagents).
 
 ### Added
 
@@ -22,7 +26,8 @@ Planned as **0.1.0** — the release gate is functional completeness
 - **`causa-kernel`** — the facts layer: ContextBlock conversation fact
   machine, turn state machine with deterministic projections, and the
   self-contained behavior ports (`ModelGateway`, `Tool`,
-  `DynamicToolSource`, `CallControl`, budget seams). Zero I/O;
+  `DynamicToolSource`, `CallControl`, `ArtifactStore`). Budget and interaction
+  components live in `causa-runtime`. Zero I/O;
   `#![deny(missing_docs)]`.
 - **Context / component separation**: the session aggregate moved from the
   kernel to `causa-runtime` —
@@ -196,7 +201,8 @@ Planned as **0.1.0** — the release gate is functional completeness
 - CI: fmt / clippy / test matrix (ubuntu + macos), MSRV 1.96 job, and the
   dependency-direction guard; a manual-trigger publish workflow with a
   full dry-run pass.
-- Five examples doubling as runnable documentation; this CHANGELOG.
+- Seven examples across runtime, provider and extension doubling as runnable
+  documentation; this CHANGELOG.
 
 ### Changed
 
@@ -209,7 +215,7 @@ Planned as **0.1.0** — the release gate is functional completeness
   shapes are unchanged.
 - **`causa-runtime` session handle API**: the session work filed under Added
   above changed the shapes Phase A introduced, still inside the unreleased
-  0.1.0 — `SessionHandle::submit` and `observe` are synchronous now (drop the
+  first release — `SessionHandle::submit` and `observe` are synchronous now (drop the
   `.await`), `FinishedKind::Interrupted` gained the required `continuation`
   field, and `SessionError` gained the `StaleRevision` / `NotPaused` /
   `InvalidResume` variants. The `resume` / `cancel` operations,
@@ -292,6 +298,15 @@ Planned as **0.1.0** — the release gate is functional completeness
 
 ### Fixed
 
+- Public documentation now distinguishes consumer setup from repository examples,
+  reflects current API ownership and dependency directions, and includes a complete
+  facade quickstart. All six libraries enforce public API documentation; CI checks
+  library module layout and the runtime-to-protocol dependency boundary.
+- Experimental release packaging includes both license texts in every crate.
+  Publishing uses a workspace preflight and explicit version/tag checks.
+- The two resume entry points document their intentional by-value error
+  payloads and locally allow `clippy::result_large_err`, preserving the
+  complete-material return contract on newer toolchains.
 - **Session checkpoint consistency (slice 8 Phase C)**: restore rejects
   duplicate keys within each request table, cancel receipts whose work
   differs from their target, paused continuations inconsistent with the

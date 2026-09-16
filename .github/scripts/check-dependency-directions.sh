@@ -2,7 +2,8 @@
 # Dependency-direction guard (slice 11, first-principles item 7.1).
 #
 # Asserts the publish set's layering on the *normal* dependency graph:
-#   causa-kernel  <- causa-protocol <- (causa-runtime, causa-provider)
+#   causa-kernel  <- causa-protocol <- causa-provider
+#   causa-kernel  <- causa-runtime
 #   causa-kernel  <- causa-extension
 #   (causa-*, causa-extension) <- causa (facade; the only crate allowed
 #   to depend on every family member, depended on by none)
@@ -16,7 +17,7 @@ check() {
   local root="$1"
   shift
   local tree
-  tree=$(cargo tree -p "$root" --edges normal --charset ascii)
+  tree=$(cargo tree -p "$root" --edges normal --all-features --locked --charset ascii)
   local banned
   for banned in "$@"; do
     if grep -q -- "$banned" <<<"$tree"; then
@@ -39,7 +40,7 @@ check causa-protocol reqwest rmcp axum tracing-subscriber \
 
 # The reference driver drives the kernel and nothing else.
 check causa-runtime reqwest rmcp axum tracing-subscriber \
-  causa-provider causa-extension "causa v"
+  causa-protocol causa-provider causa-extension "causa v"
 
 # The provider is the transport adapter — MCP is not its business.
 check causa-provider rmcp axum causa-runtime causa-extension "causa v"
@@ -53,7 +54,7 @@ check causa-extension axum \
 # The facade may depend on the whole family but nothing may depend on
 # it — a dependent would close a publish cycle.
 for member in causa-kernel causa-protocol causa-runtime causa-provider causa-extension; do
-  tree=$(cargo tree -p "$member" --edges normal --charset ascii)
+  tree=$(cargo tree -p "$member" --edges normal --all-features --locked --charset ascii)
   if grep -q -- "causa v" <<<"$tree"; then
     echo "FAIL: $member must not depend on the causa facade" >&2
     exit 1

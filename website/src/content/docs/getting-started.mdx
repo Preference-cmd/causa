@@ -5,42 +5,102 @@ description: Add Causa to a Rust project and run your first turn.
 
 ## Add the dependency
 
-```toml
+The following commands use the **0.0.1 experimental release**.
+
+```bash
 # Default: kernel + runtime + providers (Anthropic / OpenAI adapters).
-cargo add causa
+cargo add causa@0.0.1
 
 # Everything, including MCP extension adapters:
-cargo add causa --features full
+cargo add causa@0.0.1 --features full
 
 # Kernel only — offline audit / minimal embed, no I/O:
-cargo add causa --no-default-features
+cargo add causa@0.0.1 --no-default-features
 
 # Kernel + offline driver, no network adapters:
-cargo add causa --no-default-features --features runtime
+cargo add causa@0.0.1 --no-default-features --features runtime
 ```
 
-Requires Rust **1.96+** (the workspace MSRV), edition 2024, Tokio.
+Choose one of the dependency configurations above. Causa requires Rust
+**1.96+**; the async application below also adds Tokio.
 
-## Run one turn
+## Run one turn in your application
 
-The canonical shape — fill the kernel's ports, hand them to the driver,
-drive one turn:
+Create a project with Rust **1.96+** and add these dependencies:
 
-```text
-ANTHROPIC_API_KEY=sk-ant-... cargo run --example quickstart -p causa-provider
+```bash
+cargo new causa-hello
+cd causa-hello
+cargo add causa@0.0.1
+cargo add tokio@1 --features macros,rt
 ```
 
-The `quickstart` example wires a `ModelGateway` adapter from
-`causa-provider` and a local `Tool`, then runs a single turn. It lives in
-`causa-provider` on purpose: the runtime must never depend on the edge
-adapters it drives, so anything composing both sides belongs to the adapter
-crate. In your own host you compose freely.
+Replace `src/main.rs` with the following. All Causa imports come through the
+facade; this example asks a model one question without registering tools.
+
+```rust
+use causa::{
+    kernel::{CancellationToken, ModelRef, TextPayload, TurnContext, TurnId},
+    providers::AnthropicMessagesGateway,
+    runtime::{RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
+};
+use std::sync::Arc;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let gateway = Arc::new(AnthropicMessagesGateway::new(
+        std::env::var("ANTHROPIC_API_KEY")?,
+    ));
+    let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
+    let mut context = TurnContext::new(TurnId::new("hello"));
+    context.append_input(TextPayload::new("Say hello in one sentence."), "user")?;
+    let mut options = TurnRunOptions::default();
+    options.invocation.model = ModelRef::new(std::env::var("ANTHROPIC_MODEL")?);
+    let outcome = runner
+        .run(context, options, RunControl::new(CancellationToken::new(), None))
+        .await;
+    match outcome.result {
+        TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),
+        result => return Err(format!("turn did not complete: {result:?}").into()),
+    }
+    Ok(())
+}
+```
+
+Set `ANTHROPIC_API_KEY` in your environment and `ANTHROPIC_MODEL` to a model ID
+available to your account, then run `cargo run`. This makes a real provider
+request and requires network access.
+
+## Run the repository examples
+
+The `cargo run --example ... -p ...` commands on this site require the Causa
+repository workspace. Adding `causa` to your application's dependencies does
+not make those examples application targets. From a separate directory:
+
+```bash
+git clone https://github.com/Preference-cmd/causa.git
+cd causa
+```
+
+The default checkout follows development. Run `git checkout v0.0.1` to use
+this release's examples.
+
+With `ANTHROPIC_API_KEY` already set, run this from the repository root:
+
+```bash
+cargo run --example quickstart -p causa-provider
+```
+
+The `quickstart` example adds a local `Tool` to a provider-backed turn. It lives
+in `causa-provider`, which can use the runtime through a dev-dependency while
+keeping the normal dependency graph layered.
 
 ## No API key? Run offline
 
-Most in-tree examples use a scripted stub gateway and run with no network:
+From the same repository root, these examples use scripted stub gateways and
+run with no network:
 
-```text
+```bash
 cargo run --example conversation_persistence -p causa-runtime
 cargo run --example streaming_print -p causa-runtime
 cargo run --example approval_pause_resume -p causa-runtime

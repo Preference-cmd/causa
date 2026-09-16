@@ -91,6 +91,9 @@ impl<T: std::fmt::Debug> std::error::Error for ResumeRejection<T> {}
 /// Resumes continue in batch phase — the facts are complete, and a
 /// streaming continuation is future work (the `TurnInteraction` still
 /// receives batch decisions and steering pulls).
+// Rejection returns the complete paused material by value so the caller can
+// correct the request and retry, matching the Session construction contract.
+#[allow(clippy::result_large_err)]
 pub async fn resume_turn(
     runner: &TurnRunner,
     outcome: ConversationOutcome,

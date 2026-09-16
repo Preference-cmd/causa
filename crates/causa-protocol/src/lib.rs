@@ -19,6 +19,7 @@
 //! provider SDK.
 
 #![deny(unsafe_code)]
+#![deny(missing_docs)]
 
 pub mod protocol;
 pub mod translation;

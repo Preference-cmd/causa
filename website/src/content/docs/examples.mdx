@@ -5,7 +5,19 @@ description: In-tree examples — what each one shows and how to run it.
 
 > The API is pre-0.1 and moves fast — the in-tree examples are the source of
 > truth for current shapes, not prose. `cargo test --workspace` also
-> compiles every example, so they never drift.
+> compiles the current examples, checking their API usage. Live provider and
+> MCP server behavior still requires the corresponding integration environment.
+
+All commands below run from the repository root:
+
+```bash
+git clone https://github.com/Preference-cmd/causa.git
+cd causa
+```
+
+The default checkout follows development; run `git checkout v0.0.1` to use
+this release's examples. See [Getting started](/getting-started/)
+for an application that uses the `causa` facade directly.
 
 ## Needs a key or a server
 

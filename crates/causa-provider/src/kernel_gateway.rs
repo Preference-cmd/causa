@@ -35,15 +35,22 @@ use crate::media::MediaResolver;
 /// the resolution table the gateway built from its injected resolver —
 /// the config passes it through to the pure renderer.
 pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
+    /// Render a kernel request and its resolved media into a wire request body.
+    /// Rejection prevents the gateway from sending an HTTP request.
     fn render(&self, request: &ModelRequest, media: &MediaSet) -> Result<Value, ModelInvokeError>;
+    /// Parse a successful wire response into the kernel's model output.
     fn parse(&self, value: &Value) -> Result<ModelOutput, ModelInvokeError>;
+    /// Add protocol-specific authentication and version headers to a request.
     fn decorate_request(
         &self,
         builder: reqwest::RequestBuilder,
         api_key: &str,
     ) -> reqwest::RequestBuilder;
+    /// Full endpoint URL used unless the host overrides it.
     const DEFAULT_ENDPOINT: &'static str;
+    /// Protocol path appended by [`KernelHttpGateway::with_base_url`].
     const PATH: &'static str;
+    /// Provider label used in transport errors and tracing spans.
     const PROVIDER: &'static str;
 }
 
@@ -204,6 +211,8 @@ impl<C: KernelGatewayConfig> Clone for KernelHttpGateway<C> {
 }
 
 impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
+    /// Build a gateway with the protocol's default endpoint and configuration.
+    /// Media resolution is absent until the host injects a resolver.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             core: GatewayCore::new(C::DEFAULT_ENDPOINT),
@@ -227,6 +236,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
         self
     }
 
+    /// Replace the HTTP client with one configured by the host.
     pub fn with_http_client(mut self, http: Client) -> Self {
         self.core = self.core.with_http_client(http);
         self
@@ -292,6 +302,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
 }
 
 impl KernelHttpGateway<AnthropicGatewayConfig> {
+    /// Override the `anthropic-version` header (default `2023-06-01`).
     pub fn with_anthropic_version(mut self, version: impl Into<String>) -> Self {
         self.config.anthropic_version = version.into();
         self
@@ -326,7 +337,9 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
     }
 }
 
-/// Public type aliases for the three protocols.
+/// Anthropic Messages adapter for the kernel's model gateway port.
 pub type AnthropicMessagesGateway = KernelHttpGateway<AnthropicGatewayConfig>;
+/// OpenAI Chat Completions adapter for the kernel's model gateway port.
 pub type OpenAiChatCompletionsGateway = KernelHttpGateway<OpenAiChatGatewayConfig>;
+/// OpenAI Responses adapter for the kernel's model gateway port.
 pub type OpenAiResponsesGateway = KernelHttpGateway<OpenAiResponsesGatewayConfig>;

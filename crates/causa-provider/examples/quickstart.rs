@@ -4,8 +4,8 @@
 //! reason: the dependency direction. The runtime must never depend on
 //! the edge adapters it drives, so an example that wires *both* sides
 //! belongs to the adapter crate — which dev-depends on the runtime for
-//! exactly this kind of demonstration. In your own host you compose all
-//! five crates freely.
+//! exactly this kind of demonstration. In your own host, start with the
+//! `causa` facade or compose the layer crates directly.
 //!
 //! ```text
 //! ANTHROPIC_API_KEY=sk-ant-... cargo run --example quickstart -p causa-provider

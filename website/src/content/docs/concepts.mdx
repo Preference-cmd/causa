@@ -12,8 +12,8 @@ description: Facts, ports, driver — how Causa is layered and why.
   fact block (`append_parts`); media travels as cheap durable `MediaRef`
   references whose bytes live only in the host's asset store.
 - **Contracts** (`ports`): the seams third parties implement or call against —
-  `ModelGateway`, `Tool`, `DynamicToolSource`, `CallControl`, budget
-  seams, stores. A type lives in `ports` iff someone outside the kernel
+  `ModelGateway`, `Tool`, `DynamicToolSource`, `CallControl`, and
+  `ArtifactStore`. A type lives in `ports` iff someone outside the kernel
   implements or calls it.
 
 ## causa-runtime is a set of optional components
@@ -22,7 +22,9 @@ description: Facts, ports, driver — how Causa is layered and why.
 execution stack (turn loop, tool dispatch, streaming, pause/resume), the
 session aggregate (`ConversationState` / `ConversationStore`) and
 session owner (`Session` / `SessionHandle` / checkpoint), and the policy
-components (budget, interaction). Everything is optional, and each piece is
+components (`FramePolicy`, `TokenCounter`, `TurnInteraction`, `ToolUseHook`).
+`ConversationStore` is also a runtime contract; the kernel's `ArtifactStore`
+is the separate port for tool artifacts. Everything is optional, and each piece is
 offered as a reference: adopt it whole, or read it and build your own. What
 adopting a piece brings along is documented as cost — not a promise about
 how finely the crate can be split.
@@ -54,8 +56,8 @@ kernel <- extension
 - `causa` — the facade. Kernel always on; defaults add the runtime components + providers,
   `full` adds extensions.
 
-The layering is **machine-enforced, not review-enforced**: CI runs a
-dependency-direction guard on every push, and `causa-kernel` can never depend
-on transport, policy, or any sibling crate. Reference implementations of ports
+CI checks the family dependency directions and bans known transport packages
+from the kernel. Keeping policy out of facts also requires API review.
+Reference implementations of ports
 (stores, counters, exporters) live in examples or hosts — never in the publish
 set.

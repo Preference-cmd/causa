@@ -5,7 +5,8 @@
 
 **Causa** is a minimal context kernel for Rust agents: it holds the facts,
 your code holds the behavior. One Cargo workspace, six crates, lockstep
-versioned at `0.x`. Dual-licensed `MIT OR Apache-2.0`.
+versioned at `0.x`; `0.0.1` is the first experimental release, with `causa`
+as the default entry. Dual-licensed `MIT OR Apache-2.0`.
 
 ## Layout
 
@@ -20,10 +21,13 @@ crates/causa-runtime       # optional, reference components: execution stack (tu
 crates/causa-protocol      # wire-protocol translation, transport-free
 crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)
-.github/workflows/ci.yml   # fmt / clippy / test / MSRV / dependency-direction guard
+.github/workflows/ci.yml   # fmt / clippy / test / MSRV / features / docs / guards
 .github/workflows/publish.yml  # manual dispatch ONLY — never `cargo publish` by hand
 .github/scripts/check-dependency-directions.sh  # layering guard, runs in CI
-CHANGELOG.md               # Keep a Changelog; wire-serde breaks bump minor + flag at top
+.github/scripts/check-module-layout.py # rejects mod.rs in library sources
+.github/scripts/release.py # version / archive checks and tagged release retries
+CHANGELOG.md               # 0.0.x experimental; from 0.1 wire breaks bump minor
+.github/RELEASING.md        # experimental release checklist and manual workflow
 website/                   # Astro Starlight docs site (its own pnpm project + workflow)
 scripts/                   # proposal verifier and repo helpers (not published)
 ```
@@ -32,7 +36,7 @@ User-facing feature map on the facade:
 
 | selection | gets |
 |---|---|
-| `causa = "0.1"` (default) | kernel + runtime + providers |
+| `causa = "0.0.1"` (default) | kernel + runtime + providers |
 | `features = ["full"]` | + extensions (MCP) |
 | `default-features = false` | kernel only (offline audit / minimal embed) |
 | `default-features = false, features = ["runtime"]` | kernel + offline driver |
@@ -45,7 +49,7 @@ Before asserting a fact about the repo, read it here — never from memory:
 |---|---|
 | crate set, version, edition, MSRV | `Cargo.toml` `[workspace.package]` |
 | facade feature selection | `crates/causa/Cargo.toml` `[features]` |
-| driver policy surface and defaults | the policy table atop `crates/causa-runtime/src/lib.rs` |
+| driver policy surface and defaults | policy overview in `crates/causa-runtime/src/lib.rs` and linked component/config docs |
 | example names and offline / key / server needs | the doc comment atop `crates/*/examples/*.rs` |
 | release state and wire-shape breaks | `CHANGELOG.md` |
 | CI jobs and gates | `.github/workflows/ci.yml`, `.github/scripts/` |
@@ -61,6 +65,9 @@ cargo test --workspace                    # full suite (also builds examples)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check                   # CI fails otherwise; run `cargo fmt --all` first
 bash .github/scripts/check-dependency-directions.sh   # layering guard, same as CI
+python3 .github/scripts/check-module-layout.py        # library source layout
+python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
+python3 -m unittest discover -s .github/scripts -p 'test_release.py'
 
 # Feature-matrix checks (required when touching Cargo.toml / lib.rs / features):
 cargo check -p causa
@@ -77,7 +84,7 @@ Tests run offline: provider tests use `wiremock`, MCP tests use
 in-process fixtures. Examples needing live keys or servers (`quickstart`,
 `mcp_tools`) are listed in `README.md` — do not "fix" them to run in CI.
 
-## Layering (machine-enforced)
+## Layering
 
 ```text
 kernel <- protocol <- provider
@@ -86,7 +93,9 @@ kernel <- extension
 (*, extension) <- causa (facade; depended on by none)
 ```
 
-Rules, asserted by the guard script on every CI push — not by review:
+The guard checks normal family dependencies and named forbidden packages with
+all features enabled. API ownership, policy placement and feature design also
+require review; a dependency check cannot enforce their semantics.
 
 1. `causa-kernel` never depends on transport, policy, or any sibling
    (`reqwest`, `rmcp`, `axum`, `tracing-subscriber` banned, plus all
@@ -125,10 +134,17 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   adapter names. Inherited workspace metadata (`version`, `edition`,
   `authors`, `license`, `repository`) — never per-crate values.
 - `Cargo.lock` is committed (workspace binary story + reproducible CI).
+- All six crates ship `LICENSE-MIT` and `LICENSE-APACHE` via relative
+  symlinks to the root copies; Cargo flattens them when packaging.
+- During `0.0.x`, patch releases may break API / wire compatibility; record
+  breaking changes and migrations at the top of CHANGELOG. Starting with
+  `0.1.0`, wire-serde breaks require a minor bump. Checkpoint schema versions
+  remain an independent validation boundary.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
-- Module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard
-  rejects it). `foo.rs` is a thin index — docs, `mod` declarations,
+- Library module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard
+  rejects it under `crates/*/src`; test fixtures may use `tests/common/mod.rs`).
+  `foo.rs` is a thin index — docs, `mod` declarations,
   re-exports — and the code lives in `foo/*.rs`. Private submodules
   re-exported at `foo.rs` keep the path flat (`crate::session::WorkRef`);
   `pub mod` only for nested surfaces (`ports`, `context`).

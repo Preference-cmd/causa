@@ -13,7 +13,7 @@
 //! From here the model-facing flow is identical to local tools: hand
 //! `executor.tool_surface()` to a turn's `TurnInvocation` and the driver
 //! routes dispatch by listing membership (see
-//! `causa-runtime/examples/quickstart.rs` for the model-side half).
+//! `causa-provider/examples/quickstart.rs` for the model-side half).
 
 use causa_extension::McpToolSource;
 use causa_runtime::ToolExecutor;

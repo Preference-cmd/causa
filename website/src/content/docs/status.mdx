@@ -3,15 +3,18 @@ title: Status & changelog
 description: Where Causa stands and where it's going.
 ---
 
-## Pre-0.1
+## Experimental 0.0.x
 
-Expect breaking changes without notice. The **0.1 gate is functional
-completeness: multimodal I/O and subagents.**
+The first experimental release, **0.0.1**, packages
+the existing implementation; the **0.1 gate remains functional completeness:
+multimodal I/O and subagents.**
 
-During the `0.x` series, breaking changes to the wire serde shapes
-(`ContextEvent` / `TurnResult` / `TurnTrace` family) bump the **minor**
-version and are flagged at the top of the release notes — those shapes are a
-load-bearing external contract pinned by serialization tests.
+During `0.0.x`, patch releases may break Rust API and serialized-format
+compatibility. Breaking changes and migration notes appear at the top of
+the release notes. Cargo does not automatically upgrade `"0.0.1"` to
+`0.0.2`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
+version. Checkpoint schema versions are validated independently; incompatible
+saved material is rejected.
 
 ## Changelog
 
@@ -24,6 +27,5 @@ The canonical changelog lives in the repo:
 See
 [AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
 layout, commands (`cargo test --workspace`, clippy, fmt, the layering guard),
-and workflow: small work commits straight to `main` via PR; non-trivial
-behavior or contract changes open an issue first with observable acceptance
-criteria. Conventional Commits, one logical change per commit.
+and the [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
+for manual publishing. Conventional Commits, one logical change per commit.

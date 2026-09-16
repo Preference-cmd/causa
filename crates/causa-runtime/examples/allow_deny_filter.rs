@@ -1,7 +1,7 @@
 //! Allow / deny examples for `ToolUseHook` filters.
 //!
-//! A custom policy implements the kernel's `ToolUseHook` directly and joins
-//! a `FilterChain`. The kernel defaults to `PassthroughHook`; dedup /
+//! A custom policy implements the runtime's `ToolUseHook` directly and joins
+//! a `FilterChain`. The runtime defaults to `PassthroughHook`; dedup /
 //! kill-switch / approval are host concerns and live here, not in the kernel.
 
 use async_trait::async_trait;

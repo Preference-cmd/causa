@@ -82,16 +82,21 @@
 //!
 //! | Policy | Kind | Where |
 //! |---|---|---|
-//! | Retry schedule (500 ms base, 8 s ceiling, exponential) | config object [`RetryPolicy`] | `config` |
-//! | Turn limits (rounds, tool calls, deadline) | config object [`TurnPolicy`] | `config` |
+//! | Retry schedule (disabled by default; when enabled, 500 ms base, 8 s ceiling, exponential) | config object [`RetryPolicy`] | `config` |
+//! | Turn limits (10 model rounds, 64 tool calls by default) | config object [`TurnLimits`] in [`TurnPolicy`] | `config` |
+//! | Frame compaction (none by default; host supplies compactor, token counter and thresholds) | config object [`FramePolicy`] | `budget` |
 //! | Interaction / approval gate | port object [`NoopInteraction`] default | `config` |
 //! | Tool-use filtering | port object [`HookCtx`] / [`ToolUseHook`], default [`PassthroughHook`] | `hook`, `filter` |
-//! | Token estimation fallback (chars/4) | documented opinion, single home | `defaults::placeholder_token_estimate_value` (crate-internal) |
+//! | Tool-output token estimation fallback (chars/4; frame estimation defaults to zero) | documented opinion, single home | `defaults::placeholder_token_estimate_value` (crate-internal), [`FramePolicy`] |
 //! | Output truncation shape (retained head 60% + tail 40% sized to the declared token budget — notice and JSON-string wrapping measured, notice-only floor at tiny budgets; artifact spill; content replaced by a JSON string; `Truncation::Middle` marker) | documented opinion | `executor::ToolExecutor::execute_with_limits` |
 //! | Unknown-outcome continuation (default `Stop`, per-executed-name overrides, explicit per-call host decisions) | config object [`UnknownOutcomeConfig`] + checkpoint [`UnknownDecision`] data | `config`, `hook`, `driver` |
 //! | Batch semantics (dedup-then-parallel, per-call panic isolation → `Failed`, call-deadline backstop → `UnknownOutcome`) | documented opinion | `executor` |
+//! | Session retention (256 works, rejects new work at capacity) and work deadline (none by default) | config object [`SessionConfig`] | `session` |
+//! | Session admission (one active work, no queue), completed-only history and checkpoint eligibility | documented component opinions | [`Session`], [`ConversationState`], [`SessionCheckpoint`] |
 //!
-//! Anything not in this table is facts, not policy.
+//! This table summarizes the main execution and session policies. Component
+//! and configuration docs describe further defaults and constraints; absence
+//! from this table does not make a runtime decision a kernel invariant.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

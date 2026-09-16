@@ -13,13 +13,22 @@
 //!
 //! The default is the runnable stack (`runtime` + `providers`); `full`
 //! adds the extensions. `--no-default-features` is the bare kernel for
-//! offline audit or minimal embedding:
+//! offline audit or minimal embedding. Choose one dependency declaration:
 //!
 //! ```toml
-//! causa = "0.1" # default: runtime + providers
-//! causa = { version = "0.1", features = ["full"] } # + MCP extensions
-//! causa = { version = "0.1", default-features = false } # kernel only
-//! causa = { version = "0.1", default-features = false, features = ["runtime"] }
+//! causa = "0.0.1" # default: runtime + providers
+//! ```
+//!
+//! ```toml
+//! causa = { version = "0.0.1", features = ["full"] } # + MCP extensions
+//! ```
+//!
+//! ```toml
+//! causa = { version = "0.0.1", default-features = false } # kernel only
+//! ```
+//!
+//! ```toml
+//! causa = { version = "0.0.1", default-features = false, features = ["runtime"] }
 //! ```
 //!
 //! The fine-grained crates (`causa-kernel`, `causa-runtime`, …) remain
@@ -29,7 +38,7 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
-/// Facts + contracts. Always available; the only layer with no I/O.
+/// Facts + contracts. Always available, with no I/O.
 pub use causa_kernel as kernel;
 
 #[cfg(feature = "runtime")]

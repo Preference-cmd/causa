@@ -32,34 +32,36 @@ no policy. Anything the host didn't opt into doesn't happen.
   <span class="rounded-full border px-3 py-1">adapters, not opinions</span>
 </div>
 
-## Run your first turn
+## Get started
 
-```toml
-# Default entry: kernel + runtime + providers.
-cargo add causa
-```
+Add the experimental 0.0.1 facade to your Rust project (Rust 1.96+):
 
 ```bash
-# One turn, one local tool, one real provider round-trip:
-ANTHROPIC_API_KEY=sk-ant-... cargo run --example quickstart -p causa-provider
-
-# No key? These run fully offline:
-cargo run --example conversation_persistence -p causa-runtime
+# Default entry: kernel + runtime + providers.
+cargo add causa@0.0.1
 ```
 
-[Follow the getting-started guide →](/getting-started/)
+[Build your first application →](/getting-started/)
+
+To try an offline example now, clone the repository and run from its root:
+
+```bash
+git clone https://github.com/Preference-cmd/causa.git
+cd causa
+cargo run --example conversation_persistence -p causa-runtime
+```
 
 ## Why Causa
 
 <CardGrid>
   <Card title="Facts, not magic" icon="document">
     The kernel is a conversation fact machine plus the behavior ports third
-    parties implement against (`ModelGateway`, `Tool`, stores). Pure,
+    parties implement against (`ModelGateway`, `Tool`, `ArtifactStore`). Pure,
     offline, auditable — the layer CI forbids from touching I/O.
   </Card>
   <Card title="A driver with visible defaults" icon="setting">
     Turn loop, tool dispatch, streaming, pause/resume, unknown-outcome and
-    output-retention policy: config objects and one documented table.
+    output-retention policy: config objects and documented component defaults.
     Swappable, never hidden, never a trait seam for a single policy.
   </Card>
   <Card title="Adapters, not opinions" icon="puzzle">
@@ -74,7 +76,7 @@ cargo run --example conversation_persistence -p causa-runtime
 <LayerDiagram />
 
 The rule is simple: nothing depends upward, and the kernel depends on
-nothing. [Read the concepts →](/concepts/)
+no sibling crate. [Read the concepts →](/concepts/)
 
 ## What's inside
 
@@ -87,10 +89,12 @@ nothing. [Read the concepts →](/concepts/)
 | `causa-provider` | reqwest `ModelGateway` adapters |
 | `causa-extension` | `mcp` feature: MCP client tool sources |
 
-Need everything? `cargo add causa --features full`. Auditing offline?
+Need everything? `cargo add causa@0.0.1 --features full`. Auditing offline?
 `--no-default-features` is kernel-only. [Full crate guide →](/crates/)
 
 ## Learn by running
+
+Run these commands from the repository root after cloning as shown above.
 
 - **Persist a conversation** across restarts — `cargo run --example conversation_persistence -p causa-runtime`
 - **Stream a turn** delta by delta — `cargo run --example streaming_print -p causa-runtime`
@@ -100,6 +104,7 @@ Need everything? `cargo add causa --features full`. Auditing offline?
 
 <CtaBand />
 
-> **Status: pre-0.1.** Expect breaking changes without notice. The 0.1 gate
-> is functional completeness: multimodal I/O and subagents.
+> **Status: experimental 0.0.1.** API and serialized formats may
+> change in 0.0.x patch releases. The 0.1 gate remains functional completeness:
+> multimodal I/O and subagents.
 > [Status & changelog →](/status/)

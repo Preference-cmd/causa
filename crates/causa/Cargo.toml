@@ -12,11 +12,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-causa-kernel = { path = "../causa-kernel", version = "0.1" }
-causa-runtime = { path = "../causa-runtime", version = "0.1", optional = true }
-causa-protocol = { path = "../causa-protocol", version = "0.1", optional = true }
-causa-provider = { path = "../causa-provider", version = "0.1", optional = true }
-causa-extension = { path = "../causa-extension", version = "0.1", optional = true }
+causa-kernel = { path = "../causa-kernel", version = "0.0.1" }
+causa-runtime = { path = "../causa-runtime", version = "0.0.1", optional = true }
+causa-protocol = { path = "../causa-protocol", version = "0.0.1", optional = true }
+causa-provider = { path = "../causa-provider", version = "0.0.1", optional = true }
+causa-extension = { path = "../causa-extension", version = "0.0.1", optional = true }
 
 [features]
 # The default is the runnable stack: facts + driver + wire providers.

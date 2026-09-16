@@ -13,6 +13,7 @@
 //! touches bytes.
 
 #![deny(unsafe_code)]
+#![deny(missing_docs)]
 
 mod gateway_transport;
 mod kernel_gateway;

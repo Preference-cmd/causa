@@ -6,6 +6,7 @@ Cargo.lock.orig
 *.orig
 *.rej
 *.log
+__pycache__/
 
 # ----- JS tooling (website/) ----- 
 .pnpm-store/

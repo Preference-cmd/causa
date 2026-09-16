@@ -12,7 +12,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-causa-kernel = { path = "../causa-kernel", version = "0.1" }
+causa-kernel = { path = "../causa-kernel", version = "0.0.1" }
 async-trait = { workspace = true }
 # Decoding MCP image content to raw bytes for host-side media ingest.
 base64 = "0.22"
@@ -34,7 +34,7 @@ name = "integration"
 required-features = ["mcp"]
 
 [dev-dependencies]
-causa-runtime = { path = "../causa-runtime", version = "0.1" }
+causa-runtime = { path = "../causa-runtime", version = "0.0.1" }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "macros", "time"] }
 tracing-subscriber = { workspace = true }
