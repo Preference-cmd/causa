@@ -2,6 +2,8 @@
 //! and `completed_model_stream`. (The `TurnInteraction` contract lives in
 //! `causa-runtime`; its tests live there.)
 
+mod common;
+
 use async_trait::async_trait;
 use causa_kernel::{
     AttemptControl, AttemptNumber, InvocationId, ModelGateway, ModelInvokeError, ModelOutput,
@@ -57,7 +59,8 @@ impl ModelGateway for InvokeOnlyGateway {
 #[tokio::test]
 async fn default_stream_degenerates_to_single_done() {
     let mut ctx = TurnContext::new(TurnId::new("t1"));
-    ctx.append_input(TextPayload::new("hi"), "user").unwrap();
+    ctx.append_input(common::block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     let gateway = InvokeOnlyGateway {
         output: output("hello"),
     };

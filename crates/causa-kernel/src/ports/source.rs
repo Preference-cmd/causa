@@ -10,10 +10,9 @@
 
 use async_trait::async_trait;
 
-use crate::context::block::ToolCallPayload;
 use crate::context::tool_data::ToolResultPayload;
 use crate::ports::control::CallControl;
-use crate::ports::tool::ToolDefinition;
+use crate::ports::tool::{ToolCallContext, ToolDefinition};
 
 /// One external tool catalog. Implementors own their connection, their
 /// naming (see the `mcp_{server_id}_{tool}` namespace convention in
@@ -39,14 +38,14 @@ pub trait DynamicToolSource: Send + Sync {
     /// is skipped. Either way the turn is not interrupted.
     async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError>;
 
-    /// Execute one call against the catalog. `call.tool_name` arrives in
+    /// Execute one call against the catalog. `call.input.tool_name` arrives in
     /// the source's namespace; implementors de-namespace it (and reject
     /// names outside their namespace). Sources return the recorded result
     /// only — what an `UnknownOutcome` result does next is harness
     /// configuration, not source vocabulary.
     async fn invoke(
         &self,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
         control: &CallControl,
     ) -> Result<ToolResultPayload, ToolExecutionError>;
 
@@ -58,7 +57,7 @@ pub trait DynamicToolSource: Send + Sync {
     /// never produce media keep their existing `invoke` only.
     async fn invoke_with_store(
         &self,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn crate::ports::tool::ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {

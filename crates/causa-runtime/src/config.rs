@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::budget::{FramePolicy, TokenCounter};
+use crate::budget::FramePolicy;
 use crate::interaction::TurnInteraction;
 use causa_kernel::StreamDelta;
 use causa_kernel::{
@@ -80,7 +80,7 @@ pub struct TurnLimits {
     /// at the top of every round. Default: 10.
     pub max_model_rounds: u32,
     /// Ceiling on tool calls across the whole turn, counted at dispatch
-    /// time (a batch paused pending approval counts when emitted).
+    /// time (all model-emitted declarations count before processing).
     /// Default: 64.
     pub max_tool_calls: u32,
 }
@@ -105,8 +105,8 @@ pub struct TurnInvocation {
     /// changes (a dynamic source bumping its listing mid-turn) reach the
     /// next request; registering a source therefore authorizes its
     /// evolving catalog from the second round on. Retries within one round
-    /// reuse the round's snapshot. A hard per-round cap is a `ToolUseHook`
-    /// (reject) or unregister concern, not a frozen surface. Default:
+    /// reuse the round's snapshot. A hard per-round cap is a processor
+    /// rejection or unregister concern, not a frozen surface. Default:
     /// empty.
     pub tool_surface: ToolSurface,
     /// Generation (sampling) parameters sent with every attempt. Default:
@@ -161,7 +161,7 @@ pub enum UnknownOutcomePolicy {
 
 /// Unknown-outcome continuation configuration: a default action plus
 /// per-tool-name overrides. Resolution is by the **actual executed tool
-/// name** (post hook / rewrite / resume decision, full namespace for
+/// name** (after pre-processors, full namespace for
 /// dynamic tools) — never the original model draft's name, and never read
 /// out of a result body. An explicit override wins over the default.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -183,46 +183,13 @@ impl UnknownOutcomeConfig {
             .unwrap_or(self.default)
     }
 }
-/// Per-call truncation thresholds for tool outputs — the explicit
-/// truncation effect hosts opt into (output retention is harness
-/// configuration, not a tool declaration).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ToolOutputLimits {
-    /// Maximum estimated tokens a tool result may carry before it gets
-    /// truncated; [`usize::MAX`] (the default) disables truncation.
-    pub max_tokens: usize,
-}
-impl Default for ToolOutputLimits {
-    /// No limit by default — callers opt in to truncation.
-    ///
-    /// Specific limits come from host configuration (`ExecutionOptions`):
-    /// the fallback plus per-tool-name overrides. The default is
-    /// `usize::MAX` so truncation is an *explicit* effect, never the
-    /// absence of configuration.
-    fn default() -> Self {
-        Self {
-            max_tokens: usize::MAX,
-        }
-    }
-}
-
 /// Execution options — how tool calls run inside a round.
 #[derive(Clone, Default)]
 pub struct ExecutionOptions {
-    /// Fallback per-output token limit for truncation; a per-tool-name
-    /// entry in `tool_output_limits_overrides` replaces it (even with a
-    /// larger value — the override is the chosen limit, not a cap).
-    pub tool_output_limits: ToolOutputLimits,
-    /// Per-tool-name limit overrides, keyed by the actual executed tool
-    /// name (full namespace name for dynamic tools). A name not yet
-    /// present in a dynamic catalog may still be configured here; the
-    /// entry applies once that name executes.
-    pub tool_output_limits_overrides: std::collections::HashMap<String, ToolOutputLimits>,
-    /// Where a truncated output's full bytes are spilled as an artifact;
-    /// `None` = truncate without a retrievable original.
+    /// Artifact store passed through to tools that implement
+    /// `execute_with_store`. Optional output-retention processors may also
+    /// hold a store independently.
     pub artifact_store: Option<Arc<dyn ArtifactStore>>,
-    /// Counter used for tool-output truncation estimation.
-    pub token_counter: Option<Arc<dyn TokenCounter>>,
     /// Per-tool-call deadline; `None` = unbounded call (backstop still
     /// applies if the turn carries a deadline).
     pub call_timeout: Option<Duration>,
@@ -230,13 +197,7 @@ pub struct ExecutionOptions {
 impl std::fmt::Debug for ExecutionOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExecutionOptions")
-            .field("tool_output_limits", &self.tool_output_limits)
-            .field(
-                "tool_output_limits_overrides",
-                &self.tool_output_limits_overrides.len(),
-            )
             .field("artifact_store", &self.artifact_store.is_some())
-            .field("token_counter", &self.token_counter.is_some())
             .field("call_timeout", &self.call_timeout)
             .finish()
     }

@@ -4,6 +4,8 @@
 //! without the framework layer (`causa-runtime`'s `TurnRunner`) and without
 //! any private module path.
 
+mod common;
+
 use causa_kernel::{
     AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion,
     GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef,
@@ -36,7 +38,7 @@ impl ModelGateway for OneShotGateway {
 async fn external_single_shot_driver_assembles_from_root_facade() {
     let mut context = TurnContext::new(TurnId::new("ext-1"));
     context
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(common::block_id(), TextPayload::new("hi"), "user")
         .unwrap();
 
     let gateway = OneShotGateway {
@@ -81,7 +83,12 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
     let ctrl = AttemptControl::new(CancellationToken::new(), None);
     let output = gateway.invoke(&request, &ctrl).await.unwrap();
     let applied = context
-        .append_model_output(invocation, &output.response, output.stop_reason)
+        .append_model_output(
+            invocation,
+            &output.response,
+            output.stop_reason,
+            common::block_ids_for(&output.response),
+        )
         .unwrap();
     context.seal();
 
@@ -94,7 +101,7 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
     assert_eq!(snapshot.blocks.as_slice().len(), 2);
     // sealed turn rejects further mutation
     assert!(matches!(
-        context.append_input(TextPayload::new("more"), "user"),
+        context.append_input(common::block_id(), TextPayload::new("more"), "user"),
         Err(ContextError::SealedTurn)
     ));
 }

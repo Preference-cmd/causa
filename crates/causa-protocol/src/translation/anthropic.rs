@@ -141,13 +141,23 @@ pub fn render_anthropic_messages(
                 wire_id,
                 status,
                 content,
+                notes,
                 media,
             } => {
-                let content_json = if media.is_empty() {
+                let mut blocks = vec![json!({"type": "text", "text": content})];
+                if !notes.is_empty() {
+                    blocks.push(json!({"type": "text", "text": "Notes:"}));
+                    blocks.extend(notes.iter().map(|note| {
+                        json!({
+                            "type": "text",
+                            "text": format!("- {note}"),
+                        })
+                    }));
+                }
+                blocks.extend(media.iter().map(media_block_json));
+                let content_json = if notes.is_empty() && media.is_empty() {
                     json!(content)
                 } else {
-                    let mut blocks = vec![json!({"type": "text", "text": content})];
-                    blocks.extend(media.iter().map(media_block_json));
                     json!(blocks)
                 };
                 let mut block_json = json!({
@@ -382,8 +392,8 @@ fn append_message(
 mod tests {
     use super::*;
     use causa_kernel::{
-        ContextVersion, ConversationId, FrameId, FrameScope, MediaRef, ModelContext, ModelUsage,
-        RoundId, ToolDefinition, TurnId,
+        ContextVersion, ConversationId, FrameScope, MediaRef, ModelContext, ModelUsage, RoundId,
+        ToolDefinition, TurnId,
     };
 
     use crate::translation::media::{MediaPayload, MediaSet};
@@ -460,6 +470,7 @@ mod tests {
 
     #[test]
     fn tool_round_trip_pairing_and_consecutive_merge() {
+        let fallback_id = call(2, "kc2", None, "list", json!({})).id.0.to_string();
         let f = frame(vec![
             text(0, "reading now", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
@@ -471,7 +482,7 @@ mod tests {
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2);
         // text + both calls merge into one assistant message; the wire id
-        // is provider_call_id when present, kernel call_id otherwise
+        // is provider_call_id when present, declaration BlockId UUID otherwise
         assert_eq!(msgs[0]["role"], "assistant");
         assert_eq!(
             msgs[0]["content"][0],
@@ -483,7 +494,7 @@ mod tests {
         );
         assert_eq!(
             msgs[0]["content"][2],
-            json!({"type": "tool_use", "id": "kc2", "name": "list", "input": {}})
+            json!({"type": "tool_use", "id": fallback_id, "name": "list", "input": {}})
         );
         // both results merge into one user message, ids via the pairing map
         assert_eq!(msgs[1]["role"], "user");
@@ -496,7 +507,7 @@ mod tests {
             msgs[1]["content"][1],
             json!({
                 "type": "tool_result",
-                "tool_use_id": "kc2",
+                "tool_use_id": fallback_id,
                 "content": "{\"error\":\"boom\"}",
                 "is_error": true,
             })
@@ -504,7 +515,11 @@ mod tests {
     }
 
     #[test]
-    fn unpaired_tool_result_falls_back_to_kernel_call_id() {
+    fn unpaired_tool_result_falls_back_to_declaration_uuid() {
+        let fallback_id = call(0, "orphan", None, "ignored", json!({}))
+            .id
+            .0
+            .to_string();
         let f = frame(vec![result(
             0,
             "orphan",
@@ -514,7 +529,7 @@ mod tests {
         let v = render(&f);
         assert_eq!(
             v["messages"][0]["content"][0]["tool_use_id"],
-            json!("orphan")
+            json!(fallback_id)
         );
     }
 
@@ -598,7 +613,6 @@ mod tests {
             source_version: ContextVersion(2),
         };
         let turn = ContextFrame {
-            frame_id: FrameId::from_scope(&turn_scope, RoundId(1)),
             scope: turn_scope,
             round_id: RoundId(1),
             model_context: ModelContext {
@@ -606,7 +620,6 @@ mod tests {
             },
         };
         let conv = ContextFrame {
-            frame_id: FrameId::from_scope(&conv_scope, RoundId(1)),
             scope: conv_scope,
             round_id: RoundId(1),
             model_context: ModelContext { blocks },

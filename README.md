@@ -16,13 +16,13 @@
 </div>
 
 Causa keeps messages, tool calls and results as typed facts in a Rust kernel.
-Its optional runtime adds turn execution, streaming, approval pauses and session
-checkpoints, with Anthropic, OpenAI and MCP adapters available alongside it.
+Its optional runtime adds turn execution, streaming, tool-processing chains and sessions, with Anthropic, OpenAI and MCP adapters available alongside it.
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
-> **Experimental 0.0.1.** Requires Rust **1.96+**. Rust APIs and serialized
-> formats may change between `0.0.x` patch releases.
+> **Pre-0.1 development.** Requires Rust **1.96+**. This checkout includes
+> unreleased API changes after 0.0.1. APIs and stored formats have no backward
+> compatibility guarantee before 0.1; use the `v0.0.1` tag for that release.
 
 ## Try it offline
 
@@ -40,13 +40,14 @@ Repository examples run from this checkout, even if you have already added
 
 ## Use in your application
 
-Start with **`causa`**. Cargo resolves the underlying
-crates; you do not need to add all six yourself.
+Start with **`causa`**. Cargo resolves the underlying crates. The following
+example uses the current checkout; from the directory containing your cloned
+`causa` repository, create a sibling application:
 
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.0.1
+cargo add causa --path ../causa/crates/causa
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -56,7 +57,7 @@ Put this in `src/main.rs` to run one model turn through the facade:
 use causa::{
     kernel::{CancellationToken, ModelRef, TextPayload, TurnContext, TurnId},
     providers::AnthropicMessagesGateway,
-    runtime::{RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
+    runtime::{new_block_id, RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
 };
 use std::sync::Arc;
 
@@ -67,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
     let mut context = TurnContext::new(TurnId::new("hello"));
-    context.append_input(TextPayload::new("Say hello in one sentence."), "user")?;
+    context.append_input(new_block_id(), TextPayload::new("Say hello in one sentence."), "user")?;
     let mut options = TurnRunOptions::default();
     options.invocation.model = ModelRef::new(std::env::var("ANTHROPIC_MODEL")?);
     let outcome = runner
@@ -89,7 +90,8 @@ local tool, see the
 ### Choose your features
 
 The default includes the kernel, runtime and provider adapters. MCP is opt-in.
-These are alternative dependency configurations:
+These are the published 0.0.1 dependency configurations; use a local `path`
+dependency for the unreleased API shown above:
 
 | Configuration | Included |
 |---|---|
@@ -112,8 +114,8 @@ Run these from the repository root using
 |---|---|---|---|
 | `conversation_persistence` | `causa-runtime` | Save and reload conversation history | Offline |
 | `streaming_print` | `causa-runtime` | Observe deltas as a turn runs | Offline |
-| `approval_pause_resume` | `causa-runtime` | Pause a tool batch and resume with approval | Offline |
-| `allow_deny_filter` | `causa-runtime` | Compose tool-use filters | Offline |
+| `approval_processor` | `causa-runtime` | Await approval inside a tool processor | Offline |
+| `tool_processors` | `causa-runtime` | Compose tool processors | Offline |
 | `media_feedback` | `causa-runtime` | Carry tool-produced media references into the next round | Offline |
 | `quickstart` | `causa-provider` | A model turn with a local tool | `ANTHROPIC_API_KEY` |
 | `mcp_tools` | `causa-extension` | Connect MCP tool sources | MCP server; default `mcp` feature |
@@ -132,7 +134,7 @@ provides storage, credentials, tools and the policies it needs.
 |---|---|
 | `causa` | Facade and feature selection — the default entry point |
 | `causa-kernel` | Conversation facts, turn state and contracts for models and tools |
-| `causa-runtime` | Turn execution, sessions, pause/resume, checkpoints and policy configuration |
+| `causa-runtime` | Turn execution, sessions, tool-processing chains and optional output policies |
 | `causa-protocol` | Pure translation for Anthropic and OpenAI wire formats |
 | `causa-provider` | HTTP adapters implementing the model gateway contract |
 | `causa-extension` | Dynamic tool-source adapters, currently MCP |
@@ -156,11 +158,13 @@ During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Cargo does not automatically upgrade `"0.0.1"` to `0.0.2`;
 review the [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
 before upgrading. Starting with `0.1.0`, breaking wire-format changes bump the
-minor version. Checkpoint schema versions are validated independently.
+minor version. The current development API removes the old session checkpoint
+and approval-resume interfaces without compatibility adapters.
 
-Persistence stays in your application. Session checkpoints support saving an
-idle or paused session; they do not guarantee exactly-once execution across
-arbitrary process crashes.
+Persistence stays in your application. Processing interruptions return the
+uncommitted tool batch and their cause; your code chooses whether to inspect,
+save or discard it. Reconstructing context does not guarantee exactly-once
+execution of external tools.
 
 ## Contributing
 

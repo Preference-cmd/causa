@@ -24,13 +24,10 @@
 //!   placeholder `[media: {type} {reference}]`. The decision is made
 //!   once, here, never per-renderer.
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
-//!   the kernel `call_id` for synthetic calls the provider never named;
-//!   tool result ids resolve through the frame's `(turn_id, call_id) →
-//!   wire id` map (pre-pass, so order never matters). The turn id scopes
-//!   the key because `ToolCallId` is unique only within one turn — two
-//!   turns may reuse an id, and each turn's result keeps its own wire id.
-//!   An unpaired result falls back to its own kernel `call_id`; the
-//!   provider rejects the orphan at HTTP time (the loud failure path).
+//!   the declaration block UUID. Tool results resolve directly through
+//!   their declaration `BlockId` (pre-pass, so order and turn boundaries
+//!   do not matter). An unpaired result falls back to its declaration UUID;
+//!   the provider rejects the orphan at HTTP time (the loud failure path).
 //! - Tool result media travels on the result segment in result order;
 //!   whether it embeds (Anthropic) or hoists (OpenAI-family) is the
 //!   emitter's call. Non-string tool observations serialize to a string.
@@ -132,6 +129,8 @@ pub(crate) enum Segment {
         wire_id: String,
         status: ToolResultStatus,
         content: String,
+        /// Ordered model-visible notes stored with this result.
+        notes: Vec<String>,
         /// The result's media attachments, resolved or degraded, in
         /// payload order.
         media: Vec<ResolvedMedia>,
@@ -142,28 +141,37 @@ pub(crate) struct NormalizedFrame {
     pub segments: Vec<Segment>,
 }
 
+/// Add stored notes to a tool result's model-visible text while preserving
+/// the output payload as an independent fact.
+pub(crate) fn result_text_with_notes(content: &str, notes: &[String]) -> String {
+    if notes.is_empty() {
+        return content.to_owned();
+    }
+    let mut text = format!("{content}\n\nNotes:");
+    for note in notes {
+        text.push_str("\n- ");
+        text.push_str(note);
+    }
+    text
+}
+
 /// Run the shared policy walk over a frame, resolving media through
 /// `media`.
 pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFrame {
     let blocks = &frame.model_context.blocks;
 
-    // Pairing map: (owning turn id, kernel call_id) -> the id the
-    // provider saw on the tool call. The turn scopes the key because a
-    // `ToolCallId` is unique only within its turn; a result block
-    // always pairs with a call block of the same turn (kernel-enforced),
-    // so this resolves across a whole conversation frame without
-    // cross-turn collisions. Pre-pass over the frame, so a result never
-    // depends on where its call block sits.
-    let mut provider_ids: HashMap<(String, String), String> = HashMap::new();
+    // Block identity is stable across turns and directly joins declarations
+    // with results in a merged conversation frame.
+    let mut provider_ids: HashMap<causa_kernel::BlockId, String> = HashMap::new();
     for block in blocks {
-        if let BlockContent::ToolCall(call) = &block.content {
+        if let BlockContent::ToolCall(_) = &block.content {
             provider_ids.insert(
-                (block.id.turn_id.0.clone(), call.call_id.0.clone()),
+                block.id,
                 block
                     .meta
                     .provider_call_id
                     .clone()
-                    .unwrap_or_else(|| call.call_id.0.clone()),
+                    .unwrap_or_else(|| block.id.0.to_string()),
             );
         }
     }
@@ -218,7 +226,7 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
                         .meta
                         .provider_call_id
                         .clone()
-                        .unwrap_or_else(|| call.call_id.0.clone()),
+                        .unwrap_or_else(|| block.id.0.to_string()),
                     name: call.tool_name.clone(),
                     arguments: call.arguments.clone(),
                 }));
@@ -238,11 +246,12 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
                     .collect();
                 segments.push(Segment::ToolResult {
                     wire_id: provider_ids
-                        .get(&(block.id.turn_id.0.clone(), result.call_id.0.clone()))
+                        .get(&result.call_block_id)
                         .cloned()
-                        .unwrap_or_else(|| result.call_id.0.clone()),
+                        .unwrap_or_else(|| result.call_block_id.0.to_string()),
                     status: result.status.clone(),
                     content,
+                    notes: result.notes.iter().map(|note| note.0.clone()).collect(),
                     media: resolved,
                 });
             }

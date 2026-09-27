@@ -10,7 +10,7 @@ use std::sync::Arc;
 use causa_kernel::{ConversationId, ModelInvokeErrorKind, TextPayload, TurnContext, TurnId};
 use causa_runtime::{
     ConversationError, ConversationState, FramePolicy, SealedResult, TurnOutcome, TurnResult,
-    TurnRunOptions, WindowBudget,
+    TurnRunOptions, WindowBudget, new_block_id,
 };
 
 /// Both entries run the same state machine — same input sequence yields
@@ -24,7 +24,8 @@ async fn dual_entries_share_one_state_machine() {
     // Single-turn entry — same turn id as the conversation path, so the
     // accumulated facts must be byte-identical.
     let mut ctx = TurnContext::new(TurnId::new("t1"));
-    ctx.append_input(TextPayload::new("hi"), "user").unwrap();
+    ctx.append_input(new_block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     let single: TurnOutcome = runner.run(ctx, TurnRunOptions::default(), ctrl()).await;
     // Conversation entry with empty history.
     let mut state = ConversationState::new(ConversationId("conv-1".into()));
@@ -32,7 +33,7 @@ async fn dual_entries_share_one_state_machine() {
     state
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     let mut conv = runner
         .run_in_conversation(state, TurnRunOptions::default(), ctrl())
@@ -43,8 +44,26 @@ async fn dual_entries_share_one_state_machine() {
     assert_eq!(single.trace.rounds.len(), conv.trace.rounds.len());
     // Same facts accumulated in the active turn.
     assert_eq!(
-        serde_json::to_string(single.context.blocks()).unwrap(),
-        serde_json::to_string(conv.state.active_turn().unwrap().blocks()).unwrap()
+        serde_json::to_string(
+            &single
+                .context
+                .blocks()
+                .iter()
+                .map(|block| &block.content)
+                .collect::<Vec<_>>()
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &conv
+                .state
+                .active_turn()
+                .unwrap()
+                .blocks()
+                .iter()
+                .map(|block| &block.content)
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
     );
     // The conversation state comes back sealed and stamped, not yet committed.
     assert!(conv.state.active_turn().unwrap().is_sealed());
@@ -106,7 +125,7 @@ async fn conversation_entry_is_inert_to_frame_policy() {
     state
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     let out = runner
         .run_in_conversation(state, options, ctrl())
@@ -135,7 +154,7 @@ async fn interrupted_conversation_turn_is_stamped_and_aborted() {
     state
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     let mut out = runner
         .run_in_conversation(state, TurnRunOptions::default(), ctrl())

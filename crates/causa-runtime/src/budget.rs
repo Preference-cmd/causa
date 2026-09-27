@@ -87,9 +87,15 @@ pub trait Compaction: Send + Sync {
 pub trait TokenCounter: Send + Sync {
     /// Estimated token count for a block list.
     fn estimate(&self, blocks: &[ContextBlock]) -> usize;
-    /// Estimated token count for a single JSON value; the executor uses it
-    /// to size tool outputs before limit-based truncation.
+    /// Estimated token count for a single JSON value.
     fn estimate_value(&self, value: &serde_json::Value) -> usize;
+    /// Estimated token count for media rendered with a model request. The
+    /// default is unknown, so a processor with a strict budget must reject
+    /// media it cannot account for instead of treating the reference as its
+    /// image cost.
+    fn estimate_media(&self, _media: &causa_kernel::MediaRef) -> Option<usize> {
+        None
+    }
 }
 
 /// Error of policy-driven frame materialization: the only fallible step is

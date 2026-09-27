@@ -188,7 +188,11 @@ async fn a1_new_rejects_active_turn_and_returns_the_by_value_inputs() {
     state
         .active_turn_mut()
         .expect("just begun")
-        .append_input(TextPayload::new("in"), "user")
+        .append_input(
+            causa_runtime::new_block_id(),
+            TextPayload::new("in"),
+            "user",
+        )
         .expect("append");
 
     let runner = Arc::new(runner_with(gateway.clone(), vec![]));

@@ -21,7 +21,7 @@ use causa_kernel::{
     ModelStopReason, RoundId, StreamDelta, TextPayload, ToolCallDraft, TurnContext, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInteraction, TurnResult, TurnRunOptions, TurnRunner,
+    RunControl, ToolExecutor, TurnInteraction, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
 use std::io::Write as _;
 use std::sync::Arc;
@@ -117,7 +117,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
 
     let mut context = TurnContext::new(TurnId::new("streaming-demo"));
-    context.append_input(TextPayload::new("Say something about streaming."), "user")?;
+    context.append_input(
+        new_block_id(),
+        TextPayload::new("Say something about streaming."),
+        "user",
+    )?;
 
     let options = TurnRunOptions {
         interaction: Arc::new(PrintDeltas),

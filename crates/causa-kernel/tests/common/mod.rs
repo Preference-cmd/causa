@@ -7,8 +7,23 @@
 #![allow(dead_code)]
 
 use causa_kernel::{
-    ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnContext, TurnId,
+    BlockId, ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnContext,
+    TurnId,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_BLOCK_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn block_id() -> BlockId {
+    BlockId::new(uuid::Uuid::from_u128(
+        NEXT_BLOCK_ID.fetch_add(1, Ordering::Relaxed) as u128,
+    ))
+}
+
+pub fn block_ids_for(response: &ModelResponse) -> Vec<BlockId> {
+    let count = causa_kernel::model_output_block_count(response);
+    (0..count).map(|_| block_id()).collect()
+}
 
 // ---- ids and model-output constructors --------------------------------------
 

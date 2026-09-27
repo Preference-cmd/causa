@@ -29,11 +29,12 @@
 //! three renderers cannot drift): empty text blocks are skipped
 //! (mirroring the kernel model door); adjacent same-role text blocks
 //! join into one text with `\n`; tool ids come from
-//! `meta.provider_call_id` with the kernel `call_id` as fallback, and
-//! tool result ids resolve through the frame's `call_id → wire id` map
-//! (an unpaired result falls back to its own `call_id` — the provider
-//! rejects the orphan at HTTP time, the loud failure path); non-string
-//! tool observations serialize to a string.
+//! `meta.provider_call_id` with the declaration `BlockId` UUID as fallback,
+//! and tool result ids resolve through their declaration block identity
+//! (an unpaired result falls back to that UUID — the provider rejects the
+//! orphan at HTTP time, the loud failure path); non-string tool observations
+//! serialize to a string. Ordered result notes render with the same tool
+//! result, while remaining separate from the stored output payload.
 
 /// The schema name rendered into OpenAI-family structured-output envelopes
 /// (Chat `response_format.json_schema.name`, Responses `text.format.name`).

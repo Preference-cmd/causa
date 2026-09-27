@@ -5,15 +5,15 @@
 use async_trait::async_trait;
 use causa_extension::McpToolSource;
 use causa_kernel::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptControl, CallControl,
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptControl, BlockId, CallControl,
     CancellationToken, DynamicToolSource, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
     ModelRef, ModelRequest, ModelResponse, ModelStopReason, SourceError, StoreError, TextPayload,
-    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
     ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolOutputLimits, TurnInvocation, TurnLimits, TurnPolicy, TurnResult,
-    TurnRunOptions, TurnRunner,
+    RunControl, ToolExecutor, TurnInvocation, TurnLimits, TurnPolicy, TurnResult, TurnRunOptions,
+    TurnRunner, new_block_id,
 };
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -24,6 +24,17 @@ use rmcp::service::{RequestContext, RoleServer, ServiceExt};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+
+fn call_context(tool_name: &str, arguments: serde_json::Value) -> ToolCallContext {
+    ToolCallContext {
+        call_block_id: BlockId::new(uuid::Uuid::now_v7()),
+        input: ToolCallPayload {
+            tool_name: tool_name.into(),
+            arguments,
+        },
+        result_notes: Vec::new(),
+    }
+}
 
 // ---- in-process MCP server fixture ---------------------------------------------
 
@@ -190,26 +201,20 @@ async fn lists_tools_under_the_server_namespace() {
 #[tokio::test]
 async fn invoke_executes_and_returns_text_content() {
     let (source, server) = served(false, false).await;
-    let call = ToolCallPayload {
-        call_id: causa_kernel::ToolCallId("call-1".into()),
-        tool_name: "mcp_srv_echo".into(),
-        arguments: serde_json::json!({"a": 1}),
-    };
+    let mut call = call_context("mcp_srv_echo", serde_json::json!({"a": 1}));
+    call.result_notes.push(TextPayload::new("incoming note"));
     let outcome = source.invoke(&call, &ctrl()).await.expect("invoke");
     assert_eq!(outcome.status, ToolResultStatus::Succeeded);
     assert_eq!(outcome.output.content, serde_json::json!("echo: {\"a\":1}"));
-    assert_eq!(outcome.call_id, call.call_id);
+    assert_eq!(outcome.call_block_id, call.call_block_id);
+    assert!(outcome.notes.is_empty(), "the source adds no echoed notes");
     server.cancel().await.expect("server stop");
 }
 
 #[tokio::test]
 async fn invoke_rejects_names_outside_the_namespace() {
     let (source, server) = served(false, false).await;
-    let call = ToolCallPayload {
-        call_id: causa_kernel::ToolCallId("call-1".into()),
-        tool_name: "other_server_tool".into(),
-        arguments: serde_json::json!({}),
-    };
+    let call = call_context("other_server_tool", serde_json::json!({}));
     let err = source.invoke(&call, &ctrl()).await.expect_err("unknown");
     assert!(matches!(err, ToolExecutionError::UnknownTool(_)));
     server.cancel().await.expect("server stop");
@@ -218,11 +223,7 @@ async fn invoke_rejects_names_outside_the_namespace() {
 #[tokio::test]
 async fn is_error_results_map_to_failed_outcomes() {
     let (source, server) = served(true, false).await;
-    let call = ToolCallPayload {
-        call_id: causa_kernel::ToolCallId("call-1".into()),
-        tool_name: "mcp_srv_echo".into(),
-        arguments: serde_json::json!({"x": 1}),
-    };
+    let call = call_context("mcp_srv_echo", serde_json::json!({"x": 1}));
     let outcome = source.invoke(&call, &ctrl()).await.expect("invoke");
     assert_eq!(outcome.status, ToolResultStatus::Failed);
     assert!(
@@ -240,11 +241,7 @@ async fn is_error_results_map_to_failed_outcomes() {
 #[tokio::test]
 async fn call_deadline_maps_to_timed_out() {
     let (source, server) = served(false, true).await;
-    let call = ToolCallPayload {
-        call_id: causa_kernel::ToolCallId("call-1".into()),
-        tool_name: "mcp_srv_echo".into(),
-        arguments: serde_json::json!({}),
-    };
+    let call = call_context("mcp_srv_echo", serde_json::json!({}));
     let control = CallControl::new(CancellationToken::new(), Some(Duration::from_millis(200)));
     let err = source
         .invoke(&call, &control)
@@ -257,11 +254,7 @@ async fn call_deadline_maps_to_timed_out() {
 #[tokio::test]
 async fn cancellation_maps_to_cancelled() {
     let (source, server) = served(false, true).await;
-    let call = ToolCallPayload {
-        call_id: causa_kernel::ToolCallId("call-1".into()),
-        tool_name: "mcp_srv_echo".into(),
-        arguments: serde_json::json!({}),
-    };
+    let call = call_context("mcp_srv_echo", serde_json::json!({}));
     let token = CancellationToken::new();
     let control = CallControl::new(token.clone(), Some(Duration::from_secs(30)));
     let task = tokio::spawn(async move { source.invoke(&call, &control).await });
@@ -345,12 +338,12 @@ impl DynamicToolSource for BrokenSource {
     }
     async fn invoke(
         &self,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
         _control: &CallControl,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Err(ToolExecutionError::Unavailable(format!(
             "fixture outage: {}",
-            call.tool_name
+            call.input.tool_name
         )))
     }
 }
@@ -372,10 +365,11 @@ fn echo_static_tool() -> Arc<dyn causa_kernel::Tool> {
             _control: &CallControl,
         ) -> ToolResultPayload {
             ToolResultPayload {
-                call_id: ctx.call_id.clone(),
+                call_block_id: ctx.call_block_id,
                 status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(serde_json::json!({"echo": ctx.arguments})),
+                output: ToolOutput::new(serde_json::json!({"echo": ctx.input.arguments})),
                 media: Vec::new(),
+                notes: Vec::new(),
             }
         }
     }
@@ -441,18 +435,13 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
 
     // A dynamic call executes like a local one (truncation pipeline etc.).
     let outcome = executor
-        .execute_with_limits(
-            ToolCallPayload {
-                call_id: causa_kernel::ToolCallId("call-1".into()),
-                tool_name: "mcp_srv_echo".into(),
-                arguments: serde_json::json!({"k": "v"}),
-            },
+        .execute(
+            call_context("mcp_srv_echo", serde_json::json!({"k": "v"})),
             ctrl(),
             None,
-            None,
-            ToolOutputLimits::default(),
         )
-        .await;
+        .await
+        .expect("dispatch");
     assert_eq!(outcome.status, ToolResultStatus::Succeeded);
     assert_eq!(
         outcome.output.content,
@@ -462,34 +451,24 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
     // A name the server never advertised is rejected by the executor
     // itself — the model can only call what the surface showed.
     let outcome = executor
-        .execute_with_limits(
-            ToolCallPayload {
-                call_id: causa_kernel::ToolCallId("call-2".into()),
-                tool_name: "mcp_srv_nothere".into(),
-                arguments: serde_json::json!({}),
-            },
+        .execute(
+            call_context("mcp_srv_nothere", serde_json::json!({})),
             ctrl(),
             None,
-            None,
-            ToolOutputLimits::default(),
         )
-        .await;
+        .await
+        .expect("dispatch");
     assert_eq!(outcome.status, ToolResultStatus::Rejected);
 
     // A name in no listing at all is rejected by the executor too.
     let outcome = executor
-        .execute_with_limits(
-            ToolCallPayload {
-                call_id: causa_kernel::ToolCallId("call-4".into()),
-                tool_name: "no_such_tool_anywhere".into(),
-                arguments: serde_json::json!({}),
-            },
+        .execute(
+            call_context("no_such_tool_anywhere", serde_json::json!({})),
             ctrl(),
             None,
-            None,
-            ToolOutputLimits::default(),
         )
-        .await;
+        .await
+        .expect("dispatch");
     assert_eq!(outcome.status, ToolResultStatus::Rejected);
 
     // A remote tool-level failure (`is_error` result) is a Failed outcome
@@ -500,18 +479,13 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
         .expect("register flaky");
     executor.tool_surface().await;
     let outcome = executor
-        .execute_with_limits(
-            ToolCallPayload {
-                call_id: causa_kernel::ToolCallId("call-5".into()),
-                tool_name: "mcp_flaky_echo".into(),
-                arguments: serde_json::json!({}),
-            },
+        .execute(
+            call_context("mcp_flaky_echo", serde_json::json!({})),
             ctrl(),
             None,
-            None,
-            ToolOutputLimits::default(),
         )
-        .await;
+        .await
+        .expect("dispatch");
     assert_eq!(outcome.status, ToolResultStatus::Failed);
     assert!(
         outcome
@@ -612,7 +586,7 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         ..Default::default()
     };
     let mut ctx = TurnContext::new(TurnId::new("t-mcp"));
-    ctx.append_input(causa_kernel::TextPayload::new("hi"), "user")
+    ctx.append_input(new_block_id(), causa_kernel::TextPayload::new("hi"), "user")
         .unwrap();
 
     let out = runner
@@ -628,6 +602,15 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         out
     );
     assert_eq!(out.trace.tool_calls_total, 1);
+    let declaration_block_id = out
+        .context
+        .blocks()
+        .iter()
+        .find_map(|block| match &block.content {
+            causa_kernel::BlockContent::ToolCall(_) => Some(block.id),
+            _ => None,
+        })
+        .expect("model declaration block");
     let result_block = out
         .context
         .blocks()
@@ -638,6 +621,10 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         })
         .expect("tool result fact");
     assert_eq!(result_block.status, ToolResultStatus::Succeeded);
+    assert_eq!(
+        result_block.call_block_id, declaration_block_id,
+        "the dynamic source result stays attached to its declaration"
+    );
     assert_eq!(
         result_block.output.content,
         serde_json::json!("echo: {\"q\":42}")
@@ -710,11 +697,7 @@ async fn http_transport_lists_and_invokes() {
     assert_eq!(defs.len(), 1);
     assert_eq!(defs[0].name, "mcp_http_echo");
 
-    let call = ToolCallPayload {
-        call_id: causa_kernel::ToolCallId("call-h1".into()),
-        tool_name: "mcp_http_echo".into(),
-        arguments: serde_json::json!({"via": "http"}),
-    };
+    let call = call_context("mcp_http_echo", serde_json::json!({"via": "http"}));
     let outcome = source
         .invoke(&call, &ctrl())
         .await
@@ -802,10 +785,13 @@ async fn served_image() -> (
 }
 
 /// One-slot in-memory store: every persist lands as `asset-1`.
-struct MemStore;
+struct MemStore {
+    hint: std::sync::Mutex<Option<ArtifactHint>>,
+}
 #[async_trait::async_trait]
 impl ArtifactStore for MemStore {
-    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+    async fn persist(&self, _data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        *self.hint.lock().unwrap() = Some(hint);
         Ok(ArtifactRef {
             id: "asset-1".into(),
             size_bytes: 3,
@@ -825,11 +811,7 @@ impl ArtifactStore for MemStore {
 #[tokio::test]
 async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
     let (source, _server) = served_image().await;
-    let call = ToolCallPayload {
-        call_id: ToolCallId::new("c1"),
-        tool_name: "mcp_srv_render_image".into(),
-        arguments: json!({}),
-    };
+    let call = call_context("mcp_srv_render_image", json!({}));
 
     // Without a store: the deterministic placeholder text, no media.
     let out = source.invoke(&call, &ctrl()).await.unwrap();
@@ -842,12 +824,25 @@ async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
     );
 
     // With a store: bytes persisted, reference attached, note names the asset.
-    let store = MemStore;
+    let store = MemStore {
+        hint: std::sync::Mutex::new(None),
+    };
     let out = source
         .invoke_with_store(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
         .await
         .unwrap();
     assert_eq!(out.media, vec![MediaRef::new("image/png", "asset-1")]);
+    assert_eq!(
+        store
+            .hint
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("the image was persisted")
+            .call_block_id,
+        call.call_block_id,
+        "artifact provenance is keyed by the declaration BlockId"
+    );
     assert!(
         out.output
             .content

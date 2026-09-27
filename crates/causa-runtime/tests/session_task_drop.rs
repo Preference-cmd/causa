@@ -5,10 +5,16 @@ mod common;
 
 use std::time::Duration;
 
+use causa_kernel::{ContentPart, TextPayload};
 use causa_runtime::{Session, SessionError, SessionHandle, WorkRef, WorkState};
-use common::{
-    GatedGateway, RecordingGateway, approve, endturn_output, idle_session, paused_work, session_req,
-};
+use common::{GatedGateway, RecordingGateway, endturn_output, idle_session};
+
+fn session_req(request_key: &str, text: &str) -> causa_runtime::SubmitRequest {
+    causa_runtime::SubmitRequest {
+        request_key: request_key.into(),
+        parts: vec![ContentPart::Text(TextPayload::new(text))],
+    }
+}
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -22,7 +28,6 @@ fn assert_faulted_and_shutdown(session: Session, handle: SessionHandle, work: Wo
     assert_eq!(fault.state, WorkState::Faulted);
     assert!(fault.fault.as_deref().unwrap().contains("task dropped"));
     assert!(fault.finished.is_none());
-    assert!(fault.paused.is_none());
     assert!(matches!(
         handle.submit(session_req("later", "must not run")),
         Err(SessionError::Faulted { .. })
@@ -74,34 +79,4 @@ fn runtime_drop_during_model_call_faults_running_work() {
     );
     drop(rt);
     assert_faulted_and_shutdown(session, handle, receipt.work);
-}
-
-#[test]
-fn runtime_drop_before_resume_poll_faults_original_work() {
-    let rt = runtime();
-    let gateway = RecordingGateway::scripted(vec![Ok(common::tooluse_output(
-        "approve?",
-        "echo",
-        serde_json::json!({"path":"changed.rs"}),
-    ))]);
-    let (session, handle, work) = rt.block_on(paused_work("dropped-resume", gateway));
-    let paused = handle.observe(&work).unwrap();
-    let Some(causa_runtime::PausePoint::AwaitingApproval { prepared, .. }) = paused.paused else {
-        panic!("the work needs approval");
-    };
-    let request = approve(prepared.awaiting);
-    let receipt = {
-        let _entered = rt.enter();
-        handle
-            .resume(&work, paused.revision, "resume".into(), request.clone())
-            .unwrap()
-    };
-    drop(rt);
-    assert_eq!(
-        handle
-            .resume(&work, paused.revision, "resume".into(), request)
-            .unwrap(),
-        receipt
-    );
-    assert_faulted_and_shutdown(session, handle, work);
 }

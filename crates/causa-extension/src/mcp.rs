@@ -63,7 +63,7 @@
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactStore, CallControl, DynamicToolSource, MediaRef,
-    SourceError, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    SourceError, ToolCallContext, ToolDefinition, ToolExecutionError, ToolOutput,
     ToolResultPayload, ToolResultStatus,
 };
 use rmcp::handler::client::ClientHandler;
@@ -291,7 +291,7 @@ impl DynamicToolSource for McpToolSource {
 
     async fn invoke(
         &self,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
         control: &CallControl,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Self::invoke_inner(self, call, control, None).await
@@ -299,7 +299,7 @@ impl DynamicToolSource for McpToolSource {
 
     async fn invoke_with_store(
         &self,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
@@ -314,15 +314,17 @@ impl McpToolSource {
     /// degrade to placeholder text.
     async fn invoke_inner(
         &self,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         // 1. De-namespace; a foreign call is an executor routing bug.
-        let Some(tool_name) = self.denamespace(&call.tool_name) else {
-            return Err(ToolExecutionError::UnknownTool(call.tool_name.clone()));
+        let Some(tool_name) = self.denamespace(&call.input.tool_name) else {
+            return Err(ToolExecutionError::UnknownTool(
+                call.input.tool_name.clone(),
+            ));
         };
-        let arguments = match &call.arguments {
+        let arguments = match &call.input.arguments {
             serde_json::Value::Object(map) => Some(map.clone()),
             serde_json::Value::Null => None,
             other => {
@@ -410,10 +412,11 @@ impl McpToolSource {
             ToolResultStatus::Succeeded
         };
         Ok(ToolResultPayload {
-            call_id: call.call_id.clone(),
+            call_block_id: call.call_block_id,
             status,
             output: ToolOutput::new(content),
             media,
+            notes: Vec::new(),
         })
     }
 
@@ -424,7 +427,7 @@ impl McpToolSource {
     async fn ingest_image(
         image: &rmcp::model::ImageContent,
         store: Option<&dyn ArtifactStore>,
-        call: &ToolCallPayload,
+        call: &ToolCallContext,
     ) -> Option<MediaRef> {
         use base64::Engine as _;
         let store = store?;
@@ -432,8 +435,8 @@ impl McpToolSource {
             .decode(&image.data)
             .ok()?;
         let hint = ArtifactHint {
-            tool_name: call.tool_name.clone(),
-            call_id: call.call_id.clone(),
+            tool_name: call.input.tool_name.clone(),
+            call_block_id: call.call_block_id,
             kind: ArtifactKind::Binary,
         };
         let artifact = store.persist(&bytes, hint).await.ok()?;

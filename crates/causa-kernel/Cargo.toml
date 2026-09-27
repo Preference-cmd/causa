@@ -18,7 +18,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 tokio-util = { workspace = true }
 thiserror = "2"
-blake3 = "1"
+uuid.workspace = true
 # ModelStream: Pin<Box<dyn Stream<Item = StreamDelta> + Send>>
 futures-util = { workspace = true }
 

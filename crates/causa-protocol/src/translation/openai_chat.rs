@@ -163,13 +163,14 @@ pub fn render_openai_chat_messages(
             Segment::ToolResult {
                 wire_id,
                 content,
+                notes,
                 media,
                 ..
             } => {
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": wire_id,
-                    "content": content,
+                    "content": context_frame::result_text_with_notes(content, notes),
                 }));
                 // A tool message cannot carry images: hoist the result's
                 // media into a user message right after it, provenance
@@ -350,7 +351,7 @@ mod tests {
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
-        call, frame, media_part, parts, result, result_with_media, text, text_part,
+        call, frame, label_id, media_part, parts, result, result_with_media, text, text_part,
     };
 
     fn render(frame: &ContextFrame) -> Value {
@@ -397,6 +398,7 @@ mod tests {
 
     #[test]
     fn tool_round_trip_pairing_and_assistant_merge() {
+        let fallback_id = call(2, "kc2", None, "list", json!({})).id.0.to_string();
         let f = frame(vec![
             text(0, "reading now", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
@@ -408,7 +410,8 @@ mod tests {
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // text + both calls merge into ONE assistant message; arguments
-        // serialize to a JSON string; id falls back to the kernel call_id
+        // serialize to a JSON string; an unnamed call falls back to its
+        // declaration BlockId UUID.
         assert_eq!(
             msgs[0],
             json!({
@@ -417,7 +420,7 @@ mod tests {
                 "tool_calls": [
                     {"id": "toolu_a", "type": "function",
                      "function": {"name": "read", "arguments": "{\"path\":\"a\"}"}},
-                    {"id": "kc2", "type": "function",
+                    {"id": fallback_id, "type": "function",
                      "function": {"name": "list", "arguments": "{}"}},
                 ],
             })
@@ -429,7 +432,7 @@ mod tests {
         );
         assert_eq!(
             msgs[2],
-            json!({"role": "tool", "tool_call_id": "kc2", "content": "{\"error\":\"boom\"}"})
+            json!({"role": "tool", "tool_call_id": fallback_id, "content": "{\"error\":\"boom\"}"})
         );
     }
 
@@ -476,7 +479,11 @@ mod tests {
     }
 
     #[test]
-    fn unpaired_tool_result_falls_back_to_kernel_call_id() {
+    fn unpaired_tool_result_falls_back_to_declaration_uuid() {
+        let fallback_id = call(0, "orphan", None, "ignored", json!({}))
+            .id
+            .0
+            .to_string();
         let f = frame(vec![result(
             0,
             "orphan",
@@ -484,7 +491,7 @@ mod tests {
             json!("x"),
         )]);
         let v = render(&f);
-        assert_eq!(v["messages"][0]["tool_call_id"], json!("orphan"));
+        assert_eq!(v["messages"][0]["tool_call_id"], json!(fallback_id));
     }
 
     #[test]
@@ -714,6 +721,7 @@ mod tests {
 
     #[test]
     fn hoisted_placeholders_stay_in_payload_order() {
+        let fallback_id = label_id("kc1").0.to_string();
         let f = frame(vec![result_with_media(
             0,
             "kc1",
@@ -741,7 +749,7 @@ mod tests {
         assert_eq!(
             msgs[1]["content"],
             json!([
-                {"type": "text", "text": "[tool result media for call kc1]"},
+                {"type": "text", "text": format!("[tool result media for call {fallback_id}]")},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
                 {"type": "text", "text": "[media: image/png missing]"},
                 // resolved but non-image: degraded, never inlined

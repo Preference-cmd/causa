@@ -1,36 +1,31 @@
-//! Standalone executor evidence: tools execute directly through
-//! `ToolExecutor::execute_with_limits` — no `TurnRunner`, no
-//! `ConversationState`, no session — with the same result pairing, error
-//! mapping, and limit semantics the execution stack gets. The executor
-//! returns the recorded result only; the unknown-outcome action is the
-//! caller's configuration.
+//! Standalone tool-dispatch evidence: the executor accepts declaration
+//! context with explicit block identity and returns a result paired to it.
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, DynamicToolSource, Tool, ToolCallContext, ToolCallId, ToolCallPayload,
-    ToolDefinition, ToolExecutionError, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ArtifactHint, ArtifactRef, ArtifactStore, BlockId, CallControl, DynamicToolSource, MediaRef,
+    ProcessorContext, RoundId, SourceError, StoreError, TextPayload, Tool, ToolBatch,
+    ToolBatchProcessor, ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
-use causa_runtime::{ToolBridge, ToolExecutor, ToolOutputLimits};
+use causa_runtime::{TokenCounter, ToolExecutor, ToolOutputBudgetProcessor, new_block_id};
 use serde_json::json;
 use std::sync::Arc;
 
-fn call(name: &str, args: serde_json::Value) -> ToolCallPayload {
-    ToolCallPayload {
-        call_id: ToolCallId("standalone:call".into()),
-        tool_name: name.into(),
-        arguments: args,
-    }
+fn call_context(name: &str, args: serde_json::Value) -> ToolCallContext {
+    ToolCallContext::from_declaration(
+        new_block_id(),
+        &ToolCallPayload {
+            tool_name: name.into(),
+            arguments: args,
+        },
+    )
 }
 
 fn ctrl() -> CallControl {
     CallControl::new(tokio_util::sync::CancellationToken::new(), None)
 }
 
-fn limits(max_tokens: usize) -> ToolOutputLimits {
-    ToolOutputLimits { max_tokens }
-}
-
-/// A plain local tool: echoes arguments back.
 struct EchoTool;
 
 #[async_trait]
@@ -38,145 +33,201 @@ impl Tool for EchoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "echo".into(),
-            description: "echo".into(),
+            description: "echo arguments".into(),
             parameters: json!({"type": "object"}),
         }
     }
+
     async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(ctx.arguments.clone()),
+            output: ToolOutput::new(ctx.input.arguments.clone()),
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
 
-/// Source stub for the bridge: echoes, or yields a caller-chosen error.
-struct StubSource(Option<ToolExecutionError>);
+struct StubSource;
 
 #[async_trait]
 impl DynamicToolSource for StubSource {
     fn id(&self) -> &str {
         "stub"
     }
-    async fn list(&self) -> Result<Vec<ToolDefinition>, causa_kernel::SourceError> {
+
+    async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError> {
         Ok(vec![ToolDefinition {
-            name: "mcp_srv_echo".into(),
-            description: "stub".into(),
+            name: "mcp_echo".into(),
+            description: "dynamic echo".into(),
             parameters: json!({"type": "object"}),
         }])
     }
+
     async fn invoke(
         &self,
-        call: &ToolCallPayload,
+        ctx: &ToolCallContext,
         _control: &CallControl,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
-        match &self.0 {
-            Some(e) => Err(e.clone()),
-            None => Ok(ToolResultPayload {
-                call_id: call.call_id.clone(),
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(call.arguments.clone()),
-                media: Vec::new(),
-            }),
-        }
+        Ok(ToolResultPayload {
+            call_block_id: ctx.call_block_id,
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(ctx.input.arguments.clone()),
+            media: Vec::new(),
+            notes: Vec::new(),
+        })
     }
 }
 
-/// Direct execution pairs the result with the call id and needs nothing
-/// beyond the executor itself — the recorded result is all a standalone
-/// caller gets, and it chooses any continuation itself.
 #[tokio::test]
-async fn executor_executes_a_static_tool_without_a_runner() {
+async fn standalone_executor_dispatches_with_declaration_identity() {
     let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
-    let payload = call("echo", json!({"q": 1}));
-    let result = executor
-        .execute_with_limits(payload.clone(), ctrl(), None, None, limits(10_000))
-        .await;
-    assert_eq!(result.call_id, payload.call_id);
+    let context = call_context("echo", json!({"q": 1}));
+    let call_block_id = context.call_block_id;
+
+    let result = executor.execute(context, ctrl(), None).await.unwrap();
+
+    assert_eq!(result.call_block_id, call_block_id);
     assert_eq!(result.status, ToolResultStatus::Succeeded);
     assert_eq!(result.output.content, json!({"q": 1}));
 }
 
-/// Snapshot semantics: a `(source, definition)` pair bridged once becomes a
-/// static tool; the bridge's error mapping rides along (unknown name →
-/// `Rejected`, timeout → `UnknownOutcome`).
 #[tokio::test]
-async fn bridged_dynamic_tool_executes_and_maps_errors() {
-    let source = Arc::new(StubSource(None));
-    let bridge = ToolBridge::new(
-        source,
-        ToolDefinition {
-            name: "mcp_srv_echo".into(),
-            description: "stub".into(),
-            parameters: json!({"type": "object"}),
-        },
-    );
-    let executor = ToolExecutor::from_vec(vec![Arc::new(bridge)]);
-    let result = executor
-        .execute_with_limits(
-            call("mcp_srv_echo", json!({"hello": "world"})),
-            ctrl(),
-            None,
-            None,
-            limits(10_000),
-        )
-        .await;
-    assert_eq!(result.status, ToolResultStatus::Succeeded);
-    assert_eq!(result.output.content, json!({"hello": "world"}));
+async fn dynamic_dispatch_uses_the_same_identity_bearing_context() {
+    let executor = ToolExecutor::from_vec(vec![]);
+    executor.register_dynamic(Arc::new(StubSource)).unwrap();
+    let surface = executor.tool_surface().await;
+    assert!(surface.definitions.iter().any(|d| d.name == "mcp_echo"));
 
-    // Out-of-catalog source error maps to Rejected with a model-readable copy.
-    let failing = Arc::new(StubSource(Some(ToolExecutionError::UnknownTool(
-        "gone".into(),
-    ))));
-    let bridge = ToolBridge::new(
-        failing,
-        ToolDefinition {
-            name: "mcp_srv_echo".into(),
-            description: "stub".into(),
-            parameters: json!({"type": "object"}),
-        },
-    );
-    let executor = ToolExecutor::from_vec(vec![Arc::new(bridge)]);
-    let result = executor
-        .execute_with_limits(
-            call("mcp_srv_echo", json!({})),
-            ctrl(),
-            None,
-            None,
-            limits(10_000),
-        )
-        .await;
-    assert_eq!(result.status, ToolResultStatus::Rejected);
+    let context = call_context("mcp_echo", json!({"hello": "world"}));
+    let call_block_id = context.call_block_id;
+    let result = executor.execute(context, ctrl(), None).await.unwrap();
+
+    assert_eq!(result.call_block_id, call_block_id);
+    assert_eq!(result.output.content, json!({"hello": "world"}));
 }
 
-/// The last argument IS the per-call limit — the executor never consults
-/// the tool object. A standalone caller passes exactly the limit it wants
-/// (the runner resolves fallback vs per-tool-name override before dispatch).
+struct EmptyStore;
+
+#[async_trait]
+impl ArtifactStore for EmptyStore {
+    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        Err(StoreError::Persist("unused".into()))
+    }
+
+    async fn read(
+        &self,
+        _id: &str,
+        _range: Option<std::ops::Range<u64>>,
+    ) -> Result<Vec<u8>, StoreError> {
+        Err(StoreError::Read("unused".into()))
+    }
+}
+
+struct StoreAwareTool;
+
+#[async_trait]
+impl Tool for StoreAwareTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "store-aware".into(),
+            description: "reports whether the configured store was forwarded".into(),
+            parameters: json!({"type": "object"}),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+        ToolResultPayload {
+            call_block_id: ctx.call_block_id,
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!({"store": false})),
+            media: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    async fn execute_with_store(
+        &self,
+        ctx: &ToolCallContext,
+        _control: &CallControl,
+        store: Option<&dyn ArtifactStore>,
+    ) -> ToolResultPayload {
+        ToolResultPayload {
+            call_block_id: ctx.call_block_id,
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!({"store": store.is_some()})),
+            media: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
 #[tokio::test]
-async fn the_passed_limit_is_the_effective_limit() {
-    // 4k bytes under a 100-token limit truncates…
-    let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
+async fn executor_forwards_the_configured_artifact_store_to_tools() {
+    let executor = ToolExecutor::from_vec(vec![Arc::new(StoreAwareTool)]);
     let result = executor
-        .execute_with_limits(
-            call("echo", json!({"text": "a".repeat(4000)})),
+        .execute(
+            call_context("store-aware", json!({})),
             ctrl(),
-            None,
-            None,
-            limits(100),
+            Some(Arc::new(EmptyStore)),
         )
-        .await;
+        .await
+        .unwrap();
+    assert_eq!(result.output.content, json!({"store": true}));
+}
+
+struct Counter;
+
+impl TokenCounter for Counter {
+    fn estimate(&self, _blocks: &[causa_kernel::ContextBlock]) -> usize {
+        0
+    }
+
+    fn estimate_value(&self, value: &serde_json::Value) -> usize {
+        value.as_str().map_or(0, |text| text.len().div_ceil(4))
+    }
+
+    fn estimate_media(&self, _media: &MediaRef) -> Option<usize> {
+        Some(2)
+    }
+}
+
+#[tokio::test]
+async fn output_budget_retains_media_sidecars_while_truncating_text() {
+    let declaration = call_context("echo", json!({}));
+    let call_block_id = declaration.call_block_id;
+    let mut batch = ToolBatch::new(vec![declaration]).unwrap();
+    let media = vec![MediaRef::new("image/png", "asset-1")];
+    batch
+        .resolve_at(
+            0,
+            new_block_id(),
+            ToolResultPayload {
+                call_block_id,
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!("x".repeat(4_000))),
+                media: media.clone(),
+                notes: vec![TextPayload::new("kept note")],
+            },
+        )
+        .unwrap();
+
+    let ids: [BlockId; 1] = [call_block_id];
+    let control = ctrl();
+    let turn_id = TurnId::new("budget");
+    let context = ProcessorContext {
+        conversation_id: None,
+        turn_id: &turn_id,
+        round_id: RoundId(0),
+        declaration_order: &ids,
+        control: &control,
+    };
+    let processor = ToolOutputBudgetProcessor::new(100).with_token_counter(Arc::new(Counter));
+    processor.process(&mut batch, &context).await.unwrap();
+
+    let (_, result) = batch.results()[0].result().unwrap();
     assert_eq!(result.output.truncation, causa_kernel::Truncation::Middle);
-    // …and the same output under usize::MAX (the default) passes whole.
-    let result = executor
-        .execute_with_limits(
-            call("echo", json!({"text": "a".repeat(4000)})),
-            ctrl(),
-            None,
-            None,
-            ToolOutputLimits::default(),
-        )
-        .await;
-    assert_eq!(result.output.truncation, causa_kernel::Truncation::None);
+    assert_eq!(result.media, media, "media references remain untouched");
+    assert_eq!(result.notes, [TextPayload::new("kept note")]);
 }

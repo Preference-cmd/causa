@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 use causa_kernel::{RoundId, StreamDelta};
-use causa_runtime::{BatchDecision, TurnInteraction};
+use causa_runtime::TurnInteraction;
 use std::sync::{Arc, Mutex};
 
 /// A host-side observer counting what it sees through the port.
@@ -44,8 +44,21 @@ async fn turn_interaction_default_methods_are_noop_and_implementable() {
         )
         .await;
     assert_eq!(*interaction.text_deltas.lock().unwrap(), 1);
-    // The batch gate and steering pull default to the absence of opinion.
-    let decision = noop.decide_batch(&[]).await;
-    assert!(matches!(decision, BatchDecision::Proceed));
+    // The steering pull defaults to no injected inputs.
     assert!(noop.pending_inputs().await.is_empty());
+}
+
+struct InputInteraction;
+
+#[async_trait]
+impl TurnInteraction for InputInteraction {
+    async fn pending_inputs(&self) -> Vec<causa_kernel::TextPayload> {
+        vec![causa_kernel::TextPayload::new("injected")]
+    }
+}
+
+#[tokio::test]
+async fn interaction_can_supply_round_boundary_inputs() {
+    let inputs = InputInteraction.pending_inputs().await;
+    assert_eq!(inputs, vec![causa_kernel::TextPayload::new("injected")]);
 }

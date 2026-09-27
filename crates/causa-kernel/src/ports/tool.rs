@@ -9,7 +9,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolCallId, ToolResultPayload};
+use crate::context::block::{TextPayload, ToolCallPayload};
+use crate::context::ids::BlockId;
+use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolResultPayload};
 use crate::ports::control::CallControl;
 
 /// The model-facing description of one callable tool; renderers map it onto
@@ -28,12 +30,25 @@ pub struct ToolDefinition {
 /// Identity of one tool dispatch, handed to [`Tool::execute`].
 #[derive(Debug, Clone)]
 pub struct ToolCallContext {
-    /// The stable [`ToolCallId`] this call's result must pair against.
-    pub call_id: ToolCallId,
-    /// Name of the tool being invoked, as the model called it.
-    pub tool_name: String,
-    /// The model-emitted arguments, as a raw JSON value.
-    pub arguments: serde_json::Value,
+    /// The declaration block whose result this dispatch produces.
+    pub call_block_id: BlockId,
+    /// The effective input after any pre-processing edits.
+    pub input: ToolCallPayload,
+    /// Notes added before execution. `ToolBatch::resolve_at` prepends these
+    /// to the returned result's notes; tool implementations should return
+    /// only notes they add and must not copy this field into the result.
+    pub result_notes: Vec<TextPayload>,
+}
+
+impl ToolCallContext {
+    /// Builds execution material from a committed declaration.
+    pub fn from_declaration(call_block_id: BlockId, declaration: &ToolCallPayload) -> Self {
+        Self {
+            call_block_id,
+            input: declaration.clone(),
+            result_notes: Vec::new(),
+        }
+    }
 }
 
 /// Provenance a caller attaches to bytes handed to [`ArtifactStore::persist`],
@@ -42,7 +57,7 @@ pub struct ArtifactHint {
     /// The tool whose output produced the bytes.
     pub tool_name: String,
     /// The tool call the bytes belong to.
-    pub call_id: ToolCallId,
+    pub call_block_id: BlockId,
     /// The [`ArtifactKind`] classification of the bytes.
     pub kind: ArtifactKind,
 }

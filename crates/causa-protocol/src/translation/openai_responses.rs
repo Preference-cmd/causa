@@ -122,13 +122,14 @@ pub fn render_openai_responses_input(
             Segment::ToolResult {
                 wire_id,
                 content,
+                notes,
                 media,
                 ..
             } => {
                 items.push(json!({
                     "type": "function_call_output",
                     "call_id": wire_id,
-                    "output": content,
+                    "output": context_frame::result_text_with_notes(content, notes),
                 }));
                 // `function_call_output` carries no images: hoist the
                 // result's media into a user message item right after it,
@@ -393,6 +394,7 @@ mod tests {
 
     #[test]
     fn tool_round_trip_pairing_with_flat_call_ids() {
+        let fallback_id = call(2, "kc2", None, "list", json!({})).id.0.to_string();
         let f = frame(vec![
             text(0, "reading now", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
@@ -416,7 +418,7 @@ mod tests {
             input[2],
             json!({
                 "type": "function_call",
-                "call_id": "kc2",
+                "call_id": fallback_id,
                 "name": "list",
                 "arguments": "{}",
             })
@@ -429,7 +431,7 @@ mod tests {
             input[4],
             json!({
                 "type": "function_call_output",
-                "call_id": "kc2",
+                "call_id": fallback_id,
                 "output": "{\"error\":\"boom\"}",
             })
         );

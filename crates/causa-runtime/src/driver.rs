@@ -1,5 +1,5 @@
-//! The execution stack here — retry scheduling, tool batch dispatch, artifact
-//! spill, control plumbing, and trace construction. The canonical consumer
+//! The execution stack here — retry scheduling, tool batch processing,
+//! control plumbing, and trace construction. The canonical consumer
 //! of the kernel's contracts lives here, one layer up.
 use crate::budget::FramePolicy;
 use crate::config::TurnRunOptions;
@@ -7,52 +7,172 @@ use crate::config::UnknownOutcomePolicy;
 use crate::control::RunControl;
 use crate::conversation::{ConversationError, ConversationState, SealedResult};
 use crate::executor::ToolExecutor;
-use crate::hook::UnknownDecision;
-use crate::interaction::BatchDecision;
+use crate::ids::new_block_id;
 use causa_kernel::AttemptNumber;
 use causa_kernel::ModelGateway;
 use causa_kernel::ModelRequest;
 use causa_kernel::ModelStopReason;
-use causa_kernel::TextPayload;
 use causa_kernel::ToolCallPayload;
-use causa_kernel::ToolResultPayload;
-use causa_kernel::{ArtifactRef, ToolCallId, ToolResultStatus, Truncation};
+use causa_kernel::merged_frame;
+use causa_kernel::{ArtifactRef, BatchError, ToolResultStatus, Truncation};
 use causa_kernel::{AttemptControl, ModelUsage, StreamDelta};
-use causa_kernel::{BlockContent, merged_frame};
 use causa_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
 use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
 use causa_kernel::{TurnContext, TurnSnapshot};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tracing::Instrument;
 
-use crate::hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook};
+use crate::processors::ToolProcessingChain;
+use causa_kernel::{
+    ProcessorContext, ToolBatch, ToolCallContext, ToolOutput, ToolResultPayload,
+    model_output_block_count,
+};
 use futures_util::StreamExt;
 
 fn millis_since(t: Instant) -> u64 {
     t.elapsed().as_millis() as u64
 }
 
-/// The turn's committed-but-unanswered tool calls, in block order — the
-/// model-emitted draft order results pair into. Shared by the resume
-/// validation and the approval-resume prologue.
-pub(crate) fn unanswered_tool_calls(active: &TurnContext) -> Vec<ToolCallPayload> {
-    let mut pending: Vec<ToolCallPayload> = Vec::new();
-    for b in active.blocks() {
-        match &b.content {
-            BlockContent::ToolCall(c) => pending.push(c.clone()),
-            BlockContent::ToolResult(r) => pending.retain(|p| p.call_id != r.call_id),
-            _ => {}
-        }
+async fn wait_for_stop(ctrl: &RunControl) -> TurnInterruption {
+    tokio::select! {
+        biased;
+        _ = ctrl.cancellation_token().cancelled() => TurnInterruption::ExplicitCancellation,
+        _ = async {
+            match ctrl.deadline() {
+                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                None => std::future::pending::<()>().await,
+            }
+        } => TurnInterruption::TurnDeadlineExceeded,
     }
-    pending
 }
 
-// Tool-use filtering lives behind `crate::hook::ToolUseHook`.
-// `TurnRunner` defaults to `PassthroughHook` (no opinion); concrete
-// filter policies live in `crate::filter` or the host layer.
+fn stop_cause(ctrl: &RunControl) -> TurnInterruption {
+    if ctrl.is_cancelled() {
+        TurnInterruption::ExplicitCancellation
+    } else {
+        TurnInterruption::TurnDeadlineExceeded
+    }
+}
+
+fn resolve_batch_result(
+    batch: &mut ToolBatch,
+    call_block_id: BlockId,
+    result: ToolResultPayload,
+) -> Result<(), String> {
+    let pending_offset = batch
+        .calls()
+        .iter()
+        .position(|entry| entry.call().call_block_id == call_block_id)
+        .ok_or_else(|| format!("declaration {call_block_id:?} is not pending"))?;
+    let index = batch.completed_len() + pending_offset;
+    loop {
+        match batch.resolve_at(index, new_block_id(), result.clone()) {
+            Ok(()) => return Ok(()),
+            Err(BatchError::DuplicateResultBlockId(_)) => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn settle_started_calls(
+    batch: &mut ToolBatch,
+    started: &std::sync::Mutex<HashMap<BlockId, String>>,
+) {
+    let started_ids: Vec<BlockId> = started
+        .lock()
+        .expect("started calls lock")
+        .keys()
+        .copied()
+        .collect();
+    for call_block_id in started_ids {
+        if !batch
+            .calls()
+            .iter()
+            .any(|entry| entry.call().call_block_id == call_block_id)
+        {
+            continue;
+        }
+        let result = ToolResultPayload {
+            call_block_id,
+            status: ToolResultStatus::UnknownOutcome,
+            output: ToolOutput::new(serde_json::json!({
+                "error": "tool was started but no result was observed before the batch stopped"
+            })),
+            media: Vec::new(),
+            notes: Vec::new(),
+        };
+        if let Err(error) = resolve_batch_result(batch, call_block_id, result) {
+            tracing::error!(call_block_id = ?call_block_id, %error, "failed to settle started tool call");
+        }
+    }
+}
+
+fn batch_trace(
+    batch: &ToolBatch,
+    declaration_order: &[BlockId],
+    started: &std::sync::Mutex<HashMap<BlockId, String>>,
+    durations: &HashMap<BlockId, u64>,
+    completion_order: &[BlockId],
+) -> ToolBatchTrace {
+    let started = started.lock().expect("started calls lock");
+    let mut calls: Vec<ToolCallTrace> = batch
+        .results()
+        .iter()
+        .chain(batch.calls())
+        .filter_map(|entry| {
+            let call_block_id = entry.call().call_block_id;
+            let (result_id, result) = entry.result()?;
+            let _ = result_id;
+            Some(ToolCallTrace {
+                call_block_id,
+                tool_name: started
+                    .get(&call_block_id)
+                    .cloned()
+                    .unwrap_or_else(|| entry.call().input.tool_name.clone()),
+                position: declaration_order
+                    .iter()
+                    .position(|id| *id == call_block_id)
+                    .unwrap_or_default(),
+                status: result.status.clone(),
+                truncation: result.output.truncation,
+                artifact: result.output.artifact.clone(),
+                duration_ms: durations.get(&call_block_id).copied().unwrap_or(0),
+            })
+        })
+        .collect();
+    calls.sort_by_key(|call: &ToolCallTrace| call.position);
+    ToolBatchTrace {
+        calls,
+        completion_order: completion_order.to_vec(),
+    }
+}
+
+fn record_batch_trace(
+    trace: &mut TurnTrace,
+    round: u32,
+    batch: &ToolBatch,
+    declaration_order: &[BlockId],
+    started: &std::sync::Mutex<HashMap<BlockId, String>>,
+    durations: &HashMap<BlockId, u64>,
+    completion_order: &[BlockId],
+) {
+    if let Some(round_trace) = trace
+        .rounds
+        .last_mut()
+        .filter(|round_trace| round_trace.round_id == RoundId(round))
+    {
+        round_trace.tool_batch = Some(batch_trace(
+            batch,
+            declaration_order,
+            started,
+            durations,
+            completion_order,
+        ));
+    }
+}
 
 /// Why a turn terminated in `TurnResult::Interrupted`. The serde shape
 /// (`kind` / `detail`) is part of the event wire contract; see the
@@ -94,8 +214,7 @@ pub enum TurnInterruption {
         limit: u32,
     },
     /// The turn emitted more than `TurnLimits::max_tool_calls` tool calls
-    /// (counted at dispatch time, including a batch paused pending
-    /// approval).
+    /// (counted when the model emits the declarations).
     MaxToolCalls {
         /// The configured limit that was exceeded.
         limit: u32,
@@ -105,7 +224,7 @@ pub enum TurnInterruption {
     /// is unsafe.
     UnsafeUnknownOutcome {
         /// The offending call.
-        call_id: ToolCallId,
+        call_block_id: BlockId,
     },
     /// Turn-scope frame materialization failed — `FramePolicy::materialize`
     /// returned an error.
@@ -117,6 +236,11 @@ pub enum TurnInterruption {
     /// — a caller bug, not a model or tool failure.
     RunnerInvariantViolation {
         /// The invariant failure message.
+        reason: String,
+    },
+    /// A configured processor failed to complete its stage.
+    ProcessorFailed {
+        /// The processor failure detail.
         reason: String,
     },
     /// The model stopped on the token ceiling; the driver dispatches this
@@ -157,7 +281,7 @@ pub struct OutputSummary {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallTrace {
     /// Id pairing this entry with the committed tool-call block.
-    pub call_id: ToolCallId,
+    pub call_block_id: BlockId,
     /// Tool name from the draft payload (resolved by `call_id`).
     pub tool_name: String,
     /// The call's index in the model-emitted draft order.
@@ -166,8 +290,8 @@ pub struct ToolCallTrace {
     pub status: ToolResultStatus,
     /// Output truncation marker (`Truncation::None` unless truncated).
     pub truncation: Truncation,
-    /// Reference to the spilled full output, when truncation used an
-    /// `ArtifactStore`.
+    /// Reference to the full output when an output-budget processor spilled
+    /// it to an `ArtifactStore`.
     pub artifact: Option<ArtifactRef>,
     /// Executor-measured wall-clock duration in milliseconds (`0` for
     /// host-precomputed outcomes).
@@ -176,11 +300,11 @@ pub struct ToolCallTrace {
 /// One dispatched tool batch, as observed by the executor.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolBatchTrace {
-    /// Per-call traces in canonical (model draft) order — executor
-    /// results, hook rejections, and host-precomputed outcomes alike.
+    /// Observed per-call outcomes keyed by declaration ID, in declaration
+    /// order. Pending calls that never started have no outcome entry.
     pub calls: Vec<ToolCallTrace>,
     /// Actual completion order (recorded as the executor returns), not submission order.
-    pub completion_order: Vec<ToolCallId>,
+    pub completion_order: Vec<BlockId>,
 }
 /// One model round: framing, attempts, output, applied blocks, and its
 /// tool batch (when any).
@@ -209,11 +333,9 @@ pub struct TurnTrace {
     /// Rounds in execution order — including rounds whose invocation
     /// never produced output.
     pub rounds: Vec<ModelRoundTrace>,
-    /// Total tool calls emitted, counted at dispatch time (a paused batch
-    /// counts once, at emission — the resume does not re-count).
+    /// Total tool calls emitted by the model, counted once at emission.
     pub tool_calls_total: usize,
-    /// Wall-clock duration of this run in milliseconds (a resumed
-    /// continuation measures only the continuation).
+    /// Wall-clock duration of this run in milliseconds.
     pub total_duration_ms: u64,
 }
 impl TurnTrace {
@@ -233,7 +355,7 @@ impl Default for TurnTrace {
     }
 }
 
-/// How a turn ended: completed, interrupted, or paused mid-turn. The
+/// How a turn ended: completed or interrupted. The
 /// serde shapes are a load-bearing wire contract (embedded in
 /// `ContextEvent`); `tests/serialization.rs` pins them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -248,258 +370,33 @@ pub enum TurnResult {
         /// Why the turn was interrupted.
         cause: TurnInterruption,
     },
-    /// Resumable suspension — not a terminal state: the turn's facts stay
-    /// open in the outcome's `context` / `state` (the single fact source),
-    /// the prepared batch is neither executed nor rejected, and
-    /// `resume_turn` / `TurnRunner::resume` continue the same turn from
-    /// the [`Continuation`].
-    Paused {
-        /// The single continuation: pause position, control counts,
-        /// prepared work, and queued inputs.
-        continuation: Continuation,
-    },
 }
 
-/// The hook-prepared work an approval pause checkpoints: the hook has
-/// already filtered / rejected / rewritten the model-emitted batch, and
-/// those decisions cannot be re-derived on resume — they are saved, not
-/// re-run. The original payloads remain derivable from the committed
-/// tool-call blocks (fact identity); the independent rewrite and rejections
-/// live here as serializable data.
-///
-/// The checkpoint stores recorded results plus the unknown-outcome actions
-/// fixed at pause time, not result envelopes: a tool's recorded result is
-/// a fact, and what an `UnknownOutcome` result does next is harness
-/// configuration. [`unknown_decisions`](Self::unknown_decisions)
-/// must exactly cover the saved results whose status is `UnknownOutcome`
-/// — no extra, missing, or duplicate entries — and a resume may never
-/// recompute them through new configuration.
-///
-/// # Wire compatibility
-///
-/// `rejected` is written as `[{result, policy}]` through a private runtime
-/// DTO — the policy is the fixed decision for `UnknownOutcome` entries and
-/// the canonical `Stop` for every other status (whose policy never
-/// participated in execution). Deserialization reads the same shape (both
-/// fields required), drops the policy of non-unknown entries, and rejects
-/// any decision set that does not exactly cover the saved `UnknownOutcome`
-/// results; earlier formats without prepared work still fail loudly.
-pub struct PreparedApproval {
-    /// Calls the hook admitted — arguments possibly rewritten — in model
-    /// draft order. These are what still await the host's decision at
-    /// resume; the resume decision must cover them exactly once.
-    pub awaiting: Vec<ToolCallPayload>,
-    /// Calls the hook rejected. The stored results commit verbatim at
-    /// resume (with their original call ids) and can never be re-decided —
-    /// a resume decision touching them is rejected before anything
-    /// executes.
-    pub rejected: Vec<ToolResultPayload>,
-    /// The unknown-outcome actions fixed when the turn paused: exactly one
-    /// entry per saved `UnknownOutcome` result, no more, no fewer. New
-    /// configuration never overrides these on resume.
-    pub unknown_decisions: Vec<UnknownDecision>,
+/// Result of a bare-turn entry: context, terminal result, trace, and any
+/// uncommitted tool batch returned when processing stopped mid-batch.
+pub struct TurnOutcome {
+    /// The sealed active turn at handoff.
+    pub context: TurnContext,
+    /// Terminal result and stop reason.
+    pub result: TurnResult,
+    /// Execution trace.
+    pub trace: TurnTrace,
+    /// The current uncommitted batch when a processor, cancellation, deadline,
+    /// or invalid tool outcome stopped the chain. The caller owns this batch.
+    pub uncommitted_tool_batch: Option<ToolBatch>,
 }
-impl std::fmt::Debug for PreparedApproval {
+impl std::fmt::Debug for TurnOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedApproval")
-            .field("awaiting", &self.awaiting.len())
-            .field("rejected", &self.rejected.len())
-            .field("unknown_decisions", &self.unknown_decisions.len())
+        f.debug_struct("TurnOutcome")
+            .field("context", &self.context)
+            .field("result", &self.result)
+            .field("trace", &self.trace)
+            .field(
+                "has_uncommitted_tool_batch",
+                &self.uncommitted_tool_batch.is_some(),
+            )
             .finish()
     }
-}
-impl Clone for PreparedApproval {
-    fn clone(&self) -> Self {
-        Self {
-            awaiting: self.awaiting.clone(),
-            rejected: self.rejected.clone(),
-            unknown_decisions: self.unknown_decisions.clone(),
-        }
-    }
-}
-
-/// Private wire shape for one checkpointed rejection: the `{result, policy}`
-/// envelope. Not part of the public API — the public in-memory structure
-/// separates the recorded result from the saved action.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct RejectedWire {
-    result: ToolResultPayload,
-    policy: UnknownOutcomePolicy,
-}
-
-impl serde::Serialize for PreparedApproval {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let rejected: Vec<RejectedWire> = self
-            .rejected
-            .iter()
-            .map(|result| RejectedWire {
-                result: result.clone(),
-                policy: if result.status == ToolResultStatus::UnknownOutcome {
-                    // Exact cover is an invariant; fall back to the default
-                    // action only to keep serialization total.
-                    self.unknown_decisions
-                        .iter()
-                        .find(|d| d.call_id == result.call_id)
-                        .map(|d| d.policy)
-                        .unwrap_or_default()
-                } else {
-                    // The policy of a decided result never participated in
-                    // execution; the canonical Stop keeps the old shape.
-                    UnknownOutcomePolicy::Stop
-                },
-            })
-            .collect();
-        #[derive(serde::Serialize)]
-        struct Wire<'a> {
-            awaiting: &'a Vec<ToolCallPayload>,
-            rejected: Vec<RejectedWire>,
-        }
-        Wire {
-            awaiting: &self.awaiting,
-            rejected,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PreparedApproval {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
-        struct Wire {
-            awaiting: Vec<ToolCallPayload>,
-            rejected: Vec<RejectedWire>,
-        }
-        let wire = Wire::deserialize(deserializer)?;
-        let mut rejected = Vec::with_capacity(wire.rejected.len());
-        let mut unknown_decisions: Vec<UnknownDecision> = Vec::new();
-        for entry in wire.rejected {
-            if entry.result.status == ToolResultStatus::UnknownOutcome {
-                // The saved action rides the old policy field; a missing
-                // one is a hard deserialize error, never a silent Stop.
-                unknown_decisions.push(UnknownDecision {
-                    call_id: entry.result.call_id.clone(),
-                    policy: entry.policy,
-                });
-            }
-            // Non-unknown entries' policy was never consumed by the
-            // execution stack; it is dropped on load and re-canonicalized
-            // to Stop on write.
-            rejected.push(entry.result);
-        }
-        // Exact cover: every saved UnknownOutcome has exactly one decision,
-        // and no decision points at a decided (non-unknown) result.
-        let unknown_ids: std::collections::HashSet<&ToolCallId> = rejected
-            .iter()
-            .filter(|r| r.status == ToolResultStatus::UnknownOutcome)
-            .map(|r| &r.call_id)
-            .collect();
-        let mut seen = std::collections::HashSet::new();
-        for d in &unknown_decisions {
-            if !unknown_ids.contains(&d.call_id) {
-                return Err(serde::de::Error::custom(format!(
-                    "checkpoint decision for call {:?} does not match a saved UnknownOutcome result",
-                    d.call_id.0
-                )));
-            }
-            if !seen.insert(&d.call_id) {
-                return Err(serde::de::Error::custom(format!(
-                    "checkpoint has conflicting decisions for call {:?}",
-                    d.call_id.0
-                )));
-            }
-        }
-        if seen.len() != unknown_ids.len() {
-            return Err(serde::de::Error::custom(
-                "checkpoint is missing the unknown-outcome decision for a saved result",
-            ));
-        }
-        // A call id appearing twice among the results would already be a
-        // fact-pairing error downstream; reject it here where the wire is
-        // at fault.
-        let mut ids = std::collections::HashSet::new();
-        for r in &rejected {
-            if !ids.insert(&r.call_id) {
-                return Err(serde::de::Error::custom(format!(
-                    "checkpoint saves call {:?} twice",
-                    r.call_id.0
-                )));
-            }
-        }
-        Ok(Self {
-            awaiting: wire.awaiting,
-            rejected,
-            unknown_decisions,
-        })
-    }
-}
-
-/// Where a turn paused. The execution stack currently emits only the
-/// approval position; the steering position exists so hosts that suspend
-/// before a model round produce a continuation the same resume machinery
-/// consumes (the pause point and the round together define the next step —
-/// never free-floating `Option`s).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
-pub enum PausePoint {
-    /// The approval gate paused behind a hook-prepared batch.
-    AwaitingApproval {
-        /// The hook's prepared work awaiting the host's decision.
-        prepared: PreparedApproval,
-        /// Advisory decision budget the host granted itself, as *remaining*
-        /// time so the variant stays serde-friendly (a host anchors
-        /// `Instant::now() + d`). Carried for information only — the resume
-        /// never derives a deadline from it.
-        deadline: Option<Duration>,
-    },
-    /// Paused before a model round so the host can steer; no batch awaits
-    /// (a steering continuation over a turn with unanswered tool calls is
-    /// rejected at resume — the batch could never be answered).
-    PausedForSteering,
-}
-
-/// The single continuation of a paused turn: everything
-/// resuming needs beyond the paused outcome's fact state, the runner, the
-/// new options, and the new control. Rounds and quotas are read from here
-/// — never from the trace, which is observational and may be trimmed
-/// freely without changing where a resume continues or what it may spend.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Continuation {
-    /// Where and why the turn paused.
-    pub pause_point: PausePoint,
-    /// The round the continuation sits at: for an approval pause, the
-    /// paused round whose batch executes first at resume (the loop then
-    /// continues at round+1); for a steering pause, the first round whose
-    /// model phase has not run yet.
-    pub round: u32,
-    /// Tool calls already counted against the turn's quota at emission
-    /// time (a paused batch was counted once, at emission — the resume
-    /// never re-counts it). The authoritative control count across
-    /// resumes.
-    pub accounted_tool_calls: usize,
-    /// Inputs received but not yet committed. A resume commits them first
-    /// (`user.steering` label), before the resume request's own inject —
-    /// "queued → injected → pulled" order; identical texts are independent
-    /// inputs and are never deduped.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub queued_inputs: Vec<TextPayload>,
-}
-
-/// A bare-turn entry's result: the turn context (sealed unless the turn
-/// paused), the outcome, and the trace.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct TurnOutcome {
-    /// The sealed active turn at handoff. Serialized through the
-    /// `turn_context_as_snapshot` adapter (see `causa_kernel::turn_context_as_snapshot`):
-    /// the in-memory `TurnContext` is the mutable fact machine, but
-    /// once sealed its snapshot projection is the canonical wire shape.
-    /// On reload we rebuild a sealed `TurnContext` via
-    /// `from_validated_blocks` + `seal()`.
-    #[serde(with = "causa_kernel::turn_context_as_snapshot")]
-    pub context: TurnContext,
-    /// Terminal result or pause — see [`TurnResult`].
-    pub result: TurnResult,
-    /// What happened during the run — see [`TurnTrace`].
-    pub trace: TurnTrace,
 }
 
 // Wire-contract note: `TurnResult`, `TurnOutcome`, `ConversationOutcome`
@@ -510,21 +407,29 @@ pub struct TurnOutcome {
 // migration of the event wire format. `tests/serialization.rs` pins the
 // shapes.
 
-/// The conversation entry's counterpart to [`TurnOutcome`]: consume/return —
-/// the state comes back with the active turn sealed inside and its outcome
-/// stamped; the host then calls `commit` (Completed) or `abort_turn`
-/// (Interrupted).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// The conversation entry's consume/return result and any uncommitted tool
+/// batch returned when processing stopped mid-batch.
 pub struct ConversationOutcome {
-    /// The state back from the run, its active turn sealed and
-    /// outcome-stamped; the host then calls `commit` (Completed),
-    /// `abort_turn` (Interrupted), or `resume_turn` (Paused).
+    /// State back from the run, with the active turn sealed and outcome-stamped.
     pub state: ConversationState,
-    /// The active turn's outcome.
+    /// The active turn's terminal result.
     pub result: TurnResult,
-    /// The active turn's trace (a resumed continuation appends to the
-    /// paused phase's trace).
+    /// Observations from the execution.
     pub trace: TurnTrace,
+    /// Any current uncommitted batch returned to the caller.
+    pub uncommitted_tool_batch: Option<ToolBatch>,
+}
+impl std::fmt::Debug for ConversationOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConversationOutcome")
+            .field("result", &self.result)
+            .field("trace", &self.trace)
+            .field(
+                "has_uncommitted_tool_batch",
+                &self.uncommitted_tool_batch.is_some(),
+            )
+            .finish()
+    }
 }
 
 /// The frame source — the single fork point between the two runner entries.
@@ -549,106 +454,33 @@ pub(crate) enum ModelPhase {
     Stream,
 }
 
-/// Continuation payload for a resumed turn: the validated continuation plus
-/// the new decision, consumed once by `drive_from`'s prologue. Built by the
-/// public resume entries after validation; rounds, counts, prepared work,
-/// and queued inputs all come from the [`Continuation`] — the trace rides
-/// along as observation only.
-pub(crate) struct ResumeState {
-    /// The paused turn's continuation (pause position, round, counts,
-    /// prepared work, queued inputs).
-    pub(crate) continuation: Continuation,
-    /// The resume request's new decision for the prepared batch. `Some`
-    /// iff the pause point is `AwaitingApproval` (enforced by validation).
-    pub(crate) decision: Option<HookOutcome>,
-    /// The resume request's new inputs, appended before the next model
-    /// round — after the continuation's queued inputs.
-    pub(crate) inject: Vec<TextPayload>,
-    /// The paused phase's trace — rounds append to it, totals re-derive
-    /// from the continuation's count. A trimmed trace changes nothing.
-    pub(crate) trace: TurnTrace,
-}
-
-/// What a batch dispatch feeds the executor: live payloads, or
-/// pre-computed results (hook rejections and the host's
-/// `BatchDecision::Reject` copy).
-enum BatchWork {
-    Execute(Vec<ToolCallPayload>),
-    Precomputed(Vec<PrecomputedResult>),
-}
-
-/// One pre-computed tool result with its unknown-outcome action when that
-/// action is already fixed — a checkpoint entry, an explicit host
-/// decision, or an executed `UnknownOutcome` (resolved by the executed
-/// name at dispatch time). `None` resolves through the turn's
-/// unknown-outcome configuration by the batch's tool name;
-/// results with any other status never consume an action.
-#[derive(Debug, Clone)]
-struct PrecomputedResult {
-    result: ToolResultPayload,
-    fixed_policy: Option<UnknownOutcomePolicy>,
-}
-
-/// Attach explicit host decisions to precomputed results: an
-/// `UnknownOutcome` entry picks up its explicit decision if one is given,
-/// else stays unfixed (resolved by the batch name later). Entries for
-/// non-unknown results are ignored here and rejected by validation.
-fn attach_decisions(
-    results: Vec<ToolResultPayload>,
-    decisions: &[UnknownDecision],
-) -> Vec<PrecomputedResult> {
-    results
-        .into_iter()
-        .map(|result| PrecomputedResult {
-            fixed_policy: if result.status == ToolResultStatus::UnknownOutcome {
-                decisions
-                    .iter()
-                    .find(|d| d.call_id == result.call_id)
-                    .map(|d| d.policy)
-            } else {
-                None
-            },
-            result,
-        })
-        .collect()
-}
-
-/// The execution stack over the kernel's ports: frame materialization,
-/// bounded model retry, tool batch dispatch through the hook and
-/// interaction seams, run control plumbing, and trace construction.
+/// The execution stack over kernel facts, the model gateway, tool executor,
+/// run control, and ordered batch processors.
 pub struct TurnRunner {
     gateway: Arc<dyn ModelGateway>,
     executor: Arc<ToolExecutor>,
-    /// Seam for tool-use filtering. `TurnRunner::new()` defaults to
-    /// `PassthroughHook` (no filter applied — the driver carries no
-    /// opinion). Custom hooks (e.g. `FilterChain`, which implements
-    /// `ToolUseHook`) plug in via `TurnRunner::with_hook`.
-    hook: Arc<dyn ToolUseHook>,
+    processors: ToolProcessingChain,
 }
 impl TurnRunner {
-    /// A runner with the default [`PassthroughHook`] — no tool-use
-    /// filtering (the driver carries no opinion; opt in via
-    /// [`TurnRunner::with_hook`]).
+    /// Create a runner with no configured tool processors.
     pub fn new(gateway: Arc<dyn ModelGateway>, executor: Arc<ToolExecutor>) -> Self {
         Self {
             gateway,
             executor,
-            hook: Arc::new(PassthroughHook),
+            processors: ToolProcessingChain::default(),
         }
     }
 
-    /// A runner with a custom [`ToolUseHook`] applied between model
-    /// output and tool dispatch (e.g. a
-    /// [`FilterChain`](crate::filter::FilterChain)).
-    pub fn with_hook(
+    /// Create a runner with an ordered pre-/post-processing chain.
+    pub fn with_tool_processors(
         gateway: Arc<dyn ModelGateway>,
         executor: Arc<ToolExecutor>,
-        hook: Arc<dyn ToolUseHook>,
+        processors: ToolProcessingChain,
     ) -> Self {
         Self {
             gateway,
             executor,
-            hook,
+            processors,
         }
     }
     /// Frames materialize from the active turn alone (Turn scope,
@@ -677,7 +509,7 @@ impl TurnRunner {
         phase: ModelPhase,
     ) -> TurnOutcome {
         let start = Instant::now();
-        let (result, mut trace, tool_calls_total) = self
+        let (result, mut trace, tool_calls_total, uncommitted_tool_batch) = self
             .drive(
                 &mut context,
                 FrameSource::Turn(&options.frame),
@@ -686,17 +518,15 @@ impl TurnRunner {
                 phase,
             )
             .await;
-        // Every drive exit is terminal or paused; the entry owns all
-        // bookkeeping (totals, duration, sealing — withheld on pause).
+        // Every drive exit is terminal; the entry seals committed facts.
         trace.tool_calls_total = tool_calls_total;
         trace.total_duration_ms = millis_since(start);
-        if !matches!(result, TurnResult::Paused { .. }) {
-            context.seal();
-        }
+        context.seal();
         TurnOutcome {
             context,
             result,
             trace,
+            uncommitted_tool_batch,
         }
     }
 
@@ -734,7 +564,7 @@ impl TurnRunner {
         options: TurnRunOptions,
         ctrl: RunControl,
     ) -> Result<ConversationOutcome, ConversationError> {
-        self.drive_conversation(state, options, ctrl, ModelPhase::Batch, None)
+        self.drive_conversation(state, options, ctrl, ModelPhase::Batch)
             .await
     }
 
@@ -747,107 +577,24 @@ impl TurnRunner {
         options: TurnRunOptions,
         ctrl: RunControl,
     ) -> Result<ConversationOutcome, ConversationError> {
-        self.drive_conversation(state, options, ctrl, ModelPhase::Stream, None)
+        self.drive_conversation(state, options, ctrl, ModelPhase::Stream)
             .await
-    }
-
-    /// Continue a paused conversation turn. The continuation half of
-    /// `run_in_conversation` — same
-    /// consume/return contract; the free function
-    /// `crate::resume::resume_turn` is the public face: it validates the
-    /// complete paused outcome (stamp, open turn, continuation-vs-facts,
-    /// decision coverage) and builds the [`ResumeState`] from the
-    /// outcome's [`Continuation`].
-    pub(crate) async fn resume_conversation(
-        &self,
-        state: ConversationState,
-        options: TurnRunOptions,
-        ctrl: RunControl,
-        resume: ResumeState,
-    ) -> Result<ConversationOutcome, ConversationError> {
-        // Resumes continue in batch phase: the facts are complete, and a
-        // streaming continuation is future work.
-        self.drive_conversation(state, options, ctrl, ModelPhase::Batch, Some(resume))
-            .await
-    }
-
-    /// Continue a paused bare turn — the
-    /// continuation half of [`TurnRunner::run`]/[`TurnRunner::run_streaming`].
-    /// Consumes the **complete paused outcome** plus the new
-    /// [`ResumeRequest`](crate::resume::ResumeRequest) (decision + inject);
-    /// the host no longer assembles reason/trace by hand. Validation runs
-    /// before anything executes or any fact changes — a rejected request
-    /// returns the untouched paused material in the
-    /// [`ResumeRejection`](crate::resume::ResumeRejection). Rounds, quota
-    /// counts, prepared hook work, and queued inputs all come from the
-    /// outcome's [`Continuation`]: a trimmed or empty trace changes
-    /// nothing, and lower limits stop the turn before external execution.
-    // Rejection returns the complete paused material by value, matching
-    // resume_turn and the Session construction contract.
-    #[allow(clippy::result_large_err)]
-    pub async fn resume(
-        &self,
-        outcome: TurnOutcome,
-        request: crate::resume::ResumeRequest,
-        options: TurnRunOptions,
-        ctrl: RunControl,
-    ) -> Result<TurnOutcome, crate::resume::ResumeRejection<TurnOutcome>> {
-        if let Err(reason) =
-            crate::resume::validate_resume(&outcome.result, &outcome.context, &request)
-        {
-            return Err(crate::resume::ResumeRejection { reason, outcome });
-        }
-        let TurnResult::Paused { continuation } = outcome.result else {
-            unreachable!("validated above");
-        };
-        let TurnOutcome {
-            mut context, trace, ..
-        } = outcome;
-        let start = Instant::now();
-        let (result, mut trace, tool_calls_total) = self
-            .drive_from(
-                &mut context,
-                FrameSource::Turn(&options.frame),
-                &options,
-                &ctrl,
-                ModelPhase::Batch,
-                Some(ResumeState {
-                    continuation,
-                    decision: request.decision,
-                    inject: request.inject,
-                    trace,
-                }),
-            )
-            .await;
-        trace.tool_calls_total = tool_calls_total;
-        trace.total_duration_ms = millis_since(start);
-        if !matches!(result, TurnResult::Paused { .. }) {
-            context.seal();
-        }
-        Ok(TurnOutcome {
-            context,
-            result,
-            trace,
-        })
     }
 
     /// The conversation entry body — entry gates, merged-frame source,
     /// terminal bookkeeping, and outcome-stamped sealing shared by both
-    /// conversation entries and the resume path.
+    /// conversation entry points.
     async fn drive_conversation(
         &self,
         state: ConversationState,
         options: TurnRunOptions,
         ctrl: RunControl,
         phase: ModelPhase,
-        resume: Option<ResumeState>,
     ) -> Result<ConversationOutcome, ConversationError> {
         // One `agent.turn` span per entry, ids and scope only — never
         // message content. The span is entered per poll via `Instrument`,
         // so the future stays `Send`.
-        let scope = if resume.is_some() {
-            "conversation.resume"
-        } else if matches!(phase, ModelPhase::Stream) {
+        let scope = if matches!(phase, ModelPhase::Stream) {
             "conversation.streaming"
         } else {
             "conversation"
@@ -862,21 +609,20 @@ impl TurnRunner {
             conversation_id = %state.conversation_id().0,
             scope = scope,
         );
-        self.drive_conversation_inner(state, options, ctrl, phase, resume)
+        self.drive_conversation_inner(state, options, ctrl, phase)
             .instrument(span)
             .await
     }
 
     /// The conversation entry body — entry gates, merged-frame source,
     /// terminal bookkeeping, and outcome-stamped sealing shared by both
-    /// conversation entries and the resume path.
+    /// conversation entry points.
     async fn drive_conversation_inner(
         &self,
         mut state: ConversationState,
         options: TurnRunOptions,
         ctrl: RunControl,
         phase: ModelPhase,
-        resume: Option<ResumeState>,
     ) -> Result<ConversationOutcome, ConversationError> {
         // Entry gates — caller bugs fail fast, before the state machine.
         let active_id = match state.active_turn() {
@@ -886,18 +632,13 @@ impl TurnRunner {
         if state.active_turn().expect("checked above").is_sealed() {
             return Err(ConversationError::TurnAlreadySealed);
         }
-        // A paused turn occupies the slot; fresh-driving it would run the
-        // same turn twice. Resume (resume_turn) or abort instead.
-        if resume.is_none() && state.sealed_result() == Some(SealedResult::Paused) {
-            return Err(ConversationError::TurnAlreadyActive);
-        }
         // Field-split borrow: read conversation id and history while driving
         // the active turn mutably; stamping happens after the loop through
         // the public `seal_turn`, so no second &mut seam is exposed.
         let (conversation_id, history, active) = state.runner_parts();
         let active = active.expect("NoActiveTurn checked above");
         let start = Instant::now();
-        let (result, mut trace, tool_calls_total) = self
+        let (result, mut trace, tool_calls_total, uncommitted_tool_batch) = self
             .drive_from(
                 active,
                 FrameSource::Conversation {
@@ -907,7 +648,6 @@ impl TurnRunner {
                 &options,
                 &ctrl,
                 phase,
-                resume,
             )
             .await;
         trace.tool_calls_total = tool_calls_total;
@@ -915,7 +655,6 @@ impl TurnRunner {
         let stamp = match &result {
             TurnResult::Completed { .. } => SealedResult::Completed,
             TurnResult::Interrupted { .. } => SealedResult::Interrupted,
-            TurnResult::Paused { .. } => SealedResult::Paused,
         };
         state
             .seal_turn(active_id, stamp)
@@ -924,6 +663,7 @@ impl TurnRunner {
             state,
             result,
             trace,
+            uncommitted_tool_batch,
         })
     }
 
@@ -983,8 +723,8 @@ impl TurnRunner {
     }
 
     /// The shared state machine — every entry runs this loop; the frame
-    /// source, the model phase, and the resume prologue are the only
-    /// forks. Every exit is terminal or paused; the entries own
+    /// source and the model phase are the only forks. Every exit is
+    /// terminal; the entries own
     /// sealing/stamping.
     async fn drive(
         &self,
@@ -993,9 +733,8 @@ impl TurnRunner {
         options: &TurnRunOptions,
         ctrl: &RunControl,
         phase: ModelPhase,
-    ) -> (TurnResult, TurnTrace, usize) {
-        self.drive_from(active, frames, options, ctrl, phase, None)
-            .await
+    ) -> (TurnResult, TurnTrace, usize, Option<ToolBatch>) {
+        self.drive_from(active, frames, options, ctrl, phase).await
     }
 
     async fn drive_from(
@@ -1005,143 +744,10 @@ impl TurnRunner {
         options: &TurnRunOptions,
         ctrl: &RunControl,
         phase: ModelPhase,
-        resume: Option<ResumeState>,
-    ) -> (TurnResult, TurnTrace, usize) {
-        let mut round: u32;
-        let mut tool_calls_total: usize;
-        let mut trace: TurnTrace;
-        let mut pending_inject: Vec<TextPayload>;
-        match resume {
-            None => {
-                round = 0;
-                tool_calls_total = 0;
-                trace = TurnTrace::new();
-                pending_inject = Vec::new();
-            }
-            Some(r) => {
-                let ResumeState {
-                    continuation,
-                    decision,
-                    inject,
-                    trace: resumed_trace,
-                } = r;
-                let Continuation {
-                    pause_point,
-                    round: paused_round,
-                    accounted_tool_calls,
-                    queued_inputs,
-                } = continuation;
-                round = paused_round;
-                tool_calls_total = accounted_tool_calls;
-                trace = resumed_trace;
-                // Queued inputs land before the request's inject ("queued
-                // → injected → pulled"); both commit at the loop top with
-                // the `user.steering` label.
-                pending_inject = queued_inputs;
-                pending_inject.extend(inject);
-                // A resumed turn whose control is already spent exits
-                // before touching facts.
-                if ctrl.should_stop() {
-                    let cause = if ctrl.is_cancelled() {
-                        TurnInterruption::ExplicitCancellation
-                    } else {
-                        TurnInterruption::TurnDeadlineExceeded
-                    };
-                    return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
-                }
-                // Exhausted limits stop the turn BEFORE external
-                // execution: a lowered `max_tool_calls` refuses the
-                // withheld batch itself, a lowered `max_model_rounds`
-                // refuses the paused round's batch (its results would
-                // never reach a model call). Steering pauses re-enter the
-                // loop instead, where the boundary checks apply before any
-                // model call.
-                if tool_calls_total as u64 > options.policy.limits.max_tool_calls as u64 {
-                    return (
-                        TurnResult::Interrupted {
-                            cause: TurnInterruption::MaxToolCalls {
-                                limit: options.policy.limits.max_tool_calls,
-                            },
-                        },
-                        trace,
-                        tool_calls_total,
-                    );
-                }
-                if matches!(pause_point, PausePoint::AwaitingApproval { .. })
-                    && round >= options.policy.limits.max_model_rounds
-                {
-                    return (
-                        TurnResult::Interrupted {
-                            cause: TurnInterruption::MaxModelRounds {
-                                limit: options.policy.limits.max_model_rounds,
-                            },
-                        },
-                        trace,
-                        tool_calls_total,
-                    );
-                }
-                // Approval-resume prologue: execute the paused round's
-                // batch. The saved hook rejections stay rejected; the new
-                // decision covers the remaining awaiting calls exactly
-                // once (validated at the entry, re-checked by `run_batch`).
-                // The batch was already counted into `accounted_tool_calls`
-                // at emission, so the prologue never re-counts it.
-                if let Some(decision) = decision {
-                    let PausePoint::AwaitingApproval {
-                        prepared,
-                        deadline: _,
-                    } = pause_point
-                    else {
-                        unreachable!("entry validation pairs a decision with an approval pause");
-                    };
-                    // The paused batch is exactly the committed-but-
-                    // unanswered tool calls of this turn, in block order —
-                    // the model-emitted draft order the results pair into.
-                    let draft = unanswered_tool_calls(active);
-                    // Checkpoint entries commit verbatim with their fixed
-                    // actions; only the awaiting calls are
-                    // newly decided. New precomputed rejections use the
-                    // host's explicit entries, else resolve through the
-                    // current configuration by the batch name.
-                    let PreparedApproval {
-                        rejected: saved_rejected,
-                        unknown_decisions: saved_decisions,
-                        ..
-                    } = prepared;
-                    let mut rejected: Vec<PrecomputedResult> = saved_rejected
-                        .into_iter()
-                        .map(|result| PrecomputedResult {
-                            fixed_policy: saved_decisions
-                                .iter()
-                                .find(|d| d.call_id == result.call_id)
-                                .map(|d| d.policy),
-                            result,
-                        })
-                        .collect();
-                    rejected.extend(attach_decisions(
-                        decision.rejected,
-                        &decision.unknown_decisions,
-                    ));
-                    if let Err(cause) = self
-                        .run_batch(
-                            active,
-                            &draft,
-                            BatchWork::Execute(decision.to_execute),
-                            rejected,
-                            options,
-                            ctrl,
-                            round,
-                            &mut trace,
-                        )
-                        .await
-                    {
-                        return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
-                    }
-                    round += 1;
-                }
-            }
-        }
-
+    ) -> (TurnResult, TurnTrace, usize, Option<ToolBatch>) {
+        let mut round: u32 = 0;
+        let mut tool_calls_total: usize = 0;
+        let mut trace = TurnTrace::new();
         // The first model phase of this drive advertises the host-declared
         // surface (the `TurnInvocation` baseline); every later round
         // boundary re-snapshots the runner's executor, so catalog changes
@@ -1151,26 +757,8 @@ impl TurnRunner {
         let first_model_round = round;
 
         loop {
-            // Steering: resume-time injections first, then the
-            // round-boundary pull. Both append with the `user.steering`
-            // source label; the next model round sees them.
-            if !pending_inject.is_empty() {
-                for text in std::mem::take(&mut pending_inject) {
-                    if let Err(e) = active.append_input(text, "user.steering") {
-                        return (
-                            TurnResult::Interrupted {
-                                cause: TurnInterruption::RunnerInvariantViolation {
-                                    reason: e.to_string(),
-                                },
-                            },
-                            trace,
-                            tool_calls_total,
-                        );
-                    }
-                }
-            }
             for text in options.interaction.pending_inputs().await {
-                if let Err(e) = active.append_input(text, "user.steering") {
+                if let Err(e) = active.append_input(new_block_id(), text, "user.steering") {
                     return (
                         TurnResult::Interrupted {
                             cause: TurnInterruption::RunnerInvariantViolation {
@@ -1179,6 +767,7 @@ impl TurnRunner {
                         },
                         trace,
                         tool_calls_total,
+                        None,
                     );
                 }
             }
@@ -1189,7 +778,12 @@ impl TurnRunner {
                 } else {
                     TurnInterruption::TurnDeadlineExceeded
                 };
-                return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
+                return (
+                    TurnResult::Interrupted { cause },
+                    trace,
+                    tool_calls_total,
+                    None,
+                );
             }
             if round >= options.policy.limits.max_model_rounds {
                 return (
@@ -1200,6 +794,7 @@ impl TurnRunner {
                     },
                     trace,
                     tool_calls_total,
+                    None,
                 );
             }
             // materialize the round's frame — the single fork point between
@@ -1218,6 +813,7 @@ impl TurnRunner {
                                 },
                                 trace,
                                 tool_calls_total,
+                                None,
                             );
                         }
                     }
@@ -1389,7 +985,12 @@ impl TurnRunner {
                         applied_block_ids: vec![],
                         tool_batch: None,
                     });
-                    return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
+                    return (
+                        TurnResult::Interrupted { cause },
+                        trace,
+                        tool_calls_total,
+                        None,
+                    );
                 }
             };
             let output_summary = Some(OutputSummary {
@@ -1423,12 +1024,21 @@ impl TurnRunner {
                 } else {
                     TurnInterruption::ModelRefusal
                 };
-                return (TurnResult::Interrupted { cause }, trace, tool_calls_total);
+                return (
+                    TurnResult::Interrupted { cause },
+                    trace,
+                    tool_calls_total,
+                    None,
+                );
             }
+            let block_ids = (0..model_output_block_count(&output.response))
+                .map(|_| new_block_id())
+                .collect();
             let applied = match active.append_model_output(
                 invocation.clone(),
                 &output.response,
                 output.stop_reason,
+                block_ids,
             ) {
                 Ok(a) => a,
                 Err(e) => {
@@ -1440,13 +1050,18 @@ impl TurnRunner {
                         },
                         trace,
                         tool_calls_total,
+                        None,
                     );
                 }
             };
             // The receipt carries the prepared tool calls in model draft
             // order — the same payloads the kernel committed, with ids
             // generated exactly once. No re-reading of blocks.
-            let call_payloads: Vec<ToolCallPayload> = applied.tool_calls;
+            let declarations = applied.tool_calls;
+            let call_payloads: Vec<ToolCallPayload> = declarations
+                .iter()
+                .map(|(_, payload)| payload.clone())
+                .collect();
             trace
                 .rounds
                 .last_mut()
@@ -1461,13 +1076,30 @@ impl TurnRunner {
                         },
                         trace,
                         tool_calls_total,
+                        None,
                     );
                 }
                 ModelStopReason::ToolUse => {
-                    // Emitted calls count at dispatch time — including the
-                    // batch still pending behind a pause (the resume
-                    // therefore must not re-count it).
                     tool_calls_total += call_payloads.len();
+                    let contexts = declarations
+                        .iter()
+                        .map(|(id, payload)| ToolCallContext::from_declaration(*id, payload))
+                        .collect();
+                    let batch = match ToolBatch::new(contexts) {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            return (
+                                TurnResult::Interrupted {
+                                    cause: TurnInterruption::RunnerInvariantViolation {
+                                        reason: error.to_string(),
+                                    },
+                                },
+                                trace,
+                                tool_calls_total,
+                                None,
+                            );
+                        }
+                    };
                     if tool_calls_total as u32 > options.policy.limits.max_tool_calls {
                         return (
                             TurnResult::Interrupted {
@@ -1477,169 +1109,37 @@ impl TurnRunner {
                             },
                             trace,
                             tool_calls_total,
+                            Some(batch),
                         );
                     }
-                    // ToolUse hook: the tool-use filter seam. `TurnRunner::new()`
-                    // defaults to `PassthroughHook` (no filter applied — opt in
-                    // via `with_hook`). `FilterChain` plugs in via `with_hook`,
-                    // implementing `ToolUseHook` directly.
-                    let (hook_to_exec, hook_rejected, hook_decisions): (
-                        Vec<ToolCallPayload>,
-                        Vec<ToolResultPayload>,
-                        Vec<UnknownDecision>,
-                    ) = {
-                        let call_control = ctrl
-                            .for_attempt(options.policy.attempt_timeout)
-                            .for_call(options.execution.call_timeout);
-                        let conversation_id = match &frames {
-                            FrameSource::Conversation {
-                                conversation_id, ..
-                            } => Some(*conversation_id),
-                            FrameSource::Turn(_) => None,
-                        };
-                        let hook_ctx = HookCtx {
-                            turn_id: &active.turn_id(),
-                            conversation_id,
-                            round_id: RoundId(round),
-                            control: &call_control,
-                        };
-                        let outcome = self.hook.apply(call_payloads.clone(), &hook_ctx).await;
-                        (
-                            outcome.to_execute,
-                            outcome.rejected,
-                            outcome.unknown_decisions,
-                        )
+                    let declaration_order = batch.declaration_ids();
+                    let turn_id = active.turn_id();
+                    let conversation_id = match &frames {
+                        FrameSource::Conversation {
+                            conversation_id, ..
+                        } => Some(*conversation_id),
+                        FrameSource::Turn(_) => None,
                     };
-                    // The second gate — the host's batch decision.
-                    // Default `Proceed`; `Pause` suspends the turn with the
-                    // model-emitted batch as `pending_calls`, before any
-                    // execution or rejection lands in the facts.
-                    let decision = options.interaction.decide_batch(&hook_to_exec).await;
-                    match decision {
-                        BatchDecision::Pause { deadline } => {
-                            // The checkpoint saves the hook's prepared work
-                            // (admitted-with-rewrites + rejections) so the
-                            // resume never re-runs the hook and never
-                            // re-admits a rejected call. The outcome's
-                            // context is the single fact source — no
-                            // duplicated snapshot rides on the variant.
-                            // The checkpoint fixes the
-                            // actual action for every prepared
-                            // UnknownOutcome — the explicit hook entry if
-                            // given, else the turn's current configuration
-                            // resolved by the batch's tool name. A resume
-                            // can never recompute these.
-                            let draft_names: HashMap<ToolCallId, String> = call_payloads
-                                .iter()
-                                .map(|p| (p.call_id.clone(), p.tool_name.clone()))
-                                .collect();
-                            let unknown_decisions = hook_rejected
-                                .iter()
-                                .filter(|r| r.status == ToolResultStatus::UnknownOutcome)
-                                .map(|r| UnknownDecision {
-                                    call_id: r.call_id.clone(),
-                                    policy: hook_decisions
-                                        .iter()
-                                        .find(|d| d.call_id == r.call_id)
-                                        .map(|d| d.policy)
-                                        .unwrap_or_else(|| {
-                                            options.policy.unknown_outcome.resolve(
-                                                draft_names
-                                                    .get(&r.call_id)
-                                                    .map(String::as_str)
-                                                    .unwrap_or(""),
-                                            )
-                                        }),
-                                })
-                                .collect();
+                    let control = ctrl.for_attempt(None).for_call(None);
+                    let processor_context = ProcessorContext {
+                        conversation_id,
+                        turn_id: &turn_id,
+                        round_id: RoundId(round),
+                        declaration_order: &declaration_order,
+                        control: &control,
+                    };
+                    match self
+                        .run_batch(active, batch, &processor_context, options, ctrl, &mut trace)
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err((cause, batch)) => {
                             return (
-                                TurnResult::Paused {
-                                    continuation: Continuation {
-                                        pause_point: PausePoint::AwaitingApproval {
-                                            prepared: PreparedApproval {
-                                                awaiting: hook_to_exec,
-                                                rejected: hook_rejected,
-                                                unknown_decisions,
-                                            },
-                                            deadline,
-                                        },
-                                        round,
-                                        accounted_tool_calls: tool_calls_total,
-                                        queued_inputs: Vec::new(),
-                                    },
-                                },
+                                TurnResult::Interrupted { cause },
                                 trace,
                                 tool_calls_total,
+                                batch,
                             );
-                        }
-                        BatchDecision::Proceed => {
-                            if let Err(cause) = self
-                                .run_batch(
-                                    active,
-                                    &call_payloads,
-                                    BatchWork::Execute(hook_to_exec),
-                                    attach_decisions(hook_rejected, &hook_decisions),
-                                    options,
-                                    ctrl,
-                                    round,
-                                    &mut trace,
-                                )
-                                .await
-                            {
-                                return (
-                                    TurnResult::Interrupted { cause },
-                                    trace,
-                                    tool_calls_total,
-                                );
-                            }
-                        }
-                        BatchDecision::Rewrite(rewritten) => {
-                            if let Err(cause) = self
-                                .run_batch(
-                                    active,
-                                    &call_payloads,
-                                    BatchWork::Execute(rewritten),
-                                    attach_decisions(hook_rejected, &hook_decisions),
-                                    options,
-                                    ctrl,
-                                    round,
-                                    &mut trace,
-                                )
-                                .await
-                            {
-                                return (
-                                    TurnResult::Interrupted { cause },
-                                    trace,
-                                    tool_calls_total,
-                                );
-                            }
-                        }
-                        BatchDecision::Reject {
-                            results,
-                            unknown_decisions,
-                        } => {
-                            if let Err(cause) = self
-                                .run_batch(
-                                    active,
-                                    &call_payloads,
-                                    BatchWork::Precomputed(attach_decisions(
-                                        results,
-                                        &unknown_decisions,
-                                    )),
-                                    attach_decisions(hook_rejected, &hook_decisions),
-                                    options,
-                                    ctrl,
-                                    round,
-                                    &mut trace,
-                                )
-                                .await
-                            {
-                                return (
-                                    TurnResult::Interrupted { cause },
-                                    trace,
-                                    tool_calls_total,
-                                );
-                            }
                         }
                     }
                     round += 1;
@@ -1651,235 +1151,306 @@ impl TurnRunner {
         }
     }
 
-    /// Execute a tool batch and commit its results — the shared core of
-    /// the normal ToolUse dispatch and the approval-resume prologue.
-    // Private shared core; every parameter is a distinct axis (facts,
-    // order, work, policy, control, round, trace) — grouping would only
-    // obscure it.
-    #[allow(clippy::too_many_arguments)]
-    /// `draft_order` is the model-emitted payload order; the canonical
-    /// result order follows it (host rewrites and pre-computed rejects
-    /// still pair by `call_id`). The batch trace attaches to the round's
-    /// trace entry before committing, so even a
-    /// `RunnerInvariantViolation` keeps the observations.
+    /// Run the processor → executor → processor sequence over one batch.
     async fn run_batch(
         &self,
         active: &mut TurnContext,
-        draft_order: &[ToolCallPayload],
-        work: BatchWork,
-        mut rejected: Vec<PrecomputedResult>,
+        mut batch: ToolBatch,
+        ctx: &ProcessorContext<'_>,
         options: &TurnRunOptions,
         ctrl: &RunControl,
-        round: u32,
         trace: &mut TurnTrace,
-    ) -> Result<(), TurnInterruption> {
-        // Batch completeness is runner policy (the kernel's tool door
-        // intentionally accepts partial commits): every model-emitted call
-        // must be covered exactly once by the work + rejected decision —
-        // no silent drops, no duplicates, no foreign ids. Validated BEFORE
-        // dispatch so a broken decision cannot spend side effects on calls
-        // the facts can never pair.
-        let expected: HashSet<ToolCallId> = draft_order.iter().map(|p| p.call_id.clone()).collect();
-        let mut covered: HashSet<ToolCallId> = HashSet::new();
-        let work_ids: Vec<&ToolCallId> = match &work {
-            BatchWork::Execute(payloads) => payloads.iter().map(|p| &p.call_id).collect(),
-            BatchWork::Precomputed(pre) => pre.iter().map(|o| &o.result.call_id).collect(),
+    ) -> Result<(), (TurnInterruption, Option<ToolBatch>)> {
+        let round = ctx.round_id.0;
+        let started = Arc::new(std::sync::Mutex::new(HashMap::<BlockId, String>::new()));
+        let durations = HashMap::<BlockId, u64>::new();
+        let completion_order = Vec::<BlockId>::new();
+        let pre = tokio::select! {
+            biased;
+            cause = wait_for_stop(ctrl) => Err(cause),
+            result = self.processors.process_before(&mut batch, ctx) => Ok(result),
         };
-        for call_id in work_ids
-            .into_iter()
-            .chain(rejected.iter().map(|o| &o.result.call_id))
-        {
-            if !expected.contains(call_id) {
-                return Err(TurnInterruption::RunnerInvariantViolation {
-                    reason: format!(
-                        "batch decision covers call {:?} which the model did not emit",
-                        call_id.0
-                    ),
-                });
-            }
-            if !covered.insert(call_id.clone()) {
-                return Err(TurnInterruption::RunnerInvariantViolation {
-                    reason: format!("batch decision covers call {:?} more than once", call_id.0),
-                });
-            }
-        }
-        if covered.len() != expected.len() {
-            let missing: Vec<String> = expected
-                .difference(&covered)
-                .map(|id| id.0.clone())
-                .collect();
-            return Err(TurnInterruption::RunnerInvariantViolation {
-                reason: format!(
-                    "batch decision does not cover every emitted call: missing {missing:?}"
-                ),
-            });
-        }
-        // parallel dispatch; completion order comes from the
-        // stream (each future is yielded as it finishes), so no
-        // shared log is needed
-        let (mut results, completion_order, call_durations): (
-            Vec<PrecomputedResult>,
-            Vec<ToolCallId>,
-            HashMap<ToolCallId, u64>,
-        ) = match work {
-            BatchWork::Execute(to_exec) => {
-                let futs = to_exec.into_iter().map(|payload| {
-                    let unknown_outcome = options.policy.unknown_outcome.clone();
-                    let cc = ctrl
-                        .for_attempt(options.policy.attempt_timeout)
-                        .for_call(options.execution.call_timeout);
-                    let store = options.execution.artifact_store.clone();
-                    let tc = options.execution.token_counter.clone();
-                    // The effective per-call output limit is
-                    // resolved by the ACTUAL executed name (post hook /
-                    // rewrite / resume decision) before dispatch; the
-                    // executor never consults the tool object.
-                    let limits = options
-                        .execution
-                        .tool_output_limits_overrides
-                        .get(&payload.tool_name)
-                        .copied()
-                        .unwrap_or(options.execution.tool_output_limits);
-                    // An executed UnknownOutcome's action
-                    // resolves by the executed name, not the draft's.
-                    let name = payload.tool_name.clone();
-                    let exec = self.executor.clone();
-                    async move {
-                        let t0 = Instant::now();
-                        let result = exec
-                            .execute_with_limits(payload, cc, store, tc, limits)
-                            .await;
-                        let fixed_policy = if result.status == ToolResultStatus::UnknownOutcome {
-                            Some(unknown_outcome.resolve(&name))
-                        } else {
-                            None
-                        };
-                        (
-                            PrecomputedResult {
-                                result,
-                                fixed_policy,
-                            },
-                            millis_since(t0),
-                        )
-                    }
-                });
-                let mut stream = futures_util::stream::FuturesUnordered::from_iter(futs);
-                let mut results = Vec::with_capacity(stream.len());
-                let mut completion_order = Vec::with_capacity(stream.len());
-                let mut call_durations: HashMap<ToolCallId, u64> = HashMap::new();
-                while let Some((pre, duration_ms)) = stream.next().await {
-                    completion_order.push(pre.result.call_id.clone());
-                    call_durations.insert(pre.result.call_id.clone(), duration_ms);
-                    results.push(pre);
-                }
-                (results, completion_order, call_durations)
-            }
-            BatchWork::Precomputed(precomputed) => (
-                precomputed,
-                Vec::new(), // host-supplied: no executor completion order
-                HashMap::new(),
-            ),
-        };
-        results.append(&mut rejected);
-        // Post-execution identity: every returned outcome must answer one
-        // of the batch's own calls — a tool fabricating a foreign id fails
-        // loudly here instead of as a kernel pairing error after the fact.
-        if let Some(foreign) = results
-            .iter()
-            .find(|r| !expected.contains(&r.result.call_id))
-        {
-            return Err(TurnInterruption::RunnerInvariantViolation {
-                reason: format!(
-                    "tool outcome answers foreign call {:?}",
-                    foreign.result.call_id.0
-                ),
-            });
-        }
-        // Canonical order = model draft order, taken from the
-        // receipt's position — not from ToolCallId encoding. The
-        // kernel re-derives the same order from call block
-        // sequences when committing.
-        let order_index: HashMap<ToolCallId, usize> = draft_order
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.call_id.clone(), i))
-            .collect();
-        results.sort_by_key(|r| order_index.get(&r.result.call_id).copied());
-        let tool_names: HashMap<ToolCallId, String> = draft_order
-            .iter()
-            .map(|p| (p.call_id.clone(), p.tool_name.clone()))
-            .collect();
-        // Resolve every remaining unknown-outcome action through
-        // the turn policy, keyed by the batch's tool name for the call
-        // (precomputed entries were never executed, so the batch name is
-        // their actual name). Explicit / checkpoint-fixed actions win.
-        for pre in &mut results {
-            if pre.result.status == ToolResultStatus::UnknownOutcome && pre.fixed_policy.is_none() {
-                pre.fixed_policy = Some(
-                    options.policy.unknown_outcome.resolve(
-                        tool_names
-                            .get(&pre.result.call_id)
-                            .map(String::as_str)
-                            .unwrap_or(""),
-                    ),
+        match pre {
+            Err(cause) => {
+                record_batch_trace(
+                    trace,
+                    round,
+                    &batch,
+                    ctx.declaration_order,
+                    &started,
+                    &durations,
+                    &completion_order,
                 );
+                return Err((cause, Some(batch)));
+            }
+            Ok(Err(error)) => {
+                record_batch_trace(
+                    trace,
+                    round,
+                    &batch,
+                    ctx.declaration_order,
+                    &started,
+                    &durations,
+                    &completion_order,
+                );
+                if ctrl.should_stop() {
+                    return Err((stop_cause(ctrl), Some(batch)));
+                }
+                return Err((
+                    TurnInterruption::ProcessorFailed {
+                        reason: error.to_string(),
+                    },
+                    Some(batch),
+                ));
+            }
+            Ok(Ok(())) => {}
+        }
+        if ctrl.should_stop() {
+            record_batch_trace(
+                trace,
+                round,
+                &batch,
+                ctx.declaration_order,
+                &started,
+                &durations,
+                &completion_order,
+            );
+            return Err((stop_cause(ctrl), Some(batch)));
+        }
+
+        let mut durations = durations;
+        let mut completion_order = completion_order;
+        let executor = self.executor.clone();
+        let store = options.execution.artifact_store.clone();
+        let control = ctrl.clone();
+        let call_timeout = options.execution.call_timeout;
+        let calls: Vec<(BlockId, ToolCallContext)> = batch
+            .calls()
+            .iter()
+            .map(|entry| (entry.call().call_block_id, entry.call().clone()))
+            .collect();
+        let tasks = calls.into_iter().map(|(call_block_id, call)| {
+            let started = started.clone();
+            let executor = executor.clone();
+            let control = control.clone();
+            let store = store.clone();
+            async move {
+                // FuturesUnordered can poll several newly-created futures
+                // in one `next()` call. A sibling may cancel the turn during
+                // that same poll, so every task must check the shared control
+                // before claiming that it started.
+                if control.should_stop() {
+                    return (call_block_id, None, None);
+                }
+                started
+                    .lock()
+                    .expect("started calls lock")
+                    .insert(call_block_id, call.input.tool_name.clone());
+                // Start the call-scoped timeout only when this future is
+                // polled for dispatch; time spent in model/catalog/pre-stage
+                // work does not consume a tool's execution budget.
+                let call_control = control.for_attempt(None).for_call(call_timeout);
+                let begin = Instant::now();
+                let outcome = executor.execute(call, call_control, store).await;
+                (call_block_id, Some(outcome), Some(millis_since(begin)))
+            }
+        });
+        let mut stream = futures_util::stream::FuturesUnordered::from_iter(tasks);
+        let mut stopped = None;
+        while !stream.is_empty() {
+            let next = tokio::select! {
+                biased;
+                cause = wait_for_stop(ctrl) => {
+                    stopped = Some(cause);
+                    None
+                }
+                next = stream.next() => next,
+            };
+            let Some((call_block_id, outcome, duration_ms)) = next else {
+                break;
+            };
+            let (Some(outcome), Some(duration_ms)) = (outcome, duration_ms) else {
+                stopped = Some(stop_cause(ctrl));
+                break;
+            };
+            match outcome {
+                Ok(result) => {
+                    completion_order.push(call_block_id);
+                    durations.insert(call_block_id, duration_ms);
+                    if result.call_block_id != call_block_id {
+                        stopped = Some(TurnInterruption::RunnerInvariantViolation {
+                            reason: format!(
+                                "tool result targets {:?}, expected {:?}",
+                                result.call_block_id, call_block_id
+                            ),
+                        });
+                        break;
+                    }
+                    if let Err(error) = resolve_batch_result(&mut batch, call_block_id, result) {
+                        stopped =
+                            Some(TurnInterruption::RunnerInvariantViolation { reason: error });
+                        break;
+                    }
+                }
+                Err(error) => {
+                    stopped = Some(TurnInterruption::RunnerInvariantViolation {
+                        reason: error.to_string(),
+                    });
+                    break;
+                }
             }
         }
-        // Every UnknownOutcome now carries exactly one resolved action.
-        debug_assert!(results.iter().all(|pre| {
-            pre.result.status != ToolResultStatus::UnknownOutcome || pre.fixed_policy.is_some()
-        }));
-        // attach batch trace before committing so even a
-        // RunnerInvariantViolation keeps the observations
-        if let Some(rt) = trace
-            .rounds
-            .last_mut()
-            .filter(|rt| rt.round_id == RoundId(round))
-        {
-            rt.tool_batch = Some(ToolBatchTrace {
-                calls: results
-                    .iter()
-                    .map(|pre| ToolCallTrace {
-                        call_id: pre.result.call_id.clone(),
-                        tool_name: tool_names
-                            .get(&pre.result.call_id)
-                            .cloned()
-                            .unwrap_or_default(),
-                        position: order_index
-                            .get(&pre.result.call_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        status: pre.result.status.clone(),
-                        truncation: pre.result.output.truncation,
-                        artifact: pre.result.output.artifact.clone(),
-                        duration_ms: call_durations
-                            .get(&pre.result.call_id)
-                            .copied()
-                            .unwrap_or(0),
-                    })
-                    .collect(),
-                completion_order,
-            });
+        if stopped.is_some() {
+            // Preserve the selected cause, then signal every in-flight tool
+            // through the shared run token. This internal signal must not
+            // replace a deadline or runner-invariant cause with cancellation.
+            ctrl.cancellation_token().cancel();
         }
-        if let Err(e) =
-            active.append_tool_results(results.iter().map(|pre| pre.result.clone()).collect())
-        {
-            return Err(TurnInterruption::RunnerInvariantViolation {
-                reason: e.to_string(),
-            });
+        drop(stream);
+        if let Some(cause) = stopped {
+            settle_started_calls(&mut batch, &started);
+            record_batch_trace(
+                trace,
+                round,
+                &batch,
+                ctx.declaration_order,
+                &started,
+                &durations,
+                &completion_order,
+            );
+            return Err((cause, Some(batch)));
         }
-        // UnknownOutcome action: Stop interrupts after the real
-        // result is committed, Continue proceeds to the next round — it
-        // never re-runs the call, rewrites the result into a success, or
-        // cancels sibling calls; parent should_stop is checked at the next
-        // loop top.
-        if let Some(uu) = results.iter().find(|pre| {
-            pre.result.status == ToolResultStatus::UnknownOutcome
-                && pre.fixed_policy == Some(UnknownOutcomePolicy::Stop)
-        }) {
-            return Err(TurnInterruption::UnsafeUnknownOutcome {
-                call_id: uu.result.call_id.clone(),
-            });
+
+        if batch.completed_len() != batch.declaration_ids().len() {
+            settle_started_calls(&mut batch, &started);
+            record_batch_trace(
+                trace,
+                round,
+                &batch,
+                ctx.declaration_order,
+                &started,
+                &durations,
+                &completion_order,
+            );
+            return Err((
+                TurnInterruption::RunnerInvariantViolation {
+                    reason: "fixed executor stage left a call unresolved".into(),
+                },
+                Some(batch),
+            ));
+        }
+        let post = tokio::select! {
+            biased;
+            cause = wait_for_stop(ctrl) => Err(cause),
+            result = self.processors.process_after(&mut batch, ctx) => Ok(result),
+        };
+        match post {
+            Err(cause) => {
+                record_batch_trace(
+                    trace,
+                    round,
+                    &batch,
+                    ctx.declaration_order,
+                    &started,
+                    &durations,
+                    &completion_order,
+                );
+                return Err((cause, Some(batch)));
+            }
+            Ok(Err(error)) => {
+                record_batch_trace(
+                    trace,
+                    round,
+                    &batch,
+                    ctx.declaration_order,
+                    &started,
+                    &durations,
+                    &completion_order,
+                );
+                if ctrl.should_stop() {
+                    return Err((stop_cause(ctrl), Some(batch)));
+                }
+                return Err((
+                    TurnInterruption::ProcessorFailed {
+                        reason: error.to_string(),
+                    },
+                    Some(batch),
+                ));
+            }
+            Ok(Ok(())) => {}
+        }
+        if ctrl.should_stop() {
+            record_batch_trace(
+                trace,
+                round,
+                &batch,
+                ctx.declaration_order,
+                &started,
+                &durations,
+                &completion_order,
+            );
+            return Err((stop_cause(ctrl), Some(batch)));
+        }
+
+        let tool_names: HashMap<BlockId, String> = batch
+            .results()
+            .iter()
+            .map(|entry| {
+                let id = entry.call().call_block_id;
+                let name = started
+                    .lock()
+                    .expect("started calls lock")
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| entry.call().input.tool_name.clone());
+                (id, name)
+            })
+            .collect();
+        let entries = batch.results();
+        let unsafe_unknown = entries.iter().find_map(|entry| {
+            let (_, result) = entry.result()?;
+            (result.status == ToolResultStatus::UnknownOutcome
+                && options.policy.unknown_outcome.resolve(
+                    tool_names
+                        .get(&entry.call().call_block_id)
+                        .map(String::as_str)
+                        .unwrap_or(""),
+                ) == UnknownOutcomePolicy::Stop)
+                .then_some(entry.call().call_block_id)
+        });
+        record_batch_trace(
+            trace,
+            round,
+            &batch,
+            ctx.declaration_order,
+            &started,
+            &durations,
+            &completion_order,
+        );
+
+        let results = entries
+            .iter()
+            .filter_map(|entry| {
+                let (result_id, result) = entry.result()?;
+                Some((*result_id, result.clone()))
+            })
+            .collect();
+        if let Err(error) = active.append_tool_results(results) {
+            return Err((
+                TurnInterruption::RunnerInvariantViolation {
+                    reason: error.to_string(),
+                },
+                Some(batch),
+            ));
+        }
+        if ctrl.should_stop() {
+            return Err((stop_cause(ctrl), None));
+        }
+        if let Some(call_block_id) = unsafe_unknown {
+            return Err((
+                TurnInterruption::UnsafeUnknownOutcome { call_block_id },
+                None,
+            ));
         }
         Ok(())
     }

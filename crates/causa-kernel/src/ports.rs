@@ -10,6 +10,7 @@
 //! seams are that crate's component opinions, not cross-host capabilities,
 //! and live in `causa-runtime`.
 
+pub mod batch;
 pub mod control;
 pub mod gateway;
 pub mod source;

@@ -10,18 +10,15 @@ pub mod coordinator;
 
 use async_trait::async_trait;
 use causa_kernel::{
-    AttemptControl, CallControl, ContentPart, ContextFrame, ConversationId, ModelGateway,
-    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelResponse,
-    ModelStopReason, ModelStream, RoundId, StreamDelta, TextPayload, Tool, ToolCallContext,
-    ToolCallDraft, ToolCallId, ToolCallPayload, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus, Truncation, TurnContext, TurnId,
+    AttemptControl, CallControl, ContextFrame, ConversationId, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream,
+    StreamDelta, TextPayload, Tool, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, Truncation, TurnContext, TurnId,
 };
 use causa_runtime::{
-    BatchDecision, Compaction, CompactionError, CompactionInput, CompactionOutput,
-    ConversationState, HookOutcome, ResumeRequest, RunControl, SealedResult, Session,
-    SessionConfig, SessionHandle, SubmitRequest, ToolExecutor, TurnInteraction, TurnLimits,
-    TurnPolicy, TurnRunOptions, TurnRunner, WaitEnd, WorkObservation, WorkReceipt, WorkRef,
-    WorkState,
+    Compaction, CompactionError, CompactionInput, CompactionOutput, ConversationState, RunControl,
+    SealedResult, Session, SessionConfig, ToolExecutor, TurnLimits, TurnPolicy, TurnRunOptions,
+    TurnRunner, new_block_id,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,7 +42,7 @@ pub fn commit_sealed(state: &mut ConversationState, turn_label: &str, result: Se
     state
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     state.seal_turn(TurnId::new(turn_label), result).unwrap();
     state.commit(TurnId::new(turn_label)).unwrap();
@@ -114,70 +111,7 @@ pub fn runner_with(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) ->
     TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(tools)))
 }
 
-/// A `TurnInteraction` that pauses on the first tool-use batch — the host
-/// approval gate. The turn suspends with its active context left open, so the
-/// driver returns `TurnResult::Paused` and the session publishes
-/// `WorkState::Paused`.
-pub struct PausingInteraction;
-
-#[async_trait]
-impl TurnInteraction for PausingInteraction {
-    async fn decide_batch(&self, _calls: &[ToolCallPayload]) -> BatchDecision {
-        BatchDecision::Pause { deadline: None }
-    }
-}
-
-/// A `TurnInteraction` that parks inside `decide_batch` until the test
-/// releases it, then returns `Pause` — so a cancel can deterministically land
-/// while the host's approval gate is deciding.
-pub struct GatedPauseInteraction {
-    /// One permit per `decide_batch` entry, so the test knows the gate is
-    /// parked there rather than merely reached.
-    entered: tokio::sync::Semaphore,
-    /// One permit per `release()`, consumed by the parked `decide_batch`.
-    release: tokio::sync::Semaphore,
-}
-
-impl GatedPauseInteraction {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            entered: tokio::sync::Semaphore::new(0),
-            release: tokio::sync::Semaphore::new(0),
-        })
-    }
-
-    /// Wait until `decide_batch` has been entered. Bounded so a regression
-    /// fails loudly instead of hanging the suite.
-    pub async fn wait_entered(&self) {
-        tokio::time::timeout(Duration::from_secs(5), self.entered.acquire())
-            .await
-            .expect("the gated interaction is entered within 5s")
-            .expect("the entry semaphore stays open")
-            .forget();
-    }
-
-    /// Let the parked `decide_batch` return its `Pause`.
-    pub fn release(&self) {
-        self.release.add_permits(1);
-    }
-}
-
-#[async_trait]
-impl TurnInteraction for GatedPauseInteraction {
-    async fn decide_batch(&self, _calls: &[ToolCallPayload]) -> BatchDecision {
-        self.entered.add_permits(1);
-        let permit = self
-            .release
-            .acquire()
-            .await
-            .expect("the release semaphore stays open");
-        permit.forget();
-        BatchDecision::Pause { deadline: None }
-    }
-}
-
-/// A session with no interaction seam over `id`, driving `gateway` with the
-/// default config — work runs straight through the driver.
+/// A session over `id`, driving `gateway` with the default config.
 pub fn idle_session(id: &str, gateway: Arc<dyn ModelGateway>) -> Session {
     Session::new(
         ConversationState::new(ConversationId(id.into())),
@@ -188,94 +122,6 @@ pub fn idle_session(id: &str, gateway: Arc<dyn ModelGateway>) -> Session {
     .expect("an empty state is an idle session base")
 }
 
-/// A session over `id` whose interaction pauses on the first tool-use batch,
-/// driving `gateway` with `tools` under `config`.
-pub fn pausing_session(
-    id: &str,
-    gateway: Arc<dyn ModelGateway>,
-    tools: Vec<Arc<dyn Tool>>,
-    config: SessionConfig,
-) -> Session {
-    let options = TurnRunOptions {
-        interaction: Arc::new(PausingInteraction),
-        ..Default::default()
-    };
-    Session::new(
-        ConversationState::new(ConversationId(id.into())),
-        Arc::new(runner_with(gateway, tools)),
-        options,
-        config,
-    )
-    .expect("an empty state is an idle session base")
-}
-
-/// One text submission part.
-pub fn session_req(key: &str, text: &str) -> SubmitRequest {
-    SubmitRequest {
-        request_key: key.into(),
-        parts: vec![ContentPart::Text(TextPayload::new(text))],
-    }
-}
-
-/// Submit one work and wait for it to pause, returning its receipt and the
-/// paused observation (whose `revision` is the paused revision).
-pub async fn submit_to_pause(handle: &SessionHandle, key: &str) -> (WorkReceipt, WorkObservation) {
-    let receipt = handle
-        .submit(session_req(key, "go"))
-        .expect("an idle session accepts the work");
-    let waited = handle
-        .wait(&receipt.work, Duration::from_secs(5))
-        .await
-        .expect("the accepted work is observable");
-    assert_eq!(waited.end, WaitEnd::ReachedState);
-    assert_eq!(waited.observation.state, WorkState::Paused);
-    (receipt, waited.observation)
-}
-
-/// One paused work over `id`: the first model call emits a tool-use batch
-/// that the interaction pauses. Returns the owning session (dropping it
-/// would close submission), a handle, and the paused work's ref.
-pub async fn paused_work(
-    id: &str,
-    gateway: Arc<RecordingGateway>,
-) -> (Session, SessionHandle, WorkRef) {
-    let session = pausing_session(
-        id,
-        gateway,
-        vec![Arc::new(EchoTool)],
-        SessionConfig::default(),
-    );
-    let handle = session.handle();
-    let (receipt, _) = submit_to_pause(&handle, "pause").await;
-    (session, handle, receipt.work)
-}
-
-/// The paused round's unanswered call: the model emitted `echo` in round 0,
-/// position 0, with empty arguments — the kernel mints its id from exactly
-/// those. `passthrough` of this single call covers the awaiting batch once.
-pub fn awaiting_echo() -> ToolCallPayload {
-    ToolCallPayload {
-        call_id: ToolCallId::generate(RoundId(0), "echo", &serde_json::json!({}), 0),
-        tool_name: "echo".into(),
-        arguments: serde_json::json!({}),
-    }
-}
-
-/// Approve `calls` unchanged, with no extra injection.
-pub fn approve(calls: Vec<ToolCallPayload>) -> ResumeRequest {
-    ResumeRequest {
-        decision: Some(HookOutcome::passthrough(calls)),
-        inject: Vec::new(),
-    }
-}
-
-// ---- scripted gateways ---------------------------------------------------------
-
-/// A gateway that replays canned outcomes and records every request.
-///
-/// - `scripted`: pops outputs in order; an empty queue is a Permanent error.
-/// - `repeating_last`: pops until one remains, then repeats it forever —
-///   for single-output completion flows.
 pub struct RecordingGateway {
     outputs: Mutex<Vec<Result<ModelOutput, ModelInvokeErrorKind>>>,
     recorded: Mutex<Vec<ModelRequest>>,
@@ -487,55 +333,6 @@ impl ModelGateway for FakeGateway {
     }
 }
 
-// ---- test-only dedup hook -----------------------------------------------------
-//
-// The framework's `DedupFilter` lives in the lib; these integration
-// targets pin dedup behavior independently of it.
-
-pub struct TestDedupHook;
-
-#[async_trait]
-impl causa_runtime::ToolUseHook for TestDedupHook {
-    async fn apply(
-        &self,
-        calls: Vec<causa_kernel::ToolCallPayload>,
-        _ctx: &causa_runtime::HookCtx<'_>,
-    ) -> causa_runtime::HookOutcome {
-        use std::collections::HashMap;
-        let mut seen: HashMap<(String, serde_json::Value), ()> = HashMap::new();
-        let mut to_execute = Vec::new();
-        let mut rejected = Vec::new();
-        for payload in calls {
-            let key = (payload.tool_name.clone(), payload.arguments.clone());
-            if seen.insert(key, ()).is_some() {
-                rejected.push(ToolResultPayload {
-                    call_id: payload.call_id.clone(),
-                    status: ToolResultStatus::Rejected,
-                    output: ToolOutput::new(serde_json::json!({"error": "duplicate tool call"})),
-                    media: Vec::new(),
-                });
-            } else {
-                to_execute.push(payload);
-            }
-        }
-        causa_runtime::HookOutcome {
-            to_execute,
-            rejected,
-            unknown_decisions: Vec::new(),
-        }
-    }
-}
-
-/// Like `runner_with`, but with the test dedup hook installed. Normal
-/// callers compose filters explicitly via the framework layer.
-pub fn runner_with_dedup(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) -> TurnRunner {
-    TurnRunner::with_hook(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(tools)),
-        Arc::new(TestDedupHook),
-    )
-}
-
 // ---- tool fakes ---------------------------------------------------------------
 
 pub struct EchoTool;
@@ -551,15 +348,16 @@ impl Tool for EchoTool {
     }
     async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Succeeded,
             output: ToolOutput {
-                content: serde_json::json!({"echo": ctx.arguments}),
+                content: serde_json::json!({"echo": ctx.input.arguments}),
                 truncation: Truncation::None,
                 meta: None,
                 artifact: None,
             },
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
@@ -577,10 +375,11 @@ impl Tool for FailTool {
     }
     async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(serde_json::json!({"err": "fail"})),
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
@@ -600,10 +399,11 @@ impl Tool for UnknownStopTool {
     }
     async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::UnknownOutcome,
             output: ToolOutput::new(serde_json::json!({"unk": true})),
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
@@ -649,6 +449,15 @@ impl RecordingStreamingGateway {
     /// Number of `stream()` calls made so far — one per attempt.
     pub fn attempts(&self) -> usize {
         self.recorded.lock().unwrap().len()
+    }
+
+    pub fn frames(&self) -> Vec<ContextFrame> {
+        self.recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.frame.clone())
+            .collect()
     }
 }
 

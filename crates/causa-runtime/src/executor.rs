@@ -1,21 +1,14 @@
-//! Tool batch dispatch — dedup-then-parallel execution with panic isolation,
-//! call-deadline backstop, and token-limit truncation with artifact spill.
+//! Tool dispatch and catalog composition: panic isolation and call-deadline
+//! handling are centralized here; output policy belongs to batch processors.
 //! Also the tool-catalog composition point: static Rust tools
 //! and dynamic sources (`DynamicToolSource`, e.g. MCP servers) merge into
 //! one dispatch path; the driver only consumes the assembled surface.
 
-use crate::budget::TokenCounter;
 use crate::composition::ToolBridge;
-use crate::config::ToolOutputLimits;
 use causa_kernel::CallControl;
-use causa_kernel::ToolCallPayload;
 use causa_kernel::{
-    ArtifactHint, ArtifactStore, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
-    ToolSurface,
-};
-use causa_kernel::{
-    ArtifactKind, ArtifactRef, ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus,
-    Truncation,
+    ArtifactStore, BlockId, DynamicToolSource, Tool, ToolCallContext, ToolDefinition, ToolOutput,
+    ToolOutputMeta, ToolResultPayload, ToolResultStatus, ToolSurface, Truncation,
 };
 use futures_util::FutureExt;
 use std::collections::HashMap;
@@ -42,10 +35,23 @@ pub enum ToolRegistryError {
     UnknownSource(String),
 }
 
+/// A tool returned a result associated with a different declaration.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ToolExecutionError {
+    /// The result's `call_block_id` did not match the dispatched declaration.
+    #[error("tool result targets declaration {actual:?}, expected {expected:?}")]
+    MismatchedDeclaration {
+        /// Declaration identity passed to the dispatched tool.
+        expected: BlockId,
+        /// Declaration identity returned by the tool.
+        actual: BlockId,
+    },
+}
+
 /// The tool dispatcher: static tools plus registered dynamic sources
 /// behind one execution path — parallel batch dispatch with per-call
-/// panic isolation, a call-deadline backstop, and token-limit truncation
-/// with artifact spill.
+/// panic isolation and a call-deadline backstop. Output retention is
+/// handled by optional post-processors.
 pub struct ToolExecutor {
     tools: HashMap<String, Arc<dyn Tool>>,
     /// Registered dynamic sources; interior-mutable because the executor
@@ -229,204 +235,97 @@ impl ToolExecutor {
         })
     }
 
-    /// Execute a single ToolCallPayload with panic isolation, a call-deadline
-    /// backstop, and token-limit truncation. Returns the recorded result
-    /// only — the caller owns the unknown-outcome action (in the reference
-    /// driver that is the turn policy, resolved by the executed tool name
-    /// before dispatch). The `effective_limits` argument is the already
-    /// chosen per-call limit: the runner resolves the fallback /
-    /// per-tool-name override by the executed name before dispatch; a
-    /// standalone caller passes the limit it wants.
-    pub async fn execute_with_limits(
+    /// Execute one prepared call with panic isolation and a call-deadline
+    /// backstop. Output retention is handled by optional post-processors.
+    pub async fn execute(
         &self,
-        payload: ToolCallPayload,
+        ctx: ToolCallContext,
         control: CallControl,
         store: Option<Arc<dyn ArtifactStore>>,
-        token_counter: Option<Arc<dyn TokenCounter>>,
-        effective_limits: ToolOutputLimits,
-    ) -> ToolResultPayload {
-        // One `agent.tool` span per dispatch, name and id only. Entered
-        // per poll via `Instrument`, so the future stays `Send`.
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
         let span = tracing::info_span!(
             "agent.tool",
-            tool_name = %payload.tool_name,
-            call_id = %payload.call_id.0
+            tool_name = %ctx.input.tool_name,
+            call_block_id = ?ctx.call_block_id
         );
-        self.execute_with_limits_inner(payload, control, store, token_counter, effective_limits)
+        self.execute_inner(ctx, control, store)
             .instrument(span)
             .await
     }
 
-    async fn execute_with_limits_inner(
+    async fn execute_inner(
         &self,
-        payload: ToolCallPayload,
+        ctx: ToolCallContext,
         control: CallControl,
         store: Option<Arc<dyn ArtifactStore>>,
-        token_counter: Option<Arc<dyn TokenCounter>>,
-        effective_limits: ToolOutputLimits,
-    ) -> ToolResultPayload {
-        // Route: the static map first, then dynamic sources by listing
-        // membership. A dynamic call is wrapped in a [`ToolBridge`] and
-        // runs the exact static path below — panic isolation, call-deadline
-        // backstop, truncation — one code path, one error mapping (the
-        // bridge's).
-        let tool: Option<Arc<dyn Tool>> = match self.tools.get(&payload.tool_name) {
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
+        let tool: Option<Arc<dyn Tool>> = match self.tools.get(&ctx.input.tool_name) {
             Some(tool) => Some(tool.clone()),
             None => self
-                .find_dynamic(&payload.tool_name)
+                .find_dynamic(&ctx.input.tool_name)
                 .map(|(source, definition)| {
                     Arc::new(ToolBridge::new(source, definition)) as Arc<dyn Tool>
                 }),
         };
         let Some(tool) = tool else {
-            return ToolResultPayload {
-                call_id: payload.call_id.clone(),
+            return Ok(ToolResultPayload {
+                call_block_id: ctx.call_block_id,
                 status: ToolResultStatus::Rejected,
-                output: ToolOutput::new(
-                    serde_json::json!({"error": format!("unknown tool: {}", payload.tool_name)}),
-                ),
+                output: ToolOutput::new(serde_json::json!({
+                    "error": format!("unknown tool: {}", ctx.input.tool_name)
+                })),
                 media: Vec::new(),
-            };
+                notes: Vec::new(),
+            });
         };
 
-        let ctx = ToolCallContext {
-            call_id: payload.call_id.clone(),
-            tool_name: payload.tool_name.clone(),
-            arguments: payload.arguments.clone(),
-        };
         let store_ref: Option<&dyn ArtifactStore> =
-            store.as_deref().map(|s| s as &dyn ArtifactStore);
-
-        // Panic isolation plus call-deadline backstop: a tool that
-        // neither returns nor observes CallControl still yields a structured
-        // UnknownOutcome instead of hanging the turn.
+            store.as_deref().map(|value| value as &dyn ArtifactStore);
+        let panic_ctx = ctx.clone();
+        let deadline_ctx = ctx.clone();
         let fut = {
             let tool = tool.clone();
-            let control = control.clone();
+            let call_ctx = ctx.clone();
+            let call_control = control.clone();
             std::panic::AssertUnwindSafe(async move {
-                tool.execute_with_store(&ctx, &control, store_ref).await
+                tool.execute_with_store(&call_ctx, &call_control, store_ref)
+                    .await
             })
             .catch_unwind()
         };
-        let mut result = match control.deadline() {
+        let result = match control.deadline() {
             Some(deadline) => match tokio::time::timeout_at(deadline.into(), fut).await {
-                Ok(Ok(r)) => r,
-                Ok(Err(_)) => Self::panicked_outcome(&payload),
-                Err(_) => Self::deadline_backstop_outcome(&payload),
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Self::panicked_outcome(&panic_ctx),
+                Err(_) => Self::deadline_backstop_outcome(&deadline_ctx),
             },
             None => match fut.await {
-                Ok(r) => r,
-                Err(_) => Self::panicked_outcome(&payload),
+                Ok(result) => result,
+                Err(_) => Self::panicked_outcome(&panic_ctx),
             },
         };
-
-        // Token-limit truncation (middle truncation + artifact spill).
-        // Shape note: on truncation `content` is REPLACED by a JSON string
-        // (head + notice + tail) regardless of the original `Value` shape —
-        // an object or array observation becomes a string on the wire. The
-        // `truncation: Middle` marker and the artifact ref are how consumers
-        // detect this.
-        //
-        // Budget note: the retained head+tail is sized against the DECLARED
-        // limit, not the original size — the notice and the JSON-string
-        // wrapping are part of the measured output. Every candidate is
-        // re-estimated with the wired estimator and the data budget shrinks
-        // until the result fits, so the committed content re-estimates at or
-        // under `max_tokens` — with one defined floor: when the limit is
-        // smaller than the notice's own estimate, the notice alone is
-        // emitted (nothing smaller is representable).
-        let effective_limit = effective_limits.max_tokens;
-
-        let estimate = |value: &serde_json::Value| -> usize {
-            if let Some(counter) = &token_counter {
-                counter.estimate_value(value)
-            } else {
-                // The driver's fallback opinion — single home in `defaults`.
-                crate::defaults::placeholder_token_estimate_value(value)
-            }
-        };
-        let estimated = estimate(&result.output.content);
-
-        if estimated > effective_limit {
-            let content_str = serde_json::to_string(&result.output.content)
-                .unwrap_or_else(|_| result.output.content.to_string());
-            let data_bytes = serde_json::to_vec(&result.output.content)
-                .unwrap_or_else(|_| content_str.clone().into_bytes());
-
-            let artifact: Option<ArtifactRef> = if let Some(store_arc) = &store {
-                let hint = ArtifactHint {
-                    tool_name: payload.tool_name.clone(),
-                    call_id: payload.call_id.clone(),
-                    kind: ArtifactKind::FullOutput,
-                };
-                store_arc.persist(&data_bytes, hint).await.ok()
-            } else {
-                None
-            };
-
-            let notice = if let Some(ref a) = artifact {
-                format!(
-                    "\n...[truncated: original {} tokens, artifact:{}]...\n",
-                    estimated, a.id
-                )
-            } else {
-                format!(
-                    "\n...[truncated: original {} tokens, showing head+tail]...\n",
-                    estimated
-                )
-            };
-
-            // Initial data budget under the chars/4 heuristic with the
-            // notice's own footprint reserved; the loop re-measures every
-            // candidate with the wired estimator, so any counter converges.
-            // The cut floors at budget/8 (geometric convergence) and 1
-            // (termination); budget 0 leaves the notice as the floor.
-            let mut data_budget = effective_limit
-                .saturating_sub(estimate(&serde_json::Value::String(notice.clone())))
-                .saturating_mul(4);
-            let mut preview_value;
-            loop {
-                let (head, tail) = split_head_tail(&content_str, data_budget);
-                let candidate = serde_json::Value::String(format!("{head}{notice}{tail}"));
-                let candidate_tokens = estimate(&candidate);
-                let fits = candidate_tokens <= effective_limit;
-                preview_value = candidate;
-                if fits || data_budget == 0 {
-                    break;
-                }
-                let cut = (candidate_tokens - effective_limit)
-                    .saturating_mul(4)
-                    .max(data_budget / 8)
-                    .max(1);
-                data_budget = data_budget.saturating_sub(cut);
-            }
-
-            result.output.content = preview_value;
-            result.output.truncation = Truncation::Middle;
-            result.output.artifact = artifact;
-            let prev_meta = result.output.meta.take();
-            result.output.meta = Some(ToolOutputMeta {
-                duration_ms: prev_meta.as_ref().and_then(|m| m.duration_ms),
-                original_tokens: Some(estimated),
-                extra: prev_meta.as_ref().and_then(|m| m.extra.clone()),
+        if result.call_block_id != ctx.call_block_id {
+            return Err(ToolExecutionError::MismatchedDeclaration {
+                expected: ctx.call_block_id,
+                actual: result.call_block_id,
             });
         }
-
-        result
+        Ok(result)
     }
 
-    fn panicked_outcome(payload: &ToolCallPayload) -> ToolResultPayload {
+    fn panicked_outcome(ctx: &ToolCallContext) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: payload.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Failed,
             output: ToolOutput::new(serde_json::json!({"error": "tool panicked"})),
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
-    fn deadline_backstop_outcome(payload: &ToolCallPayload) -> ToolResultPayload {
+    fn deadline_backstop_outcome(ctx: &ToolCallContext) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: payload.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::UnknownOutcome,
             output: ToolOutput {
                 content: serde_json::json!({"error": "tool did not return before call deadline"}),
@@ -439,36 +338,7 @@ impl ToolExecutor {
                 artifact: None,
             },
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
-}
-
-/// Head+tail preview split of `s` totalling at most `budget` bytes
-/// (60% head / 40% tail), each cut at a char boundary and never
-/// overlapping — the retained amount follows the budget, never the
-/// original size.
-fn split_head_tail(s: &str, budget: usize) -> (&str, &str) {
-    let kept = budget.min(s.len());
-    let head_end = floor_char_boundary(s, kept * 3 / 5);
-    let tail_start = ceil_char_boundary(s, s.len() - (kept - head_end));
-    (&s[..head_end], &s[tail_start..])
-}
-
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
-fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    while idx < s.len() && !s.is_char_boundary(idx) {
-        idx += 1;
-    }
-    idx
 }

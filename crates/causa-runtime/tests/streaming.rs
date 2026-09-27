@@ -10,7 +10,7 @@ use causa_kernel::{
 };
 use causa_runtime::{
     ConversationState, NoopInteraction, RetryPolicy, RunControl, StreamEventCollector, TurnOutcome,
-    TurnPolicy, TurnResult, TurnRunOptions, TurnRunner, project_streaming_turn,
+    TurnPolicy, TurnResult, TurnRunOptions, TurnRunner, new_block_id, project_streaming_turn,
 };
 use common::{
     EchoTool, RecordingStreamingGateway, StreamScript, ctrl, text_script, tooluse_script,
@@ -150,6 +150,15 @@ async fn streaming_retry_after_error_delta_succeeds() {
     assert_eq!(attempts[0].kind, Some(ModelInvokeErrorKind::Transient));
     assert!(attempts[0].is_retryable);
     assert_eq!(attempts[1].kind, None);
+    let frames = gateway.frames();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].scope, frames[1].scope);
+    assert_eq!(frames[0].round_id, frames[1].round_id);
+    assert_eq!(
+        serde_json::to_value(&frames[0].model_context.blocks).unwrap(),
+        serde_json::to_value(&frames[1].model_context.blocks).unwrap(),
+        "retry reuses the exact round input, including block IDs"
+    );
 }
 
 #[tokio::test]
@@ -242,7 +251,7 @@ async fn conversation_streaming_entry_completes_and_stamps() {
     state
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     let turn_id = state.active_turn().unwrap().turn_id();
     let collector = Arc::new(StreamEventCollector::new(
@@ -330,7 +339,7 @@ async fn project_streaming_turn_interleaves_deltas_with_dispatches() {
         } => {
             assert_eq!(*round_id, RoundId(0));
             assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].tool_name, "echo");
+            assert_eq!(calls[0].1.tool_name, "echo");
         }
         other => panic!("expected dispatch, got {other:?}"),
     }
@@ -482,7 +491,8 @@ async fn backoff_base_zero_keeps_immediate_retry_behavior() {
 
 fn ctx() -> TurnContext {
     let mut ctx = TurnContext::new(TurnId::new("t-stream"));
-    ctx.append_input(TextPayload::new("hi"), "user").unwrap();
+    ctx.append_input(new_block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     ctx
 }
 

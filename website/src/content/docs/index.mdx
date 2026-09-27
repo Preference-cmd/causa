@@ -60,7 +60,7 @@ cargo run --example conversation_persistence -p causa-runtime
     offline, auditable — the layer CI forbids from touching I/O.
   </Card>
   <Card title="A driver with visible defaults" icon="setting">
-    Turn loop, tool dispatch, streaming, pause/resume, unknown-outcome and
+    Turn loop, tool dispatch, streaming, tool-processing chains, unknown-outcome and
     output-retention policy: config objects and documented component defaults.
     Swappable, never hidden, never a trait seam for a single policy.
   </Card>
@@ -84,7 +84,7 @@ no sibling crate. [Read the concepts →](/concepts/)
 | ----- | ---- |
 | `causa` | facade — kernel always on, defaults add runtime + providers |
 | `causa-kernel` | facts + contracts, no I/O |
-| `causa-runtime` | optional, reference components: turns, dispatch, streaming, pause/resume, sessions |
+| `causa-runtime` | optional, reference components: turns, dispatch, streaming, tool-processing chains, sessions |
 | `causa-protocol` | pure Anthropic / OpenAI Chat / Responses translation |
 | `causa-provider` | reqwest `ModelGateway` adapters |
 | `causa-extension` | `mcp` feature: MCP client tool sources |
@@ -98,7 +98,7 @@ Run these commands from the repository root after cloning as shown above.
 
 - **Persist a conversation** across restarts — `cargo run --example conversation_persistence -p causa-runtime`
 - **Stream a turn** delta by delta — `cargo run --example streaming_print -p causa-runtime`
-- **Pause for approval, then resume** with the verdict — `cargo run --example approval_pause_resume -p causa-runtime`
+- **Await approval inside a processor** — `cargo run --example approval_processor -p causa-runtime`
 
 [All examples →](/examples/)
 

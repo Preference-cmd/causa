@@ -20,21 +20,18 @@
 //! Wire shapes:
 //! - the store persists **`HistoryEntry`** records (`sequence` + `snapshot`)
 //!   — the snapshot itself carries no session order;
-//! - the load path migrates **legacy files** that embedded
-//!   `turn_sequence` inside the snapshot by extracting it into the entry;
 //! - one turn's message mixes text and a `MediaRef`: facts carry the
 //!   reference only, never bytes.
 
 use async_trait::async_trait;
 use causa_kernel::{
     ContentPart, ConversationId, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
-    ModelRequest, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnId, TurnSnapshot,
+    ModelRequest, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnId,
 };
 use causa_runtime::{
     ConversationOutcome, ConversationState, ConversationStore, ConversationStoreError,
-    HistoryEntry, RunControl, ToolExecutor, TurnResult, TurnRunner, TurnSequence,
+    HistoryEntry, RunControl, ToolExecutor, TurnResult, TurnRunner, TurnSequence, new_block_id,
 };
-use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -141,30 +138,10 @@ impl ConversationStore for FsConversationStore {
     }
 }
 
-/// Load one history file, accepting both wire shapes:
-///
-/// - **current**: `{"sequence": N, "snapshot": {...}}`;
-/// - **legacy format**: the old DTO embedded `turn_sequence` inside the
-///   snapshot itself — extract it into the entry, never drop the order.
+/// Loads the current history entry format.
 fn load_entry(bytes: &[u8]) -> Result<HistoryEntry, ConversationStoreError> {
-    if let Ok(entry) = serde_json::from_slice::<HistoryEntry>(bytes) {
-        return Ok(entry);
-    }
-    #[derive(Deserialize)]
-    struct LegacySnapshot {
-        #[serde(flatten)]
-        snapshot: TurnSnapshot,
-        turn_sequence: u64,
-    }
-    let legacy: LegacySnapshot = serde_json::from_slice(bytes).map_err(|e| {
-        ConversationStoreError::Corrupted(format!(
-            "not a history entry nor a legacy turn snapshot: {e}"
-        ))
-    })?;
-    Ok(HistoryEntry {
-        sequence: TurnSequence(legacy.turn_sequence),
-        snapshot: legacy.snapshot,
-    })
+    serde_json::from_slice(bytes)
+        .map_err(|error| ConversationStoreError::Corrupted(error.to_string()))
 }
 
 /// Drive one input through the conversation entry, print the outcome,
@@ -181,7 +158,7 @@ async fn run_turn(
     state
         .active_turn_mut()
         .expect("begin_turn just opened it")
-        .append_input(TextPayload::new(input), "user")?;
+        .append_input(new_block_id(), TextPayload::new(input), "user")?;
 
     let ConversationOutcome {
         state: returned_state,
@@ -241,6 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .active_turn_mut()
         .expect("begin_turn just opened it")
         .append_parts(
+            new_block_id(),
             vec![
                 ContentPart::Text(TextPayload::new("the chart you asked for")),
                 ContentPart::Media(MediaRef::new("image/png", "blake3-demo-asset")),
@@ -275,24 +253,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    /// The legacy migration path: an old file (turn_sequence embedded
-    /// in the snapshot) loads into an entry that keeps both the order and
-    /// the facts.
     #[test]
-    fn legacy_snapshot_files_migrate_into_history_entries() {
-        let legacy = r#"{
-            "turn_id": "t-old",
-            "turn_sequence": 3,
-            "blocks": [],
-            "source_version": 2,
-            "sealed": true
-        }"#;
-        let entry = load_entry(legacy.as_bytes()).expect("legacy file migrates");
-        assert_eq!(entry.sequence.0, 3);
-        assert_eq!(entry.snapshot.turn_id.0, "t-old");
-        assert_eq!(entry.snapshot.source_version.0, 2);
-
-        // The current shape loads directly.
+    fn history_entries_load_with_their_order() {
         let current = r#"{
             "sequence": 4,
             "snapshot": {

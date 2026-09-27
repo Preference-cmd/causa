@@ -5,10 +5,10 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, BlockSequence, ContentPart, ContextBlock, ContextError,
-    ContextVersion, FrameId, FrameScope, InvocationId, ModelOutput, ModelResponse, ModelStopReason,
-    ModelUsage, ReasoningPayload, RoundId, TextPayload, ToolCallDraft, ToolCallId, ToolCallPayload,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextError, ContextVersion,
+    InvocationId, ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload,
+    RoundId, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultPayload,
+    ToolResultStatus, TurnContext,
 };
 use common::{ctx, endturn_output, turn_id};
 use serde_json::json;
@@ -18,15 +18,17 @@ async fn empty_frame_deterministic() {
     let c = ctx("t1");
     let f0 = c.frame(RoundId(0));
     let f1 = c.frame(RoundId(0));
-    assert_eq!(f0.frame_id, f1.frame_id);
+    assert_eq!(f0.scope, f1.scope);
     assert!(f0.model_context.blocks.is_empty());
 }
 
 #[tokio::test]
 async fn append_input_and_frame_order() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("hello"), "user").unwrap();
-    c.append_input(TextPayload::new("sys"), "user").unwrap();
+    c.append_input(common::block_id(), TextPayload::new("hello"), "user")
+        .unwrap();
+    c.append_input(common::block_id(), TextPayload::new("sys"), "user")
+        .unwrap();
     let f = c.frame(RoundId(0));
     assert_eq!(f.model_context.blocks.len(), 2);
     // Order preserved.
@@ -42,7 +44,7 @@ async fn append_input_and_frame_order() {
     c.seal();
     let mut sealed = c;
     assert!(matches!(
-        sealed.append_input(TextPayload::new("x"), "user"),
+        sealed.append_input(common::block_id(), TextPayload::new("x"), "user"),
         Err(ContextError::SealedTurn)
     ));
 }
@@ -50,12 +52,13 @@ async fn append_input_and_frame_order() {
 #[tokio::test]
 async fn sealed_turn_append_closed() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    c.append_input(common::block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     c.seal();
     assert!(c.is_sealed());
     let mut sealed = c;
     assert!(matches!(
-        sealed.append_input(TextPayload::new("x"), "user"),
+        sealed.append_input(common::block_id(), TextPayload::new("x"), "user"),
         Err(ContextError::SealedTurn)
     ));
     assert!(matches!(
@@ -65,7 +68,8 @@ async fn sealed_turn_append_closed() {
                 round_id: RoundId(1)
             },
             &endturn_output("y").response,
-            ModelStopReason::EndTurn
+            ModelStopReason::EndTurn,
+            common::block_ids_for(&endturn_output("y").response)
         ),
         Err(ContextError::SealedTurn)
     ));
@@ -93,7 +97,12 @@ async fn append_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(matches!(
-        c.append_model_output(inv.clone(), &bad_endturn.response, bad_endturn.stop_reason),
+        c.append_model_output(
+            inv.clone(),
+            &bad_endturn.response,
+            bad_endturn.stop_reason,
+            common::block_ids_for(&bad_endturn.response)
+        ),
         Err(ContextError::InvalidModelOutput(_))
     ));
     // ToolUse requires non-empty tool name
@@ -111,7 +120,12 @@ async fn append_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(matches!(
-        c.append_model_output(inv.clone(), &empty_name.response, empty_name.stop_reason),
+        c.append_model_output(
+            inv.clone(),
+            &empty_name.response,
+            empty_name.stop_reason,
+            common::block_ids_for(&empty_name.response)
+        ),
         Err(ContextError::InvalidModelOutput(_))
     ));
     // ToolUse requires object arguments
@@ -129,7 +143,12 @@ async fn append_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(matches!(
-        c.append_model_output(inv.clone(), &non_object.response, non_object.stop_reason),
+        c.append_model_output(
+            inv.clone(),
+            &non_object.response,
+            non_object.stop_reason,
+            common::block_ids_for(&non_object.response)
+        ),
         Err(ContextError::InvalidModelOutput(_))
     ));
     // Identical (tool, args) twice in one batch is fine -- positions differ
@@ -154,8 +173,13 @@ async fn append_model_output_rejects_invalid_outputs() {
         reasoning: None,
     };
     assert!(
-        c.append_model_output(inv.clone(), &dup_batch.response, dup_batch.stop_reason)
-            .is_ok()
+        c.append_model_output(
+            inv.clone(),
+            &dup_batch.response,
+            dup_batch.stop_reason,
+            common::block_ids_for(&dup_batch.response)
+        )
+        .is_ok()
     );
     // Sealed turn rejects everything.
     c.seal();
@@ -169,7 +193,8 @@ async fn append_model_output_rejects_invalid_outputs() {
         sealed.append_model_output(
             sealed_inv,
             &endturn_output("y").response,
-            ModelStopReason::EndTurn
+            ModelStopReason::EndTurn,
+            common::block_ids_for(&endturn_output("y").response)
         ),
         Err(ContextError::SealedTurn)
     ));
@@ -177,74 +202,37 @@ async fn append_model_output_rejects_invalid_outputs() {
 
 #[tokio::test]
 async fn from_validated_blocks_rejects_corrupt_state() {
-    fn block(seq: u64, content: BlockContent) -> ContextBlock {
-        let tid = turn_id("t1");
+    fn block(id: BlockId, content: BlockContent) -> ContextBlock {
         ContextBlock {
-            id: BlockId {
-                turn_id: tid,
-                sequence: BlockSequence(seq),
-            },
-            sequence: BlockSequence(seq),
+            id,
             content,
             meta: BlockMeta::default(),
         }
     }
-    // Wrong turn_id
-    let mut b = block(
-        0,
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-    );
-    b.id.turn_id = turn_id("other");
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), vec![b], ContextVersion(1)),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // Non-contiguous sequence
+    let duplicate = common::block_id();
     let blocks = vec![
         block(
-            0,
+            duplicate,
             BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("a"))]),
         ),
         block(
-            2,
+            duplicate,
             BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("b"))]),
         ),
     ];
     assert!(matches!(
         TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
-        Err(ContextError::InvalidSequence(_))
-    ));
-    // Duplicate tool.call ids
-    let blocks = vec![
-        block(
-            0,
-            BlockContent::ToolCall(ToolCallPayload {
-                call_id: ToolCallId::new("dup"),
-                tool_name: "echo".into(),
-                arguments: json!({}),
-            }),
-        ),
-        block(
-            1,
-            BlockContent::ToolCall(ToolCallPayload {
-                call_id: ToolCallId::new("dup"),
-                tool_name: "echo".into(),
-                arguments: json!({}),
-            }),
-        ),
-    ];
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
-        Err(ContextError::DuplicateToolCallId(_))
+        Err(ContextError::DuplicateBlockId(_))
     ));
     // Unpaired tool.result
     let blocks = vec![block(
-        0,
+        common::block_id(),
         BlockContent::ToolResult(ToolResultPayload {
-            call_id: ToolCallId::new("ghost"),
+            call_block_id: common::block_id(),
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!({})),
             media: Vec::new(),
+            notes: Vec::new(),
         }),
     )];
     assert!(matches!(
@@ -281,7 +269,12 @@ fn provider_call_id_passes_through_draft_to_persisted_block() {
         reasoning: None,
     };
     let applied = c
-        .append_model_output(inv, &out.response, out.stop_reason)
+        .append_model_output(
+            inv,
+            &out.response,
+            out.stop_reason,
+            common::block_ids_for(&out.response),
+        )
         .expect("record facts");
     let call_blocks: Vec<&ContextBlock> = c
         .blocks()
@@ -323,7 +316,12 @@ fn append_model_output_records_max_tokens_and_refusal_as_facts() {
         reasoning: None,
     };
     let applied = c
-        .append_model_output(inv.clone(), &max_tokens.response, max_tokens.stop_reason)
+        .append_model_output(
+            inv.clone(),
+            &max_tokens.response,
+            max_tokens.stop_reason,
+            common::block_ids_for(&max_tokens.response),
+        )
         .expect("MaxTokens is recordable");
     assert_eq!(applied.block_ids.len(), 1);
     let refusal_with_calls = ModelOutput {
@@ -343,7 +341,8 @@ fn append_model_output_records_max_tokens_and_refusal_as_facts() {
         c.append_model_output(
             inv.clone(),
             &refusal_with_calls.response,
-            refusal_with_calls.stop_reason
+            refusal_with_calls.stop_reason,
+            common::block_ids_for(&refusal_with_calls.response)
         )
         .is_ok()
     );
@@ -361,7 +360,12 @@ fn append_model_output_records_max_tokens_and_refusal_as_facts() {
         reasoning: None,
     };
     assert!(matches!(
-        c.append_model_output(inv, &bad_endturn.response, bad_endturn.stop_reason),
+        c.append_model_output(
+            inv,
+            &bad_endturn.response,
+            bad_endturn.stop_reason,
+            common::block_ids_for(&bad_endturn.response)
+        ),
         Err(ContextError::InvalidModelOutput(_))
     ));
 }
@@ -411,11 +415,13 @@ fn fidelity_fields_are_serde_additive() {
         serde_json::from_str(&serde_json::to_string(&full_meta).unwrap()).unwrap();
     assert_eq!(back.provider_call_id.as_deref(), Some("abc"));
     assert_eq!(back.source.as_deref(), Some("kernel"));
-    // ToolCallPayload stays slim (no provider_call_id field).
-    let legacy_call: ToolCallPayload =
-        serde_json::from_str(r#"{"call_id":"echo:abcd1234:0","tool_name":"echo","arguments":{}}"#)
-            .unwrap();
-    assert_eq!(legacy_call.call_id.0, "echo:abcd1234:0");
+    let call = ToolCallPayload {
+        tool_name: "echo".into(),
+        arguments: json!({"a": 1}),
+    };
+    let round_trip: ToolCallPayload =
+        serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
+    assert_eq!(round_trip, call);
 }
 
 // ---- compaction projection identity ----
@@ -427,10 +433,11 @@ fn fidelity_fields_are_serde_additive() {
 #[tokio::test]
 async fn lossless_frame_is_a_pure_function_of_facts() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("hello"), "user").unwrap();
+    c.append_input(common::block_id(), TextPayload::new("hello"), "user")
+        .unwrap();
     let f0 = c.frame(RoundId(0));
     let f1 = c.frame(RoundId(0));
-    assert_eq!(f0.frame_id, f1.frame_id);
+    assert_eq!(f0.scope, f1.scope);
     assert_eq!(
         serde_json::to_string(&f0.model_context.blocks).unwrap(),
         serde_json::to_string(&f1.model_context.blocks).unwrap()
@@ -447,43 +454,30 @@ async fn lossless_frame_is_a_pure_function_of_facts() {
 #[test]
 fn content_is_first_class_with_three_shapes() {
     // Three content shapes: Text, ToolCall, ToolResult. No kind field.
-    let t = turn_id("t1");
-    let make = |content: BlockContent, seq: u64| ContextBlock {
-        id: BlockId {
-            turn_id: t.clone(),
-            sequence: BlockSequence(seq),
-        },
-        sequence: BlockSequence(seq),
+    let make = |content: BlockContent| ContextBlock {
+        id: common::block_id(),
         content,
         meta: BlockMeta::default(),
     };
 
-    let text = make(
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("any role"))]),
-        0,
-    );
+    let text = make(BlockContent::Parts(vec![ContentPart::Text(
+        TextPayload::new("any role"),
+    )]));
     assert!(matches!(text.content, BlockContent::Parts(_)));
 
-    let call_id = ToolCallId::new("echo:abcd1234:0");
-    let call = make(
-        BlockContent::ToolCall(ToolCallPayload {
-            call_id: call_id.clone(),
-            tool_name: "echo".into(),
-            arguments: json!({}),
-        }),
-        1,
-    );
+    let call = make(BlockContent::ToolCall(ToolCallPayload {
+        tool_name: "echo".into(),
+        arguments: json!({}),
+    }));
     assert!(matches!(call.content, BlockContent::ToolCall(_)));
 
-    let result = make(
-        BlockContent::ToolResult(ToolResultPayload {
-            call_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({})),
-            media: Vec::new(),
-        }),
-        2,
-    );
+    let result = make(BlockContent::ToolResult(ToolResultPayload {
+        call_block_id: call.id,
+        status: ToolResultStatus::Succeeded,
+        output: ToolOutput::new(json!({})),
+        media: Vec::new(),
+        notes: Vec::new(),
+    }));
     assert!(matches!(result.content, BlockContent::ToolResult(_)));
 }
 
@@ -491,8 +485,10 @@ fn content_is_first_class_with_three_shapes() {
 fn context_block_serde_format_is_flat_with_content() {
     // No kind field. The shape tag is "shape"; the value is the inner data.
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("sys"), "user").unwrap();
-    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    c.append_input(common::block_id(), TextPayload::new("sys"), "user")
+        .unwrap();
+    c.append_input(common::block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
     // No legacy kind field.
     assert!(!blocks_json.contains("\"kind\""));
@@ -523,7 +519,12 @@ fn foreign_invocation_is_rejected() {
     };
     let out = endturn_output("hi");
     assert!(matches!(
-        c.append_model_output(inv, &out.response, out.stop_reason),
+        c.append_model_output(
+            inv,
+            &out.response,
+            out.stop_reason,
+            common::block_ids_for(&out.response)
+        ),
         Err(ContextError::ForeignInvocation { .. })
     ));
     assert!(c.blocks().is_empty());
@@ -547,7 +548,12 @@ fn empty_output_commits_nothing_and_does_not_bump_version() {
         reasoning: None,
     };
     let applied = c
-        .append_model_output(inv, &empty.response, empty.stop_reason)
+        .append_model_output(
+            inv,
+            &empty.response,
+            empty.stop_reason,
+            common::block_ids_for(&empty.response),
+        )
         .expect("empty output is recordable");
     assert!(applied.block_ids.is_empty());
     assert!(applied.tool_calls.is_empty());
@@ -559,8 +565,10 @@ fn empty_output_commits_nothing_and_does_not_bump_version() {
 #[test]
 fn input_source_is_recorded_verbatim_in_envelope() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("sys"), "system").unwrap();
-    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    c.append_input(common::block_id(), TextPayload::new("sys"), "system")
+        .unwrap();
+    c.append_input(common::block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     let blocks = c.blocks();
     assert_eq!(blocks[0].meta.source.as_deref(), Some("system"));
     assert_eq!(blocks[1].meta.source.as_deref(), Some("user"));
@@ -573,7 +581,7 @@ fn input_source_is_recorded_verbatim_in_envelope() {
 }
 
 #[test]
-fn tool_results_commit_in_call_order_regardless_of_submission_order() {
+fn tool_results_commit_in_supplied_order_with_identity_bound_to_payload() {
     let mut c = ctx("t1");
     let inv = InvocationId {
         turn_id: turn_id("t1"),
@@ -600,77 +608,68 @@ fn tool_results_commit_in_call_order_regardless_of_submission_order() {
         reasoning: None,
     };
     let applied = c
-        .append_model_output(inv, &out.response, out.stop_reason)
+        .append_model_output(
+            inv,
+            &out.response,
+            out.stop_reason,
+            common::block_ids_for(&out.response),
+        )
         .unwrap();
     assert_eq!(applied.tool_calls.len(), 2);
     // The receipt preserves draft order and matches the committed call blocks.
-    let call_ids: Vec<ToolCallId> = applied
-        .tool_calls
-        .iter()
-        .map(|p| p.call_id.clone())
-        .collect();
-    let committed: Vec<ToolCallId> = c
+    let call_ids: Vec<BlockId> = applied.tool_calls.iter().map(|(id, _)| *id).collect();
+    let committed: Vec<BlockId> = c
         .blocks()
         .iter()
         .filter_map(|b| match &b.content {
-            BlockContent::ToolCall(p) => Some(p.call_id.clone()),
+            BlockContent::ToolCall(_) => Some(b.id),
             _ => None,
         })
         .collect();
     assert_eq!(call_ids, committed);
     assert_eq!(c.version(), ContextVersion(1));
 
-    // Submit results in reverse completion order; the kernel commits in
-    // the paired calls' block order.
+    // Submit in reverse declaration order; the kernel preserves this order.
+    let result_ids = [common::block_id(), common::block_id()];
     let results = vec![
-        ToolResultPayload {
-            call_id: call_ids[1].clone(),
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("second")),
-            media: Vec::new(),
-        },
-        ToolResultPayload {
-            call_id: call_ids[0].clone(),
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("first")),
-            media: Vec::new(),
-        },
+        (
+            result_ids[0],
+            ToolResultPayload {
+                call_block_id: call_ids[1],
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!("second")),
+                media: Vec::new(),
+                notes: Vec::new(),
+            },
+        ),
+        (
+            result_ids[1],
+            ToolResultPayload {
+                call_block_id: call_ids[0],
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!("first")),
+                media: Vec::new(),
+                notes: Vec::new(),
+            },
+        ),
     ];
-    c.append_tool_results(results).unwrap();
-    let result_order: Vec<ToolCallId> = c
+    let committed_result_ids = c.append_tool_results(results).unwrap();
+    assert_eq!(committed_result_ids, result_ids);
+    let result_blocks: Vec<&ContextBlock> = c
         .blocks()
         .iter()
-        .filter_map(|b| match &b.content {
-            BlockContent::ToolResult(r) => Some(r.call_id.clone()),
-            _ => None,
-        })
+        .filter(|b| matches!(b.content, BlockContent::ToolResult(_)))
         .collect();
-    assert_eq!(result_order, call_ids);
+    assert_eq!(result_blocks[0].id, result_ids[0]);
+    assert!(
+        matches!(&result_blocks[0].content, BlockContent::ToolResult(r) if r.call_block_id == call_ids[1])
+    );
+    assert_eq!(result_blocks[1].id, result_ids[1]);
+    assert!(
+        matches!(&result_blocks[1].content, BlockContent::ToolResult(r) if r.call_block_id == call_ids[0])
+    );
     // The whole batch was one canonical commit: exactly one version bump.
     assert_eq!(c.version(), ContextVersion(2));
-}
-
-// ---- scope-driven frame identity ----------------------------------------------
-
-#[test]
-fn frame_id_from_scope_matches_deterministic_for_turn_scope() {
-    // The Turn branch of from_scope must replicate the legacy preimage
-    // byte-for-byte, so existing frame ids stay stable.
-    let scope = FrameScope::Turn {
-        turn_id: turn_id("t1"),
-        source_version: ContextVersion(7),
-    };
-    assert_eq!(
-        FrameId::from_scope(&scope, RoundId(3)),
-        FrameId::deterministic(&turn_id("t1"), ContextVersion(7), RoundId(3))
-    );
-    // 16-hex truncation unchanged by the generalization.
-    assert_eq!(
-        FrameId::deterministic(&turn_id("t1"), ContextVersion(7), RoundId(3))
-            .0
-            .len(),
-        16
-    );
 }
 
 // ---- Parts vocabulary, media references, append_parts --------------------------
@@ -682,6 +681,7 @@ fn append_parts_commits_one_block_with_a_single_bump() {
     let mut c = ctx("t1");
     let id = c
         .append_parts(
+            common::block_id(),
             vec![
                 ContentPart::Text(TextPayload::new("look at this")),
                 ContentPart::Media(MediaRef::new("image/png", "asset-1")),
@@ -693,7 +693,6 @@ fn append_parts_commits_one_block_with_a_single_bump() {
     assert_eq!(c.blocks().len(), 1);
     assert_eq!(c.version(), ContextVersion(1));
     assert_eq!(c.blocks()[0].id, id);
-    assert_eq!(c.blocks()[0].sequence, BlockSequence(0));
     // source stamped verbatim on the envelope
     assert_eq!(c.blocks()[0].meta.source.as_deref(), Some("user"));
     // part order preserved
@@ -715,8 +714,10 @@ fn append_parts_commits_one_block_with_a_single_bump() {
 #[test]
 fn append_parts_rejects_empty_parts_without_committing() {
     let mut c = ctx("t1");
-    let e = c.append_parts(vec![], "user").unwrap_err();
-    assert!(matches!(e, ContextError::InvalidSequence(_)));
+    let e = c
+        .append_parts(common::block_id(), vec![], "user")
+        .unwrap_err();
+    assert!(matches!(e, ContextError::InvalidContext(_)));
     assert!(c.blocks().is_empty());
     assert_eq!(c.version(), ContextVersion(0));
 }
@@ -726,7 +727,11 @@ fn append_parts_is_rejected_on_a_sealed_turn() {
     let mut c = ctx("t1");
     c.seal();
     let e = c
-        .append_parts(vec![ContentPart::Text(TextPayload::new("late"))], "user")
+        .append_parts(
+            common::block_id(),
+            vec![ContentPart::Text(TextPayload::new("late"))],
+            "user",
+        )
         .unwrap_err();
     assert!(matches!(e, ContextError::SealedTurn));
 }
@@ -734,11 +739,14 @@ fn append_parts_is_rejected_on_a_sealed_turn() {
 #[test]
 fn append_input_is_the_single_text_part_sugar() {
     let mut direct = ctx("t1");
+    let id = common::block_id();
     direct
-        .append_parts(vec![ContentPart::Text(TextPayload::new("hi"))], "user")
+        .append_parts(id, vec![ContentPart::Text(TextPayload::new("hi"))], "user")
         .unwrap();
     let mut sugar = ctx("t1");
-    sugar.append_input(TextPayload::new("hi"), "user").unwrap();
+    sugar
+        .append_input(id, TextPayload::new("hi"), "user")
+        .unwrap();
     assert_eq!(
         serde_json::to_string(&direct.snapshot_blocks()).unwrap(),
         serde_json::to_string(&sugar.snapshot_blocks()).unwrap()
@@ -749,6 +757,7 @@ fn append_input_is_the_single_text_part_sugar() {
 fn media_reference_round_trips_without_bytes_in_facts() {
     let mut c = ctx("t1");
     c.append_parts(
+        common::block_id(),
         vec![
             ContentPart::Text(TextPayload::new("caption")),
             ContentPart::Media(MediaRef::new("image/png", "blake3-asset-id")),
@@ -776,10 +785,11 @@ fn media_reference_round_trips_without_bytes_in_facts() {
 #[test]
 fn tool_result_media_is_serde_additive_both_ways() {
     let payload = ToolResultPayload {
-        call_id: ToolCallId::new("c1"),
+        call_block_id: common::block_id(),
         status: ToolResultStatus::Succeeded,
         output: ToolOutput::new(json!("ok")),
         media: vec![MediaRef::new("image/png", "a1")],
+        notes: vec![TextPayload::new("note")],
     };
     let json = serde_json::to_string(&payload).unwrap();
     assert!(json.contains(r#""media":[{"media_type":"image/png","reference":"a1"}]"#));
@@ -788,26 +798,29 @@ fn tool_result_media_is_serde_additive_both_ways() {
 
     // empty media is skipped on the wire...
     let empty = ToolResultPayload {
-        call_id: ToolCallId::new("c2"),
+        call_block_id: common::block_id(),
         status: ToolResultStatus::Failed,
         output: ToolOutput::new(json!("no")),
         media: Vec::new(),
+        notes: Vec::new(),
     };
     assert!(!serde_json::to_string(&empty).unwrap().contains("media"));
     // ...and a snapshot without the field defaults to empty.
     let old = json!({
-        "call_id": "c1",
+        "call_block_id": common::block_id(),
         "status": "Succeeded",
         "output": {"content": "ok", "truncation": "none", "meta": null, "artifact": null},
     });
     let from_old: ToolResultPayload = serde_json::from_value(old).unwrap();
     assert!(from_old.media.is_empty());
+    assert!(from_old.notes.is_empty());
 }
 
 #[test]
 fn empty_parts_block_is_rejected_on_recovery() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("hi"), "user").unwrap();
+    c.append_input(common::block_id(), TextPayload::new("hi"), "user")
+        .unwrap();
     let mut json = serde_json::to_value(c.snapshot()).unwrap();
     // Corrupt the history: a Parts block the doors could never produce.
     json["blocks"][0]["content"]["value"] = json!([]);
@@ -818,5 +831,5 @@ fn empty_parts_block_is_rejected_on_recovery() {
         snap.source_version,
     )
     .unwrap_err();
-    assert!(matches!(err, ContextError::InvalidSequence(_)));
+    assert!(matches!(err, ContextError::InvalidContext(_)));
 }

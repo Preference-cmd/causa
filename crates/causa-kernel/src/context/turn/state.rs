@@ -1,0 +1,532 @@
+//! TurnContext / ContextFrame / TurnSnapshot — the turn fact machine.
+
+use crate::context::block::{
+    BlockContent, BlockMeta, ContentPart, ContextBlock, TextPayload, ToolCallPayload,
+};
+use crate::context::ids::{
+    BlockId, ContextVersion, ConversationId, FrameScope, InvocationId, RoundId, TurnId,
+};
+use crate::context::model::{ModelResponse, ModelStopReason};
+use crate::context::tool_data::ToolResultPayload;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashSet;
+
+/// Serde bridge: a `TurnContext` is serialized as its immutable snapshot
+/// projection and rebuilt from that shape on load.
+pub mod turn_context_as_snapshot {
+    use super::*;
+
+    /// Serializes the context's snapshot projection.
+    pub fn serialize<S: Serializer>(value: &TurnContext, s: S) -> Result<S::Ok, S::Error> {
+        TurnSnapshot::serialize(&value.snapshot(), s)
+    }
+
+    /// Deserializes a snapshot and rebuilds a validated context.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<TurnContext, D::Error> {
+        let snap = TurnSnapshot::deserialize(d)?;
+        let mut context = TurnContext::from_validated_blocks(
+            snap.turn_id,
+            snap.blocks.into_inner(),
+            snap.source_version,
+        )
+        .map_err(serde::de::Error::custom)?;
+        if snap.sealed {
+            context.seal();
+        }
+        Ok(context)
+    }
+}
+
+/// Serde bridge for optional active turns.
+pub mod option_turn_context_as_snapshot {
+    use super::*;
+
+    /// Serializes `Some` as a snapshot and `None` as null.
+    pub fn serialize<S: Serializer>(value: &Option<TurnContext>, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(context) => turn_context_as_snapshot::serialize(context, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    /// Deserializes null as `None`, otherwise validates and rebuilds the turn.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TurnContext>, D::Error> {
+        Option::<TurnSnapshot>::deserialize(d)?
+            .map(|snap| {
+                let mut context = TurnContext::from_validated_blocks(
+                    snap.turn_id,
+                    snap.blocks.into_inner(),
+                    snap.source_version,
+                )
+                .map_err(serde::de::Error::custom)?;
+                if snap.sealed {
+                    context.seal();
+                }
+                Ok(context)
+            })
+            .transpose()
+    }
+}
+
+/// Whether a turn accepts appends or is terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnLifecycle {
+    /// The turn accepts appends through its controlled doors.
+    Open,
+    /// The turn is terminal and rejects appends.
+    Sealed,
+}
+
+/// The ordered fact blocks a model round saw.
+#[derive(Debug, Clone)]
+pub struct ModelContext {
+    /// The ordered fact blocks that make up the model context.
+    pub blocks: Vec<ContextBlock>,
+}
+
+/// One projection of fact state handed to or received from a model round.
+#[derive(Debug, Clone)]
+pub struct ContextFrame {
+    /// What this frame projects.
+    pub scope: FrameScope,
+    /// The model round this frame was built for.
+    pub round_id: RoundId,
+    /// The ordered blocks presented to the model.
+    pub model_context: ModelContext,
+}
+
+/// Rejections for lifecycle, identity, pairing, or structural violations.
+#[derive(Debug, thiserror::Error)]
+pub enum ContextError {
+    /// The turn is sealed and rejects appends.
+    #[error("sealed turn")]
+    SealedTurn,
+    /// A model output was submitted under a different turn id.
+    #[error("foreign invocation: expected turn {expected:?}, got {actual:?}")]
+    ForeignInvocation {
+        /// The turn id the context was built with.
+        expected: TurnId,
+        /// The turn id carried by the invocation.
+        actual: TurnId,
+    },
+    /// A model response is structurally invalid.
+    #[error("invalid model output: {0}")]
+    InvalidModelOutput(String),
+    /// Block identity or pairing state is invalid.
+    #[error("invalid context: {0}")]
+    InvalidContext(String),
+    /// A block ID already exists in this context.
+    #[error("duplicate block id: {0:?}")]
+    DuplicateBlockId(BlockId),
+    /// A result references no declared tool call.
+    #[error("unpaired tool result for declaration {0:?}")]
+    UnpairedToolResult(BlockId),
+}
+
+/// Receipt of the model door: committed block IDs and declaration payloads.
+#[derive(Debug, Clone)]
+pub struct AppliedModelOutput {
+    /// IDs committed for this output, in commit order.
+    pub block_ids: Vec<BlockId>,
+    /// Tool declarations paired with IDs in model draft order.
+    pub tool_calls: Vec<(BlockId, ToolCallPayload)>,
+}
+
+/// Returns how many block IDs an accepted response requires.
+pub fn model_output_block_count(response: &ModelResponse) -> usize {
+    usize::from(!response.text.0.trim().is_empty()) + response.tool_calls.len()
+}
+
+/// Append-only, order-preserving block log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderedBlocks(Vec<ContextBlock>);
+impl OrderedBlocks {
+    /// Creates an empty log.
+    pub fn empty() -> Self {
+        Self(Vec::new())
+    }
+    /// Borrows the ordered blocks.
+    pub fn as_slice(&self) -> &[ContextBlock] {
+        &self.0
+    }
+    /// Consumes the log and returns its blocks.
+    pub fn into_inner(self) -> Vec<ContextBlock> {
+        self.0
+    }
+}
+
+/// Current turn facts. Mutations go through explicit-ID controlled doors.
+#[derive(Clone)]
+pub struct TurnContext {
+    turn_id: TurnId,
+    blocks: OrderedBlocks,
+    version: ContextVersion,
+    lifecycle: TurnLifecycle,
+}
+
+impl std::fmt::Debug for TurnContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnContext")
+            .field("turn_id", &self.turn_id)
+            .field("version", &self.version)
+            .field("lifecycle", &self.lifecycle)
+            .field("blocks_len", &self.blocks.0.len())
+            .finish()
+    }
+}
+
+impl TurnContext {
+    /// Creates an empty, open turn with version 0.
+    pub fn new(turn_id: TurnId) -> Self {
+        Self {
+            turn_id,
+            blocks: OrderedBlocks::empty(),
+            version: ContextVersion(0),
+            lifecycle: TurnLifecycle::Open,
+        }
+    }
+
+    /// Returns whether the turn has been sealed.
+    pub fn is_sealed(&self) -> bool {
+        matches!(self.lifecycle, TurnLifecycle::Sealed)
+    }
+    /// Borrows committed facts in commit order.
+    pub fn blocks(&self) -> &[ContextBlock] {
+        &self.blocks.0
+    }
+    /// Returns the current count of canonical fact commits.
+    pub fn version(&self) -> ContextVersion {
+        self.version
+    }
+    /// Returns the turn's ID.
+    pub fn turn_id(&self) -> TurnId {
+        self.turn_id.clone()
+    }
+    /// Returns the lifecycle state.
+    pub fn lifecycle(&self) -> TurnLifecycle {
+        self.lifecycle
+    }
+    /// Returns an owned copy of blocks in commit order.
+    pub fn snapshot_blocks(&self) -> Vec<ContextBlock> {
+        self.blocks.0.clone()
+    }
+
+    /// Appends one text fact with an ID prepared by the caller.
+    pub fn append_input(
+        &mut self,
+        block_id: BlockId,
+        text: TextPayload,
+        source: impl Into<String>,
+    ) -> Result<BlockId, ContextError> {
+        self.append_parts(block_id, vec![ContentPart::Text(text)], source)
+    }
+
+    /// Appends one logical message containing ordered text and media parts.
+    pub fn append_parts(
+        &mut self,
+        block_id: BlockId,
+        parts: Vec<ContentPart>,
+        source: impl Into<String>,
+    ) -> Result<BlockId, ContextError> {
+        self.ensure_open()?;
+        if parts.is_empty() {
+            return Err(ContextError::InvalidContext(
+                "append_parts: empty parts are not a fact".into(),
+            ));
+        }
+        self.validate_new_ids(std::slice::from_ref(&block_id))?;
+        let meta = BlockMeta {
+            source: Some(source.into()),
+            ..BlockMeta::default()
+        };
+        self.commit_blocks(vec![(block_id, BlockContent::Parts(parts), meta)]);
+        Ok(block_id)
+    }
+
+    /// Records model output as facts, binding IDs in text-then-call order.
+    pub fn append_model_output(
+        &mut self,
+        invocation: InvocationId,
+        response: &ModelResponse,
+        stop_reason: ModelStopReason,
+        block_ids: Vec<BlockId>,
+    ) -> Result<AppliedModelOutput, ContextError> {
+        self.ensure_open()?;
+        if invocation.turn_id != self.turn_id {
+            return Err(ContextError::ForeignInvocation {
+                expected: self.turn_id.clone(),
+                actual: invocation.turn_id.clone(),
+            });
+        }
+        match stop_reason {
+            ModelStopReason::EndTurn if !response.tool_calls.is_empty() => {
+                return Err(ContextError::InvalidModelOutput(
+                    "EndTurn must have empty tool_calls".into(),
+                ));
+            }
+            ModelStopReason::ToolUse if response.tool_calls.is_empty() => {
+                return Err(ContextError::InvalidModelOutput(
+                    "ToolUse must have non-empty tool_calls".into(),
+                ));
+            }
+            _ => {}
+        }
+        let expected = model_output_block_count(response);
+        if block_ids.len() != expected {
+            return Err(ContextError::InvalidContext(format!(
+                "model output requires {expected} block ids, received {}",
+                block_ids.len()
+            )));
+        }
+        self.validate_new_ids(&block_ids)?;
+        for draft in &response.tool_calls {
+            if draft.tool_name.trim().is_empty() {
+                return Err(ContextError::InvalidModelOutput("tool_name empty".into()));
+            }
+            if !draft.arguments.is_object() {
+                return Err(ContextError::InvalidModelOutput(
+                    "arguments must be object".into(),
+                ));
+            }
+        }
+
+        let mut supplied_ids = block_ids.into_iter();
+        let mut prepared = Vec::with_capacity(expected);
+        let mut tool_calls = Vec::with_capacity(response.tool_calls.len());
+        if !response.text.0.trim().is_empty() {
+            prepared.push((
+                supplied_ids.next().expect("ID count validated"),
+                BlockContent::Parts(vec![ContentPart::Text(TextPayload(
+                    response.text.0.clone(),
+                ))]),
+                BlockMeta::default(),
+            ));
+        }
+        for draft in &response.tool_calls {
+            let block_id = supplied_ids.next().expect("ID count validated");
+            let payload = ToolCallPayload {
+                tool_name: draft.tool_name.clone(),
+                arguments: draft.arguments.clone(),
+            };
+            tool_calls.push((block_id, payload.clone()));
+            prepared.push((
+                block_id,
+                BlockContent::ToolCall(payload),
+                BlockMeta {
+                    provider_call_id: draft.provider_call_id.clone(),
+                    ..BlockMeta::default()
+                },
+            ));
+        }
+        let committed = self.commit_blocks(prepared);
+        Ok(AppliedModelOutput {
+            block_ids: committed,
+            tool_calls,
+        })
+    }
+
+    /// Appends results atomically in the order of the supplied `(ID, result)`
+    /// tuples. Each result retains its own identity and declaration reference.
+    pub fn append_tool_results(
+        &mut self,
+        results: Vec<(BlockId, ToolResultPayload)>,
+    ) -> Result<Vec<BlockId>, ContextError> {
+        self.ensure_open()?;
+        if results.is_empty() {
+            return Ok(Vec::new());
+        }
+        let result_ids = results.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        self.validate_new_ids(&result_ids)?;
+        let declarations = self
+            .blocks
+            .0
+            .iter()
+            .filter_map(|block| {
+                matches!(block.content, BlockContent::ToolCall(_)).then_some(block.id)
+            })
+            .collect::<HashSet<_>>();
+        let already_paired = self
+            .blocks
+            .0
+            .iter()
+            .filter_map(|block| match &block.content {
+                BlockContent::ToolResult(result) => Some(result.call_block_id),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut batch = HashSet::with_capacity(results.len());
+        for (_, result) in &results {
+            let call_id = result.call_block_id;
+            if !declarations.contains(&call_id) {
+                return Err(ContextError::UnpairedToolResult(call_id));
+            }
+            if already_paired.contains(&call_id) || !batch.insert(call_id) {
+                return Err(ContextError::InvalidContext(format!(
+                    "tool declaration already has a result: {call_id:?}"
+                )));
+            }
+        }
+        let prepared = results
+            .into_iter()
+            .map(|(id, result)| (id, BlockContent::ToolResult(result), BlockMeta::default()))
+            .collect();
+        Ok(self.commit_blocks(prepared))
+    }
+
+    /// Returns the lossless projection of current facts for this round.
+    pub fn frame(&self, round_id: RoundId) -> ContextFrame {
+        self.frame_with(round_id, self.blocks.0.clone())
+    }
+
+    /// Projects an explicit block list with this turn's provenance.
+    pub(crate) fn frame_with(&self, round_id: RoundId, blocks: Vec<ContextBlock>) -> ContextFrame {
+        ContextFrame {
+            scope: FrameScope::Turn {
+                turn_id: self.turn_id.clone(),
+                source_version: self.version,
+            },
+            round_id,
+            model_context: ModelContext { blocks },
+        }
+    }
+
+    /// Seals the turn; sealed turns reject every append operation.
+    pub fn seal(&mut self) {
+        self.lifecycle = TurnLifecycle::Sealed;
+    }
+
+    fn ensure_open(&self) -> Result<(), ContextError> {
+        if self.is_sealed() {
+            Err(ContextError::SealedTurn)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_new_ids(&self, ids: &[BlockId]) -> Result<(), ContextError> {
+        let mut seen = HashSet::with_capacity(ids.len());
+        for id in ids {
+            if !seen.insert(*id) {
+                return Err(ContextError::DuplicateBlockId(*id));
+            }
+        }
+        for block in &self.blocks.0 {
+            if seen.contains(&block.id) {
+                return Err(ContextError::DuplicateBlockId(block.id));
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_blocks(&mut self, prepared: Vec<(BlockId, BlockContent, BlockMeta)>) -> Vec<BlockId> {
+        if prepared.is_empty() {
+            return Vec::new();
+        }
+        let mut ids = Vec::with_capacity(prepared.len());
+        for (id, content, meta) in prepared {
+            self.blocks.0.push(ContextBlock { id, content, meta });
+            ids.push(id);
+        }
+        self.version = self.version.next();
+        ids
+    }
+
+    /// Rebuilds an open turn from a validated block log.
+    pub fn from_validated_blocks(
+        turn_id: TurnId,
+        blocks: Vec<ContextBlock>,
+        version: ContextVersion,
+    ) -> Result<Self, ContextError> {
+        Self::validate_blocks(&turn_id, &blocks)?;
+        Ok(Self {
+            turn_id,
+            blocks: OrderedBlocks(blocks),
+            version,
+            lifecycle: TurnLifecycle::Open,
+        })
+    }
+
+    /// Validates context-local ID uniqueness and declaration/result pairing.
+    pub fn validate_blocks(_turn_id: &TurnId, blocks: &[ContextBlock]) -> Result<(), ContextError> {
+        let mut block_ids = HashSet::with_capacity(blocks.len());
+        let mut declarations = HashSet::new();
+        let mut results = HashSet::new();
+        for block in blocks {
+            if !block_ids.insert(block.id) {
+                return Err(ContextError::DuplicateBlockId(block.id));
+            }
+            match &block.content {
+                BlockContent::Parts(parts) if parts.is_empty() => {
+                    return Err(ContextError::InvalidContext("empty parts block".into()));
+                }
+                BlockContent::ToolCall(_) => {
+                    declarations.insert(block.id);
+                }
+                BlockContent::ToolResult(result) => {
+                    if !declarations.contains(&result.call_block_id) {
+                        return Err(ContextError::UnpairedToolResult(result.call_block_id));
+                    }
+                    if !results.insert(result.call_block_id) {
+                        return Err(ContextError::InvalidContext(format!(
+                            "duplicate tool result for {:?}",
+                            result.call_block_id
+                        )));
+                    }
+                }
+                BlockContent::Parts(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Projects the current facts as an immutable persistence snapshot.
+    pub fn snapshot(&self) -> TurnSnapshot {
+        TurnSnapshot {
+            turn_id: self.turn_id.clone(),
+            blocks: self.blocks.clone(),
+            source_version: self.version,
+            sealed: self.is_sealed(),
+        }
+    }
+}
+
+fn default_sealed() -> bool {
+    true
+}
+
+/// Immutable, serializable projection of a turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnSnapshot {
+    /// Identity of the snapshotted turn.
+    pub turn_id: TurnId,
+    /// Committed blocks in commit order.
+    pub blocks: OrderedBlocks,
+    /// Context version at snapshot time.
+    pub source_version: ContextVersion,
+    /// Whether the turn was sealed when snapshotted.
+    #[serde(default = "default_sealed")]
+    pub sealed: bool,
+}
+
+/// Creates a lossless merged frame from history and the active turn.
+pub fn merged_frame(
+    conversation_id: &ConversationId,
+    history: &[TurnSnapshot],
+    active: &TurnContext,
+    round_id: RoundId,
+) -> ContextFrame {
+    let mut blocks = Vec::new();
+    for snapshot in history {
+        blocks.extend(snapshot.blocks.as_slice().iter().cloned());
+    }
+    blocks.extend(active.blocks().iter().cloned());
+    ContextFrame {
+        scope: FrameScope::Conversation {
+            conversation_id: conversation_id.clone(),
+            active_turn_id: active.turn_id(),
+            source_version: active.version(),
+        },
+        round_id,
+        model_context: ModelContext { blocks },
+    }
+}

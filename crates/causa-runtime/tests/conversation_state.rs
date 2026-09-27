@@ -1,5 +1,5 @@
 //! Session-aggregate acceptance — facts and order: commit/seal/abort
-//! discipline, merged views, validated replay, and the paused-state
+//! discipline, merged views, and validated replay.
 //! round-trip. The runner-entry coverage lives in `conversation_entries.rs`;
 //! these tests play the host's stamping role via `seal_turn` directly.
 
@@ -8,11 +8,11 @@ mod common;
 use common::commit_sealed;
 
 use causa_kernel::{
-    ContextVersion, ConversationId, FrameScope, OrderedBlocks, RoundId, TextPayload, TurnId,
-    TurnSnapshot,
+    BlockContent, ContentPart, ContextVersion, ConversationId, FrameScope, OrderedBlocks, RoundId,
+    TextPayload, TurnId, TurnSnapshot,
 };
 use causa_runtime::{
-    ConversationError, ConversationState, HistoryEntry, SealedResult, TurnSequence,
+    ConversationError, ConversationState, HistoryEntry, SealedResult, TurnSequence, new_block_id,
 };
 
 fn conv() -> ConversationState {
@@ -30,7 +30,7 @@ fn commit_is_exactly_once_and_assigns_sequence() {
     c.begin_turn(TurnId::new("t1")).unwrap();
     c.active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     c.seal_turn(TurnId::new("t1"), SealedResult::Completed)
         .unwrap();
@@ -165,7 +165,7 @@ fn committed_snapshot_carries_turn_facts_and_abort_leaves_history() {
     c.begin_turn(TurnId::new("t1")).unwrap();
     c.active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hello"), "user")
+        .append_input(new_block_id(), TextPayload::new("hello"), "user")
         .unwrap();
     c.seal_turn(TurnId::new("t1"), SealedResult::Completed)
         .unwrap();
@@ -189,7 +189,11 @@ fn build_two_turn_history() -> ConversationState {
         c.begin_turn(TurnId::new(tid)).unwrap();
         c.active_turn_mut()
             .unwrap()
-            .append_input(TextPayload::new(format!("in-{tid}")), "user")
+            .append_input(
+                new_block_id(),
+                TextPayload::new(format!("in-{tid}")),
+                "user",
+            )
             .unwrap();
         c.seal_turn(TurnId::new(tid), SealedResult::Completed)
             .unwrap();
@@ -204,15 +208,19 @@ fn merged_frame_orders_history_then_active_under_conversation_scope() {
     c.begin_turn(TurnId::new("t3")).unwrap();
     c.active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("in-t3"), "user")
+        .append_input(new_block_id(), TextPayload::new("in-t3"), "user")
         .unwrap();
     let f = c.frame(RoundId(0)).unwrap();
     // history blocks in sequence order, then active blocks.
     let blocks = &f.model_context.blocks;
     assert_eq!(blocks.len(), 3);
-    assert_eq!(blocks[0].id.turn_id.0, "t1");
-    assert_eq!(blocks[1].id.turn_id.0, "t2");
-    assert_eq!(blocks[2].id.turn_id.0, "t3");
+    for (block, expected) in blocks.iter().zip(["in-t1", "in-t2", "in-t3"]) {
+        assert!(matches!(
+            &block.content,
+            BlockContent::Parts(parts)
+                if matches!(parts.as_slice(), [ContentPart::Text(TextPayload(actual))] if actual == expected)
+        ));
+    }
     // Conversation scope identity: active turn's version is the pin.
     match &f.scope {
         FrameScope::Conversation {
@@ -227,8 +235,9 @@ fn merged_frame_orders_history_then_active_under_conversation_scope() {
         _ => panic!("expected conversation scope"),
     }
     // Deterministic per (conversation, active turn, source version, round).
-    assert_eq!(f.frame_id, c.frame(RoundId(0)).unwrap().frame_id);
-    assert_ne!(f.frame_id, c.frame(RoundId(1)).unwrap().frame_id);
+    assert_eq!(f.scope, c.frame(RoundId(0)).unwrap().scope);
+    assert_eq!(f.round_id, RoundId(0));
+    assert_eq!(c.frame(RoundId(1)).unwrap().round_id, RoundId(1));
 }
 
 #[test]
@@ -237,7 +246,7 @@ fn empty_history_frame_matches_turn_projection_block_for_block() {
     c.begin_turn(TurnId::new("t1")).unwrap();
     c.active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
+        .append_input(new_block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     let merged = c.frame(RoundId(0)).unwrap();
     let single = c.active_turn().unwrap().frame(RoundId(0));
@@ -247,7 +256,7 @@ fn empty_history_frame_matches_turn_projection_block_for_block() {
         serde_json::to_string(&merged.model_context.blocks).unwrap(),
         serde_json::to_string(&single.model_context.blocks).unwrap()
     );
-    assert_ne!(merged.frame_id, single.frame_id);
+    assert_ne!(merged.scope, single.scope);
 }
 
 #[test]
@@ -256,7 +265,7 @@ fn merged_frame_is_lossless_and_writes_nothing_back() {
     c.begin_turn(TurnId::new("t3")).unwrap();
     c.active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("in-t3"), "user")
+        .append_input(new_block_id(), TextPayload::new("in-t3"), "user")
         .unwrap();
     let before_history = serde_json::to_string(c.history()).unwrap();
     let before_active = serde_json::to_string(&c.active_turn().unwrap().snapshot_blocks()).unwrap();
@@ -327,9 +336,10 @@ fn from_history_rejects_duplicate_turn_ids() {
 fn from_history_rejects_unpaired_tool_results() {
     let live = build_two_turn_history();
     let blocks_json = r#"[
-        {"id": {"turn_id": "bad", "sequence": 0}, "sequence": 0,
+        {"id": "00000000-0000-0000-0000-000000000001",
          "content": {"shape": "tool_result",
-                     "value": {"call_id": "ghost", "status": "Succeeded",
+                     "value": {"call_block_id": "00000000-0000-0000-0000-000000000002",
+                               "status": "Succeeded",
                                "output": {"content": {}, "truncation": "none",
                                           "meta": null, "artifact": null}}},
          "meta": {}}
@@ -370,15 +380,42 @@ fn replayed_conversation_matches_live_and_continues() {
         state
             .active_turn_mut()
             .unwrap()
-            .append_input(TextPayload::new("in-t3"), "user")
+            .append_input(new_block_id(), TextPayload::new("in-t3"), "user")
             .unwrap();
     }
     let f_live = live.frame(RoundId(0)).unwrap();
     let f_replayed = replayed.frame(RoundId(0)).unwrap();
-    assert_eq!(f_live.frame_id, f_replayed.frame_id);
+    assert_eq!(f_live.scope, f_replayed.scope);
     assert_eq!(
-        serde_json::to_string(&f_live.model_context.blocks).unwrap(),
-        serde_json::to_string(&f_replayed.model_context.blocks).unwrap()
+        f_live.model_context.blocks[..2]
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>(),
+        f_replayed.model_context.blocks[..2]
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>(),
+        "replay retains committed UUIDs"
+    );
+    assert_eq!(
+        serde_json::to_string(
+            &f_live
+                .model_context
+                .blocks
+                .iter()
+                .map(|block| &block.content)
+                .collect::<Vec<_>>()
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &f_replayed
+                .model_context
+                .blocks
+                .iter()
+                .map(|block| &block.content)
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
     );
 
     // Sequence assignment continues at max+1 after replay.
@@ -401,37 +438,6 @@ fn from_history_accepts_empty_history() {
     assert_eq!(replayed.history()[0].sequence, TurnSequence(0));
 }
 
-// ---- paused-state persistence ----------------------------------------------
-
-/// A paused session serializes with its active turn OPEN (snapshot
-/// `sealed: false`) and the Paused stamp; the round-trip restores exactly
-/// that resumable shape.
-#[test]
-fn paused_state_round_trip_preserves_open_active_and_stamp() {
-    let mut c = conv();
-    c.begin_turn(TurnId::new("t1")).unwrap();
-    c.active_turn_mut()
-        .unwrap()
-        .append_input(TextPayload::new("hi"), "user")
-        .unwrap();
-    c.seal_turn(TurnId::new("t1"), SealedResult::Paused)
-        .unwrap();
-    assert!(!c.active_turn().unwrap().is_sealed());
-
-    let json = serde_json::to_string(&c).expect("serialize");
-    let mut restored: ConversationState = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(restored.sealed_result(), Some(SealedResult::Paused));
-    let active = restored.active_turn().expect("active preserved");
-    assert!(!active.is_sealed(), "paused active must reload open");
-    assert_eq!(active.turn_id(), TurnId::new("t1"));
-    assert_eq!(active.blocks().len(), 1);
-    // The restored pause still rejects commit.
-    assert!(matches!(
-        restored.commit(TurnId::new("t1")),
-        Err(ConversationError::TurnPaused(_))
-    ));
-}
-
 // ---- shared history, independent executions ---------------------------------
 
 /// Two independent executions replay the same read-only history and each
@@ -444,19 +450,19 @@ fn two_executions_share_history_without_polluting_each_other() {
     let mut branch_a =
         ConversationState::from_history(ConversationId("conv-1".into()), history.clone()).unwrap();
     let mut branch_b =
-        ConversationState::from_history(ConversationId("conv-1".into()), history).unwrap();
+        ConversationState::from_history(ConversationId("conv-1".into()), history.clone()).unwrap();
 
     branch_a.begin_turn(TurnId::new("branch-a")).unwrap();
     branch_b.begin_turn(TurnId::new("branch-b")).unwrap();
     branch_a
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("only a sees this"), "user")
+        .append_input(new_block_id(), TextPayload::new("only a sees this"), "user")
         .unwrap();
     branch_b
         .active_turn_mut()
         .unwrap()
-        .append_input(TextPayload::new("only b sees this"), "user")
+        .append_input(new_block_id(), TextPayload::new("only b sees this"), "user")
         .unwrap();
 
     let frames_a = branch_a.frame(RoundId(0)).unwrap();
@@ -468,14 +474,26 @@ fn two_executions_share_history_without_polluting_each_other() {
 
     // Source facts keep their identity: the first two blocks of each
     // merged view are the shared history's own BlockIds, unrenumbered.
-    let shared_a: Vec<String> = frames_a.model_context.blocks[..2]
+    let shared_a: Vec<_> = frames_a.model_context.blocks[..2]
         .iter()
-        .map(|b| b.id.turn_id.0.clone())
+        .map(|b| b.id)
         .collect();
-    let shared_b: Vec<String> = frames_b.model_context.blocks[..2]
+    let shared_b: Vec<_> = frames_b.model_context.blocks[..2]
         .iter()
-        .map(|b| b.id.turn_id.0.clone())
+        .map(|b| b.id)
         .collect();
-    assert_eq!(shared_a, vec!["t1".to_string(), "t2".to_string()]);
+    let expected: Vec<_> = history
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .snapshot
+                .blocks
+                .as_slice()
+                .iter()
+                .map(|block| block.id)
+        })
+        .take(2)
+        .collect();
+    assert_eq!(shared_a, expected);
     assert_eq!(shared_b, shared_a);
 }

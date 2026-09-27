@@ -35,6 +35,7 @@ required-features = ["mcp"]
 
 [dev-dependencies]
 causa-runtime = { path = "../causa-runtime", version = "0.0.1" }
+uuid.workspace = true
 axum = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "macros", "time"] }
 tracing-subscriber = { workspace = true }

@@ -10,7 +10,6 @@ use crate::config::TurnRunOptions;
 use crate::conversation::ConversationState;
 use crate::driver::TurnRunner;
 
-use super::checkpoint::SessionCheckpoint;
 use super::execution::SessionCore;
 use super::handle::SessionHandle;
 use super::types::{SessionConfig, SessionError};
@@ -68,12 +67,6 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    /// Assemble a session around an already-validated core (the restore
-    /// path — [`SessionCheckpoint::restore`] built the parts).
-    pub(super) fn from_core(core: Arc<SessionCore>) -> Session {
-        Session { core }
-    }
-
     /// Build an idle session from a validated [`ConversationState`] plus the
     /// harness's assembled runner and options.
     ///
@@ -128,31 +121,12 @@ impl Session {
         }
     }
 
-    /// Export the session's versioned save envelope — the complete idle
-    /// state or the complete paused outcome, every retained work, the
-    /// request-key replay tables, the TurnId allocation progress, and the
-    /// configuration description.
-    ///
-    /// Only a quiescent session exports: while a work is accepted / running
-    /// (a cancel in progress included) the export is
-    /// [`SessionError::Busy`], and a faulted session refuses — no complete
-    /// outcome exists to save. A closed session still exports, recording
-    /// `closed`, so restoring it yields a closed session that replays
-    /// accepted keys and accepts no new work. The envelope is a plain value:
-    /// whether and when to persist it stays with the harness, and
-    /// [`SessionCheckpoint::restore`] is the only way back in. Restore never
-    /// calls the model or a tool, and a restored pause still needs an
-    /// explicit resume under its remaining (not re-granted) deadline.
-    pub fn checkpoint(&self) -> Result<SessionCheckpoint, SessionError> {
-        self.core.checkpoint()
-    }
-
     /// Shut the session down: stop accepting, then wait for the running work to
     /// wind down.
     ///
     /// Stops acceptance and fires the active work's stop signal, then waits
     /// until no work is running. The session keeps its retrievable results
-    /// and paused material readable through surviving [`SessionHandle`]s;
+    /// readable through surviving [`SessionHandle`]s;
     /// work submitted afterwards reports [`SessionError::Closed`].
     pub async fn shutdown(&self) {
         self.core.close();

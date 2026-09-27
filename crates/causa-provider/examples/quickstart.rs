@@ -23,7 +23,7 @@ use causa_kernel::{
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInvocation, TurnResult, TurnRunOptions, TurnRunner,
+    RunControl, ToolExecutor, TurnInvocation, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
 use std::sync::Arc;
 
@@ -47,16 +47,18 @@ impl Tool for WordCount {
 
     async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
         let text = ctx
+            .input
             .arguments
             .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let count = text.split_whitespace().count();
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(serde_json::json!({ "words": count })),
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
@@ -85,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut context = TurnContext::new(TurnId::new("quickstart"));
     context.append_input(
+        new_block_id(),
         TextPayload::new(
             "How many words are in \"the quick brown fox jumps over the lazy dog\"? \
              Use the word_count tool, then answer with just the number.",
@@ -115,7 +118,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TurnResult::Interrupted { cause } => {
             return Err(format!("turn interrupted: {cause:?}").into());
         }
-        TurnResult::Paused { .. } => unreachable!("no interaction gate installed"),
     }
     println!("rounds: {}", outcome.trace.rounds.len());
     Ok(())

@@ -41,3 +41,4 @@ rmcp = { version = "3.2.0", default-features = false, features = [
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
+uuid = { version = "1", features = ["serde"] }

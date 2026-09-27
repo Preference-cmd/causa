@@ -7,8 +7,45 @@ During the experimental `0.0.x` series, patch releases may break Rust API
 and wire-serde compatibility. Breaking changes and migration notes appear
 at the top of each release. Starting with `0.1.0`, breaking wire changes
 (`ContextEvent` / `TurnResult` / `TurnTrace` family) bump the **minor** version.
-Checkpoint schema versions are validated independently of package versions;
-incompatible saved material is rejected.
+Before 0.1, obsolete APIs and formats may be removed without compatibility
+adapters or data converters.
+
+## [Unreleased]
+
+### Breaking
+
+- Block IDs are supplied UUID values. Blocks no longer carry positional
+  sequences, and frames no longer carry derived frame IDs. Results reference
+  their declaration block ID; tool-call content keys are borrowed values used
+  for optional deduplication within one batch.
+- Ordered batch processors replace tool-use hooks and approval control enums.
+  Pre-processing, tool execution and post-processing update one `ToolBatch`;
+  interruptions return uncommitted material to the caller. The old approval
+  pause/resume and Session checkpoint APIs are removed without adapters.
+- Kernel result commits preserve the supplied order. Applications needing
+  declaration order can install a post processor.
+- Result notes are model-visible. Output truncation and artifact retention
+  move from implicit executor behavior to optional post processors.
+- Old snapshot conversion examples and compatibility loaders are removed.
+  Current-format conversation history storage remains application-owned.
+
+### Current API
+
+- Supply IDs to context append methods. `runtime::new_block_id()` generates
+  UUID v7 values; kernel callers may supply any UUID value. The new `uuid`
+  dependency replaces the kernel's short-hash ID generation.
+- `Tool` and `DynamicToolSource` receive `ToolCallContext`, containing the
+  declaration's `call_block_id`, effective `input` and pending result notes.
+  Tool results and artifact hints use that same declaration ID. Dispatch
+  events carry `(BlockId, ToolCallPayload)` pairs.
+- Assemble optional policy with `ToolProcessingChain::builder().before(...)
+  .after(...).build()` and `TurnRunner::with_tool_processors(...)`.
+  `DeduplicateProcessor`, `RejectAllProcessor` and `ToolOutputBudgetProcessor`
+  are opt-in components. Finite budgets require an explicit media estimate
+  when results contain media; the default executor never truncates output.
+- Interrupted runner outcomes expose `uncommitted_tool_batch`; Session's
+  `FinishedKind::Interrupted` retains it through `Arc<ToolBatch>`. The host
+  owns storage and any subsequent handling of this material.
 
 ## [0.0.1] - 2026-09-16
 

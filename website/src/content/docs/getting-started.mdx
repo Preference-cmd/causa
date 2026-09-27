@@ -5,7 +5,9 @@ description: Add Causa to a Rust project and run your first turn.
 
 ## Add the dependency
 
-The following commands use the **0.0.1 experimental release**.
+The following dependency selections use the published **0.0.1 experimental
+release**. The current checkout has unreleased breaking changes; the application
+example below uses a local checkout so its code matches the dependency.
 
 ```bash
 # Default: kernel + runtime + providers (Anthropic / OpenAI adapters).
@@ -26,12 +28,14 @@ Choose one of the dependency configurations above. Causa requires Rust
 
 ## Run one turn in your application
 
-Create a project with Rust **1.96+** and add these dependencies:
+Use Rust **1.96+**. Clone the current development checkout and create a sibling
+application:
 
 ```bash
+git clone https://github.com/Preference-cmd/causa.git
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.0.1
+cargo add causa --path ../causa/crates/causa
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -42,7 +46,7 @@ facade; this example asks a model one question without registering tools.
 use causa::{
     kernel::{CancellationToken, ModelRef, TextPayload, TurnContext, TurnId},
     providers::AnthropicMessagesGateway,
-    runtime::{RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
+    runtime::{new_block_id, RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
 };
 use std::sync::Arc;
 
@@ -53,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
     let mut context = TurnContext::new(TurnId::new("hello"));
-    context.append_input(TextPayload::new("Say hello in one sentence."), "user")?;
+    context.append_input(new_block_id(), TextPayload::new("Say hello in one sentence."), "user")?;
     let mut options = TurnRunOptions::default();
     options.invocation.model = ModelRef::new(std::env::var("ANTHROPIC_MODEL")?);
     let outcome = runner
@@ -103,7 +107,7 @@ run with no network:
 ```bash
 cargo run --example conversation_persistence -p causa-runtime
 cargo run --example streaming_print -p causa-runtime
-cargo run --example approval_pause_resume -p causa-runtime
+cargo run --example approval_processor -p causa-runtime
 cargo run --example media_feedback -p causa-runtime
 ```
 

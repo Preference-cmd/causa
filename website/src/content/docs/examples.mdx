@@ -32,8 +32,8 @@ for an application that uses the `causa` facade directly.
 | ------- | ----- | --- |
 | `conversation_persistence` | multi-turn + `FsConversationStore` + reload across restart; the canonical `begin_turn → append_parts → run_in_conversation → commit → save_entry` loop | `cargo run --example conversation_persistence -p causa-runtime` |
 | `streaming_print` | streaming deltas via `TurnInteraction::on_delta` | `cargo run --example streaming_print -p causa-runtime` |
-| `approval_pause_resume` | `decide_batch` pause + `resume_turn` with the withheld verdict | `cargo run --example approval_pause_resume -p causa-runtime` |
-| `allow_deny_filter` | `ToolUseHook` filter chains: dedup / kill-switch / approval as host policy | `cargo run --example allow_deny_filter -p causa-runtime` |
+| `approval_processor` | approval awaited inside a batch processor | `cargo run --example approval_processor -p causa-runtime` |
+| `tool_processors` | ordered tool processors for deduplication and policy | `cargo run --example tool_processors -p causa-runtime` |
 | `media_feedback` | offline media closed loop: bytes stay in the host asset store, only `MediaRef` rides the facts | `cargo run --example media_feedback -p causa-runtime` |
 
 Browse them on GitHub:

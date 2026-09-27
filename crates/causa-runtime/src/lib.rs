@@ -1,102 +1,81 @@
-//! causa-runtime — optional components over the context kernel.
+//! Optional execution and session components over the Causa context kernel.
 //!
-//! The kernel is facts (`context`) + contracts (`ports`) only. This crate
-//! is a set of optional, reference components on top of them: adopt the
-//! execution stack, take a single piece, or read them as a reference and
-//! build your own. Each component documents the policy it bakes in and what
-//! adopting it brings along.
+//! The kernel holds facts and contracts. This crate provides reference
+//! components that applications can adopt individually or assemble into a
+//! turn runner. Tools, storage, approval logic and retention remain host
+//! choices.
 //!
-//! - **Driver stack** (`driver`, `executor`, `hook`, `config`, `control`):
-//!   `TurnRunner` orchestrates turns over the kernel's ports —
-//!   retry scheduling, tool batch dispatch, artifact spill, traces, and
-//!   run control.
-//! - **Budget & interaction components** (`budget`, `interaction`): the
-//!   frame-materialization policy (`FramePolicy`, window budget,
-//!   compaction, token counting) and the host↔driver `TurnInteraction`
-//!   seam — the component's documented opinions, not fact-layer invariants.
-//!   A custom host composes the kernel's lossless `TurnContext::frame`
-//!   differently.
-//! - **Session aggregate** (`conversation`): `ConversationState` (single
-//!   active slot, completed-only history, commit-time `TurnSequence` as
-//!   `HistoryEntry`), the `SealedResult` stamp, and the `ConversationStore`
-//!   archive port. These are component decisions, not fact-layer invariants;
-//!   a custom host composes the kernel facts differently.
-//! - **Session coordination** (`session`): one [`Session`] owner per
-//!   conversation drives accepted work through the assembled [`TurnRunner`]
-//!   — cloneable [`SessionHandle`]s submit / observe / wait / resume / cancel,
-//!   one active work at a time, per-work `TurnId`s assigned at acceptance and
-//!   never reused, local `request_key` dedup, explicit retained-work capacity,
-//!   and an observable `Faulted` state. The material-free save loop is
-//!   implemented: an idle or paused session exports a versioned
-//!   [`SessionCheckpoint`], and `SessionCheckpoint::restore` registers it
-//!   against freshly assembled capabilities without calling the model or a
-//!   tool. Multi-session coordination and per-work materials are out of
-//!   scope.
-//! - **Tool-use filters** (`DedupFilter`, `AllowAllFilter`, `DenyAllFilter`,
-//!   `FilterChain`) implement this crate's `ToolUseHook` directly — the
-//!   trait, its consumer, and its policies share one crate. The default is
-//!   `PassthroughHook` (no opinion); composition and policy are opt-in.
-//! - **Events** (`ContextEvent` / `project_turn`) project a finished turn's
-//!   facts (`TurnContext` + `TurnResult` + `TurnTrace`) into an IPC-ready
-//!   event sequence for UI / observability / audit consumers.
+//! # Components
 //!
-//! Implementation-side note: implementing a `ModelGateway` or a `Tool`
-//! requires only `causa-kernel`; this crate exists to *use the optional
-//! execution components*, not to fill the kernel's ports.
+//! - [`TurnRunner`] drives model rounds, retry scheduling, streaming and
+//!   tool batches. [`TurnRunOptions`] configures model invocation, limits,
+//!   execution resources, frame construction and streaming interaction.
+//! - [`ToolProcessingChain`] runs ordered pre-processors, a fixed executor
+//!   stage, then ordered post-processors over one borrowed
+//!   [`ToolBatch`](causa_kernel::ToolBatch). Processors implement the kernel's
+//!   [`ToolBatchProcessor`](causa_kernel::ToolBatchProcessor) contract.
+//!   Approval can await an external decision inside a processor; rejection
+//!   resolves that call with a normal result. Arguments may change before
+//!   execution, while committed model declarations remain unchanged.
+//! - [`ToolExecutor`] dispatches static or dynamic tools, isolates tool
+//!   panics, and applies a call-deadline backstop. [`ToolBridge`] also exposes
+//!   a dynamic source as a static tool. Neither applies an output budget.
+//! - [`FramePolicy`] applies optional token counting and frame-local
+//!   compaction. [`TurnInteraction`] receives streaming deltas and supplies
+//!   steering input. Neither mechanism mutates previously committed facts.
+//! - [`ConversationState`] owns one active turn and completed history
+//!   ordered by [`TurnSequence`]. The [`ConversationStore`] port lets hosts
+//!   persist current [`HistoryEntry`] values.
+//! - [`Session`] coordinates one conversation and runner. Cloneable
+//!   [`SessionHandle`]s submit, observe, wait and cancel; request keys
+//!   deduplicate retained submissions and cancellations. Admission permits
+//!   one active work, with no built-in queue.
+//! - [`ContextEvent`] and traces project facts and execution observations
+//!   for UI and audit consumers. Hosts decide what to retain.
 //!
-//! # Optional components
+//! # Batch ownership and interruption
 //!
-//! Everything here is optional, and each piece is offered as a reference:
-//! adopt it whole, or read it and build your own. The four responsibilities
-//! below are how the crate is organized — not a promise about how finely it
-//! can be split. What adopting a piece brings along is noted as cost, not as
-//! a contract.
+//! The chain awaits each processor before entering the next stage. Only
+//! unfinished calls reach the fixed executor, which records results in U as
+//! they arrive. Post-processors may edit output, append notes and reorder
+//! completed entries. Handoff validation protects declaration membership,
+//! pairing and completed identities. Kernel commits preserve the resulting
+//! order; no implicit sort or truncation follows the chain.
 //!
-//! 1. **Execution stack** — [`TurnRunner`] plus its config
-//!    ([`TurnRunOptions`], policy axes), resume ([`resume_turn`]), hook
-//!    seam, the budget ([`FramePolicy`]) and interaction
-//!    ([`TurnInteraction`]) components, and the session owner
-//!    ([`Session`] / [`SessionHandle`] / [`SessionCheckpoint`]).
-//!    Adopting it brings those policy components along; the defaults they
-//!    bake in are documented in the policy table below, not fact-layer
-//!    invariants.
-//! 2. **Tool execution** — [`ToolExecutor::execute_with_limits`] runs one
-//!    call (panic isolation, deadline backstop, limit truncation, error
-//!    mapping) with no runner and no session; adopting it also brings the
-//!    config and budget vocabulary. Its catalog cache and static-name
-//!    priority are executor policies, documented at the impl site.
-//! 3. **Session aggregate** — [`ConversationState`] owns the single-active
-//!    slot, completed-only history, and commit ordering ([`HistoryEntry`]).
-//!    A host with different session needs composes kernel facts directly.
-//! 4. **Observation** — traces and [`ContextEvent`] are projections of a
-//!    finished turn for UI / audit consumers; reading them brings the
-//!    execution stack along. The host chooses what to persist; there is no
-//!    separate wire model.
+//! A processing error, cancellation or turn deadline stops further progress.
+//! [`TurnOutcome::uncommitted_tool_batch`] and
+//! [`ConversationOutcome::uncommitted_tool_batch`] return current U when it
+//! has not been committed. Session observations retain it through an `Arc`.
+//! Known results remain known; started calls without an observed outcome
+//! become `UnknownOutcome`, and calls never started remain pending. The host
+//! can inspect, save or discard U. There is no automatic replay or partial
+//! commit, and discarding material does not undo external tool effects.
+//!
+//! Long-running tools can return an ordinary successful observation such as
+//! `running` and a tool-owned handle. Later queries are new calls; the runner
+//! does not schedule polling or interpret the handle.
+//!
+//! [`new_block_id`] provides the runtime's UUID v7 convenience generator.
+//! The kernel receives explicit IDs. Content-based tool deduplication is a
+//! separate opt-in processor policy, not an exactly-once execution guarantee.
 //!
 //! # Policy surface
 //!
-//! Every default the driver bakes in is one of two kinds — a swappable
-//! policy object, or a documented opinion. No trait seams exist for
-//! single-implementation policies; a seam is added only when a second real
-//! shape appears.
+//! | Policy | Default and owner |
+//! |---|---|
+//! | Retry schedule | Disabled; [`RetryPolicy`] configures exponential backoff when enabled |
+//! | Turn limits | [`TurnLimits`]: 10 model rounds and 64 tool calls |
+//! | Tool processing | Empty pre/post chain; policy processors are opt-in |
+//! | Tool dispatch | Parallel unfinished calls; panic becomes `Failed`, no observed deadline outcome becomes `UnknownOutcome` |
+//! | Unknown outcomes | [`UnknownOutcomeConfig`] defaults to `Stop`, with effective-tool-name overrides |
+//! | Output retention | No default truncation or artifact spill; optional post-processors own budgets and storage |
+//! | Frame compaction | None; [`FramePolicy`] accepts a host counter, compactor and thresholds |
+//! | Streaming interaction | [`NoopInteraction`] observes no deltas and supplies no inputs |
+//! | Session admission | One active work, no queue; request-key replay is local to retained operations |
+//! | Session capacity/deadline | [`SessionConfig`]: 256 retained works, no work deadline |
 //!
-//! | Policy | Kind | Where |
-//! |---|---|---|
-//! | Retry schedule (disabled by default; when enabled, 500 ms base, 8 s ceiling, exponential) | config object [`RetryPolicy`] | `config` |
-//! | Turn limits (10 model rounds, 64 tool calls by default) | config object [`TurnLimits`] in [`TurnPolicy`] | `config` |
-//! | Frame compaction (none by default; host supplies compactor, token counter and thresholds) | config object [`FramePolicy`] | `budget` |
-//! | Interaction / approval gate | port object [`NoopInteraction`] default | `config` |
-//! | Tool-use filtering | port object [`HookCtx`] / [`ToolUseHook`], default [`PassthroughHook`] | `hook`, `filter` |
-//! | Tool-output token estimation fallback (chars/4; frame estimation defaults to zero) | documented opinion, single home | `defaults::placeholder_token_estimate_value` (crate-internal), [`FramePolicy`] |
-//! | Output truncation shape (retained head 60% + tail 40% sized to the declared token budget — notice and JSON-string wrapping measured, notice-only floor at tiny budgets; artifact spill; content replaced by a JSON string; `Truncation::Middle` marker) | documented opinion | `executor::ToolExecutor::execute_with_limits` |
-//! | Unknown-outcome continuation (default `Stop`, per-executed-name overrides, explicit per-call host decisions) | config object [`UnknownOutcomeConfig`] + checkpoint [`UnknownDecision`] data | `config`, `hook`, `driver` |
-//! | Batch semantics (dedup-then-parallel, per-call panic isolation → `Failed`, call-deadline backstop → `UnknownOutcome`) | documented opinion | `executor` |
-//! | Session retention (256 works, rejects new work at capacity) and work deadline (none by default) | config object [`SessionConfig`] | `session` |
-//! | Session admission (one active work, no queue), completed-only history and checkpoint eligibility | documented component opinions | [`Session`], [`ConversationState`], [`SessionCheckpoint`] |
-//!
-//! This table summarizes the main execution and session policies. Component
-//! and configuration docs describe further defaults and constraints; absence
-//! from this table does not make a runtime decision a kernel invariant.
+//! A port implementation such as a tool or gateway only needs
+//! `causa-kernel`; it need not depend on these reference components.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -106,14 +85,12 @@ pub mod composition;
 pub mod config;
 pub mod control;
 pub mod conversation;
-mod defaults;
 pub mod driver;
 pub mod event;
 pub mod executor;
-pub mod filter;
-pub mod hook;
+pub mod ids;
 pub mod interaction;
-pub mod resume;
+pub mod processors;
 pub mod session;
 
 // --- reference budget & interaction -----------------------------------------
@@ -121,13 +98,13 @@ pub use budget::{
     Compaction, CompactionError, CompactionInput, CompactionOutput, FrameError, FramePolicy,
     TokenCounter, WindowBudget,
 };
-pub use interaction::{BatchDecision, TurnInteraction};
+pub use interaction::TurnInteraction;
 
 // --- driver stack -----------------------------------------------------------
 pub use composition::ToolBridge;
 pub use config::{
-    ExecutionOptions, NoopInteraction, RetryPolicy, ToolOutputLimits, TurnInvocation, TurnLimits,
-    TurnPolicy, TurnRunOptions, UnknownOutcomeConfig, UnknownOutcomePolicy,
+    ExecutionOptions, NoopInteraction, RetryPolicy, TurnInvocation, TurnLimits, TurnPolicy,
+    TurnRunOptions, UnknownOutcomeConfig, UnknownOutcomePolicy,
 };
 pub use control::RunControl;
 pub use conversation::{
@@ -135,18 +112,18 @@ pub use conversation::{
     ConversationVersion, HistoryEntry, SealedResult, TurnSequence,
 };
 pub use driver::{
-    AttemptTrace, Continuation, ConversationOutcome, ModelRoundTrace, OutputSummary, PausePoint,
-    PreparedApproval, ToolBatchTrace, ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult,
-    TurnRunner, TurnTrace,
+    AttemptTrace, ConversationOutcome, ModelRoundTrace, OutputSummary, ToolBatchTrace,
+    ToolCallTrace, TurnInterruption, TurnOutcome, TurnResult, TurnRunner, TurnTrace,
 };
 pub use executor::{ToolExecutor, ToolRegistryError};
-pub use hook::{HookCtx, HookOutcome, PassthroughHook, ToolUseHook, UnknownDecision};
-pub use resume::{ResumeRejection, ResumeRequest, resume_turn};
+pub use ids::new_block_id;
+pub use processors::{
+    DeduplicateProcessor, PassThroughProcessor, RejectAllProcessor, ToolOutputBudgetProcessor,
+    ToolProcessingBuilder, ToolProcessingChain, ToolProcessingError,
+};
 pub use session::{
-    CancelOutcome, CancelReceipt, CheckpointPhase, FinishedKind, SESSION_CHECKPOINT_VERSION,
-    SavedCancelKey, SavedResumeKey, SavedSubmitKey, SavedWork, Session, SessionBuildRejection,
-    SessionCheckpoint, SessionConfig, SessionConfigDescription, SessionError, SessionHandle,
-    SessionRestoreRejection, SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt,
+    CancelOutcome, CancelReceipt, FinishedKind, Session, SessionBuildRejection, SessionConfig,
+    SessionError, SessionHandle, SubmitRequest, WaitEnd, WaitOutcome, WorkObservation, WorkReceipt,
     WorkRef, WorkState,
 };
 
@@ -154,4 +131,3 @@ pub use session::{
 pub use event::{
     ContextEvent, ContextEventKind, StreamEventCollector, project_streaming_turn, project_turn,
 };
-pub use filter::{AllowAllFilter, DedupFilter, DenyAllFilter, FilterChain};

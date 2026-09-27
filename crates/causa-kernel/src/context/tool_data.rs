@@ -2,41 +2,29 @@
 //!
 //! This module holds only recorded facts: what the tool door persists and
 //! what the pairing invariant validates. Behavior and execution vocabulary
-//! (the `Tool` trait, the `ArtifactStore` port, definitions, limits, outcome
-//! policies, dispatch context) live in `crate::ports::tool`; canonical
-//! modules must depend on this module, never on the executor-sized behavior
-//! module.
+//! (the `Tool` trait, the `ArtifactStore` port, definitions and dispatch
+//! context) live in `crate::ports::tool`. Execution policies belong to the
+//! runtime; this module does not depend on them.
 
+use crate::context::ids::BlockId;
 use serde::{Deserialize, Serialize};
 
-/// Canonical causal key pairing a tool call with its result. Kernel-generated
-/// (see `generate`), unique within a single turn context; never the
-/// provider-issued call id, which rides on the envelope metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ToolCallId(pub String);
-impl ToolCallId {
-    /// Wraps an arbitrary string as a tool call id.
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-    /// `tool_name + blake3(round_id + tool_name + arguments_json)[..8] + position`。
-    /// `round_id` enters the hash preimage so the same `(tool, arguments,
-    /// position)` yields a different id in every ModelRound — a model re-sending
-    /// the same call in a later round (the legitimate dedup-recovery path) must
-    /// not collide with a historical call_id. Uniqueness scope is a single
-    /// TurnContext.
-    pub fn generate(
-        round_id: crate::context::ids::RoundId,
-        tool_name: &str,
-        arguments: &serde_json::Value,
-        position: usize,
-    ) -> Self {
-        let json = serde_json::to_string(arguments)
-            .unwrap_or_else(|_| "<unserializable-arguments>".to_string());
-        let preimage = format!("{}|{}|{}", round_id.0, tool_name, json);
-        let hash = blake3::hash(preimage.as_bytes());
-        let hex = hash.to_hex();
-        Self(format!("{}:{}:{}", tool_name, &hex[..8], position))
+/// Borrowed content key for comparing tool calls within a caller-selected
+/// scope. Instance pairing always uses the declaration's [`BlockId`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolCallId<'a> {
+    /// Tool name included in the complete content key.
+    pub tool_name: &'a str,
+    /// Arguments included with their `serde_json::Value` equality semantics.
+    pub arguments: &'a serde_json::Value,
+}
+impl<'a> ToolCallId<'a> {
+    /// Borrows the content key from a tool declaration.
+    pub const fn new(tool_name: &'a str, arguments: &'a serde_json::Value) -> Self {
+        Self {
+            tool_name,
+            arguments,
+        }
     }
 }
 
@@ -48,7 +36,7 @@ pub enum ToolResultStatus {
     Succeeded,
     /// The tool ran but reported failure (including panic isolation).
     Failed,
-    /// The call never ran — unknown tool, denied by a filter, or otherwise
+    /// The call never ran — unknown tool, denied by a processor, or otherwise
     /// refused before execution.
     Rejected,
     /// The invocation was cancelled before producing an outcome.
@@ -66,7 +54,8 @@ pub enum ToolResultStatus {
 pub struct ToolOutputMeta {
     /// Wall-clock duration of the execution, if measured.
     pub duration_ms: Option<u64>,
-    /// Estimated token count of the output before truncation, when known.
+    /// Estimated token count of the output body before truncation, when known.
+    /// This does not include result notes or media.
     pub original_tokens: Option<usize>,
     /// Free-form JSON for tool- or driver-specific annotations.
     pub extra: Option<serde_json::Value>,
@@ -113,13 +102,12 @@ impl ToolOutput {
     }
 }
 
-/// The result fact for one tool call: the paired call id, terminal status,
-/// and the output. Committed through the tool door; pairing against the
-/// committed call block is kernel-enforced.
+/// The result fact for one tool call: its declaration identity, terminal
+/// status, output, media, and ordered notes. Pairing is kernel-enforced.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResultPayload {
-    /// The kernel-generated id of the call this result answers.
-    pub call_id: ToolCallId,
+    /// The declaration block this result answers.
+    pub call_block_id: BlockId,
     /// Terminal status of the invocation.
     pub status: ToolResultStatus,
     /// The tool's output, possibly truncated with an artifact spill.
@@ -129,6 +117,11 @@ pub struct ToolResultPayload {
     /// render time. Serde-additive: absent media defaults to empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media: Vec<crate::context::block::MediaRef>,
+    /// Ordered result notes. `ToolBatch::resolve_at` places any pre-execution
+    /// context notes before notes returned by the tool; tool implementations
+    /// should return only notes they add.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<crate::context::block::TextPayload>,
 }
 
 /// Pointer to a tool output persisted out-of-band (e.g. a spilled oversized

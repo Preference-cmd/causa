@@ -12,10 +12,8 @@
 //! A [`causa_kernel::TurnSnapshot`] describes one record only — identity,
 //! blocks, fact version, write lifecycle. Session ordering lives in
 //! [`HistoryEntry`] (`sequence` + `snapshot`), assigned exactly once by
-//! [`ConversationState::commit`]. A bare snapshot alone promises fact
-//! recovery, never a resumable execution checkpoint. Legacy payloads that
-//! embedded `turn_sequence` inside the snapshot are migrated by extracting it
-//! into the entry (the persistence example carries the recipe).
+//! [`ConversationState::commit`]. The archive stores and loads these entries
+//! directly; snapshots do not carry session ordering.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -45,22 +43,14 @@ impl ConversationVersion {
 /// Kernel-side eligibility stamp recorded when the driver finalizes the
 /// active turn. Marker only — the rich cause stays with the caller via the
 /// runner's `TurnResult` (`TurnInterruption` is driver vocabulary and must not enter the facts layer).
-///
-/// `Paused` stamps a turn that is *not* sealed: the active
-/// `TurnContext` stays open so `resume_turn` can continue it. `commit`
-/// rejects a Paused stamp (`TurnPaused`) — only `abort_turn` (host gives
-/// up) or a resumed completion/commit may close the slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SealedResult {
     /// The turn finished successfully — the only stamp `commit` accepts.
     Completed,
-    /// The turn was cut short. Seals the turn, but `commit` rejects it —
-    /// only `abort_turn` closes the slot.
+    /// The turn was cut short. Seals the turn, but `commit` rejects it;
+    /// `abort_turn` closes the slot.
     Interrupted,
-    /// The turn is suspended but *not* sealed: the active `TurnContext`
-    /// stays open for `resume_turn`; `commit` rejects it with `TurnPaused`.
-    Paused,
 }
 
 /// One committed session entry: the snapshot plus the session order the
@@ -105,12 +95,6 @@ pub enum ConversationError {
     /// `commit` on a turn that is not sealed-and-`Completed`.
     #[error("turn not completed, cannot commit: {0:?}")]
     TurnNotCompleted(causa_kernel::TurnId),
-    /// `commit` on a paused turn; resume it or abort it instead.
-    #[error("turn is paused, cannot commit until resumed: {0:?}")]
-    TurnPaused(causa_kernel::TurnId),
-    /// The turn is not paused (no `Paused` stamp), so it cannot be resumed.
-    #[error("turn is not paused, cannot resume: {0:?}")]
-    NotPaused(causa_kernel::TurnId),
     /// Replay validation failed in `from_history`; carries the reason
     /// (non-monotonic `TurnSequence`, a duplicate turn id, or a
     /// block-level violation).
@@ -122,18 +106,14 @@ pub enum ConversationError {
 ///
 /// - `begin_turn` admits a fresh active turn (rejects concurrent active and
 ///   turn-id collisions with committed history);
-/// - `seal_turn` is the only stamping path — for `Completed`/`Interrupted`
-///   it seals the active `TurnContext` and records the outcome in one step
-///   (invariant `sealed_result ∈ {Completed, Interrupted} ⇒ active.is_sealed()`);
-///   for `Paused` it records the stamp while the active `TurnContext` stays
-///   open, so a later `resume_turn` can continue it (invariant
-///   `sealed_result == Paused ⇒ active` is open);
+/// - `seal_turn` is the only stamping path — it seals the active
+///   `TurnContext` and records the outcome in one step
+///   (invariant `active.is_sealed()` whenever `sealed_result` is present);
 /// - `commit` is the exactly-once transition into history: it alone assigns
 ///   the `TurnSequence` (as a [`HistoryEntry`]), rejects anything not
-///   sealed-and-`Completed` (`Paused` gets the dedicated `TurnPaused`
-///   rejection), and clears the active slot — a repeated commit therefore
+///   sealed-and-`Completed`, and clears the active slot — a repeated commit therefore
 ///   lands on `UnknownTurn` (rejection, not idempotence);
-/// - `abort_turn` discards the active turn in any state (open, paused,
+/// - `abort_turn` discards the active turn in any state (open,
 ///   sealed); history is untouched either way, and an aborted turn's id
 ///   may be reused.
 ///
@@ -294,10 +274,8 @@ impl ConversationState {
         Ok(self.active_turn.as_mut().expect("just inserted"))
     }
 
-    /// The only stamping path. `Completed`/`Interrupted` seal the active
-    /// `TurnContext` and record the outcome atomically; `Paused` records
-    /// the stamp while the turn stays open — the driver-owned counterpart
-    /// of `TurnContext::seal`, deliberately withheld for resumable pauses.
+    /// The only stamping path. Seal the active `TurnContext` and record
+    /// the outcome atomically.
     pub fn seal_turn(
         &mut self,
         turn_id: causa_kernel::TurnId,
@@ -306,9 +284,7 @@ impl ConversationState {
         self.assert_stamp_invariant();
         match self.active_turn.as_mut() {
             Some(active) if active.turn_id() == turn_id => {
-                if result != SealedResult::Paused {
-                    active.seal();
-                }
+                active.seal();
                 self.sealed_result = Some(result);
                 Ok(())
             }
@@ -321,8 +297,7 @@ impl ConversationState {
         self.active_turn.as_ref()
     }
 
-    /// The eligibility stamp, if any (`Some(Paused)` marks a resumable
-    /// turn).
+    /// The eligibility stamp, if the active turn has been sealed.
     pub fn sealed_result(&self) -> Option<SealedResult> {
         self.sealed_result
     }
@@ -348,11 +323,6 @@ impl ConversationState {
             Some(active) if active.turn_id() == turn_id => {}
             _ => return Err(ConversationError::UnknownTurn(turn_id)),
         }
-        if self.sealed_result == Some(SealedResult::Paused) {
-            // Facts of a paused turn are still open; resume it (or abort)
-            // instead of committing.
-            return Err(ConversationError::TurnPaused(turn_id));
-        }
         let active = self.active_turn.as_ref().expect("matched above");
         if !active.is_sealed() || self.sealed_result != Some(SealedResult::Completed) {
             return Err(ConversationError::TurnNotCompleted(turn_id));
@@ -369,7 +339,7 @@ impl ConversationState {
         Ok(entry)
     }
 
-    /// Discard the active turn in any state (open, paused, sealed-completed,
+    /// Discard the active turn in any state (open, sealed-completed,
     /// sealed-interrupted). History is untouched; the returned
     /// `TurnContext` is for caller inspection only (no reopen/unseal). An
     /// aborted turn's id may be reused by a later `begin_turn`.
@@ -389,7 +359,7 @@ impl ConversationState {
     }
 
     /// Lossless merged view: committed history (sequence ascending,
-    /// blocks in BlockSequence order) followed by the active turn's blocks,
+    /// with each snapshot's stored block order) followed by active-turn blocks,
     /// under the Conversation scope identity. Sync and policy-free by
     /// design — budget, selection and compaction over the merged view
     /// orchestrate through the policy layer and never mutate facts. The
@@ -465,19 +435,17 @@ impl ConversationState {
     }
 
     /// Canonical-path invariant: a `Completed`/`Interrupted` stamp exists
-    /// only while the active turn is sealed; a `Paused` stamp exists only
-    /// while it is open. Enforced by construction (`seal_turn` seals
-    /// exactly when it does not stamp `Paused`; every other path only
-    /// clears). Commit does not rely on this — it checks both facts
+    /// only while the active turn is sealed. Enforced by construction;
+    /// commit also checks both facts
     /// defensively.
     fn assert_stamp_invariant(&self) {
-        debug_assert!(match self.sealed_result {
-            None => true,
-            Some(SealedResult::Paused) => {
-                self.active_turn.as_ref().is_some_and(|t| !t.is_sealed())
-            }
-            Some(_) => self.active_turn.as_ref().is_some_and(|t| t.is_sealed()),
-        });
+        debug_assert!(
+            self.sealed_result.is_none()
+                || self
+                    .active_turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.is_sealed())
+        );
     }
 }
 
@@ -488,10 +456,6 @@ impl ConversationState {
 /// calls `save_entry` after `ConversationState::commit`, keeping
 /// persistence policy (batch writes, compression, fsync cadence, retry
 /// strategy) host-owned.
-///
-/// Full paused outcomes are NOT stored through this port: the host saves
-/// them in its own checkpoint document (fact state + continuation can live
-/// atomically in one file).
 ///
 /// Implementations are expected to be `Send + Sync` so they can sit
 /// behind an `Arc` in the host's wiring.

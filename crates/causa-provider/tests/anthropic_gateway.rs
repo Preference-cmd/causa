@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use causa_kernel::{
-    AttemptControl, AttemptNumber, BlockContent, BlockId, BlockMeta, BlockSequence,
-    CancellationToken, ContextBlock, ContextFrame, ContextVersion, FrameId, FrameScope,
-    GenerationOptions, InvocationId, ModelContext, ModelGateway, ModelInvokeErrorKind, ModelRef,
-    ModelRequest, ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
+    AttemptControl, AttemptNumber, BlockContent, BlockId, BlockMeta, CancellationToken,
+    ContextBlock, ContextFrame, ContextVersion, FrameScope, GenerationOptions, InvocationId,
+    ModelContext, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason,
+    RoundId, TextPayload, ToolSurface, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use serde_json::{Value, json};
@@ -30,16 +30,11 @@ fn user_frame() -> ContextFrame {
         source_version: ContextVersion(1),
     };
     ContextFrame {
-        frame_id: FrameId::from_scope(&scope, RoundId(0)),
         scope,
         round_id: RoundId(0),
         model_context: ModelContext {
             blocks: vec![ContextBlock {
-                id: BlockId {
-                    turn_id: TurnId::new("t1"),
-                    sequence: BlockSequence(0),
-                },
-                sequence: BlockSequence(0),
+                id: BlockId::new(uuid::Uuid::from_u128(1)),
                 content: BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
                     TextPayload::new("hi"),
                 )]),
@@ -413,16 +408,11 @@ fn media_frame() -> ContextFrame {
         source_version: ContextVersion(1),
     };
     ContextFrame {
-        frame_id: FrameId::from_scope(&scope, RoundId(0)),
         scope,
         round_id: RoundId(0),
         model_context: ModelContext {
             blocks: vec![ContextBlock {
-                id: BlockId {
-                    turn_id: TurnId::new("t1"),
-                    sequence: BlockSequence(0),
-                },
-                sequence: BlockSequence(0),
+                id: BlockId::new(uuid::Uuid::from_u128(1)),
                 content: BlockContent::Parts(vec![
                     ContentPart::Text(TextPayload::new("look")),
                     ContentPart::Media(MediaRef::new("image/png", "asset-1")),

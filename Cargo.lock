@@ -202,6 +202,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -209,13 +210,13 @@ name = "causa-kernel"
 version = "0.0.1"
 dependencies = [
  "async-trait",
- "blake3",
  "futures-util",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -228,6 +229,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -243,6 +245,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wiremock",
 ]
 
@@ -262,6 +265,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2060,6 +2064,7 @@ checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

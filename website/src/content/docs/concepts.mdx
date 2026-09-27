@@ -12,17 +12,17 @@ description: Facts, ports, driver — how Causa is layered and why.
   fact block (`append_parts`); media travels as cheap durable `MediaRef`
   references whose bytes live only in the host's asset store.
 - **Contracts** (`ports`): the seams third parties implement or call against —
-  `ModelGateway`, `Tool`, `DynamicToolSource`, `CallControl`, and
+  `ModelGateway`, `Tool`, `DynamicToolSource`, `ToolBatchProcessor`, `CallControl`, and
   `ArtifactStore`. A type lives in `ports` iff someone outside the kernel
   implements or calls it.
 
 ## causa-runtime is a set of optional components
 
 `causa-runtime` holds the reference components you can adopt: the
-execution stack (turn loop, tool dispatch, streaming, pause/resume), the
+execution stack (turn loop, tool-processing chains, dispatch, streaming), the
 session aggregate (`ConversationState` / `ConversationStore`) and
-session owner (`Session` / `SessionHandle` / checkpoint), and the policy
-components (`FramePolicy`, `TokenCounter`, `TurnInteraction`, `ToolUseHook`).
+session owner (`Session` / `SessionHandle`), and the policy
+components (`FramePolicy`, `TokenCounter`, `TurnInteraction`).
 `ConversationStore` is also a runtime contract; the kernel's `ArtifactStore`
 is the separate port for tool artifacts. Everything is optional, and each piece is
 offered as a reference: adopt it whole, or read it and build your own. What
@@ -31,13 +31,19 @@ how finely the crate can be split.
 
 Key mechanisms:
 
-- **Pause/resume** — a tool batch can suspend behind a human decision
-  (`BatchDecision::Pause`) and resume with the withheld verdict
-  (`resume_turn`); approve / reject / rewrite are one `HookOutcome`
-  vocabulary, so pausing and releasing are two halves of one mechanism.
-- **Unknown-outcome / output-retention config** — how the execution stack treats
-  ambiguous tool results and how much output it keeps are explicit settings,
-  not folklore.
+- **Tool processing** — an ordered pre-processing chain, a fixed execution
+  step and an ordered post-processing chain operate on one `ToolBatch`.
+  A processor can await approval while holding the entire batch. Notes travel
+  with each result and are visible to the model.
+- **Interruption ownership** — an interrupted chain returns its current batch
+  and cause. Your application decides what to do with that material; the runtime
+  does not automatically retry, checkpoint or commit a partial batch.
+- **Explicit output policy** — optional post processors control output limits
+  and artifact storage. The processor changing content also maintains its
+  truncation and artifact descriptions.
+- **Identity** — opaque UUID block IDs identify declarations and results.
+  Content keys serve optional batch-local deduplication; identical calls still
+  have distinct declaration IDs and independent results.
 
 ## Edge crates are adapters, not opinions
 

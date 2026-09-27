@@ -1,22 +1,22 @@
 //! Block facts -- the kernel-side vocabulary of a conversation.
 //!
 //! A ContextBlock is a typed fact with three orthogonal axes:
-//! identity (id, sequence), content (BlockContent), and envelope
+//! identity (id), content (BlockContent), and envelope
 //! provenance (BlockMeta). Provider-specific role assignment (system /
 //! user / assistant / tool) is the renderer's job, not the kernel's.
 //!
 //! Content vocabulary is **Parts**: one
 //! logical message's mixed content commits as one block of ordered
-//! [`ContentPart`]s — the block is the fact atom (identity, sequence,
-//! single version bump, pairing invariant), the part is the content
+//! [`ContentPart`]s — the block is the fact atom (identity, one version
+//! bump, pairing invariant), the part is the content
 //! atom (ordered, identity-free, shares the envelope). Media enters as
 //! a [`MediaRef`] — a cheap durable reference; bytes never enter facts,
 //! they appear only in resolved render payloads (provider side).
 
 use serde::{Deserialize, Serialize};
 
-use crate::context::ids::{BlockId, BlockSequence};
-use crate::context::tool_data::{ToolCallId, ToolResultPayload};
+use crate::context::ids::BlockId;
+use crate::context::tool_data::ToolResultPayload;
 
 /// Envelope provenance. Fields are serde-additive so legacy snapshots
 /// without them still deserialize.
@@ -42,14 +42,10 @@ impl TextPayload {
     }
 }
 
-/// A model-issued tool call. call_id is the kernel-generated causal key;
-/// any provider-issued identifier rides on BlockMeta::provider_call_id.
+/// A model-issued tool call. Its containing block ID is the declaration
+/// identity; provider-issued identifiers ride on BlockMeta::provider_call_id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallPayload {
-    /// Kernel-generated causal key pairing results to this call (unique
-    /// within a single turn); provider-issued identifiers ride on
-    /// [`BlockMeta::provider_call_id`].
-    pub call_id: ToolCallId,
     /// Name of the invoked tool — the key the executor dispatches on.
     pub tool_name: String,
     /// The call's arguments as a JSON value.
@@ -59,12 +55,8 @@ pub struct ToolCallPayload {
 /// A typed fact. Three axes: identity, content, envelope provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextBlock {
-    /// Identity axis: the owning turn's id plus the block's sequence
-    /// (always equal to `sequence`).
+    /// Identity axis: the UUID assigned to this fact block.
     pub id: BlockId,
-    /// Position of the block within its turn: zero-based, increasing by
-    /// one per block; mirrors `id.sequence`.
-    pub sequence: BlockSequence,
     /// Content axis: the typed fact payload.
     pub content: BlockContent,
     /// Envelope provenance axis; serde-additive, defaulting when absent.
@@ -99,13 +91,13 @@ impl MediaRef {
 #[serde(tag = "shape", content = "value", rename_all = "snake_case")]
 pub enum BlockContent {
     /// One logical message's ordered content parts (text and media
-    /// references) — atomic at the block: identity, sequence, one
+    /// references) — atomic at the block: identity, one
     /// version bump, and the pairing invariant live only here.
     Parts(Vec<ContentPart>),
     /// A model-issued tool invocation.
     ToolCall(ToolCallPayload),
     /// The recorded outcome of a prior call, paired by
-    /// `ToolResultPayload::call_id`.
+    /// `ToolResultPayload::call_block_id`.
     ToolResult(ToolResultPayload),
 }
 

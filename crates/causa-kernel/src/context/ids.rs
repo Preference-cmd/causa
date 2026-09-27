@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-/// Unique identity of a turn. Opaque string; scopes every block, sequence,
-/// and version belonging to that turn, and is checked on every model-door
+/// Unique identity of a turn. Opaque string checked on every model-door
 /// invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TurnId(pub String);
@@ -12,9 +12,7 @@ impl TurnId {
     }
 }
 
-/// Ordinal of a model round within a turn (0-based). Enters the frame-identity
-/// and tool-call-id hash preimages, so the same logical call in different
-/// rounds never collides.
+/// Ordinal of a model round within a turn (0-based).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoundId(pub u32);
 
@@ -27,13 +25,7 @@ pub struct InvocationId {
     pub round_id: RoundId,
 }
 
-/// Monotonic per-turn block ordinal, assigned once when the fact machine
-/// commits a block; dense and gap-free (validated on replay).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct BlockSequence(pub u64);
-
-/// Counts canonical fact commits of a turn; bumps exactly once per non-empty
-/// commit and pins the frame identity for a round.
+/// Counts canonical fact commits of a turn; bumps once per non-empty commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContextVersion(pub u64);
 impl ContextVersion {
@@ -43,17 +35,18 @@ impl ContextVersion {
     }
 }
 
-/// Unique identity of a fact block: the owning turn plus the block's dense
-/// position within that turn.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct BlockId {
-    /// The turn the block belongs to.
-    pub turn_id: TurnId,
-    /// The block's position in the turn's monotonic sequence.
-    pub sequence: BlockSequence,
+/// UUID identity of one fact block, independent of its current position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BlockId(pub Uuid);
+impl BlockId {
+    /// Wraps a UUID supplied by the caller.
+    pub const fn new(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
-/// Frame identity/provenance tag. `Turn` scopes a single-turn projection;
+/// Projection provenance tag. `Turn` scopes a single-turn projection;
 /// `Conversation` scopes the lossless merged view (history + active turn).
 /// Adding a scope variant is additive; the scope never changes block-level
 /// operation rules.
@@ -63,8 +56,7 @@ pub enum FrameScope {
     Turn {
         /// The turn being projected.
         turn_id: TurnId,
-        /// The turn's `ContextVersion` the frame was built from; part of the
-        /// frame-identity preimage.
+        /// The turn's `ContextVersion` the frame was built from.
         source_version: ContextVersion,
     },
     /// Lossless merged view: conversation history plus the active turn.
@@ -76,58 +68,13 @@ pub enum FrameScope {
         /// The active turn's `ContextVersion`. History snapshots are
         /// immutable; their session ordering lives in the runtime's
         /// `HistoryEntry`. Within one round the
-        /// (conversation_id, active_turn_id, source_version) triple is
-        /// constant, so it pins the frame input.
+        /// (conversation_id, active_turn_id, source_version) triple records
+        /// the source coordinates. The projected block content is carried
+        /// separately by `ContextFrame::model_context`.
         source_version: ContextVersion,
     },
 }
 
-/// Deterministic frame identity: a blake3 digest of the scope and round,
-/// truncated to 16 hex chars. Equal `(scope, round)` inputs always yield the
-/// same id; see `from_scope` for the preimage formats.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FrameId(pub String);
-impl FrameId {
-    /// Scope-driven deterministic derivation — the canonical entry. The Turn
-    /// branch replicates the historical preimage byte-for-byte
-    /// (`turn|version|round`, colon-separated) so historical frame ids are
-    /// unchanged.
-    pub fn from_scope(scope: &FrameScope, round_id: RoundId) -> Self {
-        let input = match scope {
-            FrameScope::Turn {
-                turn_id,
-                source_version,
-            } => format!("{}:{}:{}", turn_id.0, source_version.0, round_id.0),
-            FrameScope::Conversation {
-                conversation_id,
-                active_turn_id,
-                source_version,
-            } => format!(
-                "conversation|{}|{}|{}|{}",
-                conversation_id.0, active_turn_id.0, source_version.0, round_id.0
-            ),
-        };
-        let hex = blake3::hash(input.as_bytes()).to_hex();
-        Self(hex[..16].to_string())
-    }
-
-    /// Turn-scope thin wrapper, pinned equal to `from_scope(Turn)` by test.
-    pub fn deterministic(
-        turn_id: &TurnId,
-        source_version: ContextVersion,
-        round_id: RoundId,
-    ) -> Self {
-        Self::from_scope(
-            &FrameScope::Turn {
-                turn_id: turn_id.clone(),
-                source_version,
-            },
-            round_id,
-        )
-    }
-}
-
-/// Unique identity of a conversation aggregate. Opaque string; scopes the
-/// conversation's turns, sequences, and versions.
+/// Unique identity of a conversation aggregate. Opaque string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationId(pub String);

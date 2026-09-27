@@ -14,7 +14,7 @@ use causa_kernel::{
     TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
     ToolResultStatus,
 };
-use causa_runtime::{RunControl, ToolExecutor, TurnRunOptions, TurnRunner};
+use causa_runtime::{RunControl, ToolExecutor, TurnRunOptions, TurnRunner, new_block_id};
 use std::sync::{Arc, Mutex};
 
 /// The host's in-memory asset table: bytes keyed by content hash. Facts
@@ -64,18 +64,19 @@ impl Tool for RenderChart {
             .persist(
                 &bytes,
                 ArtifactHint {
-                    tool_name: ctx.tool_name.clone(),
-                    call_id: ctx.call_id.clone(),
+                    tool_name: ctx.input.tool_name.clone(),
+                    call_block_id: ctx.call_block_id,
                     kind: ArtifactKind::Binary,
                 },
             )
             .await
             .expect("ingest");
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(serde_json::json!("chart ready")),
             media: vec![causa_kernel::MediaRef::new("image/png", artifact.id)],
+            notes: Vec::new(),
         }
     }
 }
@@ -130,8 +131,12 @@ async fn main() {
     let runner = TurnRunner::new(gateway.clone(), executor);
 
     let mut ctx = causa_kernel::TurnContext::new(causa_kernel::TurnId::new("media-turn"));
-    ctx.append_input(TextPayload::new("chart the numbers"), "user")
-        .unwrap();
+    ctx.append_input(
+        new_block_id(),
+        TextPayload::new("chart the numbers"),
+        "user",
+    )
+    .unwrap();
 
     let outcome = runner
         .run(

@@ -38,8 +38,7 @@ pub use context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload, ToolCallPayload,
 };
 pub use context::ids::{
-    BlockId, BlockSequence, ContextVersion, ConversationId, FrameId, FrameScope, InvocationId,
-    RoundId, TurnId,
+    BlockId, ContextVersion, ConversationId, FrameScope, InvocationId, RoundId, TurnId,
 };
 pub use context::model::{ModelResponse, ModelStopReason, ToolCallDraft};
 pub use context::tool_data::{
@@ -48,11 +47,14 @@ pub use context::tool_data::{
 };
 pub use context::turn::{
     AppliedModelOutput, ContextError, ContextFrame, ModelContext, OrderedBlocks, TurnContext,
-    TurnLifecycle, TurnSnapshot, merged_frame, option_turn_context_as_snapshot,
-    turn_context_as_snapshot,
+    TurnLifecycle, TurnSnapshot, merged_frame, model_output_block_count,
+    option_turn_context_as_snapshot, turn_context_as_snapshot,
 };
 
 // --- ports: behavior seams for external implementors ------------------------
+pub use ports::batch::{
+    BatchError, ProcessorContext, ProcessorError, ToolBatch, ToolBatchProcessor, ToolCallEntry,
+};
 pub use ports::control::{AttemptControl, CallControl, ControlError, effective_deadline};
 pub use ports::gateway::{
     AttemptNumber, CacheDirective, GenerationOptions, ModelGateway, ModelInvokeError,

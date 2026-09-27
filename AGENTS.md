@@ -14,10 +14,10 @@ as the default entry. Dual-licensed `MIT OR Apache-2.0`.
 crates/causa               # facade: `kernel` always on; default = runtime + providers
 crates/causa-kernel        # facts + contracts only (no I/O, no transport, no policy)
 crates/causa-runtime       # optional, reference components: execution stack (turn loop,
-                           # dispatch, streaming, pause/resume) + session aggregate
-                           # (ConversationState/Store, Session/SessionHandle/checkpoint)
-                           # + budget/interaction seams and the unknown-outcome /
-                           # output-retention configuration (Slice 13)
+                           # dispatch, streaming, tool-processing chains) + session aggregate
+                           # (ConversationState/Store, Session/SessionHandle)
+                           # + budget/interaction seams, unknown-outcome policy and
+                           # optional output processors
 crates/causa-protocol      # wire-protocol translation, transport-free
 crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)
@@ -136,10 +136,11 @@ rendering) — bare `causa` false-positives on `causa-*` names.
 - `Cargo.lock` is committed (workspace binary story + reproducible CI).
 - All six crates ship `LICENSE-MIT` and `LICENSE-APACHE` via relative
   symlinks to the root copies; Cargo flattens them when packaging.
-- During `0.0.x`, patch releases may break API / wire compatibility; record
+- Before `0.1`, no backward-compatibility measures are required. Remove obsolete
+  implementations and formats rather than adding compatibility adapters.
+  During `0.0.x`, patch releases may break API / wire compatibility; record
   breaking changes and migrations at the top of CHANGELOG. Starting with
-  `0.1.0`, wire-serde breaks require a minor bump. Checkpoint schema versions
-  remain an independent validation boundary.
+  `0.1.0`, wire-serde breaks require a minor bump. The old session checkpoint and approval-resume mechanisms are removed.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
 - Library module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard

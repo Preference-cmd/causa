@@ -13,14 +13,24 @@
 //! projection the session aggregate produces.
 
 use causa_kernel::{
-    ContextFrame, ConversationId, GenerationOptions, InvocationId, ModelRef, ModelResponse,
-    ModelStopReason, RoundId, TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload,
-    ToolResultStatus, ToolSurface, TurnContext, TurnId, TurnSnapshot, merged_frame,
+    BlockId, ContextFrame, ConversationId, GenerationOptions, InvocationId, MediaRef, ModelRef,
+    ModelResponse, ModelStopReason, RoundId, TextPayload, ToolCallDraft, ToolOutput,
+    ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId, TurnSnapshot,
+    merged_frame,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::openai_chat::render_openai_chat_messages;
 use causa_protocol::translation::openai_responses::render_openai_responses_input;
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_BLOCK_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn block_id() -> BlockId {
+    BlockId::new(uuid::Uuid::from_u128(
+        NEXT_BLOCK_ID.fetch_add(1, Ordering::Relaxed) as u128,
+    ))
+}
 
 fn invocation(turn: &str, round: u32) -> InvocationId {
     InvocationId {
@@ -62,10 +72,10 @@ fn session_frame(
 fn scenario_frame() -> ContextFrame {
     let history = vec![sealed_turn("t1", |active| {
         active
-            .append_input(TextPayload::new("be terse"), "system")
+            .append_input(block_id(), TextPayload::new("be terse"), "system")
             .unwrap();
         active
-            .append_input(TextPayload::new("find the file"), "user")
+            .append_input(block_id(), TextPayload::new("find the file"), "user")
             .unwrap();
         let applied = active
             .append_model_output(
@@ -79,22 +89,27 @@ fn scenario_frame() -> ContextFrame {
                     }],
                 },
                 ModelStopReason::ToolUse,
+                vec![block_id(), block_id()],
             )
             .unwrap();
-        let call_id = applied.tool_calls[0].call_id.clone();
+        let call_block_id = applied.tool_calls[0].0;
         active
-            .append_tool_results(vec![ToolResultPayload {
-                call_id,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!("file-a")),
-                media: Vec::new(),
-            }])
+            .append_tool_results(vec![(
+                block_id(),
+                ToolResultPayload {
+                    call_block_id,
+                    status: ToolResultStatus::Succeeded,
+                    output: ToolOutput::new(json!("file-a")),
+                    media: Vec::new(),
+                    notes: Vec::new(),
+                },
+            )])
             .unwrap();
     })];
 
     let mut active = TurnContext::new(TurnId::new("t2"));
     active
-        .append_input(TextPayload::new("and now?"), "user")
+        .append_input(block_id(), TextPayload::new("and now?"), "user")
         .unwrap();
     active
         .append_model_output(
@@ -104,6 +119,7 @@ fn scenario_frame() -> ContextFrame {
                 tool_calls: vec![],
             },
             ModelStopReason::EndTurn,
+            vec![block_id()],
         )
         .unwrap();
     active.seal();
@@ -144,6 +160,116 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
         )
         .unwrap(),
     )
+}
+
+#[test]
+fn tool_result_notes_and_media_render_with_their_own_result() {
+    use causa_protocol::translation::media::{MediaPayload, MediaSet};
+
+    let mut turn = TurnContext::new(TurnId::new("notes"));
+    turn.append_input(block_id(), TextPayload::new("search"), "user")
+        .unwrap();
+    let applied = turn
+        .append_model_output(
+            invocation("notes", 0),
+            &ModelResponse {
+                text: TextPayload::new(""),
+                tool_calls: vec![ToolCallDraft {
+                    tool_name: "search".into(),
+                    arguments: json!({"limit": 20}),
+                    provider_call_id: Some("external-call-7".into()),
+                }],
+            },
+            ModelStopReason::ToolUse,
+            vec![block_id()],
+        )
+        .unwrap();
+    let media_ref = MediaRef::new("image/png", "search-image");
+    turn.append_tool_results(vec![(
+        block_id(),
+        ToolResultPayload {
+            call_block_id: applied.tool_calls[0].0,
+            status: ToolResultStatus::Succeeded,
+            output: ToolOutput::new(json!({"found": 1})),
+            media: vec![media_ref.clone()],
+            notes: vec![
+                TextPayload::new("The limit was reduced to 5."),
+                TextPayload::new("The result includes one image."),
+            ],
+        },
+    )])
+    .unwrap();
+    turn.seal();
+    let frame = session_frame("notes", vec![], turn);
+    let mut media = MediaSet::new();
+    media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
+    let model = ModelRef::new("test-model");
+    let surface = ToolSurface::empty();
+    let generation = GenerationOptions::default();
+    let anthropic = render_anthropic_messages(
+        &frame,
+        &media,
+        &surface,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+    )
+    .unwrap();
+    let chat = render_openai_chat_messages(
+        &frame,
+        &media,
+        &surface,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+    )
+    .unwrap();
+    let responses = render_openai_responses_input(
+        &frame,
+        &media,
+        &surface,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+    )
+    .unwrap();
+
+    let expected_notes =
+        "{\"found\":1}\n\nNotes:\n- The limit was reduced to 5.\n- The result includes one image.";
+    let anthropic_result = &anthropic["messages"][2]["content"][0];
+    assert_eq!(anthropic_result["type"], "tool_result");
+    let anthropic_parts = anthropic_result["content"].as_array().unwrap();
+    assert_eq!(anthropic_parts[0]["text"], "{\"found\":1}");
+    assert_eq!(anthropic_parts[1]["text"], "Notes:");
+    assert_eq!(anthropic_parts[2]["text"], "- The limit was reduced to 5.");
+    assert_eq!(
+        anthropic_parts[3]["text"],
+        "- The result includes one image."
+    );
+    assert_eq!(anthropic_parts[4]["type"], "image");
+
+    let chat_result = &chat["messages"][2];
+    assert_eq!(chat_result["role"], "tool");
+    assert_eq!(chat_result["tool_call_id"], "external-call-7");
+    assert_eq!(chat_result["content"], expected_notes);
+    assert_eq!(chat["messages"][3]["content"][1]["type"], "image_url");
+
+    let response_result = &responses["input"][2];
+    assert_eq!(response_result["type"], "function_call_output");
+    assert_eq!(response_result["call_id"], "external-call-7");
+    assert_eq!(response_result["output"], expected_notes);
+    assert_eq!(responses["input"][3]["content"][1]["type"], "input_image");
+
+    let stored_result = frame
+        .model_context
+        .blocks
+        .iter()
+        .find_map(|block| match &block.content {
+            causa_kernel::BlockContent::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(stored_result.output.content, json!({"found": 1}));
 }
 
 // --- shared semantic timeline ------------------------------------------------
@@ -399,7 +525,9 @@ fn content_shapes_survive_all_three_renderers() {
     // one turn (input + failed tool round trip) held as the active slot.
     let history = vec![];
     let mut active = TurnContext::new(TurnId::new("t1"));
-    active.append_input(TextPayload::new("go"), "user").unwrap();
+    active
+        .append_input(block_id(), TextPayload::new("go"), "user")
+        .unwrap();
     let applied = active
         .append_model_output(
             invocation("t1", 0),
@@ -412,15 +540,20 @@ fn content_shapes_survive_all_three_renderers() {
                 }],
             },
             ModelStopReason::ToolUse,
+            vec![block_id(), block_id()],
         )
         .unwrap();
     active
-        .append_tool_results(vec![ToolResultPayload {
-            call_id: applied.tool_calls[0].call_id.clone(),
-            status: ToolResultStatus::Failed,
-            output: ToolOutput::new(json!({"error": "denied"})),
-            media: Vec::new(),
-        }])
+        .append_tool_results(vec![(
+            block_id(),
+            ToolResultPayload {
+                call_block_id: applied.tool_calls[0].0,
+                status: ToolResultStatus::Failed,
+                output: ToolOutput::new(json!({"error": "denied"})),
+                media: Vec::new(),
+                notes: Vec::new(),
+            },
+        )])
         .unwrap();
     active.seal();
     let frame = session_frame("c1", history, active);
@@ -442,17 +575,14 @@ fn content_shapes_survive_all_three_renderers() {
     assert_eq!(responses["input"][3]["output"], json!(expected_payload));
 }
 
-/// A `ToolCallId` is unique only within its turn, so two turns calling the
-/// same tool with the same arguments in round 0 reuse the same kernel id
-/// while carrying different provider ids. Each turn's result must resolve
-/// to its OWN turn's wire id — a bare call_id map would give both results
-/// the later turn's id, leaving calls and results unpaired on the wire.
+/// Identical call contents in distinct turns keep distinct declaration
+/// identities and their respective external provider IDs.
 #[test]
 fn tool_result_ids_stay_scoped_to_their_own_turn() {
     let mut history = Vec::new();
     for (turn_name, wire_id) in [("t1", "provider_first"), ("t2", "provider_second")] {
         history.push(sealed_turn(turn_name, |turn| {
-            turn.append_input(TextPayload::new("read again"), "user")
+            turn.append_input(block_id(), TextPayload::new("read again"), "user")
                 .unwrap();
             let applied = turn
                 .append_model_output(
@@ -466,25 +596,52 @@ fn tool_result_ids_stay_scoped_to_their_own_turn() {
                         }],
                     },
                     ModelStopReason::ToolUse,
+                    vec![block_id()],
                 )
                 .unwrap();
-            turn.append_tool_results(vec![ToolResultPayload {
-                call_id: applied.tool_calls[0].call_id.clone(),
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!(turn_name)),
-                media: Vec::new(),
-            }])
+            turn.append_tool_results(vec![(
+                block_id(),
+                ToolResultPayload {
+                    call_block_id: applied.tool_calls[0].0,
+                    status: ToolResultStatus::Succeeded,
+                    output: ToolOutput::new(json!(turn_name)),
+                    media: Vec::new(),
+                    notes: Vec::new(),
+                },
+            )])
             .unwrap();
         }));
     }
     let mut active = TurnContext::new(TurnId::new("t3"));
     active
-        .append_input(TextPayload::new("next"), "user")
+        .append_input(block_id(), TextPayload::new("next"), "user")
         .unwrap();
     let frame = session_frame("repeat", history, active);
 
     let (anthropic, chat, responses) = render(&frame);
 
+    let anthropic_call_ids: Vec<&str> = anthropic["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["content"].as_array().unwrap())
+        .filter(|b| b["type"] == "tool_use")
+        .map(|b| b["id"].as_str().unwrap())
+        .collect();
+    let chat_call_ids: Vec<&str> = chat["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["tool_calls"].as_array().into_iter().flatten())
+        .map(|call| call["id"].as_str().unwrap())
+        .collect();
+    let responses_call_ids: Vec<&str> = responses["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .map(|item| item["call_id"].as_str().unwrap())
+        .collect();
     let anthropic_ids: Vec<&str> = anthropic["messages"]
         .as_array()
         .unwrap()
@@ -508,7 +665,43 @@ fn tool_result_ids_stay_scoped_to_their_own_turn() {
         .map(|b| b["call_id"].as_str().unwrap())
         .collect();
 
-    assert_eq!(anthropic_ids, vec!["provider_first", "provider_second"]);
-    assert_eq!(chat_ids, vec!["provider_first", "provider_second"]);
-    assert_eq!(responses_ids, vec!["provider_first", "provider_second"]);
+    let expected_ids = vec!["provider_first", "provider_second"];
+    assert_eq!(anthropic_call_ids, expected_ids);
+    assert_eq!(chat_call_ids, expected_ids);
+    assert_eq!(responses_call_ids, expected_ids);
+    assert_eq!(anthropic_ids, expected_ids);
+    assert_eq!(chat_ids, expected_ids);
+    assert_eq!(responses_ids, expected_ids);
+
+    let anthropic_results: Vec<String> = anthropic["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["content"].as_array().unwrap())
+        .filter(|b| b["type"] == "tool_result")
+        .map(|b| {
+            b["content"]
+                .as_str()
+                .or_else(|| b["content"][0]["text"].as_str())
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let chat_results: Vec<&str> = chat["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    let responses_results: Vec<&str> = responses["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call_output")
+        .map(|item| item["output"].as_str().unwrap())
+        .collect();
+    assert_eq!(anthropic_results, vec!["t1", "t2"]);
+    assert_eq!(chat_results, vec!["t1", "t2"]);
+    assert_eq!(responses_results, vec!["t1", "t2"]);
 }

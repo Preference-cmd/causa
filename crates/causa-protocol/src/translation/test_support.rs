@@ -7,10 +7,18 @@
 use serde_json::Value;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, BlockSequence, ContentPart, ContextBlock, ContextFrame,
-    ContextVersion, FrameId, FrameScope, MediaRef, ModelContext, RoundId, TextPayload, ToolCallId,
-    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextFrame, ContextVersion,
+    FrameScope, MediaRef, ModelContext, RoundId, TextPayload, ToolCallPayload, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
+
+pub(crate) fn label_id(label: &str) -> BlockId {
+    let mut value = 0_u128;
+    for byte in label.bytes() {
+        value = value.wrapping_mul(257).wrapping_add(u128::from(byte));
+    }
+    BlockId::new(uuid::Uuid::from_u128(value))
+}
 
 pub(crate) fn block(
     seq: u64,
@@ -19,11 +27,7 @@ pub(crate) fn block(
     provider_call_id: Option<&str>,
 ) -> ContextBlock {
     ContextBlock {
-        id: BlockId {
-            turn_id: TurnId::new("t1"),
-            sequence: BlockSequence(seq),
-        },
-        sequence: BlockSequence(seq),
+        id: BlockId::new(uuid::Uuid::from_u128(u128::from(seq) + 1)),
         content,
         meta: BlockMeta {
             provider_call_id: provider_call_id.map(String::from),
@@ -58,16 +62,17 @@ pub(crate) fn call(
     name: &str,
     arguments: Value,
 ) -> ContextBlock {
-    block(
+    let mut declaration = block(
         seq,
         BlockContent::ToolCall(ToolCallPayload {
-            call_id: ToolCallId::new(call_id),
             tool_name: name.into(),
             arguments,
         }),
         None,
         provider,
-    )
+    );
+    declaration.id = label_id(call_id);
+    declaration
 }
 
 pub(crate) fn result(
@@ -90,10 +95,11 @@ pub(crate) fn result_with_media(
     block(
         seq,
         BlockContent::ToolResult(ToolResultPayload {
-            call_id: ToolCallId::new(call_id),
+            call_block_id: label_id(call_id),
             status,
             output: ToolOutput::new(content),
             media,
+            notes: Vec::new(),
         }),
         None,
         None,
@@ -106,7 +112,6 @@ pub(crate) fn frame(blocks: Vec<ContextBlock>) -> ContextFrame {
         source_version: ContextVersion(3),
     };
     ContextFrame {
-        frame_id: FrameId::from_scope(&scope, RoundId(0)),
         scope,
         round_id: RoundId(0),
         model_context: ModelContext { blocks },

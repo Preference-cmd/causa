@@ -29,6 +29,14 @@ impl RunControl {
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
     }
+    /// The shared token used to interrupt an in-flight processor stage.
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+    /// The turn deadline, if one was configured.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.turn_deadline
+    }
     /// True when the turn is cancelled or the turn deadline has passed — the
     /// driver checks this at every loop top.
     pub fn should_stop(&self) -> bool {

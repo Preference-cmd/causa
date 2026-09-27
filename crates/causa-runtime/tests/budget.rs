@@ -8,7 +8,7 @@ mod common;
 use common::{DropAllCompaction, ctx};
 
 use causa_kernel::{RoundId, TextPayload};
-use causa_runtime::{FramePolicy, TokenCounter, WindowBudget};
+use causa_runtime::{FramePolicy, TokenCounter, WindowBudget, new_block_id};
 
 /// A host-chosen estimator: any non-empty content trips the trigger.
 /// (The default policy has no counter and estimates zero — compaction is
@@ -24,12 +24,13 @@ impl TokenCounter for CountPlusOne {
 }
 
 /// Compaction output is frame-local: the projected frame keeps the
-/// deterministic frame identity of the lossless projection, only the block
+/// provenance scope of the lossless projection, only the block
 /// list is replaced, and the fact state is never written back.
 #[tokio::test]
 async fn compaction_projection_identity() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("hello"), "user").unwrap();
+    c.append_input(new_block_id(), TextPayload::new("hello"), "user")
+        .unwrap();
     let lossless = FramePolicy::default();
     let compacting = FramePolicy {
         window_budget: WindowBudget {
@@ -41,7 +42,7 @@ async fn compaction_projection_identity() {
     };
     let sync_frame = c.frame(RoundId(0));
     let lossless_frame = lossless.materialize(&c, RoundId(0)).await.unwrap();
-    assert_eq!(sync_frame.frame_id, lossless_frame.frame_id);
+    assert_eq!(sync_frame.scope, lossless_frame.scope);
     assert_eq!(
         serde_json::to_string(&sync_frame.model_context.blocks).unwrap(),
         serde_json::to_string(&lossless_frame.model_context.blocks).unwrap()
@@ -51,7 +52,7 @@ async fn compaction_projection_identity() {
         serde_json::to_string(&c.snapshot_blocks()).unwrap()
     );
     let projected = compacting.materialize(&c, RoundId(0)).await.unwrap();
-    assert_eq!(projected.frame_id, sync_frame.frame_id);
+    assert_eq!(projected.scope, sync_frame.scope);
     assert!(projected.model_context.blocks.is_empty());
     assert_eq!(c.snapshot_blocks().len(), 1);
 }

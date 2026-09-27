@@ -7,23 +7,22 @@ mod common;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptNumber, BlockContent,
     CallControl, ContextBlock, DynamicToolSource, ModelInvokeErrorKind, ModelOutput, ModelResponse,
-    ModelStopReason, ModelUsage, ReasoningPayload, SourceError, StoreError, TextPayload, Tool,
-    ToolCallContext, ToolCallId, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
-    ToolResultPayload, ToolResultStatus, Truncation,
+    ModelStopReason, ModelUsage, ProcessorContext, ProcessorError, ReasoningPayload, SourceError,
+    StoreError, TextPayload, Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolDefinition,
+    ToolExecutionError, ToolOutput, ToolResultPayload, ToolResultStatus, Truncation,
 };
 use causa_runtime::{
-    ExecutionOptions, FramePolicy, HookCtx, HookOutcome, RetryPolicy, RunControl, ToolExecutor,
-    ToolOutputLimits, ToolUseHook, TurnInterruption, TurnPolicy, TurnResult, TurnRunOptions,
-    TurnRunner, UnknownOutcomeConfig, UnknownOutcomePolicy, WindowBudget,
+    DeduplicateProcessor, ExecutionOptions, FramePolicy, RetryPolicy, RunControl, ToolExecutor,
+    ToolOutputBudgetProcessor, ToolProcessingChain, TurnInterruption, TurnPolicy, TurnResult,
+    TurnRunOptions, TurnRunner, UnknownOutcomeConfig, UnknownOutcomePolicy, WindowBudget,
 };
 use common::{
     DropAllCompaction, EchoTool, FailTool, RecordingGateway, UnknownStopTool, ctrl, ctx, draft,
-    endturn_output, options_with_limits, runner_with, runner_with_dedup, tooluse_calls_output,
-    tooluse_output,
+    endturn_output, options_with_limits, runner_with, tooluse_calls_output, tooluse_output,
 };
 use serde_json::json;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[tokio::test]
 async fn final_assistant_completes_once() {
@@ -85,7 +84,12 @@ async fn retry_same_frame_only_attempt_increments_and_no_block_on_failure() {
     let rec = gw.recorded();
     assert_eq!(rec.len(), 2);
     assert_eq!(rec[0].invocation_id, rec[1].invocation_id);
-    assert_eq!(rec[0].frame.frame_id, rec[1].frame.frame_id);
+    assert_eq!(rec[0].frame.scope, rec[1].frame.scope);
+    assert_eq!(rec[0].frame.round_id, rec[1].frame.round_id);
+    assert_eq!(
+        rec[0].frame.model_context.blocks.len(),
+        rec[1].frame.model_context.blocks.len()
+    );
     assert_eq!(rec[0].attempt, AttemptNumber(1));
     assert_eq!(rec[1].attempt, AttemptNumber(2));
     // Only one assistant block (no failed attempt block)
@@ -137,18 +141,20 @@ async fn tool_failure_is_observation_not_terminal_and_next_round() {
 #[tokio::test]
 async fn dedup_same_batch_rejected_and_parallel_single_failure_not_abort() {
     let c = ctx("t1");
-    // Two identical echo calls in same batch => one rejected. This is a
-    // test-only dedup hook — TurnRunner::new defaults to passthrough
-    // (no opinion); the host composes filters via the framework layer.
-    let runner = runner_with_dedup(
-        RecordingGateway::scripted(vec![
-            Ok(tooluse_calls_output(
-                "dup",
-                vec![draft("echo", json!({"x":1})), draft("echo", json!({"x":1}))],
-            )),
-            Ok(endturn_output("done")),
-        ]),
-        vec![Arc::new(EchoTool)],
+    // Two identical echo calls in same batch => one rejected by an ordinary pre-processor.
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_calls_output(
+            "dup",
+            vec![draft("echo", json!({"x":1})), draft("echo", json!({"x":1}))],
+        )),
+        Ok(endturn_output("done")),
+    ]);
+    let runner = TurnRunner::with_tool_processors(
+        gateway,
+        Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)])),
+        ToolProcessingChain::builder()
+            .before(Arc::new(DeduplicateProcessor))
+            .build(),
     );
     let cfg = options_with_limits(5, 10);
     let out = runner.run(c, cfg, ctrl()).await;
@@ -181,7 +187,7 @@ async fn unknown_outcome_stop_interrupts() {
 }
 
 #[tokio::test]
-async fn same_input_same_fake_output_same_snapshot() {
+async fn same_input_output_preserves_content_with_fresh_ids() {
     async fn run_once() -> Vec<ContextBlock> {
         let c = ctx("t1");
         let runner = runner_with(
@@ -196,9 +202,27 @@ async fn same_input_same_fake_output_same_snapshot() {
     }
     let a = run_once().await;
     let b = run_once().await;
-    assert_eq!(
-        serde_json::to_string(&a).unwrap(),
-        serde_json::to_string(&b).unwrap()
+    let normalize = |blocks: &[ContextBlock]| {
+        blocks
+            .iter()
+            .map(|block| match &block.content {
+                BlockContent::Parts(parts) => json!({"parts": parts}),
+                BlockContent::ToolCall(call) => {
+                    json!({"tool_name": call.tool_name, "arguments": call.arguments})
+                }
+                BlockContent::ToolResult(result) => json!({
+                    "status": result.status,
+                    "output": result.output.content,
+                    "notes": result.notes,
+                    "media": result.media,
+                }),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(normalize(&a), normalize(&b));
+    assert_ne!(
+        a[0].id, b[0].id,
+        "runtime block IDs are fresh UUIDv7 values"
     );
 }
 
@@ -217,10 +241,11 @@ async fn token_limits_and_artifact_truncation() {
         async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             let big = "a".repeat(1000);
             ToolResultPayload {
-                call_id: ctx.call_id.clone(),
+                call_block_id: ctx.call_block_id,
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!(big)),
                 media: Vec::new(),
+                notes: Vec::new(),
             }
         }
     }
@@ -252,11 +277,16 @@ async fn token_limits_and_artifact_truncation() {
             Ok(vec![])
         }
     }
-    let runner = runner_with(gw, vec![Arc::new(BigTool)]);
-    let mut cfg = options_with_limits(5, 10);
-    cfg.execution.tool_output_limits = ToolOutputLimits { max_tokens: 10 };
-    cfg.execution.artifact_store = Some(Arc::new(MemStore));
-    let out = runner.run(c, cfg, ctrl()).await;
+    let runner = TurnRunner::with_tool_processors(
+        gw,
+        Arc::new(ToolExecutor::from_vec(vec![Arc::new(BigTool)])),
+        ToolProcessingChain::builder()
+            .after(Arc::new(
+                ToolOutputBudgetProcessor::new(10).with_artifact_store(Arc::new(MemStore)),
+            ))
+            .build(),
+    );
+    let out = runner.run(c, options_with_limits(5, 10), ctrl()).await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     // Find truncated output
     let result_block = out
@@ -290,6 +320,66 @@ async fn parent_cancellation_interrupted() {
             cause: TurnInterruption::ExplicitCancellation
         }
     ));
+}
+
+#[tokio::test]
+async fn turn_deadline_notifies_inflight_tool_and_keeps_deadline_cause() {
+    struct ParkUntilCancelled(Arc<tokio::sync::Notify>);
+    #[async_trait::async_trait]
+    impl Tool for ParkUntilCancelled {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "park".into(),
+                description: "park until cancelled".into(),
+                parameters: json!({"type":"object"}),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _ctx: &ToolCallContext,
+            control: &CallControl,
+        ) -> ToolResultPayload {
+            let token = control.cancellation_token().clone();
+            let notified = self.0.clone();
+            tokio::spawn(async move {
+                token.cancelled().await;
+                notified.notify_one();
+            });
+            std::future::pending().await
+        }
+    }
+
+    let notified = Arc::new(tokio::sync::Notify::new());
+    let gateway = RecordingGateway::scripted(vec![Ok(tooluse_output("", "park", json!({})))]);
+    let runner = runner_with(
+        gateway,
+        vec![Arc::new(ParkUntilCancelled(notified.clone()))],
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+    let out = runner
+        .run(
+            ctx("deadline-tool"),
+            TurnRunOptions::default(),
+            RunControl::new(tokio_util::sync::CancellationToken::new(), Some(deadline)),
+        )
+        .await;
+    assert!(matches!(
+        out.result,
+        TurnResult::Interrupted {
+            cause: TurnInterruption::TurnDeadlineExceeded
+        }
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(1), notified.notified())
+        .await
+        .expect("in-flight tool receives batch cancellation");
+    let batch = out
+        .uncommitted_tool_batch
+        .expect("deadline keeps current U");
+    assert_eq!(
+        batch.results()[0].result().unwrap().1.status,
+        ToolResultStatus::UnknownOutcome
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +484,7 @@ async fn cross_batch_identical_call_does_not_collide() {
         .blocks()
         .iter()
         .filter_map(|b| match &b.content {
-            BlockContent::ToolCall(tc) => Some(tc.call_id.clone()),
+            BlockContent::ToolCall(_) => Some(b.id),
             _ => None,
         })
         .collect();
@@ -456,10 +546,11 @@ async fn unknown_outcome_continue_continues_turn() {
         }
         async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             ToolResultPayload {
-                call_id: ctx.call_id.clone(),
+                call_block_id: ctx.call_block_id,
                 status: ToolResultStatus::UnknownOutcome,
                 output: ToolOutput::new(json!({"unk": true})),
                 media: Vec::new(),
+                notes: Vec::new(),
             }
         }
     }
@@ -622,10 +713,11 @@ async fn completion_order_reflects_real_completion() {
         async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             ToolResultPayload {
-                call_id: ctx.call_id.clone(),
+                call_block_id: ctx.call_block_id,
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!("slow")),
                 media: Vec::new(),
+                notes: Vec::new(),
             }
         }
     }
@@ -645,11 +737,11 @@ async fn completion_order_reflects_real_completion() {
     let batch = out.trace.rounds[0].tool_batch.as_ref().unwrap();
     assert_eq!(batch.calls.len(), 2);
     assert_eq!(batch.completion_order.len(), 2);
-    // results are committed in original order (slow first)…
+    // Trace calls are reported in declaration order…
     assert_eq!(batch.calls[0].tool_name, "slow");
     assert_eq!(batch.calls[1].tool_name, "echo");
     // …but completion_order starts with the fast echo call
-    let fast_id = &batch.calls[1].call_id;
+    let fast_id = &batch.calls[1].call_block_id;
     assert_eq!(&batch.completion_order[0], fast_id);
     assert!(batch.calls[1].duration_ms < batch.calls[0].duration_ms);
 }
@@ -687,7 +779,12 @@ async fn max_tool_calls_interrupt_records_total() {
 #[tokio::test]
 async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     let mut c = ctx("t1");
-    c.append_input(TextPayload::new("hello"), "user").unwrap();
+    c.append_input(
+        causa_runtime::new_block_id(),
+        TextPayload::new("hello"),
+        "user",
+    )
+    .unwrap();
     // any non-empty content trips the trigger when the host
     // wires a real `TokenCounter` -- an absent counter estimates 0
     // and never trips the budget.
@@ -730,170 +827,6 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     ));
 }
 
-// ---- artifact failure and loss-free fidelity ----
-
-struct FailingStore;
-#[async_trait::async_trait]
-impl ArtifactStore for FailingStore {
-    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
-        Err(StoreError::Persist("disk full".into()))
-    }
-    async fn read(
-        &self,
-        _id: &str,
-        _range: Option<std::ops::Range<u64>>,
-    ) -> Result<Vec<u8>, StoreError> {
-        Err(StoreError::Read("missing".into()))
-    }
-}
-
-#[tokio::test]
-async fn artifact_store_failure_still_truncates_without_artifact() {
-    let c = ctx("t1");
-    let big = "x".repeat(400);
-    let gw = RecordingGateway::scripted(vec![
-        Ok(tooluse_output("big", "echo", json!({"pad": big}))),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = runner_with(gw, vec![Arc::new(EchoTool)]);
-    let mut cfg = options_with_limits(5, 10);
-    cfg.execution.tool_output_limits = ToolOutputLimits { max_tokens: 10 };
-    cfg.execution.artifact_store = Some(Arc::new(FailingStore));
-    let out = runner.run(c, cfg, ctrl()).await;
-    assert!(matches!(out.result, TurnResult::Completed { .. }));
-    let result_block = out
-        .context
-        .blocks()
-        .iter()
-        .find(|b| {
-            matches!(
-                &b.content,
-                BlockContent::ToolResult(r) if r.output.truncation == Truncation::Middle
-            )
-        })
-        .expect("truncated");
-    if let BlockContent::ToolResult(r) = &result_block.content {
-        // persist failed -> observation degrades to head+tail, no artifact ref
-        assert!(r.output.artifact.is_none());
-        assert!(r.output.is_truncated());
-    } else {
-        panic!()
-    }
-}
-
-// ---- truncation budget -----------------------------------------------------------
-//
-// The retained head+tail must be sized against the DECLARED limit — notice
-// and JSON-string wrapping included — so the committed content re-estimates
-// at or under `max_tokens`; a limit smaller than the notice itself leaves
-// the notice as the defined floor.
-
-struct RecordingStore;
-#[async_trait::async_trait]
-impl ArtifactStore for RecordingStore {
-    async fn persist(&self, data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
-        Ok(ArtifactRef {
-            id: blake3::hash(data).to_hex().to_string()[..8].into(),
-            size_bytes: data.len(),
-            kind: ArtifactKind::FullOutput,
-            persisted: true,
-        })
-    }
-    async fn read(
-        &self,
-        _id: &str,
-        _range: Option<std::ops::Range<u64>>,
-    ) -> Result<Vec<u8>, StoreError> {
-        Ok(vec![])
-    }
-}
-
-/// Echo a payload straight through the executor under the given output
-/// limit; returns the result fact.
-async fn truncated_echo(
-    arguments: serde_json::Value,
-    max_tokens: usize,
-    store: Option<Arc<dyn ArtifactStore>>,
-) -> ToolResultPayload {
-    let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
-    executor
-        .execute_with_limits(
-            ToolCallPayload {
-                call_id: ToolCallId("probe".into()),
-                tool_name: "echo".into(),
-                arguments,
-            },
-            CallControl::new(tokio_util::sync::CancellationToken::new(), None),
-            store,
-            None,
-            ToolOutputLimits { max_tokens },
-        )
-        .await
-}
-
-/// Test mirror of the driver's documented fallback opinion (serialized JSON
-/// length / 4, single library home in `defaults`) — used to assert what the
-/// `None`-counter fallback would estimate, without reaching into a private
-/// module.
-fn fallback_estimate(value: &serde_json::Value) -> usize {
-    serde_json::to_string(value)
-        .map(|s| s.len() / 4)
-        .unwrap_or(0)
-}
-
-#[tokio::test]
-async fn truncation_reduces_output_and_reestimates_within_the_limit() {
-    // A 4k-byte observation under a small limit must shrink, not grow;
-    // head+tail covering the whole original would grow it.
-    let original = json!({"echo": {"text": "a".repeat(4000)}});
-    let before = serde_json::to_string(&original).unwrap().len();
-    let result = truncated_echo(json!({"text": "a".repeat(4000)}), 100, None).await;
-    assert_eq!(result.output.truncation, Truncation::Middle);
-    let after = serde_json::to_string(&result.output.content).unwrap().len();
-    assert!(
-        after < before,
-        "truncation grew output: {before} -> {after} bytes"
-    );
-    assert!(
-        fallback_estimate(&result.output.content) <= 100,
-        "truncated output re-estimates above the declared limit"
-    );
-}
-
-#[tokio::test]
-async fn truncation_holds_for_utf8_and_artifact_spill() {
-    // Multibyte payload: the head/tail cuts must respect char boundaries
-    // (no panic), and the budget must hold with the artifact notice too.
-    let result = truncated_echo(
-        json!({"text": "中文内容".repeat(500)}),
-        100,
-        Some(Arc::new(RecordingStore)),
-    )
-    .await;
-    assert_eq!(result.output.truncation, Truncation::Middle);
-    assert!(result.output.artifact.is_some());
-    let text = result
-        .output
-        .content
-        .as_str()
-        .expect("truncated content is a JSON string");
-    assert!(text.contains("中文"), "kept text is not split mid-char");
-    assert!(fallback_estimate(&result.output.content) <= 100);
-}
-
-#[tokio::test]
-async fn tiny_budget_leaves_the_notice_as_the_floor() {
-    // 10 tokens cannot even hold the notice: the defined floor is the
-    // notice alone — never the untruncated payload.
-    let result = truncated_echo(json!({"text": "a".repeat(4000)}), 10, None).await;
-    let text = result.output.content.as_str().unwrap();
-    assert!(text.starts_with("\n...[truncated:"));
-    assert!(
-        !text.contains("aaaa"),
-        "tiny budget still leaked the payload: {text}"
-    );
-}
-
 #[tokio::test]
 async fn completed_output_carries_reasoning_and_usage_unchanged() {
     // reasoning signature + rich usage survive the driver losslessly
@@ -930,29 +863,31 @@ async fn completed_output_carries_reasoning_and_usage_unchanged() {
 }
 
 #[tokio::test]
-async fn hook_that_drops_a_call_interrupts_as_invariant_violation() {
-    // Batch completeness is runner policy in the normal dispatch path too:
-    // a hook that silently drops a call (neither executes nor rejects it)
-    // would leave the committed call block unanswered forever.
-    struct DropEverything;
+async fn processor_failure_returns_uncommitted_batch() {
+    struct FailingProcessor;
     #[async_trait::async_trait]
-    impl ToolUseHook for DropEverything {
-        async fn apply(&self, _calls: Vec<ToolCallPayload>, _ctx: &HookCtx<'_>) -> HookOutcome {
-            HookOutcome {
-                to_execute: vec![],
-                rejected: vec![],
-                unknown_decisions: Vec::new(),
-            }
+    impl ToolBatchProcessor for FailingProcessor {
+        async fn process(
+            &self,
+            batch: &mut ToolBatch,
+            _ctx: &ProcessorContext<'_>,
+        ) -> Result<(), ProcessorError> {
+            batch.calls_mut()[0].push_note(TextPayload::new("kept on failure"));
+            Err(ProcessorError::Failed("test failure".into()))
         }
     }
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_output("call echo", "echo", json!({"a": 1}))),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = TurnRunner::with_hook(
+
+    let gateway = RecordingGateway::scripted(vec![Ok(tooluse_output(
+        "call echo",
+        "echo",
+        json!({"a": 1}),
+    ))]);
+    let runner = TurnRunner::with_tool_processors(
         gateway,
         Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)])),
-        Arc::new(DropEverything),
+        ToolProcessingChain::builder()
+            .before(Arc::new(FailingProcessor))
+            .build(),
     );
     let out = runner
         .run(ctx("t1"), options_with_limits(5, 10), ctrl())
@@ -960,15 +895,244 @@ async fn hook_that_drops_a_call_interrupts_as_invariant_violation() {
     assert!(matches!(
         out.result,
         TurnResult::Interrupted {
-            cause: TurnInterruption::RunnerInvariantViolation { .. }
+            cause: TurnInterruption::ProcessorFailed { .. }
         }
     ));
+    let batch = out.uncommitted_tool_batch.expect("failure batch retained");
+    assert_eq!(batch.completed_len(), 0);
+    assert_eq!(batch.calls()[0].call().result_notes[0].0, "kept on failure");
     assert!(
         !out.context
             .blocks()
             .iter()
-            .any(|b| matches!(b.content, BlockContent::ToolResult(_))),
-        "the dropped call must not produce a result"
+            .any(|block| matches!(block.content, BlockContent::ToolResult(_)))
+    );
+}
+
+#[tokio::test]
+async fn preprocessor_error_preserves_mutations_for_explicit_rebuild() {
+    struct MutateRejectThenFail;
+    #[async_trait::async_trait]
+    impl ToolBatchProcessor for MutateRejectThenFail {
+        async fn process(
+            &self,
+            batch: &mut ToolBatch,
+            _ctx: &ProcessorContext<'_>,
+        ) -> Result<(), ProcessorError> {
+            batch.calls_mut()[0]
+                .input_mut()
+                .expect("pending call input")
+                .arguments["rewritten"] = json!(true);
+            batch.calls_mut()[0].push_note(TextPayload::new("preflight note"));
+
+            batch.calls_mut()[1].push_note(TextPayload::new("rejection note"));
+            let rejected_call_id = batch.calls()[1].call().call_block_id;
+            batch
+                .resolve_at(
+                    1,
+                    causa_runtime::new_block_id(),
+                    ToolResultPayload {
+                        call_block_id: rejected_call_id,
+                        status: ToolResultStatus::Rejected,
+                        output: ToolOutput::new(json!("rejected during preflight")),
+                        media: Vec::new(),
+                        notes: Vec::new(),
+                    },
+                )
+                .expect("the second declaration is pending");
+            Err(ProcessorError::Failed(
+                "preflight failed after edits".into(),
+            ))
+        }
+    }
+
+    struct CountTool(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Tool for CountTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "count".into(),
+                description: "counts calls".into(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        async fn execute(
+            &self,
+            call: &ToolCallContext,
+            _control: &CallControl,
+        ) -> ToolResultPayload {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            ToolResultPayload {
+                call_block_id: call.call_block_id,
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!("executed")),
+                media: Vec::new(),
+                notes: Vec::new(),
+            }
+        }
+    }
+
+    struct CountProcessor(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl ToolBatchProcessor for CountProcessor {
+        async fn process(
+            &self,
+            _batch: &mut ToolBatch,
+            _ctx: &ProcessorContext<'_>,
+        ) -> Result<(), ProcessorError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let tool_calls = vec![
+        draft("count", json!({"item": 1})),
+        draft("count", json!({"item": 2})),
+    ];
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_calls_output("", tool_calls.clone())),
+        Ok(endturn_output("must not be requested")),
+    ]);
+    let tool_invocations = Arc::new(AtomicUsize::new(0));
+    let later_processors = Arc::new(AtomicUsize::new(0));
+    let failing = Arc::new(MutateRejectThenFail);
+    let runner = TurnRunner::with_tool_processors(
+        gateway.clone(),
+        Arc::new(ToolExecutor::from_vec(vec![Arc::new(CountTool(
+            tool_invocations.clone(),
+        ))])),
+        ToolProcessingChain::builder()
+            .before(failing.clone())
+            .before(Arc::new(CountProcessor(later_processors.clone())))
+            .after(Arc::new(CountProcessor(later_processors.clone())))
+            .build(),
+    );
+
+    let out = runner
+        .run(ctx("preflight-rebuild"), options_with_limits(5, 10), ctrl())
+        .await;
+    assert!(matches!(
+        out.result,
+        TurnResult::Interrupted {
+            cause: TurnInterruption::ProcessorFailed { .. }
+        }
+    ));
+    assert_eq!(gateway.recorded().len(), 1, "no next model round starts");
+    assert_eq!(
+        tool_invocations.load(Ordering::SeqCst),
+        0,
+        "executor is skipped"
+    );
+    assert_eq!(
+        later_processors.load(Ordering::SeqCst),
+        0,
+        "later stages are skipped"
+    );
+
+    let uncommitted = out
+        .uncommitted_tool_batch
+        .expect("the edited batch is returned to the caller");
+    assert_eq!(uncommitted.completed_len(), 1);
+    let rejected = uncommitted.results()[0]
+        .result()
+        .expect("second declaration has its rejection result")
+        .1;
+    assert_eq!(rejected.status, ToolResultStatus::Rejected);
+    assert_eq!(rejected.notes, [TextPayload::new("rejection note")]);
+    let first = &uncommitted.calls()[0];
+    assert_eq!(
+        first.call().input.arguments,
+        json!({"item": 1, "rewritten": true})
+    );
+    assert_eq!(
+        first.call().result_notes,
+        [TextPayload::new("preflight note")]
+    );
+
+    let declarations = out
+        .context
+        .blocks()
+        .iter()
+        .filter_map(|block| match &block.content {
+            BlockContent::ToolCall(payload) => Some((block.id, payload.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(declarations.len(), 2);
+    let returned_ids = uncommitted.declaration_ids();
+    assert_eq!(returned_ids.len(), declarations.len());
+    assert!(declarations.iter().all(|(id, _)| returned_ids.contains(id)));
+    assert_eq!(
+        declarations
+            .iter()
+            .map(|(_, call)| (&call.tool_name, &call.arguments))
+            .collect::<Vec<_>>(),
+        tool_calls
+            .iter()
+            .map(|call| (&call.tool_name, &call.arguments))
+            .collect::<Vec<_>>(),
+        "preflight edits do not rewrite committed model declarations"
+    );
+    assert!(
+        out.context
+            .blocks()
+            .iter()
+            .all(|block| !matches!(block.content, BlockContent::ToolResult(_)))
+    );
+
+    // Recovery is explicit: rebuild from the original committed declarations,
+    // then invoke the processor again. The original IDs and clean notes prove
+    // no hidden continuation state or duplicate context registration exists.
+    let rebuilt = ToolBatch::new(
+        declarations
+            .iter()
+            .map(|(id, payload)| ToolCallContext::from_declaration(*id, payload))
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(
+        rebuilt.declaration_ids(),
+        declarations.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        "rebuilding from context restores declaration order"
+    );
+    assert!(
+        rebuilt
+            .calls()
+            .iter()
+            .all(|entry| entry.call().result_notes.is_empty())
+    );
+
+    let turn_id = ctx("preflight-rebuild").turn_id();
+    let ids = rebuilt.declaration_ids();
+    let recovery_control = CallControl::new(tokio_util::sync::CancellationToken::new(), None);
+    let recovery_context = ProcessorContext {
+        conversation_id: None,
+        turn_id: &turn_id,
+        round_id: causa_kernel::RoundId(0),
+        declaration_order: &ids,
+        control: &recovery_control,
+    };
+    let mut retry = rebuilt;
+    assert!(
+        failing
+            .process(&mut retry, &recovery_context)
+            .await
+            .is_err()
+    );
+    assert_eq!(retry.completed_len(), 1);
+    assert_eq!(
+        retry.calls()[0].call().result_notes,
+        [TextPayload::new("preflight note")]
+    );
+    assert_eq!(
+        retry.results()[0].result().unwrap().1.notes,
+        [TextPayload::new("rejection note")]
+    );
+    assert_eq!(
+        out.context.blocks().len(),
+        2,
+        "explicit processor retry does not register duplicate context blocks"
     );
 }
 
@@ -999,15 +1163,16 @@ async fn dynamic_catalog_refreshes_between_model_rounds() {
         }
         async fn invoke(
             &self,
-            call: &ToolCallPayload,
+            call: &ToolCallContext,
             _control: &CallControl,
         ) -> Result<ToolResultPayload, ToolExecutionError> {
             self.version.store(1, Ordering::SeqCst);
             Ok(ToolResultPayload {
-                call_id: call.call_id.clone(),
+                call_block_id: call.call_block_id,
                 status: ToolResultStatus::Succeeded,
                 output: ToolOutput::new(json!("updated")),
                 media: Vec::new(),
+                notes: Vec::new(),
             })
         }
     }
@@ -1030,54 +1195,5 @@ async fn dynamic_catalog_refreshes_between_model_rounds() {
     assert_eq!(
         recorded[1].tool_surface.definitions[0].name, "tool_v1",
         "second round ran on a stale catalog"
-    );
-}
-
-#[tokio::test]
-async fn truncation_never_touches_result_media_references() {
-    // media travels beside the output content; the textual truncator
-    // shrinks the content and must leave the references alone.
-    struct ImagingTool;
-    #[async_trait::async_trait]
-    impl Tool for ImagingTool {
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: "imaging".into(),
-                description: "imaging".into(),
-                parameters: json!({"type": "object"}),
-            }
-        }
-        async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
-            ToolResultPayload {
-                call_id: ctx.call_id.clone(),
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!({"chart": "x".repeat(4000)})),
-                media: vec![causa_kernel::MediaRef::new("image/png", "asset-1")],
-            }
-        }
-    }
-    let executor = ToolExecutor::from_vec(vec![Arc::new(ImagingTool)]);
-    let outcome = executor
-        .execute_with_limits(
-            ToolCallPayload {
-                call_id: ToolCallId("probe".into()),
-                tool_name: "imaging".into(),
-                arguments: json!({}),
-            },
-            CallControl::new(tokio_util::sync::CancellationToken::new(), None),
-            None,
-            None,
-            ToolOutputLimits { max_tokens: 50 },
-        )
-        .await;
-    assert_eq!(outcome.output.truncation, Truncation::Middle);
-    assert!(
-        outcome.output.content.to_string().len() < 4000,
-        "content must shrink"
-    );
-    assert_eq!(
-        outcome.media,
-        vec![causa_kernel::MediaRef::new("image/png", "asset-1")],
-        "media references survive truncation untouched"
     );
 }

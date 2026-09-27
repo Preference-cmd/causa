@@ -50,10 +50,11 @@ impl Tool for ReadTool {
     }
     async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
         ToolResultPayload {
-            call_id: ctx.call_id.clone(),
+            call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!("file-a")),
             media: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
@@ -98,7 +99,11 @@ async fn run_in_conversation_completes_two_tool_round_trips_over_http() {
     state
         .begin_turn(TurnId::new("t1"))
         .unwrap()
-        .append_input(TextPayload::new("find files"), "user")
+        .append_input(
+            causa_runtime::new_block_id(),
+            TextPayload::new("find files"),
+            "user",
+        )
         .unwrap();
 
     let options = TurnRunOptions {

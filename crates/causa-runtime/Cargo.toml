@@ -1,7 +1,7 @@
 [package]
 name = "causa-runtime"
 version.workspace = true
-description = "Causa runtime — optional components: execution stack (turn loop, dispatch, streaming, pause/resume, session)"
+description = "Causa runtime — optional components: turn execution, tool processing, streaming, sessions"
 repository.workspace = true
 readme = "../../README.md"
 keywords = ["agent", "llm", "tools", "streaming", "driver"]
@@ -21,6 +21,7 @@ tokio-util = { workspace = true }
 futures-util = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 
 [dev-dependencies]
 # `fs` is example-only (FsConversationStore reference store): the lib's
