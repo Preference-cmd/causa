@@ -91,7 +91,7 @@ impl ModelGateway for ResearchGateway {
             .model_context
             .blocks
             .iter()
-            .any(|block| matches!(block.content, BlockContent::ToolResult(_)));
+            .any(|block| matches!(block.content(), BlockContent::ToolResult(_)));
         Ok(ModelOutput {
             response: ModelResponse {
                 text: TextPayload::new(if has_results {
@@ -151,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("turn did not complete: {:?}", outcome.result).into());
     }
     for block in outcome.context.blocks() {
-        if let BlockContent::ToolResult(result) = &block.content {
+        if let BlockContent::ToolResult(result) = block.content() {
             println!(
                 "{:?}: {} — {:?}",
                 result.status, result.output.content, result.notes

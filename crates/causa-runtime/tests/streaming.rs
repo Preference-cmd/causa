@@ -61,7 +61,7 @@ async fn streaming_run_completes_and_observes_text_deltas() {
     let blocks = out.context.blocks();
     assert_eq!(blocks.len(), 2);
     assert!(matches!(
-        &blocks[1].content,
+        &blocks[1].content(),
         causa_kernel::BlockContent::Parts(parts)
             if matches!(
                 parts.as_slice(),

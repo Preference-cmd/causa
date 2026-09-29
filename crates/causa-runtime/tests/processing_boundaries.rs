@@ -113,7 +113,7 @@ fn assert_no_committed_results(outcome: &TurnOutcome) {
             .context
             .blocks()
             .iter()
-            .any(|block| matches!(block.content, BlockContent::ToolResult(_)))
+            .any(|block| matches!(block.content(), BlockContent::ToolResult(_)))
     );
 }
 struct CancelProcessor;

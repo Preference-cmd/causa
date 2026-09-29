@@ -20,7 +20,7 @@ use crate::context::tool_data::ToolResultPayload;
 
 /// Envelope provenance. Fields are serde-additive so legacy snapshots
 /// without them still deserialize.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockMeta {
     /// Provider-issued identifier (e.g. upstream call id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,14 +53,40 @@ pub struct ToolCallPayload {
 }
 
 /// A typed fact. Three axes: identity, content, envelope provenance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextBlock {
     /// Identity axis: the UUID assigned to this fact block.
-    pub id: BlockId,
+    id: BlockId,
     /// Content axis: the typed fact payload.
-    pub content: BlockContent,
+    content: BlockContent,
     /// Envelope provenance axis; serde-additive, defaulting when absent.
-    pub meta: BlockMeta,
+    meta: BlockMeta,
+}
+
+impl ContextBlock {
+    /// Creates a context fact with an explicit identity, content, and metadata.
+    ///
+    /// Callers that change a block's content or metadata must supply a new
+    /// identity. Construction does not validate identity reuse against any
+    /// other block or context.
+    pub fn new(id: BlockId, content: BlockContent, meta: BlockMeta) -> Self {
+        Self { id, content, meta }
+    }
+
+    /// Returns this block's stable identity.
+    pub const fn id(&self) -> BlockId {
+        self.id
+    }
+
+    /// Returns this block's content by shared reference.
+    pub const fn content(&self) -> &BlockContent {
+        &self.content
+    }
+
+    /// Returns this block's metadata by shared reference.
+    pub const fn meta(&self) -> &BlockMeta {
+        &self.meta
+    }
 }
 
 /// A media fact: a cheap, durable reference. Bytes never enter facts —
@@ -87,7 +113,7 @@ impl MediaRef {
 
 /// The content shape of a block. Three shapes: one message's ordered
 /// parts (any role), a tool call, a tool result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", content = "value", rename_all = "snake_case")]
 pub enum BlockContent {
     /// One logical message's ordered content parts (text and media

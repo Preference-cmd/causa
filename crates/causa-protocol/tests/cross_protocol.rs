@@ -264,7 +264,7 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         .model_context
         .blocks
         .iter()
-        .find_map(|block| match &block.content {
+        .find_map(|block| match block.content() {
             causa_kernel::BlockContent::ToolResult(result) => Some(result),
             _ => None,
         })

@@ -79,7 +79,7 @@ async fn stop_policy_records_result_then_interrupts_without_another_round() {
         .context
         .blocks()
         .iter()
-        .find_map(|block| match &block.content {
+        .find_map(|block| match block.content() {
             BlockContent::ToolResult(result) => Some(result),
             _ => None,
         })

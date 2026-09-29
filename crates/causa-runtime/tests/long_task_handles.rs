@@ -258,8 +258,8 @@ fn start_id_and_results(
     let mut declarations = Vec::new();
     let mut results = Vec::new();
     for block in outcome.context.blocks() {
-        match &block.content {
-            BlockContent::ToolCall(_) => declarations.push(block.id),
+        match block.content() {
+            BlockContent::ToolCall(_) => declarations.push(block.id()),
             BlockContent::ToolResult(result) => results.push(result.clone()),
             _ => {}
         }

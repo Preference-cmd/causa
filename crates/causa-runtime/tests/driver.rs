@@ -54,11 +54,11 @@ async fn tool_calls_drive_next_frame_and_causality() {
     let blocks = out.context.blocks();
     let pos_call = blocks
         .iter()
-        .position(|b| matches!(b.content, BlockContent::ToolCall(_)))
+        .position(|b| matches!(b.content(), BlockContent::ToolCall(_)))
         .unwrap();
     let pos_result = blocks
         .iter()
-        .position(|b| matches!(b.content, BlockContent::ToolResult(_)))
+        .position(|b| matches!(b.content(), BlockContent::ToolResult(_)))
         .unwrap();
     assert!(pos_result > pos_call);
 }
@@ -205,7 +205,7 @@ async fn same_input_output_preserves_content_with_fresh_ids() {
     let normalize = |blocks: &[ContextBlock]| {
         blocks
             .iter()
-            .map(|block| match &block.content {
+            .map(|block| match block.content() {
                 BlockContent::Parts(parts) => json!({"parts": parts}),
                 BlockContent::ToolCall(call) => {
                     json!({"tool_name": call.tool_name, "arguments": call.arguments})
@@ -221,7 +221,8 @@ async fn same_input_output_preserves_content_with_fresh_ids() {
     };
     assert_eq!(normalize(&a), normalize(&b));
     assert_ne!(
-        a[0].id, b[0].id,
+        a[0].id(),
+        b[0].id(),
         "runtime block IDs are fresh UUIDv7 values"
     );
 }
@@ -294,10 +295,10 @@ async fn token_limits_and_artifact_truncation() {
         .blocks()
         .iter()
         .find(|b| {
-            matches!(&b.content, BlockContent::ToolResult(r) if r.output.truncation == Truncation::Middle)
+            matches!(b.content(), BlockContent::ToolResult(r) if r.output.truncation == Truncation::Middle)
         })
         .expect("truncated");
-    if let BlockContent::ToolResult(r) = &result_block.content {
+    if let BlockContent::ToolResult(r) = result_block.content() {
         assert!(r.output.artifact.is_some());
     } else {
         panic!()
@@ -483,8 +484,8 @@ async fn cross_batch_identical_call_does_not_collide() {
         .context
         .blocks()
         .iter()
-        .filter_map(|b| match &b.content {
-            BlockContent::ToolCall(_) => Some(b.id),
+        .filter_map(|b| match b.content() {
+            BlockContent::ToolCall(_) => Some(b.id()),
             _ => None,
         })
         .collect();
@@ -576,7 +577,7 @@ async fn unknown_outcome_continue_continues_turn() {
     let out = runner.run(c, cfg, ctrl()).await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     assert!(out.context.blocks().iter().any(
-        |b| matches!(&b.content, BlockContent::ToolResult(r) if r.status == ToolResultStatus::UnknownOutcome)
+        |b| matches!(b.content(), BlockContent::ToolResult(r) if r.status == ToolResultStatus::UnknownOutcome)
     ));
 }
 
@@ -687,7 +688,7 @@ async fn parallel_batch_partial_failure_does_not_abort() {
         .context
         .blocks()
         .iter()
-        .filter_map(|b| match &b.content {
+        .filter_map(|b| match b.content() {
             BlockContent::ToolResult(r) => Some(r.status.clone()),
             _ => None,
         })
@@ -822,7 +823,7 @@ async fn frame_policy_from_options_shapes_projection_without_touching_facts() {
     // back; blocks are still [input text, response text]
     assert_eq!(out.context.blocks().len(), 2);
     assert!(matches!(
-        out.context.blocks()[0].content,
+        out.context.blocks()[0].content(),
         BlockContent::Parts(_)
     ));
 }
@@ -905,7 +906,7 @@ async fn processor_failure_returns_uncommitted_batch() {
         !out.context
             .blocks()
             .iter()
-            .any(|block| matches!(block.content, BlockContent::ToolResult(_)))
+            .any(|block| matches!(block.content(), BlockContent::ToolResult(_)))
     );
 }
 
@@ -1054,8 +1055,8 @@ async fn preprocessor_error_preserves_mutations_for_explicit_rebuild() {
         .context
         .blocks()
         .iter()
-        .filter_map(|block| match &block.content {
-            BlockContent::ToolCall(payload) => Some((block.id, payload.clone())),
+        .filter_map(|block| match block.content() {
+            BlockContent::ToolCall(payload) => Some((block.id(), payload.clone())),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1078,7 +1079,7 @@ async fn preprocessor_error_preserves_mutations_for_explicit_rebuild() {
         out.context
             .blocks()
             .iter()
-            .all(|block| !matches!(block.content, BlockContent::ToolResult(_)))
+            .all(|block| !matches!(block.content(), BlockContent::ToolResult(_)))
     );
 
     // Recovery is explicit: rebuild from the original committed declarations,

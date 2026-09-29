@@ -157,7 +157,7 @@ async fn main() {
         .model_context
         .blocks
         .iter()
-        .filter_map(|b| match &b.content {
+        .filter_map(|b| match b.content() {
             BlockContent::ToolResult(r) => r.media.first().cloned(),
             _ => None,
         })

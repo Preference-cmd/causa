@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn tool_round_trip_pairing_and_consecutive_merge() {
-        let fallback_id = call(2, "kc2", None, "list", json!({})).id.0.to_string();
+        let fallback_id = call(2, "kc2", None, "list", json!({})).id().0.to_string();
         let f = frame(vec![
             text(0, "reading now", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn unpaired_tool_result_falls_back_to_declaration_uuid() {
         let fallback_id = call(0, "orphan", None, "ignored", json!({}))
-            .id
+            .id()
             .0
             .to_string();
         let f = frame(vec![result(

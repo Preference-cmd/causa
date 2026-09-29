@@ -346,8 +346,8 @@ fn call_index(context: &TurnContext) -> HashMap<causa_kernel::BlockId, ToolCallP
     context
         .blocks()
         .iter()
-        .filter_map(|b| match &b.content {
-            BlockContent::ToolCall(call) => Some((b.id, call.clone())),
+        .filter_map(|b| match b.content() {
+            BlockContent::ToolCall(call) => Some((b.id(), call.clone())),
             _ => None,
         })
         .collect()

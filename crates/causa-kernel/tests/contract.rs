@@ -33,11 +33,11 @@ async fn append_input_and_frame_order() {
     assert_eq!(f.model_context.blocks.len(), 2);
     // Order preserved.
     assert!(matches!(
-        f.model_context.blocks[0].content,
+        f.model_context.blocks[0].content(),
         BlockContent::Parts(_)
     ));
     assert!(matches!(
-        f.model_context.blocks[1].content,
+        f.model_context.blocks[1].content(),
         BlockContent::Parts(_)
     ));
     // Sealed turn rejects further append.
@@ -203,11 +203,7 @@ async fn append_model_output_rejects_invalid_outputs() {
 #[tokio::test]
 async fn from_validated_blocks_rejects_corrupt_state() {
     fn block(id: BlockId, content: BlockContent) -> ContextBlock {
-        ContextBlock {
-            id,
-            content,
-            meta: BlockMeta::default(),
-        }
+        ContextBlock::new(id, content, BlockMeta::default())
     }
     let duplicate = common::block_id();
     let blocks = vec![
@@ -279,22 +275,22 @@ fn provider_call_id_passes_through_draft_to_persisted_block() {
     let call_blocks: Vec<&ContextBlock> = c
         .blocks()
         .iter()
-        .filter(|b| matches!(b.content, BlockContent::ToolCall(_)))
+        .filter(|b| matches!(b.content(), BlockContent::ToolCall(_)))
         .collect();
     assert_eq!(applied.block_ids.len(), 3);
     assert_eq!(call_blocks.len(), 2);
     // provider_call_id rides on envelope BlockMeta.
     assert_eq!(
-        call_blocks[0].meta.provider_call_id.as_deref(),
+        call_blocks[0].meta().provider_call_id.as_deref(),
         Some("call_provider_1")
     );
-    assert_eq!(call_blocks[1].meta.provider_call_id, None);
+    assert_eq!(call_blocks[1].meta().provider_call_id, None);
     let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
     let blocks: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
     let restored: Vec<Option<String>> = blocks
         .iter()
-        .filter(|b| matches!(b.content, BlockContent::ToolCall(_)))
-        .map(|b| b.meta.provider_call_id.clone())
+        .filter(|b| matches!(b.content(), BlockContent::ToolCall(_)))
+        .map(|b| b.meta().provider_call_id.clone())
         .collect();
     assert_eq!(restored, vec![Some("call_provider_1".into()), None]);
 }
@@ -454,31 +450,29 @@ async fn lossless_frame_is_a_pure_function_of_facts() {
 #[test]
 fn content_is_first_class_with_three_shapes() {
     // Three content shapes: Text, ToolCall, ToolResult. No kind field.
-    let make = |content: BlockContent| ContextBlock {
-        id: common::block_id(),
-        content,
-        meta: BlockMeta::default(),
+    let make = |content: BlockContent| {
+        ContextBlock::new(common::block_id(), content, BlockMeta::default())
     };
 
     let text = make(BlockContent::Parts(vec![ContentPart::Text(
         TextPayload::new("any role"),
     )]));
-    assert!(matches!(text.content, BlockContent::Parts(_)));
+    assert!(matches!(text.content(), BlockContent::Parts(_)));
 
     let call = make(BlockContent::ToolCall(ToolCallPayload {
         tool_name: "echo".into(),
         arguments: json!({}),
     }));
-    assert!(matches!(call.content, BlockContent::ToolCall(_)));
+    assert!(matches!(call.content(), BlockContent::ToolCall(_)));
 
     let result = make(BlockContent::ToolResult(ToolResultPayload {
-        call_block_id: call.id,
+        call_block_id: call.id(),
         status: ToolResultStatus::Succeeded,
         output: ToolOutput::new(json!({})),
         media: Vec::new(),
         notes: Vec::new(),
     }));
-    assert!(matches!(result.content, BlockContent::ToolResult(_)));
+    assert!(matches!(result.content(), BlockContent::ToolResult(_)));
 }
 
 #[test]
@@ -504,8 +498,8 @@ fn context_block_serde_format_is_flat_with_content() {
     // Round-trip works through the root facade.
     let restored: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
     assert_eq!(restored.len(), 2);
-    assert!(matches!(restored[0].content, BlockContent::Parts(_)));
-    assert!(matches!(restored[1].content, BlockContent::Parts(_)));
+    assert!(matches!(restored[0].content(), BlockContent::Parts(_)));
+    assert!(matches!(restored[1].content(), BlockContent::Parts(_)));
 }
 
 // ---- door contracts ---------------------------------------------------------
@@ -570,14 +564,14 @@ fn input_source_is_recorded_verbatim_in_envelope() {
     c.append_input(common::block_id(), TextPayload::new("hi"), "user")
         .unwrap();
     let blocks = c.blocks();
-    assert_eq!(blocks[0].meta.source.as_deref(), Some("system"));
-    assert_eq!(blocks[1].meta.source.as_deref(), Some("user"));
+    assert_eq!(blocks[0].meta().source.as_deref(), Some("system"));
+    assert_eq!(blocks[1].meta().source.as_deref(), Some("user"));
     // Source survives snapshot round-trip — the raw material for role
     // reconstruction at replay time.
     let json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
     let back: Vec<ContextBlock> = serde_json::from_str(&json).unwrap();
-    assert_eq!(back[0].meta.source.as_deref(), Some("system"));
-    assert_eq!(back[1].meta.source.as_deref(), Some("user"));
+    assert_eq!(back[0].meta().source.as_deref(), Some("system"));
+    assert_eq!(back[1].meta().source.as_deref(), Some("user"));
 }
 
 #[test]
@@ -621,8 +615,8 @@ fn tool_results_commit_in_supplied_order_with_identity_bound_to_payload() {
     let committed: Vec<BlockId> = c
         .blocks()
         .iter()
-        .filter_map(|b| match &b.content {
-            BlockContent::ToolCall(_) => Some(b.id),
+        .filter_map(|b| match b.content() {
+            BlockContent::ToolCall(_) => Some(b.id()),
             _ => None,
         })
         .collect();
@@ -658,15 +652,15 @@ fn tool_results_commit_in_supplied_order_with_identity_bound_to_payload() {
     let result_blocks: Vec<&ContextBlock> = c
         .blocks()
         .iter()
-        .filter(|b| matches!(b.content, BlockContent::ToolResult(_)))
+        .filter(|b| matches!(b.content(), BlockContent::ToolResult(_)))
         .collect();
-    assert_eq!(result_blocks[0].id, result_ids[0]);
+    assert_eq!(result_blocks[0].id(), result_ids[0]);
     assert!(
-        matches!(&result_blocks[0].content, BlockContent::ToolResult(r) if r.call_block_id == call_ids[1])
+        matches!(&result_blocks[0].content(), BlockContent::ToolResult(r) if r.call_block_id == call_ids[1])
     );
-    assert_eq!(result_blocks[1].id, result_ids[1]);
+    assert_eq!(result_blocks[1].id(), result_ids[1]);
     assert!(
-        matches!(&result_blocks[1].content, BlockContent::ToolResult(r) if r.call_block_id == call_ids[0])
+        matches!(&result_blocks[1].content(), BlockContent::ToolResult(r) if r.call_block_id == call_ids[0])
     );
     // The whole batch was one canonical commit: exactly one version bump.
     assert_eq!(c.version(), ContextVersion(2));
@@ -692,11 +686,11 @@ fn append_parts_commits_one_block_with_a_single_bump() {
     // one logical message = one fact block, one version bump
     assert_eq!(c.blocks().len(), 1);
     assert_eq!(c.version(), ContextVersion(1));
-    assert_eq!(c.blocks()[0].id, id);
+    assert_eq!(c.blocks()[0].id(), id);
     // source stamped verbatim on the envelope
-    assert_eq!(c.blocks()[0].meta.source.as_deref(), Some("user"));
+    assert_eq!(c.blocks()[0].meta().source.as_deref(), Some("user"));
     // part order preserved
-    if let BlockContent::Parts(parts) = &c.blocks()[0].content {
+    if let BlockContent::Parts(parts) = &c.blocks()[0].content() {
         assert_eq!(parts.len(), 2);
         assert_eq!(
             parts[0],
@@ -773,7 +767,7 @@ fn media_reference_round_trips_without_bytes_in_facts() {
     // snapshot size stays proportional to the reference, not to any payload
     assert!(json.len() < 800);
     let restored: causa_kernel::TurnSnapshot = serde_json::from_str(&json).unwrap();
-    let causa_kernel::BlockContent::Parts(parts) = &restored.blocks.as_slice()[0].content else {
+    let causa_kernel::BlockContent::Parts(parts) = &restored.blocks.as_slice()[0].content() else {
         panic!("expected Parts after round-trip");
     };
     assert_eq!(

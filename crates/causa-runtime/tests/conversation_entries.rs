@@ -49,7 +49,7 @@ async fn dual_entries_share_one_state_machine() {
                 .context
                 .blocks()
                 .iter()
-                .map(|block| &block.content)
+                .map(|block| block.content())
                 .collect::<Vec<_>>()
         )
         .unwrap(),
@@ -60,7 +60,7 @@ async fn dual_entries_share_one_state_machine() {
                 .unwrap()
                 .blocks()
                 .iter()
-                .map(|block| &block.content)
+                .map(|block| block.content())
                 .collect::<Vec<_>>()
         )
         .unwrap()

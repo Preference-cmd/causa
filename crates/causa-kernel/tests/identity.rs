@@ -57,11 +57,11 @@ fn same_invocation_can_record_identical_calls_with_distinct_block_ids() {
     assert_eq!(second.tool_calls[0].0, second_id);
     assert_eq!(context.version(), ContextVersion(2));
     assert!(matches!(
-        context.blocks()[0].content,
+        context.blocks()[0].content(),
         BlockContent::ToolCall(_)
     ));
     assert!(matches!(
-        context.blocks()[1].content,
+        context.blocks()[1].content(),
         BlockContent::ToolCall(_)
     ));
 }
@@ -115,7 +115,7 @@ fn importing_duplicate_blocks_rejects_the_material() {
         vec![block.clone(), block.clone()],
         ContextVersion(7),
     );
-    assert!(matches!(result, Err(ContextError::DuplicateBlockId(id)) if id == block.id));
+    assert!(matches!(result, Err(ContextError::DuplicateBlockId(id)) if id == block.id()));
     // The same material can independently appear in another context.
     let restored = TurnContext::from_validated_blocks(
         TurnId::new("destination"),
@@ -123,7 +123,7 @@ fn importing_duplicate_blocks_rejects_the_material() {
         ContextVersion(7),
     )
     .unwrap();
-    assert_eq!(restored.blocks()[0].id, block.id);
+    assert_eq!(restored.blocks()[0].id(), block.id());
 }
 
 #[test]
@@ -162,9 +162,9 @@ fn model_ids_bind_text_then_calls_and_all_validation_is_atomic() {
     assert_eq!(applied.block_ids, vec![a, b]);
     assert_eq!(applied.tool_calls[0].0, b);
     assert!(matches!(
-        context.blocks()[1].content,
+        context.blocks()[1].content(),
         BlockContent::Parts(_)
     ));
-    assert_eq!(context.blocks()[1].id, a);
-    assert_eq!(context.blocks()[2].id, b);
+    assert_eq!(context.blocks()[1].id(), a);
+    assert_eq!(context.blocks()[2].id(), b);
 }

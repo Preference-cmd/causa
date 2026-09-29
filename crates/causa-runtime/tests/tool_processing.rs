@@ -151,7 +151,7 @@ async fn all_pre_rejections_still_reach_post_processor_without_execution() {
         .context
         .blocks()
         .iter()
-        .filter_map(|block| match &block.content {
+        .filter_map(|block| match block.content() {
             BlockContent::ToolResult(result) => Some(result.status.clone()),
             _ => None,
         })
@@ -201,7 +201,7 @@ async fn postprocessor_order_is_the_committed_result_order() {
         .context
         .blocks()
         .iter()
-        .filter_map(|block| match &block.content {
+        .filter_map(|block| match block.content() {
             BlockContent::ToolResult(result) => {
                 Some((result.call_block_id, result.output.content.clone()))
             }
@@ -212,8 +212,8 @@ async fn postprocessor_order_is_the_committed_result_order() {
         .context
         .blocks()
         .iter()
-        .filter_map(|block| match &block.content {
-            BlockContent::ToolCall(call) => Some((block.id, call.tool_name.as_str())),
+        .filter_map(|block| match block.content() {
+            BlockContent::ToolCall(call) => Some((block.id(), call.tool_name.as_str())),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -556,7 +556,7 @@ async fn dedup_rejects_later_declaration_but_allows_same_content_next_round() {
         .context
         .blocks()
         .iter()
-        .filter_map(|block| match &block.content {
+        .filter_map(|block| match block.content() {
             BlockContent::ToolResult(result) => Some(result.status.clone()),
             _ => None,
         })

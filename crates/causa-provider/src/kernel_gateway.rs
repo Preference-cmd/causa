@@ -274,7 +274,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
                     refs.push(r.clone());
                 }
             };
-            match &block.content {
+            match block.content() {
                 BlockContent::Parts(parts) => {
                     for part in parts {
                         if let ContentPart::Media(r) = part {

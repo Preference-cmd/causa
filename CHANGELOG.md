@@ -14,6 +14,9 @@ adapters or data converters.
 
 ### Breaking
 
+- `ContextBlock` identity, content, and metadata fields are private. Construct
+  blocks with `ContextBlock::new(id, content, meta)` and read them through
+  `id()`, `content()`, and `meta()`; replace a changed block with a new ID.
 - Block IDs are supplied UUID values. Blocks no longer carry positional
   sequences, and frames no longer carry derived frame IDs. Results reference
   their declaration block ID; tool-call content keys are borrowed values used

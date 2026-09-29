@@ -33,16 +33,16 @@ fn user_frame() -> ContextFrame {
         scope,
         round_id: RoundId(0),
         model_context: ModelContext {
-            blocks: vec![ContextBlock {
-                id: BlockId::new(uuid::Uuid::from_u128(1)),
-                content: BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
-                    TextPayload::new("hi"),
-                )]),
-                meta: BlockMeta {
+            blocks: vec![ContextBlock::new(
+                BlockId::new(uuid::Uuid::from_u128(1)),
+                BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
+                    "hi",
+                ))]),
+                BlockMeta {
                     provider_call_id: None,
                     source: Some("user".into()),
                 },
-            }],
+            )],
         },
     }
 }
@@ -411,17 +411,17 @@ fn media_frame() -> ContextFrame {
         scope,
         round_id: RoundId(0),
         model_context: ModelContext {
-            blocks: vec![ContextBlock {
-                id: BlockId::new(uuid::Uuid::from_u128(1)),
-                content: BlockContent::Parts(vec![
+            blocks: vec![ContextBlock::new(
+                BlockId::new(uuid::Uuid::from_u128(1)),
+                BlockContent::Parts(vec![
                     ContentPart::Text(TextPayload::new("look")),
                     ContentPart::Media(MediaRef::new("image/png", "asset-1")),
                 ]),
-                meta: BlockMeta {
+                BlockMeta {
                     provider_call_id: None,
                     source: Some("user".into()),
                 },
-            }],
+            )],
         },
     }
 }

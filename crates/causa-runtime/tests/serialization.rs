@@ -61,9 +61,9 @@ fn conversation_state_round_trip_rebuilds_validated_facts() {
     let restored: ConversationState = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(&restored).unwrap(), value);
     assert_eq!(restored.history_len(), 1);
-    assert_eq!(restored.active_turn().unwrap().blocks()[0].id, active_id);
+    assert_eq!(restored.active_turn().unwrap().blocks()[0].id(), active_id);
     assert!(matches!(
-        &restored.active_turn().unwrap().blocks()[0].content,
+        &restored.active_turn().unwrap().blocks()[0].content(),
         BlockContent::Parts(_)
     ));
 }

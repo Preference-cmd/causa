@@ -606,8 +606,8 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         .context
         .blocks()
         .iter()
-        .find_map(|block| match &block.content {
-            causa_kernel::BlockContent::ToolCall(_) => Some(block.id),
+        .find_map(|block| match block.content() {
+            causa_kernel::BlockContent::ToolCall(_) => Some(block.id()),
             _ => None,
         })
         .expect("model declaration block");
@@ -615,7 +615,7 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         .context
         .blocks()
         .iter()
-        .find_map(|b| match &b.content {
+        .find_map(|b| match b.content() {
             causa_kernel::BlockContent::ToolResult(r) => Some(r.clone()),
             _ => None,
         })

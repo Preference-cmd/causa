@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn tool_round_trip_pairing_with_flat_call_ids() {
-        let fallback_id = call(2, "kc2", None, "list", json!({})).id.0.to_string();
+        let fallback_id = call(2, "kc2", None, "list", json!({})).id().0.to_string();
         let f = frame(vec![
             text(0, "reading now", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),

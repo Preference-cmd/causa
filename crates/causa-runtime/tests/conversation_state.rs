@@ -216,7 +216,7 @@ fn merged_frame_orders_history_then_active_under_conversation_scope() {
     assert_eq!(blocks.len(), 3);
     for (block, expected) in blocks.iter().zip(["in-t1", "in-t2", "in-t3"]) {
         assert!(matches!(
-            &block.content,
+            block.content(),
             BlockContent::Parts(parts)
                 if matches!(parts.as_slice(), [ContentPart::Text(TextPayload(actual))] if actual == expected)
         ));
@@ -389,11 +389,11 @@ fn replayed_conversation_matches_live_and_continues() {
     assert_eq!(
         f_live.model_context.blocks[..2]
             .iter()
-            .map(|block| block.id)
+            .map(|block| block.id())
             .collect::<Vec<_>>(),
         f_replayed.model_context.blocks[..2]
             .iter()
-            .map(|block| block.id)
+            .map(|block| block.id())
             .collect::<Vec<_>>(),
         "replay retains committed UUIDs"
     );
@@ -403,7 +403,7 @@ fn replayed_conversation_matches_live_and_continues() {
                 .model_context
                 .blocks
                 .iter()
-                .map(|block| &block.content)
+                .map(|block| block.content())
                 .collect::<Vec<_>>()
         )
         .unwrap(),
@@ -412,7 +412,7 @@ fn replayed_conversation_matches_live_and_continues() {
                 .model_context
                 .blocks
                 .iter()
-                .map(|block| &block.content)
+                .map(|block| block.content())
                 .collect::<Vec<_>>()
         )
         .unwrap()
@@ -476,11 +476,11 @@ fn two_executions_share_history_without_polluting_each_other() {
     // merged view are the shared history's own BlockIds, unrenumbered.
     let shared_a: Vec<_> = frames_a.model_context.blocks[..2]
         .iter()
-        .map(|b| b.id)
+        .map(|b| b.id())
         .collect();
     let shared_b: Vec<_> = frames_b.model_context.blocks[..2]
         .iter()
-        .map(|b| b.id)
+        .map(|b| b.id())
         .collect();
     let expected: Vec<_> = history
         .iter()
@@ -490,7 +490,7 @@ fn two_executions_share_history_without_polluting_each_other() {
                 .blocks
                 .as_slice()
                 .iter()
-                .map(|block| block.id)
+                .map(|block| block.id())
         })
         .take(2)
         .collect();

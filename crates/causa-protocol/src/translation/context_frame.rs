@@ -164,14 +164,14 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
     // with results in a merged conversation frame.
     let mut provider_ids: HashMap<causa_kernel::BlockId, String> = HashMap::new();
     for block in blocks {
-        if let BlockContent::ToolCall(_) = &block.content {
+        if let BlockContent::ToolCall(_) = block.content() {
             provider_ids.insert(
-                block.id,
+                block.id(),
                 block
-                    .meta
+                    .meta()
                     .provider_call_id
                     .clone()
-                    .unwrap_or_else(|| block.id.0.to_string()),
+                    .unwrap_or_else(|| block.id().0.to_string()),
             );
         }
     }
@@ -183,9 +183,9 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
         // part boundaries INSIDE one block stay preserved while block
         // seams stay envelope-only.
         let mut block_emitted = false;
-        match &block.content {
+        match block.content() {
             BlockContent::Parts(parts) => {
-                let role = text_role(block.meta.source.as_deref());
+                let role = text_role(block.meta().source.as_deref());
                 for part in parts {
                     match part {
                         ContentPart::Text(t) => {
@@ -223,10 +223,10 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
             BlockContent::ToolCall(call) => {
                 segments.push(Segment::ToolCall(PreparedCall {
                     wire_id: block
-                        .meta
+                        .meta()
                         .provider_call_id
                         .clone()
-                        .unwrap_or_else(|| block.id.0.to_string()),
+                        .unwrap_or_else(|| block.id().0.to_string()),
                     name: call.tool_name.clone(),
                     arguments: call.arguments.clone(),
                 }));

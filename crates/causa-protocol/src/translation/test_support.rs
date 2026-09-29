@@ -26,14 +26,14 @@ pub(crate) fn block(
     source: Option<&str>,
     provider_call_id: Option<&str>,
 ) -> ContextBlock {
-    ContextBlock {
-        id: BlockId::new(uuid::Uuid::from_u128(u128::from(seq) + 1)),
+    ContextBlock::new(
+        BlockId::new(uuid::Uuid::from_u128(u128::from(seq) + 1)),
         content,
-        meta: BlockMeta {
+        BlockMeta {
             provider_call_id: provider_call_id.map(String::from),
             source: source.map(String::from),
         },
-    }
+    )
 }
 
 pub(crate) fn text(seq: u64, text: &str, source: Option<&str>) -> ContextBlock {
@@ -56,23 +56,23 @@ pub(crate) fn media_part(media_type: &str, reference: &str) -> ContentPart {
 }
 
 pub(crate) fn call(
-    seq: u64,
+    _seq: u64,
     call_id: &str,
     provider: Option<&str>,
     name: &str,
     arguments: Value,
 ) -> ContextBlock {
-    let mut declaration = block(
-        seq,
+    ContextBlock::new(
+        label_id(call_id),
         BlockContent::ToolCall(ToolCallPayload {
             tool_name: name.into(),
             arguments,
         }),
-        None,
-        provider,
-    );
-    declaration.id = label_id(call_id);
-    declaration
+        BlockMeta {
+            provider_call_id: provider.map(String::from),
+            source: None,
+        },
+    )
 }
 
 pub(crate) fn result(

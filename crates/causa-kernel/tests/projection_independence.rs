@@ -11,22 +11,22 @@ use causa_kernel::{
 use serde_json::json;
 
 fn parts_block(parts: Vec<ContentPart>, source: &str) -> ContextBlock {
-    ContextBlock {
-        id: common::block_id(),
-        content: BlockContent::Parts(parts),
-        meta: BlockMeta {
+    ContextBlock::new(
+        common::block_id(),
+        BlockContent::Parts(parts),
+        BlockMeta {
             provider_call_id: None,
             source: Some(source.into()),
         },
-    }
+    )
 }
 
 fn pending_calls(blocks: &[ContextBlock]) -> Vec<BlockId> {
     let mut calls = Vec::new();
     let mut answered = Vec::new();
     for block in blocks {
-        match &block.content {
-            BlockContent::ToolCall(_) => calls.push(block.id),
+        match block.content() {
+            BlockContent::ToolCall(_) => calls.push(block.id()),
             BlockContent::ToolResult(result) => answered.push(result.call_block_id),
             _ => {}
         }
@@ -102,19 +102,25 @@ async fn projection_transforms_never_write_back_into_facts() {
 
     let mut projection = ctx.frame(RoundId(0));
     let blocks = &mut projection.model_context.blocks;
-    blocks.retain(|block| !matches!(block.content, BlockContent::ToolResult(_)));
+    blocks.retain(|block| !matches!(block.content(), BlockContent::ToolResult(_)));
     blocks.push(parts_block(
         vec![ContentPart::Text(TextPayload::new("host context"))],
         "host.injected",
     ));
     for block in blocks.iter_mut() {
-        if let BlockContent::Parts(parts) = &mut block.content {
-            for part in parts.iter_mut() {
+        if let BlockContent::Parts(parts) = block.content() {
+            let mut parts = parts.clone();
+            for part in &mut parts {
                 if let ContentPart::Media(media) = part {
                     *media = MediaRef::new("image/png", "asset-host-copy");
                 }
             }
             parts.push(ContentPart::Text(TextPayload::new("rewritten")));
+            *block = ContextBlock::new(
+                common::block_id(),
+                BlockContent::Parts(parts),
+                block.meta().clone(),
+            );
         }
     }
 
@@ -127,7 +133,7 @@ async fn projection_transforms_never_write_back_into_facts() {
     );
     assert_eq!(projection.model_context.blocks.len(), 4);
     assert!(matches!(
-        projection.model_context.blocks[3].content,
+        projection.model_context.blocks[3].content(),
         BlockContent::Parts(_)
     ));
     assert!(
@@ -226,8 +232,8 @@ async fn shared_history_projection_feeds_two_records_without_pollution() {
     let b_facts = serde_json::to_string(record_b.blocks()).unwrap();
     assert!(a_facts.contains("\"who\":\"a\"") && !a_facts.contains("\"who\":\"b\""));
     assert!(b_facts.contains("\"who\":\"b\"") && !b_facts.contains("\"who\":\"a\""));
-    let a_ids: Vec<_> = record_a.blocks().iter().map(|block| block.id).collect();
-    let b_ids: Vec<_> = record_b.blocks().iter().map(|block| block.id).collect();
+    let a_ids: Vec<_> = record_a.blocks().iter().map(|block| block.id()).collect();
+    let b_ids: Vec<_> = record_b.blocks().iter().map(|block| block.id()).collect();
     assert!(a_ids.iter().all(|id| !b_ids.contains(id)));
     assert_eq!(history_wire, serde_json::to_string(&history).unwrap());
 }

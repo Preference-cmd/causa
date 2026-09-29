@@ -342,14 +342,14 @@ impl TurnContext {
             .0
             .iter()
             .filter_map(|block| {
-                matches!(block.content, BlockContent::ToolCall(_)).then_some(block.id)
+                matches!(block.content(), BlockContent::ToolCall(_)).then_some(block.id())
             })
             .collect::<HashSet<_>>();
         let already_paired = self
             .blocks
             .0
             .iter()
-            .filter_map(|block| match &block.content {
+            .filter_map(|block| match block.content() {
                 BlockContent::ToolResult(result) => Some(result.call_block_id),
                 _ => None,
             })
@@ -411,8 +411,8 @@ impl TurnContext {
             }
         }
         for block in &self.blocks.0 {
-            if seen.contains(&block.id) {
-                return Err(ContextError::DuplicateBlockId(block.id));
+            if seen.contains(&block.id()) {
+                return Err(ContextError::DuplicateBlockId(block.id()));
             }
         }
         Ok(())
@@ -424,7 +424,7 @@ impl TurnContext {
         }
         let mut ids = Vec::with_capacity(prepared.len());
         for (id, content, meta) in prepared {
-            self.blocks.0.push(ContextBlock { id, content, meta });
+            self.blocks.0.push(ContextBlock::new(id, content, meta));
             ids.push(id);
         }
         self.version = self.version.next();
@@ -452,15 +452,15 @@ impl TurnContext {
         let mut declarations = HashSet::new();
         let mut results = HashSet::new();
         for block in blocks {
-            if !block_ids.insert(block.id) {
-                return Err(ContextError::DuplicateBlockId(block.id));
+            if !block_ids.insert(block.id()) {
+                return Err(ContextError::DuplicateBlockId(block.id()));
             }
-            match &block.content {
+            match block.content() {
                 BlockContent::Parts(parts) if parts.is_empty() => {
                     return Err(ContextError::InvalidContext("empty parts block".into()));
                 }
                 BlockContent::ToolCall(_) => {
-                    declarations.insert(block.id);
+                    declarations.insert(block.id());
                 }
                 BlockContent::ToolResult(result) => {
                     if !declarations.contains(&result.call_block_id) {
