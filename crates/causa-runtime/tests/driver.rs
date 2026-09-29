@@ -198,7 +198,7 @@ async fn same_input_output_preserves_content_with_fresh_ids() {
             vec![Arc::new(EchoTool)],
         );
         let out = runner.run(c, options_with_limits(5, 10), ctrl()).await;
-        out.context.snapshot_blocks()
+        out.context.blocks().to_vec()
     }
     let a = run_once().await;
     let b = run_once().await;

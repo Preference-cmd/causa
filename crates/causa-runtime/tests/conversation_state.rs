@@ -8,8 +8,8 @@ mod common;
 use common::commit_sealed;
 
 use causa_kernel::{
-    BlockContent, ContentPart, ContextVersion, ConversationId, FrameScope, OrderedBlocks, RoundId,
-    TextPayload, TurnId, TurnSnapshot,
+    BlockContent, ContentPart, ConversationId, FrameScope, RoundId, TextPayload, TurnContext,
+    TurnId,
 };
 use causa_runtime::{
     ConversationError, ConversationState, HistoryEntry, SealedResult, TurnSequence, new_block_id,
@@ -36,10 +36,10 @@ fn commit_is_exactly_once_and_assigns_sequence() {
         .unwrap();
     let entry = c.commit(TurnId::new("t1")).unwrap();
     assert_eq!(entry.sequence.0, 0);
-    assert_eq!(entry.snapshot.turn_id.0, "t1");
-    // The snapshot itself carries no session order: the entry is the only
+    assert_eq!(entry.facts.turn_id().0, "t1");
+    // The facts themselves carry no session order: the entry is the only
     // place a sequence exists.
-    let wire = serde_json::to_string(&entry.snapshot).unwrap();
+    let wire = serde_json::to_string(&entry.facts).unwrap();
     assert!(!wire.contains("turn_sequence"), "{wire}");
     // Repeated commit: the active slot is empty, so rejection lands on
     // UnknownTurn — rejection, not idempotence.
@@ -160,7 +160,7 @@ fn conversations_are_fully_isolated() {
 }
 
 #[test]
-fn committed_snapshot_carries_turn_facts_and_abort_leaves_history() {
+fn committed_facts_carry_turn_data_and_abort_leaves_history() {
     let mut c = conv();
     c.begin_turn(TurnId::new("t1")).unwrap();
     c.active_turn_mut()
@@ -170,14 +170,14 @@ fn committed_snapshot_carries_turn_facts_and_abort_leaves_history() {
     c.seal_turn(TurnId::new("t1"), SealedResult::Completed)
         .unwrap();
     let entry = c.commit(TurnId::new("t1")).unwrap();
-    assert_eq!(entry.snapshot.blocks.as_slice().len(), 1);
+    assert_eq!(entry.facts.blocks().len(), 1);
     // Aborting a later turn leaves committed history byte-identical.
     c.begin_turn(TurnId::new("t2")).unwrap();
     c.seal_turn(TurnId::new("t2"), SealedResult::Interrupted)
         .unwrap();
     c.abort_turn(TurnId::new("t2")).unwrap();
     assert_eq!(c.history_len(), 1);
-    assert_eq!(c.history()[0].snapshot.turn_id.0, "t1");
+    assert_eq!(c.history()[0].facts.turn_id().0, "t1");
 }
 
 // ---- lossless merged view ------------------------------------------------------
@@ -221,20 +221,18 @@ fn merged_frame_orders_history_then_active_under_conversation_scope() {
                 if matches!(parts.as_slice(), [ContentPart::Text(TextPayload(actual))] if actual == expected)
         ));
     }
-    // Conversation scope identity: active turn's version is the pin.
+    // Conversation scope records the conversation and active turn identity.
     match &f.scope {
         FrameScope::Conversation {
             conversation_id,
             active_turn_id,
-            source_version,
         } => {
             assert_eq!(conversation_id.0, "conv-1");
             assert_eq!(active_turn_id.0, "t3");
-            assert_eq!(source_version.0, 1);
         }
         _ => panic!("expected conversation scope"),
     }
-    // Deterministic per (conversation, active turn, source version, round).
+    // The same facts and identities produce the same scope and projection.
     assert_eq!(f.scope, c.frame(RoundId(0)).unwrap().scope);
     assert_eq!(f.round_id, RoundId(0));
     assert_eq!(c.frame(RoundId(1)).unwrap().round_id, RoundId(1));
@@ -268,11 +266,11 @@ fn merged_frame_is_lossless_and_writes_nothing_back() {
         .append_input(new_block_id(), TextPayload::new("in-t3"), "user")
         .unwrap();
     let before_history = serde_json::to_string(c.history()).unwrap();
-    let before_active = serde_json::to_string(&c.active_turn().unwrap().snapshot_blocks()).unwrap();
+    let before_active = serde_json::to_string(&c.active_turn().unwrap().blocks()).unwrap();
     let _ = c.frame(RoundId(0)).unwrap();
     assert_eq!(serde_json::to_string(c.history()).unwrap(), before_history);
     assert_eq!(
-        serde_json::to_string(&c.active_turn().unwrap().snapshot_blocks()).unwrap(),
+        serde_json::to_string(&c.active_turn().unwrap().blocks()).unwrap(),
         before_active
     );
     // frame() is a projection, not a transition: two commits + begin = 5.
@@ -320,7 +318,7 @@ fn from_history_rejects_duplicate_turn_ids() {
     // Re-sequence the copied entry so only the id duplicates.
     let twin = HistoryEntry {
         sequence: TurnSequence(9),
-        snapshot: entries[0].snapshot.clone(),
+        facts: entries[0].facts.clone(),
     };
     entries.push(twin);
     assert!(matches!(
@@ -329,37 +327,36 @@ fn from_history_rejects_duplicate_turn_ids() {
     ));
 }
 
-/// A snapshot whose blocks fail pairing validation is rejected. The
-/// corrupt snapshot is fabricated through serde — exactly the path
-/// corrupt external data would take.
+/// History accepts local fact material without imposing tool execution
+/// pairing policy. The orphan result is supplied through direct serde.
 #[test]
-fn from_history_rejects_unpaired_tool_results() {
+fn from_history_accepts_orphan_tool_result_material() {
     let live = build_two_turn_history();
-    let blocks_json = r#"[
-        {"id": "00000000-0000-0000-0000-000000000001",
-         "content": {"shape": "tool_result",
-                     "value": {"call_block_id": "00000000-0000-0000-0000-000000000002",
-                               "status": "Succeeded",
-                               "output": {"content": {}, "truncation": "none",
-                                          "meta": null, "artifact": null}}},
-         "meta": {}}
-    ]"#;
-    let blocks: OrderedBlocks = serde_json::from_str(blocks_json).unwrap();
-    let corrupt = HistoryEntry {
+    let facts: TurnContext = serde_json::from_str(
+        r#"{
+            "turn_id": "orphan-result-turn",
+            "blocks": [{
+                "id": "00000000-0000-0000-0000-000000000001",
+                "content": {"shape": "tool_result", "value": {
+                    "call_block_id": "00000000-0000-0000-0000-000000000002",
+                    "status": "Succeeded",
+                    "output": {"content": {}, "truncation": "none", "meta": null, "artifact": null}
+                }},
+                "meta": {}
+            }],
+            "lifecycle": "sealed"
+        }"#,
+    )
+    .unwrap();
+    let partial = HistoryEntry {
         sequence: TurnSequence(9),
-        snapshot: TurnSnapshot {
-            turn_id: TurnId::new("bad"),
-            blocks,
-            source_version: ContextVersion(1),
-            sealed: true,
-        },
+        facts,
     };
     let mut entries: Vec<_> = live.history().to_vec();
-    entries.push(corrupt);
-    assert!(matches!(
-        ConversationState::from_history(ConversationId("conv-1".into()), entries),
-        Err(ConversationError::InvalidSequence(_))
-    ));
+    entries.push(partial);
+    let replayed = ConversationState::from_history(ConversationId("conv-1".into()), entries)
+        .expect("tool pairing belongs to execution-specific append paths");
+    assert_eq!(replayed.history().last().unwrap().facts.blocks().len(), 1);
 }
 
 /// A valid replay rebuilds block-for-block identical merged frames,
@@ -484,14 +481,7 @@ fn two_executions_share_history_without_polluting_each_other() {
         .collect();
     let expected: Vec<_> = history
         .iter()
-        .flat_map(|entry| {
-            entry
-                .snapshot
-                .blocks
-                .as_slice()
-                .iter()
-                .map(|block| block.id())
-        })
+        .flat_map(|entry| entry.facts.blocks().iter().map(|block| block.id()))
         .take(2)
         .collect();
     assert_eq!(shared_a, expected);

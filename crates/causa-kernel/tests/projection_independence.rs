@@ -4,9 +4,9 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextVersion, ConversationId,
-    InvocationId, MediaRef, ModelResponse, ModelStopReason, RoundId, TextPayload, ToolCallDraft,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId, merged_frame,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ConversationId, InvocationId,
+    MediaRef, ModelResponse, ModelStopReason, RoundId, TextPayload, ToolCallDraft, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnContext, TurnId, merged_frame,
 };
 use serde_json::json;
 
@@ -96,9 +96,8 @@ async fn projection_transforms_never_write_back_into_facts() {
     .unwrap();
 
     let facts_before = serde_json::to_string(ctx.blocks()).unwrap();
-    let version_before = ctx.version();
     let pending_before = pending_calls(ctx.blocks());
-    let snapshot_before = serde_json::to_string(&ctx.snapshot()).unwrap();
+    let context_before = serde_json::to_string(&ctx).unwrap();
 
     let mut projection = ctx.frame(RoundId(0));
     let blocks = &mut projection.model_context.blocks;
@@ -125,12 +124,8 @@ async fn projection_transforms_never_write_back_into_facts() {
     }
 
     assert_eq!(facts_before, serde_json::to_string(ctx.blocks()).unwrap());
-    assert_eq!(version_before, ctx.version());
     assert_eq!(pending_before, pending_calls(ctx.blocks()));
-    assert_eq!(
-        snapshot_before,
-        serde_json::to_string(&ctx.snapshot()).unwrap()
-    );
+    assert_eq!(context_before, serde_json::to_string(&ctx).unwrap());
     assert_eq!(projection.model_context.blocks.len(), 4);
     assert!(matches!(
         projection.model_context.blocks[3].content(),
@@ -167,9 +162,9 @@ async fn shared_history_projection_feeds_two_records_without_pollution() {
         )
         .unwrap();
     shared.seal();
-    let history = vec![shared.snapshot()];
+    let history = vec![shared.clone()];
     let history_wire = serde_json::to_string(&history).unwrap();
-    let history_block_count: usize = history.iter().map(|s| s.blocks.as_slice().len()).sum();
+    let history_block_count: usize = history.iter().map(|turn| turn.blocks().len()).sum();
     let conversation = ConversationId("shared-proj".into());
 
     let mut record_a = TurnContext::new(TurnId::new("child-a"));
@@ -257,13 +252,9 @@ async fn rebuilt_record_from_validated_blocks_matches_original_projection() {
             common::block_ids_for(&response),
         )
         .unwrap();
-    let snapshot = original.snapshot();
-    let rebuilt = TurnContext::from_validated_blocks(
-        TurnId::new("rebuild-1"),
-        snapshot.blocks.as_slice().to_vec(),
-        ContextVersion(snapshot.source_version.0),
-    )
-    .unwrap();
+    let rebuilt =
+        TurnContext::from_validated_blocks(TurnId::new("rebuild-1"), original.blocks().to_vec())
+            .unwrap();
     assert_eq!(
         serde_json::to_string(&original.frame(RoundId(0)).model_context.blocks).unwrap(),
         serde_json::to_string(&rebuilt.frame(RoundId(0)).model_context.blocks).unwrap()

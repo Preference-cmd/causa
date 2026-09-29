@@ -63,7 +63,7 @@ fn conversation_state_round_trip_rebuilds_validated_facts() {
     assert_eq!(restored.history_len(), 1);
     assert_eq!(restored.active_turn().unwrap().blocks()[0].id(), active_id);
     assert!(matches!(
-        &restored.active_turn().unwrap().blocks()[0].content(),
+        restored.active_turn().unwrap().blocks()[0].content(),
         BlockContent::Parts(_)
     ));
 }

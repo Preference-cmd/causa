@@ -7,8 +7,8 @@
 //!
 //! Content vocabulary is **Parts**: one
 //! logical message's mixed content commits as one block of ordered
-//! [`ContentPart`]s — the block is the fact atom (identity, one version
-//! bump, pairing invariant), the part is the content
+//! [`ContentPart`]s — the block is the fact atom (identity and envelope),
+//! and the part is the content
 //! atom (ordered, identity-free, shares the envelope). Media enters as
 //! a [`MediaRef`] — a cheap durable reference; bytes never enter facts,
 //! they appear only in resolved render payloads (provider side).
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::context::ids::BlockId;
 use crate::context::tool_data::ToolResultPayload;
 
-/// Envelope provenance. Fields are serde-additive so legacy snapshots
+/// Envelope provenance. Fields are serde-additive so older records
 /// without them still deserialize.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockMeta {
@@ -118,7 +118,8 @@ impl MediaRef {
 pub enum BlockContent {
     /// One logical message's ordered content parts (text and media
     /// references) — atomic at the block: identity, one
-    /// version bump, and the pairing invariant live only here.
+    /// content identity; execution pairing is enforced by specialized append
+    /// operations rather than by importing arbitrary facts.
     Parts(Vec<ContentPart>),
     /// A model-issued tool invocation.
     ToolCall(ToolCallPayload),

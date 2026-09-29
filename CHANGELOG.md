@@ -14,6 +14,12 @@ adapters or data converters.
 
 ### Breaking
 
+- `TurnContext` now owns its block `Vec` and serializes directly as the
+  required `turn_id`, `blocks`, and `lifecycle` fields (`open` or `sealed`).
+  `ContextVersion`, `OrderedBlocks`, `TurnSnapshot`, snapshot serde bridges,
+  and version provenance on frames and round traces are removed. Loading checks
+  context-local block ID uniqueness only; execution append doors keep their
+  specialized validation.
 - `ContextBlock` identity, content, and metadata fields are private. Construct
   blocks with `ContextBlock::new(id, content, meta)` and read them through
   `id()`, `content()`, and `meta()`; replace a changed block with a new ID.

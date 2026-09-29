@@ -1,9 +1,8 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, ContextError, ContextVersion, InvocationId, ModelResponse,
-    ModelStopReason, RoundId, TextPayload, ToolCallDraft, TurnContext, TurnId,
-    model_output_block_count,
+    BlockContent, BlockId, ContextError, InvocationId, ModelResponse, ModelStopReason, RoundId,
+    TextPayload, ToolCallDraft, TurnContext, TurnId, model_output_block_count,
 };
 use serde_json::json;
 
@@ -55,7 +54,6 @@ fn same_invocation_can_record_identical_calls_with_distinct_block_ids() {
     assert_eq!(first.tool_calls[0].1, second.tool_calls[0].1);
     assert_eq!(first.tool_calls[0].0, first_id);
     assert_eq!(second.tool_calls[0].0, second_id);
-    assert_eq!(context.version(), ContextVersion(2));
     assert!(matches!(
         context.blocks()[0].content(),
         BlockContent::ToolCall(_)
@@ -73,14 +71,12 @@ fn duplicate_imported_id_is_rejected_without_any_context_mutation() {
     context
         .append_input(id, TextPayload::new("kept"), "user")
         .unwrap();
-    let before = serde_json::to_string(context.blocks()).unwrap();
-    let version = context.version();
+    let before = serde_json::to_string(&context).unwrap();
     let err = context
         .append_input(id, TextPayload::new("rejected"), "user")
         .unwrap_err();
     assert!(matches!(err, ContextError::DuplicateBlockId(found) if found == id));
-    assert_eq!(before, serde_json::to_string(context.blocks()).unwrap());
-    assert_eq!(context.version(), version);
+    assert_eq!(before, serde_json::to_string(&context).unwrap());
 }
 
 #[test]
@@ -113,16 +109,12 @@ fn importing_duplicate_blocks_rejects_the_material() {
     let result = TurnContext::from_validated_blocks(
         TurnId::new("destination"),
         vec![block.clone(), block.clone()],
-        ContextVersion(7),
     );
     assert!(matches!(result, Err(ContextError::DuplicateBlockId(id)) if id == block.id()));
     // The same material can independently appear in another context.
-    let restored = TurnContext::from_validated_blocks(
-        TurnId::new("destination"),
-        vec![block.clone()],
-        ContextVersion(7),
-    )
-    .unwrap();
+    let restored =
+        TurnContext::from_validated_blocks(TurnId::new("destination"), vec![block.clone()])
+            .unwrap();
     assert_eq!(restored.blocks()[0].id(), block.id());
 }
 
@@ -147,14 +139,14 @@ fn model_ids_bind_text_then_calls_and_all_validation_is_atomic() {
     };
     let a = common::block_id();
     let b = common::block_id();
-    let before = serde_json::to_value(context.snapshot()).unwrap();
+    let before = serde_json::to_value(&context).unwrap();
     for ids in [vec![a], vec![a, a], vec![a, existing]] {
         assert!(
             context
                 .append_model_output(invocation.clone(), &response, ModelStopReason::ToolUse, ids,)
                 .is_err()
         );
-        assert_eq!(serde_json::to_value(context.snapshot()).unwrap(), before);
+        assert_eq!(serde_json::to_value(&context).unwrap(), before);
     }
     let applied = context
         .append_model_output(invocation, &response, ModelStopReason::ToolUse, vec![a, b])

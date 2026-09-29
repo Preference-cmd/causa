@@ -1,7 +1,7 @@
 //! Tool-domain fact vocabulary — call ids, results, outputs, artifacts.
 //!
-//! This module holds only recorded facts: what the tool door persists and
-//! what the pairing invariant validates. Behavior and execution vocabulary
+//! This module holds only recorded facts: what the tool door persists.
+//! Specialized append operations validate call/result pairing. Behavior and execution vocabulary
 //! (the `Tool` trait, the `ArtifactStore` port, definitions and dispatch
 //! context) live in `crate::ports::tool`. Execution policies belong to the
 //! runtime; this module does not depend on them.

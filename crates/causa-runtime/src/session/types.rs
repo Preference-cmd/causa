@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use causa_kernel::{ContentPart, ConversationId, ModelOutput, ToolBatch, TurnId, TurnSnapshot};
+use causa_kernel::{ContentPart, ConversationId, ModelOutput, ToolBatch, TurnContext, TurnId};
 
 use crate::driver::TurnInterruption;
 
@@ -42,8 +42,8 @@ pub enum FinishedKind {
     Interrupted {
         /// Why the turn was interrupted.
         cause: TurnInterruption,
-        /// Snapshot of the aborted turn's facts.
-        facts: TurnSnapshot,
+        /// Owned facts from the aborted turn.
+        facts: TurnContext,
         /// Uncommitted calls and results returned with the interrupted outcome.
         /// The shared pointer lets observations remain cloneable without
         /// cloning or serializing the batch itself.

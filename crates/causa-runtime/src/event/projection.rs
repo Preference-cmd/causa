@@ -363,9 +363,7 @@ fn call_index(context: &TurnContext) -> HashMap<causa_kernel::BlockId, ToolCallP
 mod tests {
     use super::*;
     use crate::driver::{OutputSummary, ToolBatchTrace, TurnInterruption};
-    use causa_kernel::{
-        ContextVersion, InvocationId, ModelResponse, ModelStopReason, TextPayload, TurnContext,
-    };
+    use causa_kernel::{InvocationId, ModelResponse, ModelStopReason, TextPayload, TurnContext};
     use serde_json::json;
 
     fn block_id(value: u128) -> BlockId {
@@ -421,7 +419,6 @@ mod tests {
                 turn_id: turn_id(1),
                 round_id,
             },
-            frame_version: ContextVersion(0),
             attempts: Vec::new(),
             output_summary: Some(OutputSummary {
                 stop_reason: ModelStopReason::ToolUse,
@@ -444,7 +441,6 @@ mod tests {
                 turn_id: turn_id(2),
                 round_id,
             },
-            frame_version: ContextVersion(0),
             attempts: Vec::new(),
             output_summary: Some(OutputSummary {
                 stop_reason: ModelStopReason::EndTurn,

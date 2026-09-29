@@ -392,8 +392,8 @@ fn append_message(
 mod tests {
     use super::*;
     use causa_kernel::{
-        ContextVersion, ConversationId, FrameScope, MediaRef, ModelContext, ModelUsage, RoundId,
-        ToolDefinition, TurnId,
+        ConversationId, FrameScope, MediaRef, ModelContext, ModelUsage, RoundId, ToolDefinition,
+        TurnId,
     };
 
     use crate::translation::media::{MediaPayload, MediaSet};
@@ -605,12 +605,10 @@ mod tests {
         let blocks = vec![text(0, "hi", Some("user")), text(1, "hello", None)];
         let turn_scope = FrameScope::Turn {
             turn_id: TurnId::new("t1"),
-            source_version: ContextVersion(1),
         };
         let conv_scope = FrameScope::Conversation {
             conversation_id: ConversationId("c1".into()),
             active_turn_id: TurnId::new("t2"),
-            source_version: ContextVersion(2),
         };
         let turn = ContextFrame {
             scope: turn_scope,

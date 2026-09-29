@@ -49,10 +49,10 @@ async fn compaction_projection_identity() {
     );
     assert_eq!(
         serde_json::to_string(&lossless_frame.model_context.blocks).unwrap(),
-        serde_json::to_string(&c.snapshot_blocks()).unwrap()
+        serde_json::to_string(&c.blocks()).unwrap()
     );
     let projected = compacting.materialize(&c, RoundId(0)).await.unwrap();
     assert_eq!(projected.scope, sync_frame.scope);
     assert!(projected.model_context.blocks.is_empty());
-    assert_eq!(c.snapshot_blocks().len(), 1);
+    assert_eq!(c.blocks().len(), 1);
 }

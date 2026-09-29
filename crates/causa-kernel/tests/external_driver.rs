@@ -7,10 +7,10 @@
 mod common;
 
 use causa_kernel::{
-    AttemptControl, AttemptNumber, CancellationToken, ContextError, ContextVersion,
-    GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef,
-    ModelRequest, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
-    TextPayload, ToolSurface, TurnContext, TurnId, TurnSnapshot,
+    AttemptControl, AttemptNumber, CancellationToken, ContextError, GenerationOptions,
+    InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef, ModelRequest,
+    ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId, TextPayload,
+    ToolSurface, TurnContext, TurnId,
 };
 
 /// A gateway that returns one canned output and asserts the invocation
@@ -94,11 +94,10 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
 
     assert!(context.is_sealed());
     assert_eq!(applied.block_ids.len(), 1); // response text only
-    assert_eq!(context.version(), ContextVersion(2));
-    // facts round-trip losslessly through a snapshot
-    let json = serde_json::to_string(&context.snapshot()).unwrap();
-    let snapshot: TurnSnapshot = serde_json::from_str(&json).unwrap();
-    assert_eq!(snapshot.blocks.as_slice().len(), 2);
+    // facts round-trip losslessly through TurnContext's direct serde shape
+    let json = serde_json::to_string(&context).unwrap();
+    let restored: TurnContext = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.blocks().len(), 2);
     // sealed turn rejects further mutation
     assert!(matches!(
         context.append_input(common::block_id(), TextPayload::new("more"), "user"),

@@ -45,8 +45,8 @@ async fn timeout_is_observational_and_owner_drop_interrupts_work() {
     match done.observation.finished {
         Some(FinishedKind::Interrupted { cause, facts, .. }) => {
             assert_eq!(cause, TurnInterruption::ExplicitCancellation);
-            assert_eq!(facts.turn_id, receipt.work.turn_id);
-            assert!(!facts.blocks.as_slice().is_empty());
+            assert_eq!(facts.turn_id(), receipt.work.turn_id);
+            assert!(!facts.blocks().is_empty());
         }
         other => panic!("expected interrupted facts, got {other:?}"),
     }

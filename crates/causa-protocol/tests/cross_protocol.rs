@@ -9,14 +9,13 @@
 //!
 //! `ConversationState` (the session aggregate) lives in `causa-runtime`;
 //! this test tree stays kernel-only and materializes the merged projection
-//! directly through `merged_frame` over sealed turn snapshots — the same
+//! directly through `merged_frame` over sealed turns — the same
 //! projection the session aggregate produces.
 
 use causa_kernel::{
     BlockId, ContextFrame, ConversationId, GenerationOptions, InvocationId, MediaRef, ModelRef,
     ModelResponse, ModelStopReason, RoundId, TextPayload, ToolCallDraft, ToolOutput,
-    ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId, TurnSnapshot,
-    merged_frame,
+    ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId, merged_frame,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::openai_chat::render_openai_chat_messages;
@@ -39,23 +38,23 @@ fn invocation(turn: &str, round: u32) -> InvocationId {
     }
 }
 
-/// Build a turn, seal it, and project it into a history-ready snapshot —
+/// Build a turn, seal it, and return it as history material —
 /// what a session's `commit` would admit into history.
-fn sealed_turn<F>(turn: &str, build: F) -> TurnSnapshot
+fn sealed_turn<F>(turn: &str, build: F) -> TurnContext
 where
     F: FnOnce(&mut TurnContext),
 {
     let mut ctx = TurnContext::new(TurnId::new(turn));
     build(&mut ctx);
     ctx.seal();
-    ctx.snapshot()
+    ctx
 }
 
-/// The merged frame over a history of sealed snapshots plus an active
+/// The merged frame over a history of sealed turns plus an active
 /// (possibly sealed) turn — the lossless conversation projection.
 fn session_frame(
     conversation_id: &str,
-    history: Vec<TurnSnapshot>,
+    history: Vec<TurnContext>,
     active: TurnContext,
 ) -> ContextFrame {
     merged_frame(

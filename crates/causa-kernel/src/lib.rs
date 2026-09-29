@@ -8,7 +8,7 @@
 //!   machine and its deterministic projections, and ids. Session-level
 //!   vocabulary (the `ConversationState` aggregate, its eligibility stamp,
 //!   ordering, and the conversation store port) is runtime territory; the
-//!   kernel keeps the facts (`TurnContext` / `TurnSnapshot`), the validated
+//!   kernel keeps the facts (`TurnContext`), the validated
 //!   recovery entries, and the shared `merged_frame` projection.
 //! - **`ports`** — the behavior seams external implementors fill in, each
 //!   self-contained: `ModelGateway` (request params, result envelope,
@@ -37,18 +37,15 @@ mod ports;
 pub use context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload, ToolCallPayload,
 };
-pub use context::ids::{
-    BlockId, ContextVersion, ConversationId, FrameScope, InvocationId, RoundId, TurnId,
-};
+pub use context::ids::{BlockId, ConversationId, FrameScope, InvocationId, RoundId, TurnId};
 pub use context::model::{ModelResponse, ModelStopReason, ToolCallDraft};
 pub use context::tool_data::{
     ArtifactKind, ArtifactRef, ToolCallId, ToolOutput, ToolOutputMeta, ToolResultPayload,
     ToolResultStatus, Truncation,
 };
 pub use context::turn::{
-    AppliedModelOutput, ContextError, ContextFrame, ModelContext, OrderedBlocks, TurnContext,
-    TurnLifecycle, TurnSnapshot, merged_frame, model_output_block_count,
-    option_turn_context_as_snapshot, turn_context_as_snapshot,
+    AppliedModelOutput, ContextError, ContextFrame, ModelContext, TurnContext, TurnLifecycle,
+    merged_frame, model_output_block_count,
 };
 
 // --- ports: behavior seams for external implementors ------------------------

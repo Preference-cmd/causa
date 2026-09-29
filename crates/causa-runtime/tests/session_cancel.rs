@@ -49,8 +49,8 @@ async fn cancel_signals_running_work_and_replays_its_receipt() {
     match waited.observation.finished {
         Some(FinishedKind::Interrupted { cause, facts, .. }) => {
             assert_eq!(cause, TurnInterruption::ExplicitCancellation);
-            assert_eq!(facts.turn_id, submitted.work.turn_id);
-            assert!(!facts.blocks.as_slice().is_empty());
+            assert_eq!(facts.turn_id(), submitted.work.turn_id);
+            assert!(!facts.blocks().is_empty());
         }
         other => panic!("expected retained interrupted facts, got {other:?}"),
     }

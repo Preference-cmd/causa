@@ -6,7 +6,7 @@
 //! A session runs one work at a time. Accepted request keys replay their
 //! original receipts, while reusing a key with different input is a conflict.
 //! Completed work commits into history. Interrupted work remains observable
-//! with its fact snapshot, cause, and any uncommitted tool batch. The session
+//! with its owned turn facts, cause, and any uncommitted tool batch. The session
 //! retains finished work up to its configured capacity.
 //!
 //! Shutdown stops admission, signals active work, and waits for it to finish.

@@ -18,8 +18,8 @@
 //! on load.
 //!
 //! Wire shapes:
-//! - the store persists **`HistoryEntry`** records (`sequence` + `snapshot`)
-//!   — the snapshot itself carries no session order;
+//! - the store persists **`HistoryEntry`** records (`sequence` + `facts`)
+//!   — the turn facts themselves carry no session order;
 //! - one turn's message mixes text and a `MediaRef`: facts carry the
 //!   reference only, never bytes.
 
@@ -257,11 +257,10 @@ mod tests {
     fn history_entries_load_with_their_order() {
         let current = r#"{
             "sequence": 4,
-            "snapshot": {
+            "facts": {
                 "turn_id": "t-new",
                 "blocks": [],
-                "source_version": 1,
-                "sealed": true
+                "lifecycle": "sealed"
             }
         }"#;
         let entry = load_entry(current.as_bytes()).expect("current file loads");

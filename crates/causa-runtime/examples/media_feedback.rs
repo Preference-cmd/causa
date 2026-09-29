@@ -1,7 +1,7 @@
 //! Offline media closed loop: a tool produces an image, the
 //! host's asset store ingests the bytes, and only a `MediaRef` rides the
 //! facts — the next model round's frame carries the reference, and a
-//! snapshot round-trip preserves it. Rendering-side resolution (bytes →
+//! TurnContext round-trip preserves it. Rendering-side resolution (bytes →
 //! wire image blocks) is the provider's `MediaResolver`, shown in
 //! `causa-provider`'s quickstart; this example runs fully offline.
 //!
@@ -173,10 +173,9 @@ async fn main() {
         b"fake-png-bytes"
     );
 
-    // A snapshot round-trip preserves the reference — and nothing else.
-    let snap = outcome.context.snapshot();
-    let restored = serde_json::to_string(&snap).unwrap();
+    // TurnContext serde preserves the reference — and nothing else.
+    let restored = serde_json::to_string(&outcome.context).unwrap();
     assert!(restored.contains(&reference));
     assert!(!restored.contains("fake-png-bytes"));
-    println!("snapshot round-trip kept the reference, never the bytes");
+    println!("turn round-trip kept the reference, never the bytes");
 }

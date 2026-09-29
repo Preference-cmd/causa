@@ -413,7 +413,7 @@ impl SessionCore {
                 Slot::Idle(state) => state
                     .history()
                     .iter()
-                    .any(|entry| entry.snapshot.turn_id == candidate),
+                    .any(|entry| entry.facts.turn_id() == candidate),
                 _ => false,
             };
             let in_works = inner.works.keys().any(|work| work.turn_id == candidate);
@@ -498,7 +498,7 @@ impl SessionCore {
                     WorkState::Finished,
                     Some(FinishedKind::Interrupted {
                         cause,
-                        facts: facts.snapshot(),
+                        facts,
                         uncommitted_tool_batch: uncommitted_tool_batch.map(Arc::new),
                     }),
                     None,

@@ -5,7 +5,7 @@ use crate::budget::FramePolicy;
 use crate::config::TurnRunOptions;
 use crate::config::UnknownOutcomePolicy;
 use crate::control::RunControl;
-use crate::conversation::{ConversationError, ConversationState, SealedResult};
+use crate::conversation::{ConversationError, ConversationState, HistoryEntry, SealedResult};
 use crate::executor::ToolExecutor;
 use crate::ids::new_block_id;
 use causa_kernel::AttemptNumber;
@@ -13,12 +13,12 @@ use causa_kernel::ModelGateway;
 use causa_kernel::ModelRequest;
 use causa_kernel::ModelStopReason;
 use causa_kernel::ToolCallPayload;
+use causa_kernel::TurnContext;
 use causa_kernel::merged_frame;
 use causa_kernel::{ArtifactRef, BatchError, ToolResultStatus, Truncation};
 use causa_kernel::{AttemptControl, ModelUsage, StreamDelta};
-use causa_kernel::{BlockId, ConversationId, FrameScope, InvocationId, RoundId};
+use causa_kernel::{BlockId, ConversationId, InvocationId, RoundId};
 use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
-use causa_kernel::{TurnContext, TurnSnapshot};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -315,8 +315,6 @@ pub struct ModelRoundTrace {
     /// Turn + round identity every attempt of the round shares (a retry
     /// bumps only the attempt number).
     pub invocation_id: InvocationId,
-    /// The `source_version` at frame materialization (the version before apply).
-    pub frame_version: causa_kernel::ContextVersion,
     /// One entry per model attempt, in order.
     pub attempts: Vec<AttemptTrace>,
     /// `None` when no output was produced (every attempt failed).
@@ -441,7 +439,7 @@ enum FrameSource<'a> {
     /// deliberately inert here.
     Conversation {
         conversation_id: &'a ConversationId,
-        history: &'a [TurnSnapshot],
+        history: &'a [HistoryEntry],
     },
 }
 
@@ -643,7 +641,7 @@ impl TurnRunner {
                 active,
                 FrameSource::Conversation {
                     conversation_id,
-                    history: &history,
+                    history,
                 },
                 &options,
                 &ctrl,
@@ -821,11 +819,12 @@ impl TurnRunner {
                 FrameSource::Conversation {
                     conversation_id,
                     history,
-                } => merged_frame(conversation_id, history, active, RoundId(round)),
-            };
-            let frame_version = match &frame.scope {
-                FrameScope::Turn { source_version, .. }
-                | FrameScope::Conversation { source_version, .. } => *source_version,
+                } => merged_frame(
+                    conversation_id,
+                    history.iter().map(|entry| &entry.facts),
+                    active,
+                    RoundId(round),
+                ),
             };
             let invocation = InvocationId {
                 turn_id: active.turn_id(),
@@ -979,7 +978,6 @@ impl TurnRunner {
                     trace.rounds.push(ModelRoundTrace {
                         round_id: RoundId(round),
                         invocation_id: invocation,
-                        frame_version,
                         attempts,
                         output_summary: None,
                         applied_block_ids: vec![],
@@ -1005,7 +1003,6 @@ impl TurnRunner {
             trace.rounds.push(ModelRoundTrace {
                 round_id: RoundId(round),
                 invocation_id: invocation.clone(),
-                frame_version,
                 attempts,
                 output_summary,
                 applied_block_ids: vec![],

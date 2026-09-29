@@ -26,7 +26,7 @@
 //! ## Boundaries
 //!
 //! - **Not facts**: `ContextEvent` instances are constructed on demand
-//!   by `project_turn`; they never appear in a kernel snapshot.
+//!   by `project_turn`; they never appear in the kernel's fact model.
 //! - **Not persistent**: nothing in this module touches the workspace
 //!   store. Consumers persist what they need.
 //! - **No harness dependency**: this module is `Send + Sync`-pure and

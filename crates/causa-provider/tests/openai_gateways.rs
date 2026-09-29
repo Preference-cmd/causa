@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use causa_kernel::{
     AttemptControl, AttemptNumber, BlockContent, BlockId, BlockMeta, CancellationToken,
-    ContextBlock, ContextFrame, ContextVersion, FrameScope, GenerationOptions, InvocationId,
-    ModelContext, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason,
-    RoundId, TextPayload, ToolSurface, TurnId,
+    ContextBlock, ContextFrame, FrameScope, GenerationOptions, InvocationId, ModelContext,
+    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason, RoundId,
+    TextPayload, ToolSurface, TurnId,
 };
 use causa_provider::{OpenAiChatCompletionsGateway, OpenAiResponsesGateway};
 use serde_json::{Value, json};
@@ -24,7 +24,6 @@ fn ctrl(deadline: Option<Instant>) -> AttemptControl {
 fn user_frame() -> ContextFrame {
     let scope = FrameScope::Turn {
         turn_id: TurnId::new("t1"),
-        source_version: ContextVersion(1),
     };
     ContextFrame {
         scope,

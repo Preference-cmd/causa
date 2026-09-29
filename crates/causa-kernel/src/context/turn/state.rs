@@ -1,75 +1,19 @@
-//! TurnContext / ContextFrame / TurnSnapshot — the turn fact machine.
+//! TurnContext / ContextFrame — the turn fact machine.
 
 use crate::context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, TextPayload, ToolCallPayload,
 };
-use crate::context::ids::{
-    BlockId, ContextVersion, ConversationId, FrameScope, InvocationId, RoundId, TurnId,
-};
+use crate::context::ids::{BlockId, ConversationId, FrameScope, InvocationId, RoundId, TurnId};
 use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::context::tool_data::ToolResultPayload;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// Serde bridge: a `TurnContext` is serialized as its immutable snapshot
-/// projection and rebuilt from that shape on load.
-pub mod turn_context_as_snapshot {
-    use super::*;
-
-    /// Serializes the context's snapshot projection.
-    pub fn serialize<S: Serializer>(value: &TurnContext, s: S) -> Result<S::Ok, S::Error> {
-        TurnSnapshot::serialize(&value.snapshot(), s)
-    }
-
-    /// Deserializes a snapshot and rebuilds a validated context.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<TurnContext, D::Error> {
-        let snap = TurnSnapshot::deserialize(d)?;
-        let mut context = TurnContext::from_validated_blocks(
-            snap.turn_id,
-            snap.blocks.into_inner(),
-            snap.source_version,
-        )
-        .map_err(serde::de::Error::custom)?;
-        if snap.sealed {
-            context.seal();
-        }
-        Ok(context)
-    }
-}
-
-/// Serde bridge for optional active turns.
-pub mod option_turn_context_as_snapshot {
-    use super::*;
-
-    /// Serializes `Some` as a snapshot and `None` as null.
-    pub fn serialize<S: Serializer>(value: &Option<TurnContext>, s: S) -> Result<S::Ok, S::Error> {
-        match value {
-            Some(context) => turn_context_as_snapshot::serialize(context, s),
-            None => s.serialize_none(),
-        }
-    }
-
-    /// Deserializes null as `None`, otherwise validates and rebuilds the turn.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TurnContext>, D::Error> {
-        Option::<TurnSnapshot>::deserialize(d)?
-            .map(|snap| {
-                let mut context = TurnContext::from_validated_blocks(
-                    snap.turn_id,
-                    snap.blocks.into_inner(),
-                    snap.source_version,
-                )
-                .map_err(serde::de::Error::custom)?;
-                if snap.sealed {
-                    context.seal();
-                }
-                Ok(context)
-            })
-            .transpose()
-    }
-}
+mod serde_impl;
 
 /// Whether a turn accepts appends or is terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TurnLifecycle {
     /// The turn accepts appends through its controlled doors.
     Open,
@@ -137,30 +81,11 @@ pub fn model_output_block_count(response: &ModelResponse) -> usize {
     usize::from(!response.text.0.trim().is_empty()) + response.tool_calls.len()
 }
 
-/// Append-only, order-preserving block log.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrderedBlocks(Vec<ContextBlock>);
-impl OrderedBlocks {
-    /// Creates an empty log.
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-    /// Borrows the ordered blocks.
-    pub fn as_slice(&self) -> &[ContextBlock] {
-        &self.0
-    }
-    /// Consumes the log and returns its blocks.
-    pub fn into_inner(self) -> Vec<ContextBlock> {
-        self.0
-    }
-}
-
 /// Current turn facts. Mutations go through explicit-ID controlled doors.
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct TurnContext {
     turn_id: TurnId,
-    blocks: OrderedBlocks,
-    version: ContextVersion,
+    blocks: Vec<ContextBlock>,
     lifecycle: TurnLifecycle,
 }
 
@@ -168,20 +93,18 @@ impl std::fmt::Debug for TurnContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TurnContext")
             .field("turn_id", &self.turn_id)
-            .field("version", &self.version)
             .field("lifecycle", &self.lifecycle)
-            .field("blocks_len", &self.blocks.0.len())
+            .field("blocks_len", &self.blocks.len())
             .finish()
     }
 }
 
 impl TurnContext {
-    /// Creates an empty, open turn with version 0.
+    /// Creates an empty, open turn.
     pub fn new(turn_id: TurnId) -> Self {
         Self {
             turn_id,
-            blocks: OrderedBlocks::empty(),
-            version: ContextVersion(0),
+            blocks: Vec::new(),
             lifecycle: TurnLifecycle::Open,
         }
     }
@@ -192,11 +115,7 @@ impl TurnContext {
     }
     /// Borrows committed facts in commit order.
     pub fn blocks(&self) -> &[ContextBlock] {
-        &self.blocks.0
-    }
-    /// Returns the current count of canonical fact commits.
-    pub fn version(&self) -> ContextVersion {
-        self.version
+        &self.blocks
     }
     /// Returns the turn's ID.
     pub fn turn_id(&self) -> TurnId {
@@ -206,11 +125,6 @@ impl TurnContext {
     pub fn lifecycle(&self) -> TurnLifecycle {
         self.lifecycle
     }
-    /// Returns an owned copy of blocks in commit order.
-    pub fn snapshot_blocks(&self) -> Vec<ContextBlock> {
-        self.blocks.0.clone()
-    }
-
     /// Appends one text fact with an ID prepared by the caller.
     pub fn append_input(
         &mut self,
@@ -339,7 +253,6 @@ impl TurnContext {
         self.validate_new_ids(&result_ids)?;
         let declarations = self
             .blocks
-            .0
             .iter()
             .filter_map(|block| {
                 matches!(block.content(), BlockContent::ToolCall(_)).then_some(block.id())
@@ -347,7 +260,6 @@ impl TurnContext {
             .collect::<HashSet<_>>();
         let already_paired = self
             .blocks
-            .0
             .iter()
             .filter_map(|block| match block.content() {
                 BlockContent::ToolResult(result) => Some(result.call_block_id),
@@ -375,7 +287,7 @@ impl TurnContext {
 
     /// Returns the lossless projection of current facts for this round.
     pub fn frame(&self, round_id: RoundId) -> ContextFrame {
-        self.frame_with(round_id, self.blocks.0.clone())
+        self.frame_with(round_id, self.blocks.clone())
     }
 
     /// Projects an explicit block list with this turn's provenance.
@@ -383,7 +295,6 @@ impl TurnContext {
         ContextFrame {
             scope: FrameScope::Turn {
                 turn_id: self.turn_id.clone(),
-                source_version: self.version,
             },
             round_id,
             model_context: ModelContext { blocks },
@@ -410,7 +321,7 @@ impl TurnContext {
                 return Err(ContextError::DuplicateBlockId(*id));
             }
         }
-        for block in &self.blocks.0 {
+        for block in &self.blocks {
             if seen.contains(&block.id()) {
                 return Err(ContextError::DuplicateBlockId(block.id()));
             }
@@ -424,10 +335,9 @@ impl TurnContext {
         }
         let mut ids = Vec::with_capacity(prepared.len());
         for (id, content, meta) in prepared {
-            self.blocks.0.push(ContextBlock::new(id, content, meta));
+            self.blocks.push(ContextBlock::new(id, content, meta));
             ids.push(id);
         }
-        self.version = self.version.next();
         ids
     }
 
@@ -435,96 +345,43 @@ impl TurnContext {
     pub fn from_validated_blocks(
         turn_id: TurnId,
         blocks: Vec<ContextBlock>,
-        version: ContextVersion,
     ) -> Result<Self, ContextError> {
-        Self::validate_blocks(&turn_id, &blocks)?;
+        Self::validate_blocks(&blocks)?;
         Ok(Self {
             turn_id,
-            blocks: OrderedBlocks(blocks),
-            version,
+            blocks,
             lifecycle: TurnLifecycle::Open,
         })
     }
 
-    /// Validates context-local ID uniqueness and declaration/result pairing.
-    pub fn validate_blocks(_turn_id: &TurnId, blocks: &[ContextBlock]) -> Result<(), ContextError> {
+    /// Validates uniqueness of block IDs within this turn.
+    pub fn validate_blocks(blocks: &[ContextBlock]) -> Result<(), ContextError> {
         let mut block_ids = HashSet::with_capacity(blocks.len());
-        let mut declarations = HashSet::new();
-        let mut results = HashSet::new();
         for block in blocks {
             if !block_ids.insert(block.id()) {
                 return Err(ContextError::DuplicateBlockId(block.id()));
             }
-            match block.content() {
-                BlockContent::Parts(parts) if parts.is_empty() => {
-                    return Err(ContextError::InvalidContext("empty parts block".into()));
-                }
-                BlockContent::ToolCall(_) => {
-                    declarations.insert(block.id());
-                }
-                BlockContent::ToolResult(result) => {
-                    if !declarations.contains(&result.call_block_id) {
-                        return Err(ContextError::UnpairedToolResult(result.call_block_id));
-                    }
-                    if !results.insert(result.call_block_id) {
-                        return Err(ContextError::InvalidContext(format!(
-                            "duplicate tool result for {:?}",
-                            result.call_block_id
-                        )));
-                    }
-                }
-                BlockContent::Parts(_) => {}
-            }
         }
         Ok(())
     }
-
-    /// Projects the current facts as an immutable persistence snapshot.
-    pub fn snapshot(&self) -> TurnSnapshot {
-        TurnSnapshot {
-            turn_id: self.turn_id.clone(),
-            blocks: self.blocks.clone(),
-            source_version: self.version,
-            sealed: self.is_sealed(),
-        }
-    }
-}
-
-fn default_sealed() -> bool {
-    true
-}
-
-/// Immutable, serializable projection of a turn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnSnapshot {
-    /// Identity of the snapshotted turn.
-    pub turn_id: TurnId,
-    /// Committed blocks in commit order.
-    pub blocks: OrderedBlocks,
-    /// Context version at snapshot time.
-    pub source_version: ContextVersion,
-    /// Whether the turn was sealed when snapshotted.
-    #[serde(default = "default_sealed")]
-    pub sealed: bool,
 }
 
 /// Creates a lossless merged frame from history and the active turn.
-pub fn merged_frame(
+pub fn merged_frame<'a>(
     conversation_id: &ConversationId,
-    history: &[TurnSnapshot],
+    history: impl IntoIterator<Item = &'a TurnContext>,
     active: &TurnContext,
     round_id: RoundId,
 ) -> ContextFrame {
     let mut blocks = Vec::new();
-    for snapshot in history {
-        blocks.extend(snapshot.blocks.as_slice().iter().cloned());
+    for turn in history {
+        blocks.extend(turn.blocks().iter().cloned());
     }
     blocks.extend(active.blocks().iter().cloned());
     ContextFrame {
         scope: FrameScope::Conversation {
             conversation_id: conversation_id.clone(),
             active_turn_id: active.turn_id(),
-            source_version: active.version(),
         },
         round_id,
         model_context: ModelContext { blocks },

@@ -8,7 +8,7 @@
 //! lives in `causa-runtime`. Session aggregation (single active slot,
 //! completed-only history, commit-time ordering) is runtime vocabulary;
 //! `ConversationState` and the store port live there, while the kernel keeps
-//! the facts (`TurnContext` / `TurnSnapshot`) and the shared `merged_frame`
+//! the facts (`TurnContext`) and the shared `merged_frame`
 //! projection.
 
 pub mod block;

@@ -5,10 +5,10 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextError, ContextVersion,
-    InvocationId, ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload,
-    RoundId, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultPayload,
-    ToolResultStatus, TurnContext,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextError, InvocationId,
+    ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
+    TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
+    TurnContext,
 };
 use common::{ctx, endturn_output, turn_id};
 use serde_json::json;
@@ -200,8 +200,8 @@ async fn append_model_output_rejects_invalid_outputs() {
     ));
 }
 
-#[tokio::test]
-async fn from_validated_blocks_rejects_corrupt_state() {
+#[test]
+fn from_validated_blocks_checks_only_context_local_identity() {
     fn block(id: BlockId, content: BlockContent) -> ContextBlock {
         ContextBlock::new(id, content, BlockMeta::default())
     }
@@ -217,24 +217,38 @@ async fn from_validated_blocks_rejects_corrupt_state() {
         ),
     ];
     assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(2)),
+        TurnContext::from_validated_blocks(turn_id("t1"), blocks),
         Err(ContextError::DuplicateBlockId(_))
     ));
-    // Unpaired tool.result
-    let blocks = vec![block(
-        common::block_id(),
-        BlockContent::ToolResult(ToolResultPayload {
-            call_block_id: common::block_id(),
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({})),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }),
-    )];
-    assert!(matches!(
-        TurnContext::from_validated_blocks(turn_id("t1"), blocks, ContextVersion(1)),
-        Err(ContextError::UnpairedToolResult(_))
-    ));
+    let call_id = common::block_id();
+    let partial_material = vec![
+        block(
+            common::block_id(),
+            BlockContent::ToolResult(ToolResultPayload {
+                call_block_id: call_id,
+                status: ToolResultStatus::Succeeded,
+                output: ToolOutput::new(json!({})),
+                media: Vec::new(),
+                notes: Vec::new(),
+            }),
+        ),
+        block(common::block_id(), BlockContent::Parts(Vec::new())),
+        block(
+            common::block_id(),
+            BlockContent::ToolResult(ToolResultPayload {
+                call_block_id: call_id,
+                status: ToolResultStatus::Failed,
+                output: ToolOutput::new(json!("later")),
+                media: Vec::new(),
+                notes: Vec::new(),
+            }),
+        ),
+    ];
+    let imported = TurnContext::from_validated_blocks(turn_id("t1"), partial_material).unwrap();
+    assert_eq!(imported.blocks().len(), 3);
+    let wire = serde_json::to_string(&imported).unwrap();
+    let restored: TurnContext = serde_json::from_str(&wire).unwrap();
+    assert_eq!(restored.blocks(), imported.blocks());
 }
 
 #[test]
@@ -285,7 +299,7 @@ fn provider_call_id_passes_through_draft_to_persisted_block() {
         Some("call_provider_1")
     );
     assert_eq!(call_blocks[1].meta().provider_call_id, None);
-    let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
+    let blocks_json = serde_json::to_string(&c.blocks()).unwrap();
     let blocks: Vec<ContextBlock> = serde_json::from_str(&blocks_json).unwrap();
     let restored: Vec<Option<String>> = blocks
         .iter()
@@ -440,9 +454,9 @@ async fn lossless_frame_is_a_pure_function_of_facts() {
     );
     assert_eq!(
         serde_json::to_string(&f0.model_context.blocks).unwrap(),
-        serde_json::to_string(&c.snapshot_blocks()).unwrap()
+        serde_json::to_string(&c.blocks()).unwrap()
     );
-    assert_eq!(c.snapshot_blocks().len(), 1);
+    assert_eq!(c.blocks().len(), 1);
 }
 
 // ---- New: content is the only axis, no kind field ----
@@ -483,7 +497,7 @@ fn context_block_serde_format_is_flat_with_content() {
         .unwrap();
     c.append_input(common::block_id(), TextPayload::new("hi"), "user")
         .unwrap();
-    let blocks_json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
+    let blocks_json = serde_json::to_string(&c.blocks()).unwrap();
     // No legacy kind field.
     assert!(!blocks_json.contains("\"kind\""));
     // Content with shape + value; the value is the ordered parts list
@@ -522,11 +536,10 @@ fn foreign_invocation_is_rejected() {
         Err(ContextError::ForeignInvocation { .. })
     ));
     assert!(c.blocks().is_empty());
-    assert_eq!(c.version(), ContextVersion(0));
 }
 
 #[test]
-fn empty_output_commits_nothing_and_does_not_bump_version() {
+fn empty_output_commits_nothing() {
     let mut c = ctx("t1");
     let inv = InvocationId {
         turn_id: turn_id("t1"),
@@ -552,8 +565,6 @@ fn empty_output_commits_nothing_and_does_not_bump_version() {
     assert!(applied.block_ids.is_empty());
     assert!(applied.tool_calls.is_empty());
     assert!(c.blocks().is_empty());
-    // ContextVersion counts canonical fact commits, not attempts.
-    assert_eq!(c.version(), ContextVersion(0));
 }
 
 #[test]
@@ -566,12 +577,12 @@ fn input_source_is_recorded_verbatim_in_envelope() {
     let blocks = c.blocks();
     assert_eq!(blocks[0].meta().source.as_deref(), Some("system"));
     assert_eq!(blocks[1].meta().source.as_deref(), Some("user"));
-    // Source survives snapshot round-trip — the raw material for role
+    // Source survives a direct TurnContext round-trip — the raw material for role
     // reconstruction at replay time.
-    let json = serde_json::to_string(&c.snapshot_blocks()).unwrap();
-    let back: Vec<ContextBlock> = serde_json::from_str(&json).unwrap();
-    assert_eq!(back[0].meta().source.as_deref(), Some("system"));
-    assert_eq!(back[1].meta().source.as_deref(), Some("user"));
+    let json = serde_json::to_string(&c).unwrap();
+    let back: TurnContext = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.blocks()[0].meta().source.as_deref(), Some("system"));
+    assert_eq!(back.blocks()[1].meta().source.as_deref(), Some("user"));
 }
 
 #[test]
@@ -621,7 +632,6 @@ fn tool_results_commit_in_supplied_order_with_identity_bound_to_payload() {
         })
         .collect();
     assert_eq!(call_ids, committed);
-    assert_eq!(c.version(), ContextVersion(1));
 
     // Submit in reverse declaration order; the kernel preserves this order.
     let result_ids = [common::block_id(), common::block_id()];
@@ -656,14 +666,13 @@ fn tool_results_commit_in_supplied_order_with_identity_bound_to_payload() {
         .collect();
     assert_eq!(result_blocks[0].id(), result_ids[0]);
     assert!(
-        matches!(&result_blocks[0].content(), BlockContent::ToolResult(r) if r.call_block_id == call_ids[1])
+        matches!(result_blocks[0].content(), BlockContent::ToolResult(r) if r.call_block_id == call_ids[1])
     );
     assert_eq!(result_blocks[1].id(), result_ids[1]);
     assert!(
-        matches!(&result_blocks[1].content(), BlockContent::ToolResult(r) if r.call_block_id == call_ids[0])
+        matches!(result_blocks[1].content(), BlockContent::ToolResult(r) if r.call_block_id == call_ids[0])
     );
-    // The whole batch was one canonical commit: exactly one version bump.
-    assert_eq!(c.version(), ContextVersion(2));
+    // The batch preserves its supplied commit order.
 }
 
 // ---- Parts vocabulary, media references, append_parts --------------------------
@@ -671,7 +680,7 @@ fn tool_results_commit_in_supplied_order_with_identity_bound_to_payload() {
 use causa_kernel::MediaRef;
 
 #[test]
-fn append_parts_commits_one_block_with_a_single_bump() {
+fn append_parts_commits_one_block() {
     let mut c = ctx("t1");
     let id = c
         .append_parts(
@@ -683,14 +692,13 @@ fn append_parts_commits_one_block_with_a_single_bump() {
             "user",
         )
         .unwrap();
-    // one logical message = one fact block, one version bump
+    // one logical message = one fact block
     assert_eq!(c.blocks().len(), 1);
-    assert_eq!(c.version(), ContextVersion(1));
     assert_eq!(c.blocks()[0].id(), id);
     // source stamped verbatim on the envelope
     assert_eq!(c.blocks()[0].meta().source.as_deref(), Some("user"));
     // part order preserved
-    if let BlockContent::Parts(parts) = &c.blocks()[0].content() {
+    if let BlockContent::Parts(parts) = c.blocks()[0].content() {
         assert_eq!(parts.len(), 2);
         assert_eq!(
             parts[0],
@@ -713,7 +721,6 @@ fn append_parts_rejects_empty_parts_without_committing() {
         .unwrap_err();
     assert!(matches!(e, ContextError::InvalidContext(_)));
     assert!(c.blocks().is_empty());
-    assert_eq!(c.version(), ContextVersion(0));
 }
 
 #[test]
@@ -742,8 +749,8 @@ fn append_input_is_the_single_text_part_sugar() {
         .append_input(id, TextPayload::new("hi"), "user")
         .unwrap();
     assert_eq!(
-        serde_json::to_string(&direct.snapshot_blocks()).unwrap(),
-        serde_json::to_string(&sugar.snapshot_blocks()).unwrap()
+        serde_json::to_string(&direct.blocks()).unwrap(),
+        serde_json::to_string(&sugar.blocks()).unwrap()
     );
 }
 
@@ -759,15 +766,15 @@ fn media_reference_round_trips_without_bytes_in_facts() {
         "user",
     )
     .unwrap();
-    let json = serde_json::to_string(&c.snapshot()).unwrap();
+    let json = serde_json::to_string(&c).unwrap();
     // the reference is the only media content on the wire shape
     assert!(json.contains(
         r#""part":"media","value":{"media_type":"image/png","reference":"blake3-asset-id"}"#
     ));
-    // snapshot size stays proportional to the reference, not to any payload
+    // The saved turn stays proportional to the reference, not to any payload.
     assert!(json.len() < 800);
-    let restored: causa_kernel::TurnSnapshot = serde_json::from_str(&json).unwrap();
-    let causa_kernel::BlockContent::Parts(parts) = &restored.blocks.as_slice()[0].content() else {
+    let restored: TurnContext = serde_json::from_str(&json).unwrap();
+    let BlockContent::Parts(parts) = restored.blocks()[0].content() else {
         panic!("expected Parts after round-trip");
     };
     assert_eq!(
@@ -799,7 +806,7 @@ fn tool_result_media_is_serde_additive_both_ways() {
         notes: Vec::new(),
     };
     assert!(!serde_json::to_string(&empty).unwrap().contains("media"));
-    // ...and a snapshot without the field defaults to empty.
+    // ...and a stored record without the field defaults to empty.
     let old = json!({
         "call_block_id": common::block_id(),
         "status": "Succeeded",
@@ -811,19 +818,85 @@ fn tool_result_media_is_serde_additive_both_ways() {
 }
 
 #[test]
-fn empty_parts_block_is_rejected_on_recovery() {
+fn turn_context_serde_requires_all_fields_and_preserves_partial_material() {
     let mut c = ctx("t1");
     c.append_input(common::block_id(), TextPayload::new("hi"), "user")
         .unwrap();
-    let mut json = serde_json::to_value(c.snapshot()).unwrap();
-    // Corrupt the history: a Parts block the doors could never produce.
-    json["blocks"][0]["content"]["value"] = json!([]);
-    let snap: causa_kernel::TurnSnapshot = serde_json::from_value(json).unwrap();
-    let err = causa_kernel::TurnContext::from_validated_blocks(
-        snap.turn_id.clone(),
-        snap.blocks.into_inner(),
-        snap.source_version,
-    )
-    .unwrap_err();
-    assert!(matches!(err, ContextError::InvalidContext(_)));
+    c.seal();
+    let value = serde_json::to_value(&c).unwrap();
+    let restored: TurnContext = serde_json::from_value(value.clone()).unwrap();
+    assert!(restored.is_sealed());
+    assert_eq!(restored.blocks(), c.blocks());
+
+    let mut open = TurnContext::new(turn_id("empty"));
+    let empty_open = serde_json::to_value(&open).unwrap();
+    assert_eq!(empty_open["lifecycle"], "open");
+    assert!(serde_json::from_value::<TurnContext>(empty_open.clone()).is_ok());
+    open.seal();
+    let empty_sealed = serde_json::to_value(&open).unwrap();
+    assert_eq!(empty_sealed["lifecycle"], "sealed");
+    assert!(
+        serde_json::from_value::<TurnContext>(empty_sealed)
+            .unwrap()
+            .is_sealed()
+    );
+
+    for field in ["turn_id", "blocks", "lifecycle"] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<TurnContext>(missing).is_err());
+    }
+    let mut unknown_lifecycle = value.clone();
+    unknown_lifecycle["lifecycle"] = json!("paused");
+    assert!(serde_json::from_value::<TurnContext>(unknown_lifecycle).is_err());
+
+    let mut duplicate = value;
+    duplicate["blocks"] = json!([c.blocks()[0], c.blocks()[0]]);
+    assert!(serde_json::from_value::<TurnContext>(duplicate).is_err());
+
+    let partial: TurnContext = serde_json::from_value(json!({
+        "turn_id": "partial-material",
+        "blocks": [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "content": {"shape": "tool_result", "value": {
+                    "call_block_id": "00000000-0000-0000-0000-000000000003",
+                    "status": "Succeeded",
+                    "output": {"content": "first", "truncation": "none", "meta": null, "artifact": null}
+                }},
+                "meta": {}
+            },
+            {
+                "id": "00000000-0000-0000-0000-000000000002",
+                "content": {"shape": "parts", "value": []},
+                "meta": {}
+            },
+            {
+                "id": "00000000-0000-0000-0000-000000000004",
+                "content": {"shape": "tool_result", "value": {
+                    "call_block_id": "00000000-0000-0000-0000-000000000003",
+                    "status": "Failed",
+                    "output": {"content": "second", "truncation": "none", "meta": null, "artifact": null}
+                }},
+                "meta": {}
+            }
+        ],
+        "lifecycle": "open"
+    }))
+    .unwrap();
+    let partial_round_trip: TurnContext =
+        serde_json::from_value(serde_json::to_value(&partial).unwrap()).unwrap();
+    assert_eq!(partial_round_trip.blocks(), partial.blocks());
+    assert_eq!(
+        partial_round_trip
+            .blocks()
+            .iter()
+            .map(|block| block.id())
+            .collect::<Vec<_>>(),
+        vec![
+            BlockId::new(uuid::Uuid::from_u128(1)),
+            BlockId::new(uuid::Uuid::from_u128(2)),
+            BlockId::new(uuid::Uuid::from_u128(4)),
+        ]
+    );
 }
