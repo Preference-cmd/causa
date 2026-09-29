@@ -5,10 +5,10 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextError, InvocationId,
-    ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId,
-    TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
-    TurnContext,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextError, EditError,
+    InvocationId, ModelOutput, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload,
+    RoundId, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultPayload,
+    ToolResultStatus, TurnContext,
 };
 use common::{ctx, endturn_output, turn_id};
 use serde_json::json;
@@ -45,7 +45,7 @@ async fn append_input_and_frame_order() {
     let mut sealed = c;
     assert!(matches!(
         sealed.append_input(common::block_id(), TextPayload::new("x"), "user"),
-        Err(ContextError::SealedTurn)
+        Err(ContextError::Edit(EditError::SealedTurn))
     ));
 }
 
@@ -59,7 +59,7 @@ async fn sealed_turn_append_closed() {
     let mut sealed = c;
     assert!(matches!(
         sealed.append_input(common::block_id(), TextPayload::new("x"), "user"),
-        Err(ContextError::SealedTurn)
+        Err(ContextError::Edit(EditError::SealedTurn))
     ));
     assert!(matches!(
         sealed.append_model_output(
@@ -71,7 +71,7 @@ async fn sealed_turn_append_closed() {
             ModelStopReason::EndTurn,
             common::block_ids_for(&endturn_output("y").response)
         ),
-        Err(ContextError::SealedTurn)
+        Err(ContextError::Edit(EditError::SealedTurn))
     ));
 }
 
@@ -196,7 +196,7 @@ async fn append_model_output_rejects_invalid_outputs() {
             ModelStopReason::EndTurn,
             common::block_ids_for(&endturn_output("y").response)
         ),
-        Err(ContextError::SealedTurn)
+        Err(ContextError::Edit(EditError::SealedTurn))
     ));
 }
 
@@ -218,7 +218,7 @@ fn from_validated_blocks_checks_only_context_local_identity() {
     ];
     assert!(matches!(
         TurnContext::from_validated_blocks(turn_id("t1"), blocks),
-        Err(ContextError::DuplicateBlockId(_))
+        Err(ContextError::Edit(EditError::DuplicateBlockId(_)))
     ));
     let call_id = common::block_id();
     let partial_material = vec![
@@ -734,7 +734,7 @@ fn append_parts_is_rejected_on_a_sealed_turn() {
             "user",
         )
         .unwrap_err();
-    assert!(matches!(e, ContextError::SealedTurn));
+    assert!(matches!(e, ContextError::Edit(EditError::SealedTurn)));
 }
 
 #[test]

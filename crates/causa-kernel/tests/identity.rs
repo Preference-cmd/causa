@@ -1,8 +1,8 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, ContextError, InvocationId, ModelResponse, ModelStopReason, RoundId,
-    TextPayload, ToolCallDraft, TurnContext, TurnId, model_output_block_count,
+    BlockContent, BlockId, ContextError, EditError, InvocationId, ModelResponse, ModelStopReason,
+    RoundId, TextPayload, ToolCallDraft, TurnContext, TurnId, model_output_block_count,
 };
 use serde_json::json;
 
@@ -75,7 +75,18 @@ fn duplicate_imported_id_is_rejected_without_any_context_mutation() {
     let err = context
         .append_input(id, TextPayload::new("rejected"), "user")
         .unwrap_err();
-    assert!(matches!(err, ContextError::DuplicateBlockId(found) if found == id));
+    assert!(
+        matches!(err, ContextError::Edit(EditError::BlockIdentityMismatch(found)) if found == id)
+    );
+    assert_eq!(before, serde_json::to_string(&context).unwrap());
+
+    let identical = context
+        .append_input(id, TextPayload::new("kept"), "user")
+        .unwrap_err();
+    assert!(matches!(
+        identical,
+        ContextError::Edit(EditError::DuplicateBlockId(found)) if found == id
+    ));
     assert_eq!(before, serde_json::to_string(&context).unwrap());
 }
 
@@ -110,7 +121,9 @@ fn importing_duplicate_blocks_rejects_the_material() {
         TurnId::new("destination"),
         vec![block.clone(), block.clone()],
     );
-    assert!(matches!(result, Err(ContextError::DuplicateBlockId(id)) if id == block.id()));
+    assert!(
+        matches!(result, Err(ContextError::Edit(EditError::DuplicateBlockId(id))) if id == block.id())
+    );
     // The same material can independently appear in another context.
     let restored =
         TurnContext::from_validated_blocks(TurnId::new("destination"), vec![block.clone()])

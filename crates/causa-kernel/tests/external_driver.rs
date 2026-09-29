@@ -7,7 +7,7 @@
 mod common;
 
 use causa_kernel::{
-    AttemptControl, AttemptNumber, CancellationToken, ContextError, GenerationOptions,
+    AttemptControl, AttemptNumber, CancellationToken, ContextError, EditError, GenerationOptions,
     InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef, ModelRequest,
     ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, RoundId, TextPayload,
     ToolSurface, TurnContext, TurnId,
@@ -101,6 +101,6 @@ async fn external_single_shot_driver_assembles_from_root_facade() {
     // sealed turn rejects further mutation
     assert!(matches!(
         context.append_input(common::block_id(), TextPayload::new("more"), "user"),
-        Err(ContextError::SealedTurn)
+        Err(ContextError::Edit(EditError::SealedTurn))
     ));
 }

@@ -3,6 +3,6 @@
 mod state;
 
 pub use state::{
-    AppliedModelOutput, ContextError, ContextFrame, ModelContext, TurnContext, TurnLifecycle,
-    merged_frame, model_output_block_count,
+    AppliedModelOutput, ContextEdit, ContextError, ContextFrame, EditError, EditFailure,
+    ModelContext, Replacement, TurnContext, TurnLifecycle, merged_frame, model_output_block_count,
 };

@@ -14,12 +14,21 @@ adapters or data converters.
 
 ### Breaking
 
+- `TurnContext` now supports atomic range edits and tail appends through
+  `apply` or the exclusive `edit` builder. Ranges use original block indices;
+  later overlapping edits replace earlier operations, reused IDs must retain
+  identical content and metadata, and failed edits return all submitted
+  material. Append errors for sealed turns and duplicate IDs are now wrapped in
+  `ContextError::Edit`; reusing an existing ID with changed content or
+  metadata reports `BlockIdentityMismatch`.
 - `TurnContext` now owns its block `Vec` and serializes directly as the
   required `turn_id`, `blocks`, and `lifecycle` fields (`open` or `sealed`).
   `ContextVersion`, `OrderedBlocks`, `TurnSnapshot`, snapshot serde bridges,
   and version provenance on frames and round traces are removed. Loading checks
   context-local block ID uniqueness only; execution append doors keep their
-  specialized validation.
+  specialized validation. Runtime `HistoryEntry` stores `facts: TurnContext`
+  instead of a snapshot, and interrupted outcomes return owned turn facts.
+  The former snapshot wire format is no longer supported.
 - `ContextBlock` identity, content, and metadata fields are private. Construct
   blocks with `ContextBlock::new(id, content, meta)` and read them through
   `id()`, `content()`, and `meta()`; replace a changed block with a new ID.

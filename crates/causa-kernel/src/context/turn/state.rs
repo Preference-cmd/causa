@@ -9,7 +9,10 @@ use crate::context::tool_data::ToolResultPayload;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+mod edit;
 mod serde_impl;
+
+pub use edit::{ContextEdit, EditError, EditFailure, Replacement};
 
 /// Whether a turn accepts appends or is terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,9 +45,9 @@ pub struct ContextFrame {
 /// Rejections for lifecycle, identity, pairing, or structural violations.
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
-    /// The turn is sealed and rejects appends.
-    #[error("sealed turn")]
-    SealedTurn,
+    /// A context edit violates lifecycle or block identity rules.
+    #[error(transparent)]
+    Edit(#[from] EditError),
     /// A model output was submitted under a different turn id.
     #[error("foreign invocation: expected turn {expected:?}, got {actual:?}")]
     ForeignInvocation {
@@ -59,9 +62,6 @@ pub enum ContextError {
     /// Block identity or pairing state is invalid.
     #[error("invalid context: {0}")]
     InvalidContext(String),
-    /// A block ID already exists in this context.
-    #[error("duplicate block id: {0:?}")]
-    DuplicateBlockId(BlockId),
     /// A result references no declared tool call.
     #[error("unpaired tool result for declaration {0:?}")]
     UnpairedToolResult(BlockId),
@@ -81,7 +81,7 @@ pub fn model_output_block_count(response: &ModelResponse) -> usize {
     usize::from(!response.text.0.trim().is_empty()) + response.tool_calls.len()
 }
 
-/// Current turn facts. Mutations go through explicit-ID controlled doors.
+/// Current turn facts. Mutations go through explicit-ID append doors or atomic edits.
 #[derive(Clone, Serialize)]
 pub struct TurnContext {
     turn_id: TurnId,
@@ -113,7 +113,7 @@ impl TurnContext {
     pub fn is_sealed(&self) -> bool {
         matches!(self.lifecycle, TurnLifecycle::Sealed)
     }
-    /// Borrows committed facts in commit order.
+    /// Borrows the current facts in commit order.
     pub fn blocks(&self) -> &[ContextBlock] {
         &self.blocks
     }
@@ -148,12 +148,13 @@ impl TurnContext {
                 "append_parts: empty parts are not a fact".into(),
             ));
         }
-        self.validate_new_ids(std::slice::from_ref(&block_id))?;
         let meta = BlockMeta {
             source: Some(source.into()),
             ..BlockMeta::default()
         };
-        self.commit_blocks(vec![(block_id, BlockContent::Parts(parts), meta)]);
+        let block = ContextBlock::new(block_id, BlockContent::Parts(parts), meta);
+        self.apply(Vec::new(), vec![block])
+            .map_err(|failure| ContextError::Edit(failure.reason))?;
         Ok(block_id)
     }
 
@@ -192,7 +193,6 @@ impl TurnContext {
                 block_ids.len()
             )));
         }
-        self.validate_new_ids(&block_ids)?;
         for draft in &response.tool_calls {
             if draft.tool_name.trim().is_empty() {
                 return Err(ContextError::InvalidModelOutput("tool_name empty".into()));
@@ -208,7 +208,7 @@ impl TurnContext {
         let mut prepared = Vec::with_capacity(expected);
         let mut tool_calls = Vec::with_capacity(response.tool_calls.len());
         if !response.text.0.trim().is_empty() {
-            prepared.push((
+            prepared.push(ContextBlock::new(
                 supplied_ids.next().expect("ID count validated"),
                 BlockContent::Parts(vec![ContentPart::Text(TextPayload(
                     response.text.0.clone(),
@@ -223,7 +223,7 @@ impl TurnContext {
                 arguments: draft.arguments.clone(),
             };
             tool_calls.push((block_id, payload.clone()));
-            prepared.push((
+            prepared.push(ContextBlock::new(
                 block_id,
                 BlockContent::ToolCall(payload),
                 BlockMeta {
@@ -232,9 +232,11 @@ impl TurnContext {
                 },
             ));
         }
-        let committed = self.commit_blocks(prepared);
+        let committed_ids = prepared.iter().map(ContextBlock::id).collect();
+        self.apply(Vec::new(), prepared)
+            .map_err(|failure| ContextError::Edit(failure.reason))?;
         Ok(AppliedModelOutput {
-            block_ids: committed,
+            block_ids: committed_ids,
             tool_calls,
         })
     }
@@ -249,8 +251,6 @@ impl TurnContext {
         if results.is_empty() {
             return Ok(Vec::new());
         }
-        let result_ids = results.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        self.validate_new_ids(&result_ids)?;
         let declarations = self
             .blocks
             .iter()
@@ -278,11 +278,16 @@ impl TurnContext {
                 )));
             }
         }
+        let result_ids = results.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         let prepared = results
             .into_iter()
-            .map(|(id, result)| (id, BlockContent::ToolResult(result), BlockMeta::default()))
+            .map(|(id, result)| {
+                ContextBlock::new(id, BlockContent::ToolResult(result), BlockMeta::default())
+            })
             .collect();
-        Ok(self.commit_blocks(prepared))
+        self.apply(Vec::new(), prepared)
+            .map_err(|failure| ContextError::Edit(failure.reason))?;
+        Ok(result_ids)
     }
 
     /// Returns the lossless projection of current facts for this round.
@@ -301,44 +306,17 @@ impl TurnContext {
         }
     }
 
-    /// Seals the turn; sealed turns reject every append operation.
+    /// Seals the turn; sealed turns reject every append or edit operation.
     pub fn seal(&mut self) {
         self.lifecycle = TurnLifecycle::Sealed;
     }
 
     fn ensure_open(&self) -> Result<(), ContextError> {
         if self.is_sealed() {
-            Err(ContextError::SealedTurn)
+            Err(EditError::SealedTurn.into())
         } else {
             Ok(())
         }
-    }
-
-    fn validate_new_ids(&self, ids: &[BlockId]) -> Result<(), ContextError> {
-        let mut seen = HashSet::with_capacity(ids.len());
-        for id in ids {
-            if !seen.insert(*id) {
-                return Err(ContextError::DuplicateBlockId(*id));
-            }
-        }
-        for block in &self.blocks {
-            if seen.contains(&block.id()) {
-                return Err(ContextError::DuplicateBlockId(block.id()));
-            }
-        }
-        Ok(())
-    }
-
-    fn commit_blocks(&mut self, prepared: Vec<(BlockId, BlockContent, BlockMeta)>) -> Vec<BlockId> {
-        if prepared.is_empty() {
-            return Vec::new();
-        }
-        let mut ids = Vec::with_capacity(prepared.len());
-        for (id, content, meta) in prepared {
-            self.blocks.push(ContextBlock::new(id, content, meta));
-            ids.push(id);
-        }
-        ids
     }
 
     /// Rebuilds an open turn from a validated block log.
@@ -359,7 +337,7 @@ impl TurnContext {
         let mut block_ids = HashSet::with_capacity(blocks.len());
         for block in blocks {
             if !block_ids.insert(block.id()) {
-                return Err(ContextError::DuplicateBlockId(block.id()));
+                return Err(EditError::DuplicateBlockId(block.id()).into());
             }
         }
         Ok(())
