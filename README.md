@@ -148,6 +148,9 @@ for layer boundaries and the
 [runtime policy overview](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/src/lib.rs)
 for defaults and component contracts.
 
+To edit the blocks in a turn explicitly, see the
+[context editing guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/context-editing.mdx).
+
 ## Status and boundaries
 
 **0.0.1 is an experimental development snapshot.** Multimodal I/O and session

@@ -140,7 +140,9 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   implementations and formats rather than adding compatibility adapters.
   During `0.0.x`, patch releases may break API / wire compatibility; record
   breaking changes and migrations at the top of CHANGELOG. Starting with
-  `0.1.0`, wire-serde breaks require a minor bump. The old session checkpoint and approval-resume mechanisms are removed.
+  `0.1.0`, wire-serde breaks require a minor bump. The previous Session checkpoint
+  and approval-resume interfaces have been removed; the current API has no
+  separate checkpoint schema version.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
 - Library module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard

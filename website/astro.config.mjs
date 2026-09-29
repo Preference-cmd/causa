@@ -36,6 +36,7 @@ export default defineConfig({
       sidebar: [
         { label: 'Getting started', slug: 'getting-started' },
         { label: 'Concepts', slug: 'concepts' },
+        { label: 'Editing turn context', slug: 'context-editing' },
         { label: 'Crates', slug: 'crates' },
         { label: 'Examples', slug: 'examples' },
         { label: 'Status & changelog', slug: 'status' },

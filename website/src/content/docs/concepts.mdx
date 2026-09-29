@@ -45,6 +45,10 @@ Key mechanisms:
   Content keys serve optional batch-local deduplication; identical calls still
   have distinct declaration IDs and independent results.
 
+For explicit block replacement or appending within one `TurnContext`, use its
+`edit()` API. See the [context editing guide](/context-editing/) for the edit
+builder and its range semantics.
+
 ## Edge crates are adapters, not opinions
 
 ```text

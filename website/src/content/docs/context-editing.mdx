@@ -1,0 +1,99 @@
+---
+title: Editing turn context
+description: Explicitly replace and append facts in a TurnContext.
+---
+
+`TurnContext` stores an ordered list of context blocks. When your application
+decides that some material should be replaced, use the context edit API to
+prepare the replacement and any new trailing blocks as one atomic change.
+The kernel does not choose what to summarize or when to edit.
+
+## Replace a range and append material
+
+Create each new block with an ID supplied by your application. A changed block
+needs a new ID; when you carry a block forward unchanged, clone or reuse the
+existing `ContextBlock` so its ID, content, and metadata stay together.
+
+```rust
+use causa::{
+    kernel::{BlockContent, BlockMeta, ContextBlock, ContentPart, TextPayload, TurnContext, TurnId},
+    runtime::new_block_id,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut context = TurnContext::new(TurnId::new("editing-example"));
+    for text in ["system note", "old detail one", "old detail two", "old detail three", "recent request"] {
+        context.append_input(new_block_id(), TextPayload::new(text), "example")?;
+    }
+
+    let summary = ContextBlock::new(
+        new_block_id(),
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
+            "The user prefers short answers and is building a Rust agent.",
+        ))]),
+        BlockMeta::default(),
+    );
+    let note = ContextBlock::new(
+        new_block_id(),
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
+            "The current request concerns context editing.",
+        ))]),
+        BlockMeta::default(),
+    );
+
+    context
+        .edit()
+        .replace(1..4, [summary])
+        .append([note])
+        .commit()?;
+
+    println!("{} blocks", context.blocks().len());
+    Ok(())
+}
+```
+
+This example uses the runtime's `new_block_id()` convenience function. A
+kernel-only application supplies its own IDs, for example by wrapping UUIDs in
+`BlockId`.
+
+Ranges use indexes from the original block sequence at the start of the edit;
+earlier replacements do not shift later coordinates. Overlapping replacements
+resolve in declaration order: a later one displaces the whole earlier
+replacement, which does not reappear. An insertion exactly at a replacement's
+right endpoint is adjacent and coexists; an insertion at its start or inside
+it overlaps and is displaced by a later replacement. Appended blocks are added
+after the replacement result, in append order.
+
+An empty replacement deletes its range; an empty range inserts at that
+position. Keep an owned copy before editing if you may need the original:
+`context.blocks()[range].to_vec()` copies the selected blocks, including their
+IDs and metadata. Editing does not mutate those copies. Causa does not retain
+deleted blocks as hidden history, so save any material you need before
+replacing or deleting it. A summary block is just material in this turn; it is
+not automatically carried into a later turn.
+
+## Atomicity and lifecycle
+
+Commit applies the whole edit or leaves the context unchanged. If validation
+fails, the edit failure returns all submitted replacement and appended blocks,
+including inputs from operations displaced by later overlapping edits. The
+caller can inspect or reuse those values. A successful commit returns `()`.
+
+An open context accepts an empty edit. A sealed context rejects every commit,
+including an empty one; reading and copying its blocks remain available.
+Creating an edit builder does not change the context, and dropping an
+uncommitted builder discards only that pending edit.
+
+## Saving a turn
+
+`TurnContext` serializes directly as an object with three required fields:
+`turn_id`, `blocks`, and `lifecycle`. The lifecycle is `open` or `sealed`.
+Loading checks the serialized shape and uniqueness of block IDs before
+constructing the context. Empty Parts and partial tool-call material are allowed.
+Missing fields, unknown lifecycle values, or duplicate block IDs are rejected. Loading does not run tools, call a model, register a session, or
+recover blocks that were previously deleted and not saved elsewhere.
+
+This API edits one supplied turn. Choosing summary content, retaining prior
+turns, coordinating sessions, and preparing a model request remain application
+or harness responsibilities; the guide does not imply automatic Session
+summarization or cross-turn history management.
