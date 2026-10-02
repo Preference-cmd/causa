@@ -34,11 +34,11 @@ no policy. Anything the host didn't opt into doesn't happen.
 
 ## Get started
 
-Add the experimental 0.0.1 facade to your Rust project (Rust 1.96+):
+Add the experimental 0.0.2 facade to your Rust project (Rust 1.96+):
 
 ```bash
 # Default entry: kernel + runtime + providers.
-cargo add causa@0.0.1
+cargo add causa@0.0.2
 ```
 
 [Build your first application →](/getting-started/)
@@ -89,7 +89,7 @@ no sibling crate. [Read the concepts →](/concepts/)
 | `causa-provider` | reqwest `ModelGateway` adapters |
 | `causa-extension` | `mcp` feature: MCP client tool sources |
 
-Need everything? `cargo add causa@0.0.1 --features full`. Auditing offline?
+Need everything? `cargo add causa@0.0.2 --features full`. Auditing offline?
 `--no-default-features` is kernel-only. [Full crate guide →](/crates/)
 
 ## Learn by running
@@ -104,7 +104,7 @@ Run these commands from the repository root after cloning as shown above.
 
 <CtaBand />
 
-> **Status: experimental 0.0.1.** API and serialized formats may
-> change in 0.0.x patch releases. The current checkout has unreleased material-flow
-> APIs; applications own sessions and subagent orchestration.
+> **Status: experimental 0.0.2.** API and serialized formats may
+> change in 0.0.x patch releases. Context material and execution are separate;
+> applications own sessions and subagent orchestration.
 > [Status & changelog →](/status/)

@@ -12,6 +12,13 @@ adapters or data converters.
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-02
+
+An experimental release separating editable context material from execution
+across all six crates. Update dependencies explicitly from `0.0.1` to `0.0.2`;
+this release breaks the Rust API and stored material format. Applications own
+sessions, history, work management and subagent orchestration.
+
 ### Breaking
 
 - Replace `TurnContext` with `Context`: it owns only ordered blocks, stays

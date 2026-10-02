@@ -27,7 +27,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "causa"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "causa-kernel",
  "causa-runtime",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "causa-kernel"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "causa-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "causa-kernel",

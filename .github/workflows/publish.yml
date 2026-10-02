@@ -6,7 +6,7 @@ on:
       version:
         description: Experimental version shared by all six crates
         required: true
-        default: '0.0.1'
+        default: '0.0.2'
         type: string
       publish:
         description: Upload to crates.io (requires the matching vVERSION tag)

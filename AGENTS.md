@@ -5,7 +5,7 @@
 
 **Causa** is a minimal context kernel for Rust agents: it holds the facts,
 your code holds the behavior. One Cargo workspace, six crates, lockstep
-versioned at `0.x`; `0.0.1` is the first experimental release, with `causa`
+versioned at `0.x`; `0.0.2` is the current experimental release, with `causa`
 as the default entry. Dual-licensed `MIT OR Apache-2.0`.
 
 ## Layout
@@ -34,7 +34,7 @@ User-facing feature map on the facade:
 
 | selection | gets |
 |---|---|
-| `causa = "0.0.1"` (default) | kernel + runtime + providers |
+| `causa = "0.0.2"` (default) | kernel + runtime + providers |
 | `features = ["full"]` | + extensions (MCP) |
 | `default-features = false` | kernel only (offline audit / minimal embed) |
 | `default-features = false, features = ["runtime"]` | kernel + offline driver |

@@ -5,17 +5,40 @@ description: Where Causa stands and where it's going.
 
 ## Experimental 0.0.x
 
-The published **0.0.1** is the first experimental snapshot. The current
-checkout contains unreleased breaking changes: editable `Context`, a
+**0.0.2** separates context material from execution: editable `Context`, a
 material-returning runner, explicit preparation and bound tool processing.
 Session management, history policies and subagent orchestration belong to
-applications built on Causa. This migration does not announce a new release.
+applications built on Causa. This is an experimental release with breaking
+changes from 0.0.1.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Breaking changes and migration notes appear at the top of
 the release notes. Cargo does not automatically upgrade `"0.0.1"` to
 `0.0.2`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
 version.
+
+## Upgrading from 0.0.1
+
+Update your dependency explicitly to `causa = "0.0.2"`, then migrate these
+boundaries:
+
+| 0.0.1 usage | 0.0.2 replacement |
+| --- | --- |
+| `TurnContext`, snapshots and sealed turns | Editable `Context`; store the material your application retains |
+| Implicit conversation history and `merged_frame` | Supply context explicitly; use `ContextPreparer` to edit retained material and select the request frame |
+| Runner-owned model defaults and policies | `TurnRunOptions::new(model)` plus application-owned preparation and policy |
+| Executor constructors and implicit tool lookup | `ToolExecutor::new(tools, options)`, then bind and process a fresh batch |
+| `Session` and conversation storage | Application-owned session, work and persistence layers |
+| Stored event history | Optional borrowed `RunEvent` observations; copy observations you need to keep |
+| Previous context/session serialized data | Explicit application migration; no automatic compatibility reader |
+
+Handle `TurnOutcome.result` and retain or dispose of returned context and any
+uncommitted tool batch deliberately. An interrupted external tool may have an
+unknown outcome; recreating context does not guarantee exactly-once execution.
+
+The [getting-started example](/getting-started/) uses the new facade API. The
+[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.2/CHANGELOG.md)
+details the control, conversion, tool-binding and protocol changes.
 
 ## Changelog
 
