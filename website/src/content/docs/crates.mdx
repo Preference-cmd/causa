@@ -3,7 +3,7 @@ title: Crates
 description: The six Causa crates and how to select them.
 ---
 
-`cargo add causa@0.0.1` is the default entry for the 0.0.1 experimental
+`cargo add causa@0.0.2` is the default entry for the 0.0.2 experimental
 release. Cargo resolves the family dependencies for you; using the layer
 crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
 `MIT OR Apache-2.0`.
@@ -23,7 +23,7 @@ crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
 
 | selection | gets |
 | --------- | ---- |
-| `causa = "0.0.1"` (default) | kernel + runtime + providers |
+| `causa = "0.0.2"` (default) | kernel + runtime + providers |
 | `features = ["full"]` | + extensions (MCP) |
 | `default-features = false` | kernel only (offline audit / minimal embed) |
 | `default-features = false, features = ["runtime"]` | kernel + offline driver |

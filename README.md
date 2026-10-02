@@ -20,9 +20,10 @@ Its optional runtime adds turn execution, streaming and tool-processing chains, 
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
-> **Pre-0.1 development.** Requires Rust **1.96+**. This checkout includes
-> unreleased API changes after 0.0.1. APIs and stored formats have no backward
-> compatibility guarantee before 0.1; use the `v0.0.1` tag for that release.
+> **Experimental 0.0.2.** Requires Rust **1.96+**. This release separates
+> editable context material from execution and removes session ownership.
+> APIs and stored formats have no backward compatibility guarantee before 0.1;
+> review the [migration notes](https://github.com/Preference-cmd/causa/blob/v0.0.2/CHANGELOG.md#002---2026-10-02) when upgrading.
 
 ## Try it offline
 
@@ -36,18 +37,17 @@ cargo run --example conversation_persistence -p causa-runtime
 
 Repository examples run from this checkout, even if you have already added
 `causa` to another project. The default checkout follows development; use
-`git checkout v0.0.1` to run the examples for this release.
+`git checkout v0.0.2` to run the examples for this release.
 
 ## Use in your application
 
-Start with **`causa`**. Cargo resolves the underlying crates. The following
-example uses the current checkout; from the directory containing your cloned
-`causa` repository, create a sibling application:
+Start with **`causa`**. Cargo resolves the underlying crates. Create an
+application using the published release:
 
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa --path ../causa/crates/causa
+cargo add causa@0.0.2
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -96,15 +96,14 @@ local tool, see the
 ### Choose your features
 
 The default includes the kernel, runtime and provider adapters. MCP is opt-in.
-These are the published 0.0.1 dependency configurations; use a local `path`
-dependency for the unreleased API shown above:
+Choose the dependencies your application needs:
 
 | Configuration | Included |
 |---|---|
-| `causa = "0.0.1"` | Kernel + runtime + providers |
-| `causa = { version = "0.0.1", features = ["full"] }` | Default stack + MCP extensions |
-| `causa = { version = "0.0.1", default-features = false }` | Kernel only |
-| `causa = { version = "0.0.1", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
+| `causa = "0.0.2"` | Kernel + runtime + providers |
+| `causa = { version = "0.0.2", features = ["full"] }` | Default stack + MCP extensions |
+| `causa = { version = "0.0.2", default-features = false }` | Kernel only |
+| `causa = { version = "0.0.2", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
 The kernel is always present. `providers` also enables `protocol`; `full`
 enables the MCP adapter through `extensions`. See the
@@ -159,15 +158,15 @@ To edit the retained blocks explicitly, see the
 
 ## Status and boundaries
 
-**0.0.1 is an experimental development snapshot.** The current checkout provides
+**0.0.2 is an experimental release.** It provides
 multimodal material, turn execution and tool-processing contracts. Session management and subagent orchestration belong to applications built
-on Causa. This migration is unreleased and does not announce a 0.1 release.
+on Causa. This release does not announce a 0.1 stability commitment.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Cargo does not automatically upgrade `"0.0.1"` to `0.0.2`;
 review the [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
 before upgrading. Starting with `0.1.0`, breaking wire-format changes bump the
-minor version. The current development API replaces `TurnContext` with editable `Context`
+minor version. The 0.0.2 API replaces `TurnContext` with editable `Context`
 and removes session ownership, implicit traces and built-in budget policies.
 Applications own history, input admission, preparation and persistence.
 
