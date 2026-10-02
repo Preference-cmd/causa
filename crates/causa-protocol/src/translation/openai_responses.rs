@@ -64,6 +64,7 @@ pub fn render_openai_responses_input(
     model: &ModelRef,
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
+    super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media);
 
     let mut instructions: Vec<String> = Vec::new();

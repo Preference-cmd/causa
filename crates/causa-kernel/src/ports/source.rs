@@ -23,26 +23,25 @@ pub trait DynamicToolSource: Send + Sync {
     fn id(&self) -> &str;
 
     /// Change signal for executor-side caching: bump whenever the tool
-    /// listing may have changed (e.g. MCP `tools/list_changed`). The
-    /// executor caches the listing keyed by this value — a source whose
-    /// observed version matches the cache costs no re-list, and a source
-    /// without change notifications (the `0` default) is therefore listed
-    /// once and served from the cache until it bumps.
+    /// listing may have changed (e.g. MCP `tools/list_changed`). Consumers
+    /// may reuse a listing while the observed version remains unchanged.
+    /// This signal does not make version/list reads an atomic snapshot or
+    /// replace an invocation binding to concrete targets.
     fn version(&self) -> u64 {
         0
     }
 
-    /// The current tool listing. Fails when the catalog is unreachable —
-    /// the executor then keeps serving the source's last good listing
-    /// (with a warning) and proceeds; a source with no cached listing yet
-    /// is skipped. Either way the turn is not interrupted.
+    /// The current tool listing. Failure means acquisition failed, not an
+    /// empty catalog. The reference executor propagates refresh errors and
+    /// does not substitute an old listing or skip the source. Existing
+    /// successful bindings retain the targets they already acquired.
     async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError>;
 
     /// Execute one call against the catalog. `call.input.tool_name` arrives in
     /// the source's namespace; implementors de-namespace it (and reject
     /// names outside their namespace). Sources return the recorded result
-    /// only — what an `UnknownOutcome` result does next is harness
-    /// configuration, not source vocabulary.
+    /// only — handling `UnknownOutcome` belongs to the execution consumer,
+    /// not source vocabulary.
     async fn invoke(
         &self,
         call: &ToolCallContext,

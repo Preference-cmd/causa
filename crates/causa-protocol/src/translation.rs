@@ -31,8 +31,8 @@
 //! join into one text with `\n`; tool ids come from
 //! `meta.provider_call_id` with the declaration `BlockId` UUID as fallback,
 //! and tool result ids resolve through their declaration block identity
-//! (an unpaired result falls back to that UUID — the provider rejects the
-//! orphan at HTTP time, the loud failure path); non-string tool observations
+//! (unpaired, duplicate, incomplete or ambiguously identified exchanges
+//! fail with InvalidRequest before HTTP); non-string tool observations
 //! serialize to a string. Ordered result notes render with the same tool
 //! result, while remaining separate from the stored output payload.
 
@@ -48,6 +48,7 @@ pub mod media;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod sse_parser;
+mod tool_history;
 pub mod usage;
 
 #[cfg(test)]

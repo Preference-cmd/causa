@@ -9,8 +9,8 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    AttemptControl, BlockContent, ContentPart, MediaRef, ModelGateway, ModelInvokeError,
-    ModelOutput, ModelRequest,
+    BlockContent, CallControl, ContentPart, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
+    ModelRequest,
 };
 use causa_protocol::translation::anthropic::{parse_anthropic_response, render_anthropic_messages};
 use causa_protocol::translation::media::MediaSet;
@@ -266,7 +266,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
         };
         let mut refs: Vec<MediaRef> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for block in &request.frame.model_context.blocks {
+        for block in &request.frame.blocks {
             let collect = |r: &MediaRef,
                            refs: &mut Vec<MediaRef>,
                            seen: &mut std::collections::HashSet<String>| {
@@ -314,7 +314,7 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
     async fn invoke(
         &self,
         request: &ModelRequest,
-        control: &AttemptControl,
+        control: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         // Observability baseline: ids and names only — never arguments,
         // message bodies, or API keys. The span is entered per poll via

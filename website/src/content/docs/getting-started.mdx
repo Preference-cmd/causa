@@ -44,9 +44,11 @@ facade; this example asks a model one question without registering tools.
 
 ```rust
 use causa::{
-    kernel::{CancellationToken, ModelRef, TextPayload, TurnContext, TurnId},
+    kernel::{BlockContent, BlockMeta, CancellationToken, ContentPart, Context, ContextBlock,
+             ModelRef, TextPayload, TurnId},
     providers::AnthropicMessagesGateway,
-    runtime::{new_block_id, RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
+    runtime::{new_block_id, RunControl, ToolExecutor, ToolExecutorOptions,
+              TurnResult, TurnRunOptions, TurnRunner},
 };
 use std::sync::Arc;
 
@@ -55,13 +57,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Arc::new(AnthropicMessagesGateway::new(
         std::env::var("ANTHROPIC_API_KEY")?,
     ));
-    let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
-    let mut context = TurnContext::new(TurnId::new("hello"));
-    context.append_input(new_block_id(), TextPayload::new("Say hello in one sentence."), "user")?;
-    let mut options = TurnRunOptions::default();
-    options.invocation.model = ModelRef::new(std::env::var("ANTHROPIC_MODEL")?);
+    let executor = Arc::new(ToolExecutor::new(Vec::new(), ToolExecutorOptions::default())?);
+    let runner = TurnRunner::new(gateway, executor);
+    let context = Context::from_blocks(vec![ContextBlock::new(
+        new_block_id(),
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("Say hello in one sentence."))]),
+        BlockMeta { source: Some("user".into()), ..Default::default() },
+    )])?;
+    let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?));
     let outcome = runner
-        .run(context, options, RunControl::new(CancellationToken::new(), None))
+        .run(TurnId::new("hello"), context, options,
+             RunControl::new(CancellationToken::new(), None))
         .await;
     match outcome.result {
         TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),

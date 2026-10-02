@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Unique identity of a turn. Opaque string checked on every model-door
-/// invocation.
+/// Identity of an execution, independent of its context material.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TurnId(pub String);
 impl TurnId {
@@ -35,26 +34,3 @@ impl BlockId {
         Self(uuid)
     }
 }
-
-/// Projection provenance tag. `Turn` scopes a single-turn projection;
-/// `Conversation` scopes the lossless merged view (history + active turn).
-/// The scope never changes block-level operation rules.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FrameScope {
-    /// Single-turn projection: only one turn's committed facts.
-    Turn {
-        /// The turn being projected.
-        turn_id: TurnId,
-    },
-    /// Lossless merged view: conversation history plus the active turn.
-    Conversation {
-        /// The conversation being projected.
-        conversation_id: ConversationId,
-        /// The turn currently active in the conversation.
-        active_turn_id: TurnId,
-    },
-}
-
-/// Unique identity of a conversation aggregate. Opaque string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ConversationId(pub String);

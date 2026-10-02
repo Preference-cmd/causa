@@ -1,31 +1,10 @@
 //! causa-kernel — ContextBlock conversation kernel.
 //! No dependency on a host application, a UI shell, or another agent framework.
 //!
-//! # Layering (the kernel is facts + contracts, nothing else)
-//!
-//! - **`context`** — the external rule interface: exactly what the fact
-//!   machine stores and validates — block content shapes, the turn state
-//!   machine and its deterministic projections, and ids. Session-level
-//!   vocabulary (the `ConversationState` aggregate, its eligibility stamp,
-//!   ordering, and the conversation store port) is runtime territory; the
-//!   kernel keeps the facts (`TurnContext`), the validated
-//!   recovery entries, and the shared `merged_frame` projection.
-//! - **`ports`** — the behavior seams external implementors fill in, each
-//!   self-contained: `ModelGateway` (request params, result envelope,
-//!   transport error), `Tool` + `ArtifactStore` (definitions, execution
-//!   context, outcome policy, limits), `DynamicToolSource`, control planes. A
-//!   type belongs here iff it is the contract surface third parties
-//!   implement or call against; the kernel itself consumes none of it. The
-//!   reference budget/compaction and host↔driver interaction seams are the
-//!   runtime components' opinions, not cross-host contracts, and live in
-//!   `causa-runtime`.
-//!
-//! The execution stack, executor, hook seam, config axes, and run control
-//! live in `causa-runtime`. Anything left here is either a fact or a
-//! contract; both are load-bearing.
-//!
-//! The physical modules are private; every re-export below is the entire
-//! public contract. Nothing else is a cross-crate commitment.
+//! The kernel holds ordered material and atomic identity-preserving edits, plus
+//! third-party model, preparation, tool and cancellation contracts. It performs
+//! no I/O, execution policy or conversation management. Reference execution
+//! lives in causa-runtime; concrete transports live in edge crates.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -37,27 +16,28 @@ mod ports;
 pub use context::block::{
     BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload, ToolCallPayload,
 };
-pub use context::ids::{BlockId, ConversationId, FrameScope, InvocationId, RoundId, TurnId};
-pub use context::model::{ModelResponse, ModelStopReason, ToolCallDraft};
+pub use context::ids::{BlockId, InvocationId, RoundId, TurnId};
+pub use context::material::{
+    Context, ContextEdit, ContextFrame, EditError, EditFailure, Replacement, ToolResultError,
+    validate_tool_result_append,
+};
+pub use context::model::{ModelBlockError, ModelResponse, ModelStopReason, ToolCallDraft};
 pub use context::tool_data::{
     ArtifactKind, ArtifactRef, ToolCallId, ToolOutput, ToolOutputMeta, ToolResultPayload,
     ToolResultStatus, Truncation,
-};
-pub use context::turn::{
-    AppliedModelOutput, ContextEdit, ContextError, ContextFrame, EditError, EditFailure,
-    ModelContext, Replacement, TurnContext, TurnLifecycle, merged_frame, model_output_block_count,
 };
 
 // --- ports: behavior seams for external implementors ------------------------
 pub use ports::batch::{
     BatchError, ProcessorContext, ProcessorError, ToolBatch, ToolBatchProcessor, ToolCallEntry,
 };
-pub use ports::control::{AttemptControl, CallControl, ControlError, effective_deadline};
+pub use ports::control::{CallControl, ControlError};
 pub use ports::gateway::{
-    AttemptNumber, CacheDirective, GenerationOptions, ModelGateway, ModelInvokeError,
-    ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage,
-    ReasoningPayload, StreamDelta, ToolSurface, completed_model_stream,
+    CacheDirective, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage, ReasoningPayload, StreamDelta,
+    ToolSurface, completed_model_stream,
 };
+pub use ports::prepare::{ContextPreparer, PrepareError, RoundInfo};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
     ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDefinition,

@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use causa_runtime::TurnResult;
 use common::{
-    EchoTool, RecordingGateway, ctrl, ctx, endturn_output, options_with_limits, runner_with,
-    tooluse_output,
+    EchoTool, RecordingGateway, ctrl, endturn_output, options, runner_with, tooluse_output,
 };
 
 /// Appends every write into the shared capture buffer.
@@ -53,9 +52,9 @@ fn capture() -> &'static Arc<Mutex<String>> {
 }
 
 #[tokio::test]
-async fn driver_spans_turn_round_attempt_and_tool_dispatch() {
+async fn driver_spans_turn_logical_invocation_and_tool_dispatch() {
     let log = capture();
-    let c = ctx("t1");
+    let c = causa_kernel::Context::new();
     let runner = runner_with(
         RecordingGateway::scripted(vec![
             Ok(tooluse_output(
@@ -67,25 +66,27 @@ async fn driver_spans_turn_round_attempt_and_tool_dispatch() {
         ]),
         vec![Arc::new(EchoTool)],
     );
-    let out = runner.run(c, options_with_limits(5, 10), ctrl()).await;
+    let out = runner
+        .run(causa_kernel::TurnId::new("t1"), c, options(), ctrl())
+        .await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
 
     let text = log.lock().unwrap().clone();
     assert!(text.contains("agent.turn"), "missing agent.turn: {text}");
-    assert!(
-        text.contains(r#"scope="turn""#),
-        "missing scope field: {text}"
-    );
+    assert!(text.contains("turn_id=t1"), "missing turn identity: {text}");
     assert!(text.contains("agent.round"), "missing agent.round: {text}");
     assert!(
         text.contains("round_id=0"),
         "missing round_id field: {text}"
     );
     assert!(
-        text.contains("agent.attempt"),
-        "missing agent.attempt: {text}"
+        !text.contains("agent.attempt"),
+        "obsolete agent.attempt: {text}"
     );
-    assert!(text.contains("model=fake"), "missing model field: {text}");
+    assert!(
+        text.contains("model=fixture-model"),
+        "missing model field: {text}"
+    );
     assert!(text.contains("agent.tool"), "missing agent.tool: {text}");
     assert!(
         text.contains("tool_name=echo"),

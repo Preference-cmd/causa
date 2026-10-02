@@ -16,15 +16,15 @@
 //! | 2xx body not parseable / over cap       | `Permanent`     |
 //! | anything else                           | `Permanent`     |
 //!
-//! The adapter is **read-only** on the control plane: `AttemptControl::deadline`
+//! The adapter is **read-only** on the control plane: `CallControl::deadline`
 //! becomes the request timeout and the shared cancellation token is raced
 //! against in-flight HTTP via `select!`. Gateways never construct control
-//! planes — those are driver-owned (`AttemptControl::new` stays
+//! planes — those are driver-owned (`CallControl::new` stays
 //! `pub(crate)`).
 
 use std::time::Duration;
 
-use causa_kernel::{AttemptControl, ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
+use causa_kernel::{CallControl, ModelInvokeError, ModelInvokeErrorKind, ModelOutput};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 
@@ -92,7 +92,7 @@ fn default_client() -> Client {
 /// parsing.
 pub(crate) async fn send_with_control(
     req: reqwest::RequestBuilder,
-    control: &AttemptControl,
+    control: &CallControl,
 ) -> Result<(StatusCode, String), ModelInvokeError> {
     if control.is_cancelled() {
         return Err(ModelInvokeError::new(

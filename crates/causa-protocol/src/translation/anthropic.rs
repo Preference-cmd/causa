@@ -76,6 +76,7 @@ pub fn render_anthropic_messages(
     model: &ModelRef,
     cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
+    super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media);
 
     // Group consecutive same-wire-role segments into one message
@@ -172,6 +173,8 @@ pub fn render_anthropic_messages(
             }
         }
     }
+
+    super::tool_history::validate_anthropic(&messages)?;
 
     if messages.is_empty() {
         return Err(ModelInvokeError::new(
@@ -391,10 +394,7 @@ fn append_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use causa_kernel::{
-        ConversationId, FrameScope, MediaRef, ModelContext, ModelUsage, RoundId, ToolDefinition,
-        TurnId,
-    };
+    use causa_kernel::{MediaRef, ModelUsage, ToolDefinition};
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
@@ -515,22 +515,23 @@ mod tests {
     }
 
     #[test]
-    fn unpaired_tool_result_falls_back_to_declaration_uuid() {
-        let fallback_id = call(0, "orphan", None, "ignored", json!({}))
-            .id()
-            .0
-            .to_string();
+    fn unpaired_tool_result_is_invalid_before_http() {
         let f = frame(vec![result(
             0,
             "orphan",
             ToolResultStatus::Succeeded,
             json!("x"),
         )]);
-        let v = render(&f);
-        assert_eq!(
-            v["messages"][0]["content"][0]["tool_use_id"],
-            json!(fallback_id)
-        );
+        let error = render_anthropic_messages(
+            &f,
+            &MediaSet::new(),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("test"),
+            CacheDirective::None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
     }
 
     #[test]
@@ -598,31 +599,6 @@ mod tests {
             serde_json::to_string(&v2).unwrap(),
             serde_json::to_string(&again).unwrap()
         );
-    }
-
-    #[test]
-    fn conversation_scope_renders_same_body_as_turn_scope() {
-        let blocks = vec![text(0, "hi", Some("user")), text(1, "hello", None)];
-        let turn_scope = FrameScope::Turn {
-            turn_id: TurnId::new("t1"),
-        };
-        let conv_scope = FrameScope::Conversation {
-            conversation_id: ConversationId("c1".into()),
-            active_turn_id: TurnId::new("t2"),
-        };
-        let turn = ContextFrame {
-            scope: turn_scope,
-            round_id: RoundId(1),
-            model_context: ModelContext {
-                blocks: blocks.clone(),
-            },
-        };
-        let conv = ContextFrame {
-            scope: conv_scope,
-            round_id: RoundId(1),
-            model_context: ModelContext { blocks },
-        };
-        assert_eq!(render(&turn), render(&conv));
     }
 
     #[test]
@@ -862,12 +838,10 @@ mod tests {
 
     #[test]
     fn result_without_media_keeps_the_string_content_shape() {
-        let f = frame(vec![result(
-            0,
-            "kc1",
-            ToolResultStatus::Succeeded,
-            json!("ok"),
-        )]);
+        let f = frame(vec![
+            call(0, "kc1", None, "read", json!({})),
+            result(1, "kc1", ToolResultStatus::Succeeded, json!("ok")),
+        ]);
         let v = render_anthropic_messages(
             &f,
             &resolved("unused"),
@@ -877,7 +851,7 @@ mod tests {
             CacheDirective::None,
         )
         .unwrap();
-        assert_eq!(v["messages"][0]["content"][0]["content"], json!("ok"));
+        assert_eq!(v["messages"][1]["content"][0]["content"], json!("ok"));
     }
 
     #[test]

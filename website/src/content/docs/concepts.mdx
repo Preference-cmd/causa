@@ -7,47 +7,45 @@ description: Facts, ports, driver — how Causa is layered and why.
 
 `causa-kernel` has no I/O, no transport, no policy. It holds:
 
-- **Facts** (`context`): the conversation fact machine — blocks, turn state,
-  deterministic projections. One logical message's mixed content commits as one
-  fact block (`append_parts`); media travels as cheap durable `MediaRef`
-  references whose bytes live only in the host's asset store.
-- **Contracts** (`ports`): the seams third parties implement or call against —
-  `ModelGateway`, `Tool`, `DynamicToolSource`, `ToolBatchProcessor`, `CallControl`, and
-  `ArtifactStore`. A type lives in `ports` iff someone outside the kernel
-  implements or calls it.
+- **Material** (`context`): `Context` owns ordered blocks and atomic edits;
+  `ContextFrame` is an independent selection for a model request. Neither has a
+  turn lifecycle or execution identity. Media uses durable `MediaRef` values;
+  asset bytes live in the host's store.
+- **Contracts** (`ports`): `ModelGateway`, `ContextPreparer`, `Tool`,
+  `DynamicToolSource`, `ToolBatchProcessor`, `CallControl` and `ArtifactStore`.
+  Third parties can implement or call these without adopting the runtime.
 
-## causa-runtime is a set of optional components
+## Optional execution components
 
-`causa-runtime` holds the reference components you can adopt: the
-execution stack (turn loop, tool-processing chains, dispatch, streaming), the
-session aggregate (`ConversationState` / `ConversationStore`) and
-session owner (`Session` / `SessionHandle`), and the policy
-components (`FramePolicy`, `TokenCounter`, `TurnInteraction`).
-`ConversationStore` is also a runtime contract; the kernel's `ArtifactStore`
-is the separate port for tool artifacts. Everything is optional, and each piece is
-offered as a reference: adopt it whole, or read it and build your own. What
-adopting a piece brings along is documented as cost — not a promise about
-how finely the crate can be split.
+`TurnRunner` owns a gateway and `ToolExecutor`. Each call supplies a turn ID,
+context, explicit model, options and control. It returns the editable context
+on completion or controlled interruption, with the complete current tool batch
+when results have not committed. Dropping the future or panicking bypasses that
+return guarantee. Local cancellation cannot undo remote tool effects.
 
-Key mechanisms:
+The runner binds the tool catalog before preparation, so the request surface and
+execution targets refer to the same captured tool objects. An optional
+`ContextPreparer` edits retained context and selects a request frame. The
+request's logical invocation ID stays unchanged across gateway-owned retries.
+Only declarations from a fresh model output become executable work; imported
+context is never a resume command.
 
-- **Tool processing** — an ordered pre-processing chain, a fixed execution
-  step and an ordered post-processing chain operate on one `ToolBatch`.
-  A processor can await approval while holding the entire batch. Notes travel
-  with each result and are visible to the model.
-- **Interruption ownership** — an interrupted chain returns its current batch
-  and cause. Your application decides what to do with that material; the runtime
-  does not automatically retry, checkpoint or commit a partial batch.
-- **Explicit output policy** — optional post processors control output limits
-  and artifact storage. The processor changing content also maintains its
-  truncation and artifact descriptions.
-- **Identity** — opaque UUID block IDs identify declarations and results.
-  Content keys serve optional batch-local deduplication; identical calls still
-  have distinct declaration IDs and independent results.
+Tool processing applies ordered before processors, concurrent execution and
+ordered after processors to one `ToolBatch`. A processor can await approval.
+The executor collects started calls before returning a controlled interruption;
+the runner commits results atomically only after successful processing and
+validation. An unknown outcome is committed and stops further model rounds.
 
-For explicit block replacement or appending within one `TurnContext`, use its
-`edit()` API. See the [context editing guide](/context-editing/) for the edit
-builder and its range semantics.
+Six borrowed `RunEvent` observations expose requests, streaming deltas, complete
+outputs, actual block appends and tool-processing entry/return. Observers choose
+what to save; the runner keeps no implicit trace. Typed interruptions retain
+failed conversion or commit inputs so an observer is not required for recovery.
+
+History, session admission, input queues, budgets, model retries, output policies
+and persistence belong to applications. Build preparation or processors from
+those policies; no built-in session owner or budget strategy is imposed.
+
+See [context editing](/context-editing/) for atomic replacement and append rules.
 
 ## Edge crates are adapters, not opinions
 

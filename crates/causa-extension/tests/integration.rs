@@ -5,15 +5,16 @@
 use async_trait::async_trait;
 use causa_extension::McpToolSource;
 use causa_kernel::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, AttemptControl, BlockId, CallControl,
-    CancellationToken, DynamicToolSource, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
-    ModelRef, ModelRequest, ModelResponse, ModelStopReason, SourceError, StoreError, TextPayload,
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, BlockId, BlockMeta,
+    CallControl, CancellationToken, ContentPart, Context, ContextBlock, DynamicToolSource,
+    InvocationId, MediaRef, ModelGateway, ModelInvokeError, ModelOutput, ModelRef, ModelRequest,
+    ModelResponse, ModelStopReason, RoundId, SourceError, StoreError, TextPayload, ToolBatch,
     ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
-    ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInvocation, TurnLimits, TurnPolicy, TurnResult, TurnRunOptions,
-    TurnRunner, new_block_id,
+    RunControl, ToolCatalogError, ToolExecutor, ToolExecutorOptions, TurnLimits, TurnResult,
+    TurnRunOptions, TurnRunner, new_block_id,
 };
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -166,6 +167,20 @@ async fn served_as(
     (source, running)
 }
 
+fn invocation() -> InvocationId {
+    InvocationId {
+        turn_id: TurnId::new("mcp-integration"),
+        round_id: RoundId(0),
+    }
+}
+
+async fn process_single(executor: &ToolExecutor, call: ToolCallContext) -> ToolResultPayload {
+    let bound = executor.bind(invocation(), ctrl()).await.expect("bind");
+    let mut batch = ToolBatch::new(vec![call]).expect("new batch");
+    bound.process(&mut batch).await.expect("process");
+    batch.results()[0].result().expect("result").1.clone()
+}
+
 fn ctrl() -> CallControl {
     CallControl::new(CancellationToken::new(), None)
 }
@@ -242,7 +257,7 @@ async fn is_error_results_map_to_failed_outcomes() {
 async fn call_deadline_maps_to_timed_out() {
     let (source, server) = served(false, true).await;
     let call = call_context("mcp_srv_echo", serde_json::json!({}));
-    let control = CallControl::new(CancellationToken::new(), Some(Duration::from_millis(200)));
+    let control = ctrl().with_timeout(Duration::from_millis(200));
     let err = source
         .invoke(&call, &control)
         .await
@@ -256,7 +271,7 @@ async fn cancellation_maps_to_cancelled() {
     let (source, server) = served(false, true).await;
     let call = call_context("mcp_srv_echo", serde_json::json!({}));
     let token = CancellationToken::new();
-    let control = CallControl::new(token.clone(), Some(Duration::from_secs(30)));
+    let control = CallControl::new(token.clone(), None).with_timeout(Duration::from_secs(30));
     let task = tokio::spawn(async move { source.invoke(&call, &control).await });
     tokio::time::sleep(Duration::from_millis(100)).await;
     token.cancel();
@@ -379,12 +394,14 @@ fn echo_static_tool() -> Arc<dyn causa_kernel::Tool> {
 #[tokio::test]
 async fn executor_aggregates_static_and_dynamic_definitions() {
     let (source, server) = served(false, false).await;
-    let executor = ToolExecutor::from_vec(vec![echo_static_tool()]);
+    let executor =
+        ToolExecutor::new(vec![echo_static_tool()], ToolExecutorOptions::default()).unwrap();
     executor
         .register_dynamic(Arc::new(source))
         .expect("register");
 
-    let surface = executor.tool_surface().await;
+    let bound = executor.bind(invocation(), ctrl()).await.expect("bind");
+    let surface = bound.surface();
     let mut names: Vec<String> = surface.definitions.iter().map(|d| d.name.clone()).collect();
     names.sort();
     assert_eq!(names, vec!["echo", "mcp_srv_echo"]);
@@ -402,9 +419,9 @@ async fn executor_aggregates_static_and_dynamic_definitions() {
 }
 
 #[tokio::test]
-async fn executor_skips_a_failing_source_without_interrupting() {
+async fn executor_rejects_a_failing_catalog_source() {
     let (source, server) = served(false, false).await;
-    let executor = ToolExecutor::from_vec(vec![]);
+    let executor = ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap();
     executor
         .register_dynamic(Arc::new(source))
         .expect("register");
@@ -412,36 +429,30 @@ async fn executor_skips_a_failing_source_without_interrupting() {
         .register_dynamic(Arc::new(BrokenSource))
         .expect("register broken");
 
-    // Surface assembly still succeeds; only the healthy source's tools
-    // are present.
-    let surface = executor.tool_surface().await;
-    assert_eq!(surface.definitions.len(), 1);
-    assert_eq!(surface.definitions[0].name, "mcp_srv_echo");
+    assert!(matches!(executor.bind(invocation(), ctrl()).await,
+        Err(ToolCatalogError::Source { source_id, .. }) if source_id == "broken"));
     server.cancel().await.expect("server stop");
 }
 
 #[tokio::test]
 async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
     let (source, server) = served(false, false).await;
-    let executor = ToolExecutor::from_vec(vec![]);
+    let executor = ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap();
     executor
         .register_dynamic(Arc::new(source))
         .expect("register");
 
-    // Dispatch routes by listing membership: the surface assembly (the
-    // host's per-turn job) populates the routing cache.
-    let surface = executor.tool_surface().await;
+    // A binding exposes its directory and pins its concrete source targets.
+    let bound = executor.bind(invocation(), ctrl()).await.expect("bind");
+    let surface = bound.surface();
     assert_eq!(surface.definitions.len(), 1);
 
-    // A dynamic call executes like a local one (truncation pipeline etc.).
-    let outcome = executor
-        .execute(
-            call_context("mcp_srv_echo", serde_json::json!({"k": "v"})),
-            ctrl(),
-            None,
-        )
-        .await
-        .expect("dispatch");
+    // A dynamic call uses the same complete batch path as a local tool.
+    let outcome = process_single(
+        &executor,
+        call_context("mcp_srv_echo", serde_json::json!({"k": "v"})),
+    )
+    .await;
     assert_eq!(outcome.status, ToolResultStatus::Succeeded);
     assert_eq!(
         outcome.output.content,
@@ -450,25 +461,19 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
 
     // A name the server never advertised is rejected by the executor
     // itself — the model can only call what the surface showed.
-    let outcome = executor
-        .execute(
-            call_context("mcp_srv_nothere", serde_json::json!({})),
-            ctrl(),
-            None,
-        )
-        .await
-        .expect("dispatch");
+    let outcome = process_single(
+        &executor,
+        call_context("mcp_srv_nothere", serde_json::json!({})),
+    )
+    .await;
     assert_eq!(outcome.status, ToolResultStatus::Rejected);
 
     // A name in no listing at all is rejected by the executor too.
-    let outcome = executor
-        .execute(
-            call_context("no_such_tool_anywhere", serde_json::json!({})),
-            ctrl(),
-            None,
-        )
-        .await
-        .expect("dispatch");
+    let outcome = process_single(
+        &executor,
+        call_context("no_such_tool_anywhere", serde_json::json!({})),
+    )
+    .await;
     assert_eq!(outcome.status, ToolResultStatus::Rejected);
 
     // A remote tool-level failure (`is_error` result) is a Failed outcome
@@ -477,15 +482,11 @@ async fn executor_dispatch_routes_dynamic_calls_and_maps_errors() {
     executor
         .register_dynamic(Arc::new(flaky) as Arc<dyn DynamicToolSource>)
         .expect("register flaky");
-    executor.tool_surface().await;
-    let outcome = executor
-        .execute(
-            call_context("mcp_flaky_echo", serde_json::json!({})),
-            ctrl(),
-            None,
-        )
-        .await
-        .expect("dispatch");
+    let outcome = process_single(
+        &executor,
+        call_context("mcp_flaky_echo", serde_json::json!({})),
+    )
+    .await;
     assert_eq!(outcome.status, ToolResultStatus::Failed);
     assert!(
         outcome
@@ -510,7 +511,7 @@ impl ModelGateway for ScriptedGateway {
     async fn invoke(
         &self,
         _req: &ModelRequest,
-        _control: &AttemptControl,
+        _control: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         let mut guard = self.outputs.lock().unwrap();
         if guard.is_empty() {
@@ -554,15 +555,10 @@ fn end_turn(text: &str) -> ModelOutput {
 #[tokio::test]
 async fn kernel_turn_completes_through_the_mcp_source() {
     let (source, server) = served(false, false).await;
-    let executor = Arc::new(ToolExecutor::from_vec(vec![]));
+    let executor = Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap());
     executor
         .register_dynamic(Arc::new(source))
         .expect("register");
-    // Surface assembled from the executor (static ∪ dynamic) — the host's
-    // only job; the driver is untouched by dynamic sources.
-    let surface: ToolSurface = executor.tool_surface().await;
-    assert_eq!(surface.definitions.len(), 1);
-
     let gateway = Arc::new(ScriptedGateway {
         outputs: std::sync::Mutex::new(vec![
             tool_use_output("mcp_srv_echo", serde_json::json!({"q": 42})),
@@ -570,27 +566,24 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         ]),
     });
     let runner = TurnRunner::new(gateway, executor);
-    let options = TurnRunOptions {
-        invocation: TurnInvocation {
-            model: ModelRef::new("fake"),
-            tool_surface: surface,
-            ..Default::default()
-        },
-        policy: TurnPolicy {
-            limits: TurnLimits {
-                max_model_rounds: 5,
-                max_tool_calls: 8,
-            },
-            ..Default::default()
-        },
-        ..Default::default()
+    let mut options = TurnRunOptions::new(ModelRef::new("fake"));
+    options.limits = TurnLimits {
+        max_model_rounds: 5,
+        max_tool_calls: 8,
     };
-    let mut ctx = TurnContext::new(TurnId::new("t-mcp"));
-    ctx.append_input(new_block_id(), causa_kernel::TextPayload::new("hi"), "user")
-        .unwrap();
+    let ctx = Context::from_blocks(vec![ContextBlock::new(
+        new_block_id(),
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
+        BlockMeta {
+            source: Some("user".into()),
+            ..Default::default()
+        },
+    )])
+    .unwrap();
 
     let out = runner
         .run(
+            TurnId::new("t-mcp"),
             ctx,
             options,
             RunControl::new(CancellationToken::new(), None),
@@ -601,7 +594,14 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         "expected completion, got {:?}",
         out
     );
-    assert_eq!(out.trace.tool_calls_total, 1);
+    assert_eq!(
+        out.context
+            .blocks()
+            .iter()
+            .filter(|block| matches!(block.content(), BlockContent::ToolCall(_)))
+            .count(),
+        1
+    );
     let declaration_block_id = out
         .context
         .blocks()

@@ -1,269 +1,109 @@
-//! Multi-turn conversation with session entries persisted to disk and
-//! reloaded across a "restart" — the host-side persistence loop the
-//! `ConversationStore` port exists for.
+//! Save caller-owned Context material as JSON and import it before another run.
+//! Runnable offline: `cargo run -p causa-runtime --example conversation_persistence`.
 //!
-//! Runnable offline: the model gateway is a scripted stub that answers
-//! `"ack."` every round. In production you would plug a provider gateway
-//! from `causa-provider` here — persistence is gateway-agnostic.
-//!
-//! ```text
-//! cargo run --example conversation_persistence -p causa-runtime
-//! ```
-//!
-//! The dance the example performs is the canonical commit loop:
-//! `begin_turn → append_parts → run_in_conversation → commit →
-//! save_entry`, and on reload `load_entries →
-//! ConversationState::from_history`. The store writes one JSON file per
-//! committed turn; `from_history` validates strict sequence monotonicity
-//! on load.
-//!
-//! Wire shapes:
-//! - the store persists **`HistoryEntry`** records (`sequence` + `facts`)
-//!   — the turn facts themselves carry no session order;
-//! - one turn's message mixes text and a `MediaRef`: facts carry the
-//!   reference only, never bytes.
+//! The caller chooses the file and retention unit. Context has no execution
+//! identity or closed state; importing prior tool material never restarts it.
+//! Media remains a reference; bytes are owned by the caller's asset store.
 
 use async_trait::async_trait;
 use causa_kernel::{
-    ContentPart, ConversationId, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
-    ModelRequest, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnId,
+    BlockContent, BlockMeta, CallControl, ContentPart, Context, ContextBlock, MediaRef,
+    ModelGateway, ModelInvokeError, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelStopReason, TextPayload, TurnId,
 };
 use causa_runtime::{
-    ConversationOutcome, ConversationState, ConversationStore, ConversationStoreError,
-    HistoryEntry, RunControl, ToolExecutor, TurnResult, TurnRunner, TurnSequence, new_block_id,
+    RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-/// Scripted stub gateway: pops one canned output per model round, then
-/// fails permanently — the offline stand-in for a provider adapter.
-struct ScriptedGateway(Mutex<Vec<ModelOutput>>);
-
-impl ScriptedGateway {
-    fn new(outputs: Vec<ModelOutput>) -> Arc<Self> {
-        Arc::new(Self(Mutex::new(outputs)))
-    }
-}
-
+struct AckGateway;
 #[async_trait]
-impl ModelGateway for ScriptedGateway {
+impl ModelGateway for AckGateway {
     async fn invoke(
         &self,
-        _request: &ModelRequest,
-        _control: &causa_kernel::AttemptControl,
+        request: &ModelRequest,
+        _: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
-        let mut outputs = self.0.lock().await;
-        if outputs.is_empty() {
-            return Err(ModelInvokeError::new(
-                causa_kernel::ModelInvokeErrorKind::Permanent,
-                "script exhausted",
-            ));
-        }
-        Ok(outputs.remove(0))
+        Ok(ModelOutput {
+            response: ModelResponse {
+                text: TextPayload::new(format!(
+                    "ack: {} material blocks",
+                    request.frame.blocks.len()
+                )),
+                tool_calls: vec![],
+            },
+            usage: None,
+            stop_reason: ModelStopReason::EndTurn,
+            reasoning: None,
+        })
     }
 }
-
-fn ack(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: Vec::<ToolCallDraft>::new(),
+fn input(text: &str) -> ContextBlock {
+    ContextBlock::new(
+        new_block_id(),
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
+        BlockMeta {
+            source: Some("user".into()),
+            ..Default::default()
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-    }
+    )
 }
-
-/// Reference `ConversationStore` over the local filesystem — one JSON
-/// file per committed turn under `<root>/<conversation_id>/`. Reference
-/// implementations of ports live in examples and hosts, never in the
-/// publish set.
-struct FsConversationStore {
-    root: PathBuf,
-}
-
-impl FsConversationStore {
-    fn turn_path(&self, conversation_id: &ConversationId, sequence: TurnSequence) -> PathBuf {
-        self.root
-            .join(&conversation_id.0)
-            .join(format!("turn-{:04}.json", sequence.0))
-    }
-}
-
-#[async_trait]
-impl ConversationStore for FsConversationStore {
-    async fn save_entry(
-        &self,
-        conversation_id: &ConversationId,
-        entry: &HistoryEntry,
-    ) -> Result<(), ConversationStoreError> {
-        let dir = self.root.join(&conversation_id.0);
-        tokio::fs::create_dir_all(&dir)
-            .await
-            .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
-        let bytes = serde_json::to_vec_pretty(entry)
-            .map_err(|e| ConversationStoreError::Serialization(e.to_string()))?;
-        tokio::fs::write(self.turn_path(conversation_id, entry.sequence), bytes)
-            .await
-            .map_err(|e| ConversationStoreError::Io(e.to_string()))
-    }
-
-    async fn load_entries(
-        &self,
-        conversation_id: &ConversationId,
-    ) -> Result<Vec<HistoryEntry>, ConversationStoreError> {
-        let dir = self.root.join(&conversation_id.0);
-        let mut entries = Vec::new();
-        let mut files = tokio::fs::read_dir(&dir).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                ConversationStoreError::NotFound(conversation_id.0.clone())
-            } else {
-                ConversationStoreError::Io(e.to_string())
-            }
-        })?;
-        while let Some(file) = files
-            .next_entry()
-            .await
-            .map_err(|e| ConversationStoreError::Io(e.to_string()))?
-        {
-            let bytes = tokio::fs::read(file.path())
-                .await
-                .map_err(|e| ConversationStoreError::Io(e.to_string()))?;
-            entries.push(load_entry(&bytes)?);
-        }
-        entries.sort_by_key(|e| e.sequence);
-        Ok(entries)
-    }
-}
-
-/// Loads the current history entry format.
-fn load_entry(bytes: &[u8]) -> Result<HistoryEntry, ConversationStoreError> {
-    serde_json::from_slice(bytes)
-        .map_err(|error| ConversationStoreError::Corrupted(error.to_string()))
-}
-
-/// Drive one input through the conversation entry, print the outcome,
-/// and return the state for the next stage. `run_in_conversation`
-/// consumes and returns the state with the active turn sealed; the host
-/// then commits (or aborts) it.
-async fn run_turn(
+async fn run(
     runner: &TurnRunner,
-    mut state: ConversationState,
-    turn_label: &str,
-    input: &str,
-) -> Result<(ConversationState, String), Box<dyn std::error::Error>> {
-    state.begin_turn(TurnId::new(turn_label))?;
-    state
-        .active_turn_mut()
-        .expect("begin_turn just opened it")
-        .append_input(new_block_id(), TextPayload::new(input), "user")?;
-
-    let ConversationOutcome {
-        state: returned_state,
-        result,
-        ..
-    } = runner
-        .run_in_conversation(
-            state,
-            Default::default(),
+    mut context: Context,
+    id: &str,
+    text: &str,
+) -> Result<Context, Box<dyn std::error::Error>> {
+    context.edit().append([input(text)]).commit()?;
+    let outcome = runner
+        .run(
+            TurnId::new(id),
+            context,
+            TurnRunOptions::new(ModelRef::new("offline-ack")),
             RunControl::new(Default::default(), None),
         )
-        .await?;
-    let mut state = returned_state;
-
-    let text = match result {
-        TurnResult::Completed { final_output } => final_output.response.text.0,
-        other => return Err(format!("turn {turn_label} did not complete: {other:?}").into()),
-    };
-    let entry = state.commit(TurnId::new(turn_label))?;
-    println!(
-        "turn {turn_label} committed (seq {}): {text}",
-        entry.sequence.0
-    );
-    Ok((state, text))
+        .await;
+    match outcome.result {
+        TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),
+        other => return Err(format!("execution failed: {other:?}").into()),
+    }
+    Ok(outcome.context)
 }
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let scratch = tempfile::tempdir()?;
-    let store = Arc::new(FsConversationStore {
-        root: scratch.path().to_path_buf(),
-    });
-    let conversation_id = ConversationId("demo".into());
-
-    let gateway = ScriptedGateway::new(vec![
-        ack("ack — first turn sealed"),
-        ack("ack — second turn, with history"),
-        ack("ack — third turn, reloaded from disk"),
-    ]);
-    let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
-
-    // --- session one: two turns, each persisted at commit -------------------
-    let (state, _) = run_turn(
-        &runner,
-        ConversationState::new(conversation_id.clone()),
-        "turn-1",
-        "hello",
-    )
-    .await?;
-    let (mut state, _) = run_turn(&runner, state, "turn-2", "and again").await?;
-
-    // A turn whose message mixes text and a media reference.
-    // Facts carry the reference only; the bytes live in the host's asset
-    // store and resolve provider-side at render time.
-    state.begin_turn(TurnId::new("turn-media"))?;
-    state
-        .active_turn_mut()
-        .expect("begin_turn just opened it")
-        .append_parts(
+    let runner = TurnRunner::new(
+        Arc::new(AckGateway),
+        Arc::new(ToolExecutor::new(vec![], Default::default())?),
+    );
+    let context = run(&runner, Context::new(), "first", "hello").await?;
+    let mut context = run(&runner, context, "second", "and again").await?;
+    context
+        .edit()
+        .append([ContextBlock::new(
             new_block_id(),
-            vec![
-                ContentPart::Text(TextPayload::new("the chart you asked for")),
-                ContentPart::Media(MediaRef::new("image/png", "blake3-demo-asset")),
-            ],
-            "user",
-        )?;
-    state.seal_turn(
-        TurnId::new("turn-media"),
-        causa_runtime::SealedResult::Completed,
-    )?;
-    state.commit(TurnId::new("turn-media"))?;
-
-    for entry in state.history() {
-        store.save_entry(&conversation_id, entry).await?;
-    }
-
-    // --- "restart": rebuild the session from disk and continue -------------
-    let history = store.load_entries(&conversation_id).await?;
-    println!("reloaded {} session entry(s) from disk", history.len());
-    let state = ConversationState::from_history(conversation_id.clone(), history)?;
-    let (state, text) = run_turn(&runner, state, "turn-3", "back after the restart").await?;
-    if let Some(entry) = state.history().last() {
-        store.save_entry(&conversation_id, entry).await?;
-    }
-    assert!(text.contains("reloaded"), "third script entry served");
-
-    println!("conversation persisted and resumed cleanly");
+            BlockContent::Parts(vec![
+                ContentPart::Text(TextPayload::new("chart")),
+                ContentPart::Media(MediaRef::new("image/png", "asset-chart")),
+            ]),
+            BlockMeta {
+                source: Some("user".into()),
+                ..Default::default()
+            },
+        )])
+        .commit()?;
+    let scratch = tempfile::tempdir()?;
+    let path = scratch.path().join("materials.json");
+    tokio::fs::write(&path, serde_json::to_vec_pretty(&context)?).await?;
+    let restored: Context = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
+    assert_eq!(restored.blocks(), context.blocks());
+    let resumed = run(&runner, restored, "third", "back after reload").await?;
+    assert_eq!(
+        &resumed.blocks()[..context.blocks().len()],
+        context.blocks()
+    );
+    println!(
+        "saved, imported and continued {} material blocks",
+        resumed.blocks().len()
+    );
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn history_entries_load_with_their_order() {
-        let current = r#"{
-            "sequence": 4,
-            "facts": {
-                "turn_id": "t-new",
-                "blocks": [],
-                "lifecycle": "sealed"
-            }
-        }"#;
-        let entry = load_entry(current.as_bytes()).expect("current file loads");
-        assert_eq!(entry.sequence.0, 4);
-    }
 }

@@ -5,10 +5,9 @@
 use std::time::{Duration, Instant};
 
 use causa_kernel::{
-    AttemptControl, AttemptNumber, BlockContent, BlockId, BlockMeta, CancellationToken,
-    ContextBlock, ContextFrame, FrameScope, GenerationOptions, InvocationId, ModelContext,
-    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason, RoundId,
-    TextPayload, ToolSurface, TurnId,
+    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
+    GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest,
+    ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
 };
 use causa_provider::{OpenAiChatCompletionsGateway, OpenAiResponsesGateway};
 use serde_json::{Value, json};
@@ -17,29 +16,22 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const KEY: &str = "sk-test-openai";
 
-fn ctrl(deadline: Option<Instant>) -> AttemptControl {
-    AttemptControl::new(CancellationToken::new(), deadline)
+fn ctrl(deadline: Option<Instant>) -> CallControl {
+    CallControl::new(CancellationToken::new(), deadline)
 }
 
 fn user_frame() -> ContextFrame {
-    let scope = FrameScope::Turn {
-        turn_id: TurnId::new("t1"),
-    };
     ContextFrame {
-        scope,
-        round_id: RoundId(0),
-        model_context: ModelContext {
-            blocks: vec![ContextBlock::new(
-                BlockId::new(uuid::Uuid::from_u128(1)),
-                BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                    "hi",
-                ))]),
-                BlockMeta {
-                    provider_call_id: None,
-                    source: Some("user".into()),
-                },
-            )],
-        },
+        blocks: vec![ContextBlock::new(
+            BlockId::new(uuid::Uuid::from_u128(1)),
+            BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
+                "hi",
+            ))]),
+            BlockMeta {
+                provider_call_id: None,
+                source: Some("user".into()),
+            },
+        )],
     }
 }
 
@@ -49,7 +41,6 @@ fn request(frame: ContextFrame) -> ModelRequest {
             turn_id: TurnId::new("t1"),
             round_id: RoundId(0),
         },
-        attempt: AttemptNumber(1),
         frame,
         model: ModelRef::new("gpt-test"),
         tool_surface: ToolSurface::empty(),
@@ -338,7 +329,7 @@ async fn cancelled_token_yields_cancelled_promptly_on_both_paths() {
             tokio::time::sleep(Duration::from_millis(100)).await;
             canceller.cancel();
         });
-        let attempt = AttemptControl::new(token.clone(), None);
+        let attempt = CallControl::new(token.clone(), None);
         let gw: Box<dyn ModelGateway> = match path_suffix {
             "/v1/chat/completions" => {
                 Box::new(OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri()))
@@ -369,7 +360,7 @@ async fn pre_cancelled_control_never_reaches_the_wire_on_both_paths() {
     let server = MockServer::start().await;
     let token = CancellationToken::new();
     token.cancel();
-    let attempt = AttemptControl::new(token.clone(), None);
+    let attempt = CallControl::new(token.clone(), None);
 
     let chat = OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri());
     let e = chat

@@ -13,9 +13,9 @@ crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
 | crate | role |
 | ----- | ---- |
 | `causa` | facade over the family |
-| `causa-kernel` | facts + contracts: conversation kernel and ports, no I/O |
+| `causa-kernel` | editable context material + contracts for models, preparation and tools, no I/O |
 | `causa-protocol` | wire-protocol translation (Anthropic / OpenAI Chat / OpenAI Responses) |
-| `causa-runtime` | optional, reference components: execution stack (turn loop, tool-processing chains, tool dispatch, streaming and session coordination), policy components (budget, interaction, unknown-outcome policy and optional output processors) |
+| `causa-runtime` | optional material-returning turn runner, borrowed observations and bound tool execution |
 | `causa-provider` | reqwest adapters for the `ModelGateway` port |
 | `causa-extension` | extension adapters (`mcp` feature: MCP client) |
 
@@ -42,3 +42,10 @@ From the repository root, run `bash .github/scripts/check-dependency-directions.
 and `python3 .github/scripts/check-module-layout.py`; see
 [AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md)
 for the full verification commands.
+
+Public facade consumers are also checked independently of the workspace:
+
+```bash
+cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked
+cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --locked
+```

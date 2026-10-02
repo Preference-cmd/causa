@@ -25,9 +25,8 @@
 //!   once, here, never per-renderer.
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
 //!   the declaration block UUID. Tool results resolve directly through
-//!   their declaration `BlockId` (pre-pass, so order and turn boundaries
-//!   do not matter). An unpaired result falls back to its declaration UUID;
-//!   the provider rejects the orphan at HTTP time (the loud failure path).
+//!   their declaration `BlockId`. Renderers first reject incomplete or
+//!   ambiguous exchanges; normalization never invents missing declarations.
 //! - Tool result media travels on the result segment in result order;
 //!   whether it embeds (Anthropic) or hoists (OpenAI-family) is the
 //!   emitter's call. Non-string tool observations serialize to a string.
@@ -158,7 +157,7 @@ pub(crate) fn result_text_with_notes(content: &str, notes: &[String]) -> String 
 /// Run the shared policy walk over a frame, resolving media through
 /// `media`.
 pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFrame {
-    let blocks = &frame.model_context.blocks;
+    let blocks = &frame.blocks;
 
     // Block identity is stable across turns and directly joins declarations
     // with results in a merged conversation frame.
@@ -248,7 +247,7 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
                     wire_id: provider_ids
                         .get(&result.call_block_id)
                         .cloned()
-                        .unwrap_or_else(|| result.call_block_id.0.to_string()),
+                        .expect("renderer validated tool declaration"),
                     status: result.status.clone(),
                     content,
                     notes: result.notes.iter().map(|note| note.0.clone()).collect(),

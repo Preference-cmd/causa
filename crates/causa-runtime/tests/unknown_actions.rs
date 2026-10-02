@@ -1,199 +1,417 @@
-//! Unknown tool outcomes are recorded facts; runtime policy decides whether
-//! the driver may continue after recording them.
-
-mod common;
-
+//! Unknown results complete the batch and stop the runner after one commit.
+mod tool_fixtures;
 use async_trait::async_trait;
-use causa_kernel::{
-    BlockContent, CallControl, ProcessorContext, ProcessorError, Tool, ToolBatch,
-    ToolBatchProcessor, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus,
-};
+use causa_kernel::*;
 use causa_runtime::{
-    ToolExecutor, ToolProcessingChain, TurnInterruption, TurnPolicy, TurnResult, TurnRunOptions,
-    TurnRunner, UnknownOutcomeConfig, UnknownOutcomePolicy,
+    RunControl, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
 };
-use common::{RecordingGateway, ctrl, ctx, endturn_output, runner_with, tooluse_output};
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
+use tool_fixtures::*;
 
-struct UnknownTool;
-
+struct StatusTool {
+    name: &'static str,
+    status: ToolResultStatus,
+    count: Arc<AtomicUsize>,
+}
 #[async_trait]
-impl Tool for UnknownTool {
+impl Tool for StatusTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "lookup".into(),
-            description: "returns an externally unresolved result".into(),
-            parameters: json!({"type": "object"}),
-        }
+        definition(self.name)
     }
-
     async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::UnknownOutcome,
-            output: ToolOutput::new(json!({"state": "unknown"})),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        self.count.fetch_add(1, Ordering::SeqCst);
+        result(
+            call,
+            self.status.clone(),
+            json!({"state": format!("{:?}", self.status)}),
+        )
     }
 }
-
-fn options(policy: UnknownOutcomePolicy) -> TurnRunOptions {
-    let mut unknown_outcome = UnknownOutcomeConfig::default();
-    unknown_outcome.overrides.insert("lookup".into(), policy);
-    TurnRunOptions {
-        policy: TurnPolicy {
-            unknown_outcome,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-#[tokio::test]
-async fn stop_policy_records_result_then_interrupts_without_another_round() {
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_output("check", "lookup", json!({}))),
-        Ok(endturn_output("must not be requested")),
-    ]);
-    let runner = runner_with(gateway.clone(), vec![Arc::new(UnknownTool)]);
-
-    let outcome = runner
-        .run(
-            ctx("stop-unknown"),
-            options(UnknownOutcomePolicy::Stop),
-            ctrl(),
-        )
-        .await;
-
-    assert!(matches!(
-        outcome.result,
-        TurnResult::Interrupted {
-            cause: TurnInterruption::UnsafeUnknownOutcome { .. }
-        }
-    ));
-    assert_eq!(gateway.recorded().len(), 1);
-    let result = outcome
-        .context
-        .blocks()
-        .iter()
-        .find_map(|block| match block.content() {
-            BlockContent::ToolResult(result) => Some(result),
-            _ => None,
-        })
-        .expect("the unknown result is committed before policy stops the turn");
-    assert_eq!(result.status, ToolResultStatus::UnknownOutcome);
-}
-
-#[tokio::test]
-async fn continue_policy_allows_a_later_model_round() {
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_output("check", "lookup", json!({}))),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = runner_with(gateway.clone(), vec![Arc::new(UnknownTool)]);
-
-    let outcome = runner
-        .run(
-            ctx("continue-unknown"),
-            options(UnknownOutcomePolicy::Continue),
-            ctrl(),
-        )
-        .await;
-
-    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
-    assert_eq!(gateway.recorded().len(), 2);
-    assert_eq!(outcome.trace.rounds.len(), 2);
-}
-
-struct RenameBeforeDispatch;
-
+struct Post(Arc<AtomicUsize>);
 #[async_trait]
-impl ToolBatchProcessor for RenameBeforeDispatch {
+impl ToolBatchProcessor for Post {
     async fn process(
         &self,
         batch: &mut ToolBatch,
         _context: &ProcessorContext<'_>,
     ) -> Result<(), ProcessorError> {
-        for entry in batch.calls_mut() {
-            if let Some(input) = entry.input_mut() {
-                input.tool_name = "lookup".into();
-            }
+        self.0.fetch_add(1, Ordering::SeqCst);
+        for entry in batch.results_mut() {
+            entry.push_note(TextPayload::new("after note"));
         }
+        batch
+            .results_mut()
+            .sort_by_key(|entry| entry.call().input.tool_name.clone());
         Ok(())
     }
 }
-
-#[tokio::test]
-async fn unknown_policy_uses_the_effective_preprocessed_tool_name() {
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_output("call alias", "alias", json!({}))),
-        Ok(endturn_output("done")),
-    ]);
-    let processors = ToolProcessingChain::builder()
-        .before(Arc::new(RenameBeforeDispatch))
-        .build();
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(UnknownTool)])),
-        processors,
-    );
-
-    let mut config = UnknownOutcomeConfig::default();
-    config
-        .overrides
-        .insert("alias".into(), UnknownOutcomePolicy::Continue);
-    let stopped = runner
-        .run(
-            ctx("effective-name-stop"),
-            options_with_config(config),
-            ctrl(),
-        )
-        .await;
-    assert!(matches!(
-        stopped.result,
-        TurnResult::Interrupted {
-            cause: TurnInterruption::UnsafeUnknownOutcome { .. }
-        }
-    ));
-
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_output("call alias", "alias", json!({}))),
-        Ok(endturn_output("done")),
-    ]);
-    let processors = ToolProcessingChain::builder()
-        .before(Arc::new(RenameBeforeDispatch))
-        .build();
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(UnknownTool)])),
-        processors,
-    );
-    let mut config = UnknownOutcomeConfig::default();
-    config
-        .overrides
-        .insert("alias".into(), UnknownOutcomePolicy::Stop);
-    config
-        .overrides
-        .insert("lookup".into(), UnknownOutcomePolicy::Continue);
-    let continued = runner
-        .run(
-            ctx("effective-name-continue"),
-            options_with_config(config),
-            ctrl(),
-        )
-        .await;
-    assert!(matches!(continued.result, TurnResult::Completed { .. }));
+struct Gateway {
+    names: Vec<&'static str>,
+    count: Arc<AtomicUsize>,
 }
-
-fn options_with_config(unknown_outcome: UnknownOutcomeConfig) -> TurnRunOptions {
-    TurnRunOptions {
-        policy: TurnPolicy {
-            unknown_outcome,
+#[async_trait]
+impl ModelGateway for Gateway {
+    async fn invoke(
+        &self,
+        _request: &ModelRequest,
+        _control: &CallControl,
+    ) -> Result<ModelOutput, ModelInvokeError> {
+        let first = self.count.fetch_add(1, Ordering::SeqCst) == 0;
+        Ok(ModelOutput {
+            response: ModelResponse {
+                text: TextPayload::new(if first { "" } else { "done" }),
+                tool_calls: if first {
+                    self.names
+                        .iter()
+                        .map(|name| ToolCallDraft {
+                            tool_name: (*name).into(),
+                            arguments: json!({}),
+                            provider_call_id: Some(format!("provider-{name}")),
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                },
+            },
+            usage: None,
+            reasoning: None,
+            stop_reason: if first {
+                ModelStopReason::ToolUse
+            } else {
+                ModelStopReason::EndTurn
+            },
+        })
+    }
+}
+#[tokio::test]
+async fn unknown_success_and_failure_complete_after_and_commit_once_before_fixed_stop() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let after = Arc::new(AtomicUsize::new(0));
+    let models = Arc::new(AtomicUsize::new(0));
+    let executor = Arc::new(executor(
+        vec![
+            Arc::new(StatusTool {
+                name: "z-unknown",
+                status: ToolResultStatus::UnknownOutcome,
+                count: calls.clone(),
+            }),
+            Arc::new(StatusTool {
+                name: "a-success",
+                status: ToolResultStatus::Succeeded,
+                count: calls.clone(),
+            }),
+            Arc::new(StatusTool {
+                name: "b-failed",
+                status: ToolResultStatus::Failed,
+                count: calls.clone(),
+            }),
+            Arc::new(StatusTool {
+                name: "c-unknown",
+                status: ToolResultStatus::UnknownOutcome,
+                count: calls.clone(),
+            }),
+        ],
+        ToolExecutorOptions {
+            after: vec![Arc::new(Post(after.clone()))],
             ..Default::default()
         },
-        ..Default::default()
+    ));
+    let runner = TurnRunner::new(
+        Arc::new(Gateway {
+            names: vec!["z-unknown", "a-success", "b-failed", "c-unknown"],
+            count: models.clone(),
+        }),
+        executor,
+    );
+    let outcome = runner
+        .run(
+            TurnId::new("unknown"),
+            Context::new(),
+            TurnRunOptions::new(ModelRef("model".into())),
+            RunControl::new(CancellationToken::new(), None),
+        )
+        .await;
+    let call_block_id = match outcome.result {
+        TurnResult::Interrupted {
+            cause: TurnInterruption::UnknownToolOutcome { call_block_id, .. },
+        } => call_block_id,
+        result => panic!("unexpected {result:?}"),
+    };
+    assert!(outcome.uncommitted_tool_batch.is_none());
+    assert_eq!(models.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(after.load(Ordering::SeqCst), 1);
+    let results = outcome
+        .context
+        .blocks()
+        .iter()
+        .filter_map(|block| match block.content() {
+            BlockContent::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 4);
+    assert_eq!(
+        results.iter().map(|r| r.status.clone()).collect::<Vec<_>>(),
+        [
+            ToolResultStatus::Succeeded,
+            ToolResultStatus::Failed,
+            ToolResultStatus::UnknownOutcome,
+            ToolResultStatus::UnknownOutcome
+        ]
+    );
+    assert_eq!(results[2].call_block_id, call_block_id);
+    assert!(
+        results
+            .iter()
+            .all(|result| result.notes == [TextPayload::new("after note")])
+    );
+}
+#[tokio::test]
+async fn ordinary_failed_and_rejected_results_allow_the_next_model_round() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let models = Arc::new(AtomicUsize::new(0));
+    let runner = TurnRunner::new(
+        Arc::new(Gateway {
+            names: vec!["failed", "outside"],
+            count: models.clone(),
+        }),
+        Arc::new(executor(
+            vec![Arc::new(StatusTool {
+                name: "failed",
+                status: ToolResultStatus::Failed,
+                count: count.clone(),
+            })],
+            ToolExecutorOptions::default(),
+        )),
+    );
+    let outcome = runner
+        .run(
+            TurnId::new("ordinary"),
+            Context::new(),
+            TurnRunOptions::new(ModelRef("model".into())),
+            RunControl::new(CancellationToken::new(), None),
+        )
+        .await;
+    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
+    assert_eq!(models.load(Ordering::SeqCst), 2);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+struct Alias(Arc<dyn Tool>);
+#[async_trait]
+impl Tool for Alias {
+    fn definition(&self) -> ToolDefinition {
+        let mut definition = self.0.definition();
+        definition.name = "alias".into();
+        definition
     }
+    async fn execute(&self, call: &ToolCallContext, control: &CallControl) -> ToolResultPayload {
+        let mut translated = call.clone();
+        translated.input.tool_name = self.0.definition().name;
+        self.0.execute(&translated, control).await
+    }
+}
+#[tokio::test]
+async fn explicitly_advertised_alias_wrapper_dispatches_and_keeps_unknown_fact() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let target: Arc<dyn Tool> = Arc::new(StatusTool {
+        name: "real",
+        status: ToolResultStatus::UnknownOutcome,
+        count: count.clone(),
+    });
+    let executor = executor(
+        vec![Arc::new(Alias(target))],
+        ToolExecutorOptions::default(),
+    );
+    let mut batch = batch(&["alias"]);
+    let binding = executor.bind(invocation(), control()).await.unwrap();
+    assert_eq!(binding.surface().definitions[0].name, "alias");
+    binding.process(&mut batch).await.unwrap();
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::UnknownOutcome]);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+struct Slow;
+#[async_trait]
+impl Tool for Slow {
+    fn definition(&self) -> ToolDefinition {
+        definition("slow")
+    }
+    async fn execute(&self, _call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+        std::future::pending().await
+    }
+}
+#[tokio::test]
+async fn local_timeout_is_unknown_without_cancelling_parent_siblings_or_after() {
+    let parent = control();
+    let after = Arc::new(AtomicUsize::new(0));
+    let sibling = NamedTool::new("fast");
+    let executor = executor(
+        vec![Arc::new(Slow), sibling.clone()],
+        ToolExecutorOptions {
+            call_timeout: Some(Duration::from_millis(10)),
+            after: vec![Arc::new(Post(after.clone()))],
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["slow", "fast"]);
+    executor
+        .bind(invocation(), parent.clone())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    assert!(!parent.is_cancelled());
+    assert_eq!(sibling.count.load(Ordering::SeqCst), 1);
+    assert_eq!(after.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        statuses(&batch),
+        [
+            ToolResultStatus::Succeeded,
+            ToolResultStatus::UnknownOutcome
+        ]
+    );
+}
+struct Delay;
+#[async_trait]
+impl ToolBatchProcessor for Delay {
+    async fn process(
+        &self,
+        _batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn tool_timeout_starts_after_before_stage_instead_of_bind_time() {
+    let tool = NamedTool::new("fast");
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            call_timeout: Some(Duration::from_millis(10)),
+            before: vec![Arc::new(Delay)],
+            ..Default::default()
+        },
+    );
+    let binding = executor.bind(invocation(), control()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let mut batch = batch(&["fast"]);
+    binding.process(&mut batch).await.unwrap();
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::Succeeded]);
+    assert_eq!(tool.count.load(Ordering::SeqCst), 1);
+}
+struct Panics;
+#[async_trait]
+impl Tool for Panics {
+    fn definition(&self) -> ToolDefinition {
+        definition("panic")
+    }
+    async fn execute(&self, _call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+        panic!("tool panic fixture")
+    }
+}
+#[tokio::test]
+async fn tool_panic_is_an_ordinary_failed_result_and_siblings_complete() {
+    let sibling = NamedTool::new("fast");
+    let executor = executor(
+        vec![Arc::new(Panics), sibling.clone()],
+        ToolExecutorOptions::default(),
+    );
+    let mut batch = batch(&["panic", "fast"]);
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    assert_eq!(
+        statuses(&batch),
+        [ToolResultStatus::Failed, ToolResultStatus::Succeeded]
+    );
+    assert_eq!(sibling.count.load(Ordering::SeqCst), 1);
+}
+
+struct ChangeUnknown;
+#[async_trait]
+impl ToolBatchProcessor for ChangeUnknown {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        let entry = &batch.results()[0];
+        let call = entry.call().clone();
+        let (id, result) = entry.result().unwrap();
+        let id = *id;
+        let mut result = result.clone();
+        result.status = ToolResultStatus::Succeeded;
+        let mut replacement = ToolBatch::new(vec![call]).unwrap();
+        replacement.resolve_at(0, id, result).unwrap();
+        *batch = replacement;
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn after_cannot_turn_unknown_into_success_to_allow_continuation() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let parent = control();
+    let executor = executor(
+        vec![Arc::new(StatusTool {
+            name: "unknown",
+            status: ToolResultStatus::UnknownOutcome,
+            count: count.clone(),
+        })],
+        ToolExecutorOptions {
+            after: vec![Arc::new(ChangeUnknown)],
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["unknown"]);
+    assert!(matches!(
+        executor
+            .bind(invocation(), parent.clone())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await,
+        Err(causa_runtime::ToolProcessingError::Handoff {
+            phase: causa_runtime::ToolProcessorPhase::After,
+            index: 0,
+            ..
+        })
+    ));
+    assert!(!parent.is_cancelled());
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn zero_local_timeout_does_not_poll_an_immediately_ready_uncooperative_tool() {
+    let tool = NamedTool::new("instant");
+    let parent = control();
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            call_timeout: Some(Duration::ZERO),
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["instant"]);
+    executor
+        .bind(invocation(), parent.clone())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::UnknownOutcome]);
+    assert!(!parent.is_cancelled());
 }

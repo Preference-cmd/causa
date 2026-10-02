@@ -1,11 +1,15 @@
 //! Offline media closed loop: a tool produces an image, the
 //! host's asset store ingests the bytes, and only a `MediaRef` rides the
 //! facts — the next model round's frame carries the reference, and a
-//! TurnContext round-trip preserves it. Rendering-side resolution (bytes →
+//! Context round-trip preserves it. Rendering-side resolution (bytes →
 //! wire image blocks) is the provider's `MediaResolver`, shown in
 //! `causa-provider`'s quickstart; this example runs fully offline.
 //!
 //! Run: `cargo run -p causa-runtime --example media_feedback`
+
+#[path = "media_feedback/output_budget.rs"]
+mod output_budget;
+use output_budget::{TokenCounter, ToolOutputBudgetProcessor};
 
 use async_trait::async_trait;
 use causa_kernel::{
@@ -14,7 +18,9 @@ use causa_kernel::{
     TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
     ToolResultStatus,
 };
-use causa_runtime::{RunControl, ToolExecutor, TurnRunOptions, TurnRunner, new_block_id};
+use causa_runtime::{
+    RunControl, ToolExecutor, ToolExecutorOptions, TurnRunOptions, TurnRunner, new_block_id,
+};
 use std::sync::{Arc, Mutex};
 
 /// The host's in-memory asset table: bytes keyed by content hash. Facts
@@ -23,12 +29,12 @@ use std::sync::{Arc, Mutex};
 struct MemoryAssets(Mutex<Vec<u8>>);
 #[async_trait]
 impl ArtifactStore for MemoryAssets {
-    async fn persist(&self, data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+    async fn persist(&self, data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
         *self.0.lock().unwrap() = data.to_vec();
         Ok(ArtifactRef {
             id: format!("blake3-{}", &blake3::hash(data).to_hex()[..8]),
             size_bytes: data.len(),
-            kind: ArtifactKind::Binary,
+            kind: hint.kind,
             persisted: true,
         })
     }
@@ -74,9 +80,11 @@ impl Tool for RenderChart {
         ToolResultPayload {
             call_block_id: ctx.call_block_id,
             status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(serde_json::json!("chart ready")),
+            output: ToolOutput::new(serde_json::json!(
+                "chart ready with explanatory details. ".repeat(100)
+            )),
             media: vec![causa_kernel::MediaRef::new("image/png", artifact.id)],
-            notes: Vec::new(),
+            notes: vec![TextPayload::new("Image reference preserved.")],
         }
     }
 }
@@ -88,7 +96,7 @@ impl ModelGateway for Recorder {
     async fn invoke(
         &self,
         req: &ModelRequest,
-        _ctrl: &causa_kernel::AttemptControl,
+        _ctrl: &causa_kernel::CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         self.0.lock().unwrap().push(req.clone());
         let n = self.0.lock().unwrap().len();
@@ -120,28 +128,62 @@ impl ModelGateway for Recorder {
     }
 }
 
+/// Deliberately simple demo estimate; production hosts choose their tokenizer.
+struct DemoCounter;
+impl TokenCounter for DemoCounter {
+    fn estimate_value(&self, value: &serde_json::Value) -> usize {
+        value
+            .as_str()
+            .map_or_else(|| value.to_string().len(), str::len)
+            .div_ceil(4)
+    }
+    fn estimate_media(&self, _: &MediaRef) -> Option<usize> {
+        Some(8)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let assets = Arc::new(MemoryAssets::default());
-    let executor = Arc::new(ToolExecutor::from_vec(vec![Arc::new(RenderChart(
-        assets.clone(),
-    ))]));
+    let outputs = Arc::new(MemoryAssets::default());
+    let budget = ToolOutputBudgetProcessor::new(64)
+        .for_tool("render_chart", 64)
+        .with_token_counter(Arc::new(DemoCounter))
+        .with_artifact_store(outputs.clone());
+    let executor = Arc::new(
+        ToolExecutor::new(
+            vec![Arc::new(RenderChart(assets.clone()))],
+            ToolExecutorOptions {
+                after: vec![Arc::new(budget)],
+                ..Default::default()
+            },
+        )
+        .expect("unique tools"),
+    );
 
     let gateway = Arc::new(Recorder(Mutex::new(vec![])));
     let runner = TurnRunner::new(gateway.clone(), executor);
 
-    let mut ctx = causa_kernel::TurnContext::new(causa_kernel::TurnId::new("media-turn"));
-    ctx.append_input(
-        new_block_id(),
-        TextPayload::new("chart the numbers"),
-        "user",
-    )
-    .unwrap();
+    let mut ctx = causa_kernel::Context::new();
+    ctx.edit()
+        .append([causa_kernel::ContextBlock::new(
+            new_block_id(),
+            causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                TextPayload::new("chart the numbers"),
+            )]),
+            causa_kernel::BlockMeta {
+                source: Some("user".into()),
+                ..Default::default()
+            },
+        )])
+        .commit()
+        .unwrap();
 
     let outcome = runner
         .run(
+            causa_kernel::TurnId::new("media_feedback"),
             ctx,
-            TurnRunOptions::default(),
+            TurnRunOptions::new(causa_kernel::ModelRef::new("offline-demo")),
             RunControl::new(Default::default(), None),
         )
         .await;
@@ -154,7 +196,6 @@ async fn main() {
     let round2 = gateway.0.lock().unwrap()[1].clone();
     let media_refs: Vec<MediaRef> = round2
         .frame
-        .model_context
         .blocks
         .iter()
         .filter_map(|b| match b.content() {
@@ -173,7 +214,36 @@ async fn main() {
         b"fake-png-bytes"
     );
 
-    // TurnContext serde preserves the reference — and nothing else.
+    // This consumer selected result-local retention. It retains media/notes,
+    // spills the exact original JSON bytes, and verifies the retained estimate.
+    let result = outcome
+        .context
+        .blocks()
+        .iter()
+        .find_map(|block| match block.content() {
+            BlockContent::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .expect("tool result committed");
+    assert_eq!(result.output.truncation, causa_kernel::Truncation::Middle);
+    assert_eq!(
+        result.notes,
+        vec![TextPayload::new("Image reference preserved.")]
+    );
+    assert_eq!(result.media, media_refs);
+    let mut visible = result.output.content.as_str().unwrap().to_owned();
+    visible.push_str("\n\nNotes:\n- Image reference preserved.");
+    assert!(visible.len().div_ceil(4) + 8 <= 64);
+    let artifact = result.output.artifact.as_ref().expect("full output stored");
+    assert_eq!(artifact.kind, ArtifactKind::FullOutput);
+    let full: serde_json::Value =
+        serde_json::from_slice(&outputs.read(&artifact.id, None).await.unwrap()).unwrap();
+    assert_eq!(
+        full,
+        serde_json::json!("chart ready with explanatory details. ".repeat(100))
+    );
+
+    // Context serde preserves the reference — and nothing else.
     let restored = serde_json::to_string(&outcome.context).unwrap();
     assert!(restored.contains(&reference));
     assert!(!restored.contains("fake-png-bytes"));

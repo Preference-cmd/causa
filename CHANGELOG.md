@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 During the experimental `0.0.x` series, patch releases may break Rust API
 and wire-serde compatibility. Breaking changes and migration notes appear
 at the top of each release. Starting with `0.1.0`, breaking wire changes
-(`ContextEvent` / `TurnResult` / `TurnTrace` family) bump the **minor** version.
+(serialized context and tool material) bump the **minor** version.
 Before 0.1, obsolete APIs and formats may be removed without compatibility
 adapters or data converters.
 
@@ -14,56 +14,49 @@ adapters or data converters.
 
 ### Breaking
 
-- `TurnContext` now supports atomic range edits and tail appends through
-  `apply` or the exclusive `edit` builder. Ranges use original block indices;
-  later overlapping edits replace earlier operations, reused IDs must retain
-  identical content and metadata, and failed edits return all submitted
-  material. Append errors for sealed turns and duplicate IDs are now wrapped in
-  `ContextError::Edit`; reusing an existing ID with changed content or
-  metadata reports `BlockIdentityMismatch`.
-- `TurnContext` now owns its block `Vec` and serializes directly as the
-  required `turn_id`, `blocks`, and `lifecycle` fields (`open` or `sealed`).
-  `ContextVersion`, `OrderedBlocks`, `TurnSnapshot`, snapshot serde bridges,
-  and version provenance on frames and round traces are removed. Loading checks
-  context-local block ID uniqueness only; execution append doors keep their
-  specialized validation. Runtime `HistoryEntry` stores `facts: TurnContext`
-  instead of a snapshot, and interrupted outcomes return owned turn facts.
-  The former snapshot wire format is no longer supported.
-- `ContextBlock` identity, content, and metadata fields are private. Construct
-  blocks with `ContextBlock::new(id, content, meta)` and read them through
-  `id()`, `content()`, and `meta()`; replace a changed block with a new ID.
-- Block IDs are supplied UUID values. Blocks no longer carry positional
-  sequences, and frames no longer carry derived frame IDs. Results reference
-  their declaration block ID; tool-call content keys are borrowed values used
-  for optional deduplication within one batch.
-- Ordered batch processors replace tool-use hooks and approval control enums.
-  Pre-processing, tool execution and post-processing update one `ToolBatch`;
-  interruptions return uncommitted material to the caller. The old approval
-  pause/resume and Session checkpoint APIs are removed without adapters.
-- Kernel result commits preserve the supplied order. Applications needing
-  declaration order can install a post processor.
-- Result notes are model-visible. Output truncation and artifact retention
-  move from implicit executor behavior to optional post processors.
-- Old snapshot conversion examples and compatibility loaders are removed.
-  Current-format conversation history storage remains application-owned.
+- Replace `TurnContext` with `Context`: it owns only ordered blocks, stays
+  editable after a run and serializes as `{ "blocks": [...] }`. Remove turn
+  lifecycle, sealing, snapshots, `merged_frame` and automatic input/output
+  append methods. Construct blocks explicitly, use `apply` / `edit`, and supply
+  the `TurnId` separately to `TurnRunner::run` or `run_streaming`.
+- `ContextFrame` contains only an owned block vector. `ModelRequest` owns the
+  invocation identity, explicit model, generation, cache and bound tool surface.
+  `ModelGateway` receives `CallControl`; gateway-owned retries reuse the logical
+  request. `AttemptControl`, attempt identities and implicit round traces are removed.
+- `TurnRunOptions::new(model)` replaces default model selection. Optional
+  `ContextPreparer` edits retained context and selects the next request frame;
+  already committed preparation edits survive failure or cancellation.
+- Replace executor constructors with `ToolExecutor::new(tools, options)`.
+  `bind(invocation_id, control)` captures both definitions and actual targets;
+  `BoundTools::process` consumes that binding and accepts a fresh `ToolBatch`.
+  Duplicate static or dynamic names and failed catalog listings are errors.
+  Cache ownership is per registration, including re-registration of the same Arc.
+- Before/after processors live in `ToolExecutorOptions`. Session ownership,
+  conversation storage, implicit traces, budget/interaction policies and built-in
+  deduplication/output processors are removed. Implement these policies in the
+  host; the examples demonstrate approval, deduplication and persistence.
+- `TurnOutcome` returns context and a typed `TurnResult`, plus the complete
+  current batch if results have not committed. Conversion and commit failures
+  retain their submitted inputs. Six borrowed `RunEvent` variants replace stored
+  event history. Observers copy only what they need to retain.
+- Unknown tool outcomes are committed and stop the run. A module failure never
+  cancels the caller's parent token. Controlled tool interruption collects started
+  calls before returning; dropping the whole future bypasses material return.
+- Protocol adapters reject incomplete or invalid tool exchanges locally before
+  HTTP. OpenAI Chat and Anthropic additionally enforce their message ordering.
+  Generic context import/edit still permits partial material. No synthetic
+  provider ID is invented for orphan results.
+- Block identity/content/metadata remain private and UUID IDs are caller supplied.
+  Atomic edits preserve reused identity and return all submitted material on
+  failure. The prior context/session formats have no compatibility adapters.
 
-### Current API
+### Verification
 
-- Supply IDs to context append methods. `runtime::new_block_id()` generates
-  UUID v7 values; kernel callers may supply any UUID value. The new `uuid`
-  dependency replaces the kernel's short-hash ID generation.
-- `Tool` and `DynamicToolSource` receive `ToolCallContext`, containing the
-  declaration's `call_block_id`, effective `input` and pending result notes.
-  Tool results and artifact hints use that same declaration ID. Dispatch
-  events carry `(BlockId, ToolCallPayload)` pairs.
-- Assemble optional policy with `ToolProcessingChain::builder().before(...)
-  .after(...).build()` and `TurnRunner::with_tool_processors(...)`.
-  `DeduplicateProcessor`, `RejectAllProcessor` and `ToolOutputBudgetProcessor`
-  are opt-in components. Finite budgets require an explicit media estimate
-  when results contain media; the default executor never truncates output.
-- Interrupted runner outcomes expose `uncommitted_tool_batch`; Session's
-  `FinishedKind::Interrupted` retains it through `Arc<ToolBatch>`. The host
-  owns storage and any subsequent handling of this material.
+- Independent facade consumers exercise kernel-only and runtime selections,
+  custom preparation and budgeting, logical retry ownership, standalone tool
+  binding, borrowed observations and material reuse across runs.
+- Offline protocol/provider tests cover invalid histories and zero HTTP requests
+  for rejected frames, including streaming entry points.
 
 ## [0.0.1] - 2026-09-16
 

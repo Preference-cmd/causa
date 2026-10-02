@@ -1,112 +1,75 @@
-//! Projection-independence evidence: hosts transform projection copies while
-//! committed facts and sibling contexts remain unchanged.
+//! Independent frames and caller-owned saved material remain isolated.
 
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ConversationId, InvocationId,
-    MediaRef, ModelResponse, ModelStopReason, RoundId, TextPayload, ToolCallDraft, ToolOutput,
-    ToolResultPayload, ToolResultStatus, TurnContext, TurnId, merged_frame,
+    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame, MediaRef,
+    ModelResponse, ModelStopReason, TextPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
+    validate_tool_result_append,
 };
 use serde_json::json;
 
-fn parts_block(parts: Vec<ContentPart>, source: &str) -> ContextBlock {
-    ContextBlock::new(
-        common::block_id(),
-        BlockContent::Parts(parts),
-        BlockMeta {
-            provider_call_id: None,
-            source: Some(source.into()),
-        },
-    )
-}
-
-fn pending_calls(blocks: &[ContextBlock]) -> Vec<BlockId> {
-    let mut calls = Vec::new();
-    let mut answered = Vec::new();
-    for block in blocks {
-        match block.content() {
-            BlockContent::ToolCall(_) => calls.push(block.id()),
-            BlockContent::ToolResult(result) => answered.push(result.call_block_id),
-            _ => {}
-        }
-    }
-    calls.retain(|id| !answered.contains(id));
-    calls
-}
-
-fn call_response(tool_name: &str) -> ModelResponse {
-    ModelResponse {
+fn declaration(context: &mut Context, name: &str) -> BlockId {
+    let response = ModelResponse {
         text: TextPayload::new("calling"),
-        tool_calls: vec![ToolCallDraft {
-            tool_name: tool_name.into(),
-            arguments: json!({ "path": "notes.txt" }),
-            provider_call_id: None,
-        }],
-    }
-}
-
-fn endturn_response(text: &str) -> ModelResponse {
-    ModelResponse {
-        text: TextPayload::new(text),
-        tool_calls: vec![],
-    }
-}
-
-fn declare_call(ctx: &mut TurnContext, round: RoundId, tool_name: &str) -> BlockId {
-    let invocation = InvocationId {
-        turn_id: ctx.turn_id(),
-        round_id: round,
+        tool_calls: vec![common::draft(name, json!({"path":"notes.txt"}))],
     };
-    let response = call_response(tool_name);
-    let applied = ctx
-        .append_model_output(
-            invocation,
-            &response,
-            ModelStopReason::ToolUse,
-            common::block_ids_for(&response),
+    let ids = common::block_ids_for(&response);
+    context
+        .apply(
+            Vec::new(),
+            response.to_blocks(ModelStopReason::ToolUse, &ids).unwrap(),
         )
         .unwrap();
-    applied.tool_calls[0].0
+    ids[1]
 }
 
-#[tokio::test]
-async fn projection_transforms_never_write_back_into_facts() {
-    let mut ctx = TurnContext::new(TurnId::new("proj-1"));
-    ctx.append_parts(
+fn complete(context: &mut Context, call_block_id: BlockId, output: serde_json::Value) {
+    let id = common::block_id();
+    let result = ToolResultPayload {
+        call_block_id,
+        status: ToolResultStatus::Succeeded,
+        output: ToolOutput::new(output),
+        media: vec![],
+        notes: vec![],
+    };
+    validate_tool_result_append(context.blocks(), &[(id, result.clone())]).unwrap();
+    context
+        .apply(
+            Vec::new(),
+            vec![ContextBlock::new(
+                id,
+                BlockContent::ToolResult(result),
+                BlockMeta::default(),
+            )],
+        )
+        .unwrap();
+}
+
+#[test]
+fn projection_transforms_never_write_back_into_material() {
+    let input = common::parts_block(
         common::block_id(),
         vec![
             ContentPart::Text(TextPayload::new("read this")),
             ContentPart::Media(MediaRef::new("image/png", "asset-1")),
         ],
         "user",
-    )
-    .unwrap();
-    let declaration_id = declare_call(&mut ctx, RoundId(0), "read_file");
-    ctx.append_tool_results(vec![(
+    );
+    let mut context = Context::from_blocks(vec![input]).unwrap();
+    let call = declaration(&mut context, "read_file");
+    complete(&mut context, call, json!({"contents":"original body"}));
+    let before = serde_json::to_value(&context).unwrap();
+    let mut projection = context.frame();
+    projection
+        .blocks
+        .retain(|block| !matches!(block.content(), BlockContent::ToolResult(_)));
+    projection.blocks.push(common::text_block(
         common::block_id(),
-        ToolResultPayload {
-            call_block_id: declaration_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({ "contents": "original body" })),
-            media: vec![],
-            notes: vec![],
-        },
-    )])
-    .unwrap();
-
-    let facts_before = serde_json::to_string(ctx.blocks()).unwrap();
-    let pending_before = pending_calls(ctx.blocks());
-    let context_before = serde_json::to_string(&ctx).unwrap();
-
-    let mut projection = ctx.frame(RoundId(0));
-    let blocks = &mut projection.model_context.blocks;
-    blocks.retain(|block| !matches!(block.content(), BlockContent::ToolResult(_)));
-    blocks.push(parts_block(
-        vec![ContentPart::Text(TextPayload::new("host context"))],
+        TextPayload::new("host context"),
         "host.injected",
     ));
-    for block in blocks.iter_mut() {
+    for block in &mut projection.blocks {
         if let BlockContent::Parts(parts) = block.content() {
             let mut parts = parts.clone();
             for part in &mut parts {
@@ -122,145 +85,103 @@ async fn projection_transforms_never_write_back_into_facts() {
             );
         }
     }
-
-    assert_eq!(facts_before, serde_json::to_string(ctx.blocks()).unwrap());
-    assert_eq!(pending_before, pending_calls(ctx.blocks()));
-    assert_eq!(context_before, serde_json::to_string(&ctx).unwrap());
-    assert_eq!(projection.model_context.blocks.len(), 4);
-    assert!(matches!(
-        projection.model_context.blocks[3].content(),
-        BlockContent::Parts(_)
-    ));
+    assert_eq!(serde_json::to_value(&context).unwrap(), before);
+    assert_eq!(projection.blocks.len(), 4);
     assert!(
-        serde_json::to_string(&projection.model_context.blocks)
+        serde_json::to_string(&projection.blocks)
             .unwrap()
             .contains("asset-host-copy")
     );
+    context.edit().replace(0..1, vec![]).commit().unwrap();
+    assert_eq!(projection.blocks.len(), 4);
+    assert_eq!(context.blocks().len(), 3);
 }
 
-#[tokio::test]
-async fn shared_history_projection_feeds_two_records_without_pollution() {
-    let mut shared = TurnContext::new(TurnId::new("shared-1"));
-    shared
-        .append_input(
+#[test]
+fn caller_selected_shared_material_feeds_two_contexts_without_pollution() {
+    let shared = vec![
+        common::text_block(
             common::block_id(),
-            TextPayload::new("the shared question"),
+            TextPayload::new("shared question"),
             "user",
-        )
-        .unwrap();
-    let shared_invocation = InvocationId {
-        turn_id: TurnId::new("shared-1"),
-        round_id: RoundId(0),
+        ),
+        common::text_block(
+            common::block_id(),
+            TextPayload::new("shared answer"),
+            "model",
+        ),
+    ];
+    let saved = serde_json::to_value(&shared).unwrap();
+    let mut a = Context::from_blocks(vec![common::text_block(
+        common::block_id(),
+        TextPayload::new("a's follow-up"),
+        "user",
+    )])
+    .unwrap();
+    let mut b = Context::from_blocks(vec![common::text_block(
+        common::block_id(),
+        TextPayload::new("b's follow-up"),
+        "user",
+    )])
+    .unwrap();
+    let frame = |context: &Context| ContextFrame {
+        blocks: shared.iter().chain(context.blocks()).cloned().collect(),
     };
-    let response = endturn_response("the shared answer");
-    shared
-        .append_model_output(
-            shared_invocation,
-            &response,
-            ModelStopReason::EndTurn,
-            common::block_ids_for(&response),
-        )
-        .unwrap();
-    shared.seal();
-    let history = vec![shared.clone()];
-    let history_wire = serde_json::to_string(&history).unwrap();
-    let history_block_count: usize = history.iter().map(|turn| turn.blocks().len()).sum();
-    let conversation = ConversationId("shared-proj".into());
-
-    let mut record_a = TurnContext::new(TurnId::new("child-a"));
-    record_a
-        .append_input(
-            common::block_id(),
-            TextPayload::new("a's follow-up"),
-            "user",
-        )
-        .unwrap();
-    let mut record_b = TurnContext::new(TurnId::new("child-b"));
-    record_b
-        .append_input(
-            common::block_id(),
-            TextPayload::new("b's follow-up"),
-            "user",
-        )
-        .unwrap();
-
-    let frame_a = merged_frame(&conversation, &history, &record_a, RoundId(1));
-    let frame_b = merged_frame(&conversation, &history, &record_b, RoundId(1));
-    assert_eq!(
-        serde_json::to_string(&frame_a.model_context.blocks[..history_block_count]).unwrap(),
-        serde_json::to_string(&frame_b.model_context.blocks[..history_block_count]).unwrap()
+    let frame_a = frame(&a);
+    let frame_b = frame(&b);
+    assert_eq!(frame_a.blocks[..2], frame_b.blocks[..2]);
+    let wire_a = serde_json::to_string(&frame_a.blocks).unwrap();
+    let wire_b = serde_json::to_string(&frame_b.blocks).unwrap();
+    assert!(wire_a.contains("a's follow-up") && !wire_a.contains("b's follow-up"));
+    assert!(wire_b.contains("b's follow-up") && !wire_b.contains("a's follow-up"));
+    let call_a = declaration(&mut a, "echo");
+    let call_b = declaration(&mut b, "echo");
+    complete(&mut a, call_a, json!({"who":"a"}));
+    complete(&mut b, call_b, json!({"who":"b"}));
+    assert!(
+        a.blocks()
+            .iter()
+            .all(|block| !b.blocks().iter().any(|other| other.id() == block.id()))
     );
-    assert_eq!(history_wire, serde_json::to_string(&history).unwrap());
-    let a_wire = serde_json::to_string(&frame_a.model_context.blocks).unwrap();
-    let b_wire = serde_json::to_string(&frame_b.model_context.blocks).unwrap();
-    assert!(a_wire.contains("a's follow-up") && !a_wire.contains("b's follow-up"));
-    assert!(b_wire.contains("b's follow-up") && !b_wire.contains("a's follow-up"));
-
-    let call_a = declare_call(&mut record_a, RoundId(1), "echo");
-    let call_b = declare_call(&mut record_b, RoundId(1), "echo");
-    record_a
-        .append_tool_results(vec![(
-            common::block_id(),
-            ToolResultPayload {
-                call_block_id: call_a,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!({ "who": "a" })),
-                media: vec![],
-                notes: vec![],
-            },
-        )])
-        .unwrap();
-    record_b
-        .append_tool_results(vec![(
-            common::block_id(),
-            ToolResultPayload {
-                call_block_id: call_b,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!({ "who": "b" })),
-                media: vec![],
-                notes: vec![],
-            },
-        )])
-        .unwrap();
-
-    let a_facts = serde_json::to_string(record_a.blocks()).unwrap();
-    let b_facts = serde_json::to_string(record_b.blocks()).unwrap();
-    assert!(a_facts.contains("\"who\":\"a\"") && !a_facts.contains("\"who\":\"b\""));
-    assert!(b_facts.contains("\"who\":\"b\"") && !b_facts.contains("\"who\":\"a\""));
-    let a_ids: Vec<_> = record_a.blocks().iter().map(|block| block.id()).collect();
-    let b_ids: Vec<_> = record_b.blocks().iter().map(|block| block.id()).collect();
-    assert!(a_ids.iter().all(|id| !b_ids.contains(id)));
-    assert_eq!(history_wire, serde_json::to_string(&history).unwrap());
+    assert_eq!(serde_json::to_value(&shared).unwrap(), saved);
+    assert_eq!(frame_a.blocks.len(), 3);
+    assert_eq!(frame_b.blocks.len(), 3);
 }
 
-#[tokio::test]
-async fn rebuilt_record_from_validated_blocks_matches_original_projection() {
-    let mut original = TurnContext::new(TurnId::new("rebuild-1"));
+#[test]
+fn imported_material_matches_original_projection_and_remains_editable() {
+    let mut original = Context::from_blocks(vec![common::text_block(
+        common::block_id(),
+        TextPayload::new("hi"),
+        "user",
+    )])
+    .unwrap();
+    let response = common::endturn_output("hello");
     original
-        .append_input(common::block_id(), TextPayload::new("hi"), "user")
-        .unwrap();
-    let invocation = InvocationId {
-        turn_id: TurnId::new("rebuild-1"),
-        round_id: RoundId(0),
-    };
-    let response = endturn_response("hello");
-    original
-        .append_model_output(
-            invocation,
-            &response,
-            ModelStopReason::EndTurn,
-            common::block_ids_for(&response),
+        .apply(
+            Vec::new(),
+            response
+                .response
+                .to_blocks(
+                    response.stop_reason,
+                    &common::block_ids_for(&response.response),
+                )
+                .unwrap(),
         )
         .unwrap();
-    let rebuilt =
-        TurnContext::from_validated_blocks(TurnId::new("rebuild-1"), original.blocks().to_vec())
-            .unwrap();
-    assert_eq!(
-        serde_json::to_string(&original.frame(RoundId(0)).model_context.blocks).unwrap(),
-        serde_json::to_string(&rebuilt.frame(RoundId(0)).model_context.blocks).unwrap()
-    );
-    assert_eq!(
-        original.frame(RoundId(0)).scope,
-        rebuilt.frame(RoundId(0)).scope
-    );
+    let mut rebuilt = Context::from_blocks(original.blocks().to_vec()).unwrap();
+    assert_eq!(original.frame().blocks, rebuilt.frame().blocks);
+    let retained = rebuilt.frame();
+    rebuilt
+        .apply(
+            Vec::new(),
+            vec![common::text_block(
+                common::block_id(),
+                TextPayload::new("new work"),
+                "user",
+            )],
+        )
+        .unwrap();
+    assert_eq!(retained.blocks, original.blocks());
+    assert_eq!(rebuilt.blocks().len(), original.blocks().len() + 1);
 }

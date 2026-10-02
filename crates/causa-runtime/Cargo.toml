@@ -1,7 +1,7 @@
 [package]
 name = "causa-runtime"
 version.workspace = true
-description = "Causa runtime — optional components: turn execution, tool processing, streaming, sessions"
+description = "Causa runtime — optional components: material execution, bound tool processing, streaming"
 repository.workspace = true
 readme = "../../README.md"
 keywords = ["agent", "llm", "tools", "streaming", "driver"]
@@ -15,7 +15,6 @@ license.workspace = true
 causa-kernel = { path = "../causa-kernel", version = "0.0.1" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-serde = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
@@ -24,7 +23,7 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [dev-dependencies]
-# `fs` is example-only (FsConversationStore reference store): the lib's
+# `fs` is example-only (direct Context persistence): the lib's
 # normal graph stays fs-free (first-principles item 7.5).
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 tempfile = { workspace = true }

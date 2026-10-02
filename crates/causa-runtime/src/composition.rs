@@ -2,8 +2,8 @@
 //!
 //! [`ToolBridge`] adapts a `(DynamicToolSource, ToolDefinition)`
 //! pair into a plain [`Tool`](causa_kernel::Tool). It is the executor's dynamic-dispatch
-//! adapter (`ToolExecutor::execute` wraps a dynamic call in a
-//! bridge so it runs the same static path as a local tool) and the
+//! adapter (an invocation binding wraps a dynamic definition in a
+//! bridge so it runs the same path as a local tool) and the
 //! canonical home of the `ToolExecutionError` → status mapping. Hosts that
 //! prefer snapshot semantics (list once, register as static tools) reuse
 //! the same bridge directly; for live catalogs prefer

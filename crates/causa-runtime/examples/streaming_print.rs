@@ -1,5 +1,5 @@
 //! Streaming output — drive a turn with `run_streaming` and print each
-//! provider delta as it arrives through the `TurnInteraction` seam.
+//! provider delta as it arrives through the `RunEvent` seam.
 //!
 //! Runnable offline: the gateway is a scripted streaming stub (text
 //! deltas, then `Done`). In production you would use a streaming
@@ -12,16 +12,16 @@
 //!
 //! Contract worth remembering: `StreamDelta::Done` carries the fully
 //! assembled `ModelOutput` — the deltas are advisory observations, never
-//! the source of truth. A retried attempt re-streams the same frame;
-//! presenting the partial-then-reset flow is the host's call.
+//! the source of truth. Retries, if needed, belong to the gateway wrapper;
+//! partial output is never committed by the runner.
 
 use async_trait::async_trait;
 use causa_kernel::{
-    AttemptControl, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse,
-    ModelStopReason, RoundId, StreamDelta, TextPayload, ToolCallDraft, TurnContext, TurnId,
+    CallControl, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse,
+    ModelStopReason, StreamDelta, TextPayload, ToolCallDraft, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInteraction, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
+    RunControl, RunEvent, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
 use std::io::Write as _;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ impl ModelGateway for ScriptedStreamGateway {
     async fn invoke(
         &self,
         _request: &ModelRequest,
-        _control: &AttemptControl,
+        _control: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         Err(ModelInvokeError::new(
             causa_kernel::ModelInvokeErrorKind::Permanent,
@@ -53,7 +53,7 @@ impl ModelGateway for ScriptedStreamGateway {
     async fn stream(
         &self,
         _request: &ModelRequest,
-        _control: &AttemptControl,
+        _control: &CallControl,
     ) -> Result<causa_kernel::ModelStream, ModelInvokeError> {
         let mut scripts = self.0.lock().await;
         if scripts.is_empty() {
@@ -67,24 +67,22 @@ impl ModelGateway for ScriptedStreamGateway {
     }
 }
 
-/// The host side of streaming: every provider delta lands here, tagged
-/// with the round it belongs to. Deltas are advisory — print them raw.
-struct PrintDeltas;
-
-#[async_trait]
-impl TurnInteraction for PrintDeltas {
-    async fn on_delta(&self, _round_id: RoundId, delta: &StreamDelta) {
-        match delta {
-            StreamDelta::TextDelta { delta } => {
-                print!("{delta}");
-                std::io::stdout().flush().ok();
-            }
-            StreamDelta::ToolCallDelta { .. } => {
-                println!("[tool call streaming in…]");
-            }
-            StreamDelta::Done { .. } => println!(),
-            _ => {}
+/// The host chooses how to display borrowed observations.
+fn print_observation(event: &RunEvent<'_>) {
+    match event {
+        RunEvent::ModelDelta {
+            delta: StreamDelta::TextDelta { delta },
+            ..
+        } => {
+            print!("{delta}");
+            std::io::stdout().flush().ok();
         }
+        RunEvent::ModelDelta {
+            delta: StreamDelta::ToolCallDelta { .. },
+            ..
+        } => println!("[tool call streaming in…]"),
+        RunEvent::ModelOutput { .. } => println!(),
+        _ => {}
     }
 }
 
@@ -114,22 +112,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ]]);
 
-    let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
+    let runner = TurnRunner::new(
+        gateway,
+        Arc::new(ToolExecutor::new(Vec::new(), Default::default())?),
+    );
 
-    let mut context = TurnContext::new(TurnId::new("streaming-demo"));
-    context.append_input(
-        new_block_id(),
-        TextPayload::new("Say something about streaming."),
-        "user",
-    )?;
+    let mut context = causa_kernel::Context::new();
+    context
+        .edit()
+        .append([causa_kernel::ContextBlock::new(
+            new_block_id(),
+            causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                TextPayload::new("Say something about streaming."),
+            )]),
+            causa_kernel::BlockMeta {
+                source: Some("user".into()),
+                ..Default::default()
+            },
+        )])
+        .commit()?;
 
-    let options = TurnRunOptions {
-        interaction: Arc::new(PrintDeltas),
-        ..Default::default()
-    };
+    let mut options = TurnRunOptions::new(causa_kernel::ModelRef::new("offline-stream"));
+    options.observer = Some(Arc::new(print_observation));
 
     let outcome = runner
-        .run_streaming(context, options, RunControl::new(Default::default(), None))
+        .run_streaming(
+            TurnId::new("streaming-demo"),
+            context,
+            options,
+            RunControl::new(Default::default(), None),
+        )
         .await;
     match outcome.result {
         TurnResult::Completed { final_output } => {
