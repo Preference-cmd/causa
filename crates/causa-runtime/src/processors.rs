@@ -1,11 +1,5 @@
-//! Ordered tool-batch processor chain and optional processor components.
+//! Private per-processor handoff checks used by whole-batch execution.
 
-mod chain;
-mod output_budget;
-mod prebuilt;
+mod handoff;
 
-pub use chain::{
-    PassThroughProcessor, ToolProcessingBuilder, ToolProcessingChain, ToolProcessingError,
-};
-pub use output_budget::ToolOutputBudgetProcessor;
-pub use prebuilt::{DeduplicateProcessor, RejectAllProcessor};
+pub(crate) use handoff::process_phase;

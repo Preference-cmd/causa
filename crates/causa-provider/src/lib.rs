@@ -2,7 +2,7 @@
 //! seam — `AnthropicMessagesGateway`, `OpenAiChatCompletionsGateway`,
 //! and `OpenAiResponsesGateway` compose the kernel-native translation in
 //! `causa-protocol::translation` with reqwest transport, the shared
-//! error mapping table, and read-only `AttemptControl` wiring.
+//! error mapping table, and read-only `CallControl` wiring.
 //!
 //! This crate is the transport + adapter layer: it owns reqwest HTTP
 //! plumbing and the adapter implementations. Wire-protocol translation

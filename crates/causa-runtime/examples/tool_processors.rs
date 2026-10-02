@@ -5,16 +5,20 @@
 //! effective inputs, then restores declaration order after execution. Each
 //! policy is an ordinary processor; the empty chain applies none of them.
 
+#[path = "tool_processors/policy.rs"]
+mod policy;
+use policy::DeduplicateProcessor;
+
 use async_trait::async_trait;
 use causa_kernel::{
-    AttemptControl, BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelOutput,
-    ModelRequest, ModelResponse, ModelStopReason, ProcessorContext, ProcessorError, TextPayload,
-    Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
+    BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest,
+    ModelResponse, ModelStopReason, ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch,
+    ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
-    DeduplicateProcessor, RunControl, ToolExecutor, ToolProcessingChain, TurnResult,
-    TurnRunOptions, TurnRunner, new_block_id,
+    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
+    new_block_id,
 };
 use std::sync::Arc;
 
@@ -84,11 +88,10 @@ impl ModelGateway for ResearchGateway {
     async fn invoke(
         &self,
         request: &ModelRequest,
-        _control: &AttemptControl,
+        _control: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         let has_results = request
             .frame
-            .model_context
             .blocks
             .iter()
             .any(|block| matches!(block.content(), BlockContent::ToolResult(_)));
@@ -124,26 +127,34 @@ impl ModelGateway for ResearchGateway {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let chain = ToolProcessingChain::builder()
-        .before(Arc::new(LimitResults))
-        .before(Arc::new(DeduplicateProcessor))
-        .after(Arc::new(DeclarationOrder))
-        .build();
-    let runner = TurnRunner::with_tool_processors(
-        Arc::new(ResearchGateway),
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(Search)])),
-        chain,
-    );
-    let mut context = TurnContext::new(TurnId::new("research"));
-    context.append_input(
-        new_block_id(),
-        TextPayload::new("Research video models."),
-        "user",
+    let executor = ToolExecutor::new(
+        vec![Arc::new(Search)],
+        ToolExecutorOptions {
+            before: vec![Arc::new(LimitResults), Arc::new(DeduplicateProcessor)],
+            after: vec![Arc::new(DeclarationOrder)],
+            ..Default::default()
+        },
     )?;
+    let runner = TurnRunner::new(Arc::new(ResearchGateway), Arc::new(executor));
+    let mut context = causa_kernel::Context::new();
+    context
+        .edit()
+        .append([causa_kernel::ContextBlock::new(
+            new_block_id(),
+            causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                TextPayload::new("Research video models."),
+            )]),
+            causa_kernel::BlockMeta {
+                source: Some("user".into()),
+                ..Default::default()
+            },
+        )])
+        .commit()?;
     let outcome = runner
         .run(
+            TurnId::new("tool_processors"),
             context,
-            TurnRunOptions::default(),
+            TurnRunOptions::new(causa_kernel::ModelRef::new("offline-demo")),
             RunControl::new(Default::default(), None),
         )
         .await;

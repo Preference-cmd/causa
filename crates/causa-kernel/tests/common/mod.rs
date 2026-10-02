@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use causa_kernel::{
-    BlockId, ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft, TurnContext,
+    BlockId, Context, ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft,
     TurnId,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +21,7 @@ pub fn block_id() -> BlockId {
 }
 
 pub fn block_ids_for(response: &ModelResponse) -> Vec<BlockId> {
-    let count = causa_kernel::model_output_block_count(response);
+    let count = response.block_count();
     (0..count).map(|_| block_id()).collect()
 }
 
@@ -31,8 +31,8 @@ pub fn turn_id(s: &str) -> TurnId {
     TurnId::new(s)
 }
 
-pub fn ctx(s: &str) -> TurnContext {
-    TurnContext::new(turn_id(s))
+pub fn ctx(_s: &str) -> Context {
+    Context::new()
 }
 
 pub fn endturn_output(text: &str) -> ModelOutput {
@@ -53,4 +53,24 @@ pub fn draft(tool_name: &str, args: serde_json::Value) -> ToolCallDraft {
         arguments: args,
         provider_call_id: None,
     }
+}
+
+/// A fixture block; the caller chooses its identity and metadata explicitly.
+pub fn text_block(id: BlockId, text: TextPayload, source: &str) -> causa_kernel::ContextBlock {
+    parts_block(id, vec![causa_kernel::ContentPart::Text(text)], source)
+}
+
+pub fn parts_block(
+    id: BlockId,
+    parts: Vec<causa_kernel::ContentPart>,
+    source: &str,
+) -> causa_kernel::ContextBlock {
+    causa_kernel::ContextBlock::new(
+        id,
+        causa_kernel::BlockContent::Parts(parts),
+        causa_kernel::BlockMeta {
+            source: Some(source.to_owned()),
+            ..Default::default()
+        },
+    )
 }

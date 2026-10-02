@@ -16,7 +16,7 @@
 </div>
 
 Causa keeps messages, tool calls and results as typed facts in a Rust kernel.
-Its optional runtime adds turn execution, streaming, tool-processing chains and sessions, with Anthropic, OpenAI and MCP adapters available alongside it.
+Its optional runtime adds turn execution, streaming and tool-processing chains, with Anthropic, OpenAI and MCP adapters available alongside it.
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
@@ -26,7 +26,7 @@ kernel, behavior in yours.
 
 ## Try it offline
 
-Run a conversation, save its history and reload it — no API key or server needed:
+Run a conversation, save its context and reload it — no API key or server needed:
 
 ```bash
 git clone https://github.com/Preference-cmd/causa.git
@@ -55,9 +55,11 @@ Put this in `src/main.rs` to run one model turn through the facade:
 
 ```rust
 use causa::{
-    kernel::{CancellationToken, ModelRef, TextPayload, TurnContext, TurnId},
+    kernel::{BlockContent, BlockMeta, CancellationToken, ContentPart, Context, ContextBlock,
+             ModelRef, TextPayload, TurnId},
     providers::AnthropicMessagesGateway,
-    runtime::{new_block_id, RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner},
+    runtime::{new_block_id, RunControl, ToolExecutor, ToolExecutorOptions,
+              TurnResult, TurnRunOptions, TurnRunner},
 };
 use std::sync::Arc;
 
@@ -66,13 +68,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Arc::new(AnthropicMessagesGateway::new(
         std::env::var("ANTHROPIC_API_KEY")?,
     ));
-    let runner = TurnRunner::new(gateway, Arc::new(ToolExecutor::from_vec(Vec::new())));
-    let mut context = TurnContext::new(TurnId::new("hello"));
-    context.append_input(new_block_id(), TextPayload::new("Say hello in one sentence."), "user")?;
-    let mut options = TurnRunOptions::default();
-    options.invocation.model = ModelRef::new(std::env::var("ANTHROPIC_MODEL")?);
+    let executor = Arc::new(ToolExecutor::new(Vec::new(), ToolExecutorOptions::default())?);
+    let runner = TurnRunner::new(gateway, executor);
+    let context = Context::from_blocks(vec![ContextBlock::new(
+        new_block_id(),
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("Say hello in one sentence."))]),
+        BlockMeta { source: Some("user".into()), ..Default::default() },
+    )])?;
+    let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?));
     let outcome = runner
-        .run(context, options, RunControl::new(CancellationToken::new(), None))
+        .run(TurnId::new("hello"), context, options,
+             RunControl::new(CancellationToken::new(), None))
         .await;
     match outcome.result {
         TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),
@@ -112,7 +118,7 @@ Run these from the repository root using
 
 | Example | Crate | Demonstrates | Needs |
 |---|---|---|---|
-| `conversation_persistence` | `causa-runtime` | Save and reload conversation history | Offline |
+| `conversation_persistence` | `causa-runtime` | Save and reload caller-owned context | Offline |
 | `streaming_print` | `causa-runtime` | Observe deltas as a turn runs | Offline |
 | `approval_processor` | `causa-runtime` | Await approval inside a tool processor | Offline |
 | `tool_processors` | `causa-runtime` | Compose tool processors | Offline |
@@ -133,8 +139,8 @@ provides storage, credentials, tools and the policies it needs.
 | Crate | Responsibility |
 |---|---|
 | `causa` | Facade and feature selection — the default entry point |
-| `causa-kernel` | Conversation facts, turn state and contracts for models and tools |
-| `causa-runtime` | Turn execution, sessions, tool-processing chains and optional output policies |
+| `causa-kernel` | Editable context material and contracts for models, preparation and tools |
+| `causa-runtime` | Material-returning turn runner, borrowed observations and bound tool execution |
 | `causa-protocol` | Pure translation for Anthropic and OpenAI wire formats |
 | `causa-provider` | HTTP adapters implementing the model gateway contract |
 | `causa-extension` | Dynamic tool-source adapters, currently MCP |
@@ -148,21 +154,22 @@ for layer boundaries and the
 [runtime policy overview](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/src/lib.rs)
 for defaults and component contracts.
 
-To edit the blocks in a turn explicitly, see the
+To edit the retained blocks explicitly, see the
 [context editing guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/context-editing.mdx).
 
 ## Status and boundaries
 
-**0.0.1 is an experimental development snapshot.** Multimodal I/O and session
-building blocks are implemented. Subagent collaboration is not yet released;
-it remains part of the 0.1 functional completeness gate.
+**0.0.1 is an experimental development snapshot.** The current checkout provides
+multimodal material, turn execution and tool-processing contracts. Session management and subagent orchestration belong to applications built
+on Causa. This migration is unreleased and does not announce a 0.1 release.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Cargo does not automatically upgrade `"0.0.1"` to `0.0.2`;
 review the [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
 before upgrading. Starting with `0.1.0`, breaking wire-format changes bump the
-minor version. The current development API removes the old session checkpoint
-and approval-resume interfaces without compatibility adapters.
+minor version. The current development API replaces `TurnContext` with editable `Context`
+and removes session ownership, implicit traces and built-in budget policies.
+Applications own history, input admission, preparation and persistence.
 
 Persistence stays in your application. Processing interruptions return the
 uncommitted tool batch and their cause; your code chooses whether to inspect,
@@ -172,7 +179,9 @@ execution of external tools.
 ## Contributing
 
 See [AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
-repository layout, conventions and verification commands. The
+repository layout, conventions and verification commands. Public facade consumers
+are checked with `cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked`
+and the same command with `--features runtime`. The
 [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
 covers the manual publishing workflow.
 

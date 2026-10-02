@@ -7,9 +7,8 @@
 use serde_json::Value;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextFrame, FrameScope,
-    MediaRef, ModelContext, RoundId, TextPayload, ToolCallPayload, ToolOutput, ToolResultPayload,
-    ToolResultStatus, TurnId,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextFrame, MediaRef,
+    TextPayload, ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 
 pub(crate) fn label_id(label: &str) -> BlockId {
@@ -107,12 +106,5 @@ pub(crate) fn result_with_media(
 }
 
 pub(crate) fn frame(blocks: Vec<ContextBlock>) -> ContextFrame {
-    let scope = FrameScope::Turn {
-        turn_id: TurnId::new("t1"),
-    };
-    ContextFrame {
-        scope,
-        round_id: RoundId(0),
-        model_context: ModelContext { blocks },
-    }
+    ContextFrame { blocks }
 }

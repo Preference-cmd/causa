@@ -56,8 +56,8 @@
 //!
 //! External tools are an injection surface: their output is model-visible
 //! input and their effects are host-executed. Hosts should keep the
-//! approval gate (`causa_runtime::TurnInteraction::decide_batch`) in
-//! front of dynamic-source batches, exactly as for local tools.
+//! approval policy in a `ToolBatchProcessor` registered in the executor
+//! before-processing chain, for dynamic-source and local tools alike.
 #![deny(unsafe_code)]
 
 use async_trait::async_trait;

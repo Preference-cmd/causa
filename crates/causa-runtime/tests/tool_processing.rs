@@ -1,579 +1,627 @@
-//! End-to-end coverage for the opt-in tool-batch processor chain.
-
-mod common;
-
+//! Processor policy is supplied by callers; the executor enforces each handoff.
+mod tool_fixtures;
+use async_trait::async_trait;
+use causa_kernel::*;
+use causa_runtime::{ToolExecutorOptions, ToolProcessingError, ToolProcessorPhase, new_block_id};
+use serde_json::json;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::Duration;
-
-use async_trait::async_trait;
-use causa_kernel::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, CallControl, ContentPart,
-    ConversationId, MediaRef, ProcessorContext, ProcessorError, StoreError, TextPayload, Tool,
-    ToolBatch, ToolBatchProcessor, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus, Truncation, TurnId,
-};
-use causa_runtime::{
-    ConversationState, DeduplicateProcessor, RejectAllProcessor, Session, SessionConfig,
-    SubmitRequest, TokenCounter, ToolExecutor, ToolOutputBudgetProcessor, ToolProcessingChain,
-    TurnLimits, TurnPolicy, TurnResult, TurnRunOptions, TurnRunner, WaitEnd, WorkState,
-    new_block_id,
-};
-use common::{EchoTool, RecordingGateway, ctrl, ctx, draft, endturn_output, tooluse_calls_output};
-use serde_json::json;
 use tokio::sync::{Notify, Semaphore};
+use tool_fixtures::*;
 
-struct NamedTool(&'static str, Arc<AtomicUsize>);
-
+struct Count(Arc<AtomicUsize>);
 #[async_trait]
-impl Tool for NamedTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.0.into(),
-            description: self.0.into(),
-            parameters: json!({"type": "object"}),
-        }
-    }
-
-    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
-        self.1.fetch_add(1, Ordering::SeqCst);
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!(self.0)),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
-    }
-}
-
-struct CountPost(Arc<AtomicUsize>);
-
-#[async_trait]
-impl ToolBatchProcessor for CountPost {
+impl ToolBatchProcessor for Count {
     async fn process(
         &self,
         _batch: &mut ToolBatch,
-        _ctx: &ProcessorContext<'_>,
+        _context: &ProcessorContext<'_>,
     ) -> Result<(), ProcessorError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
-
+struct Gate {
+    entered: Arc<Notify>,
+    release: Arc<Semaphore>,
+}
+#[async_trait]
+impl ToolBatchProcessor for Gate {
+    async fn process(
+        &self,
+        _batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        self.entered.notify_one();
+        self.release.acquire().await.unwrap().forget();
+        Ok(())
+    }
+}
 #[tokio::test]
-async fn asynchronous_preprocessor_holds_batch_before_execution_and_postprocessing() {
-    struct Gate {
-        entered: Arc<Notify>,
-        release: Arc<Semaphore>,
-    }
-    #[async_trait]
-    impl ToolBatchProcessor for Gate {
-        async fn process(
-            &self,
-            _batch: &mut ToolBatch,
-            _ctx: &ProcessorContext<'_>,
-        ) -> Result<(), ProcessorError> {
-            self.entered.notify_one();
-            self.release.acquire().await.expect("gate is open").forget();
-            Ok(())
-        }
-    }
-
+async fn asynchronous_before_holds_dispatch_and_after_until_released() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let executions = Arc::new(AtomicUsize::new(0));
-    let post_calls = Arc::new(AtomicUsize::new(0));
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_calls_output("", vec![draft("slow", json!({}))])),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(NamedTool(
-            "slow",
-            executions.clone(),
-        ))])),
-        ToolProcessingChain::builder()
-            .before(Arc::new(Gate {
+    let tool = NamedTool::new("work");
+    let after = Arc::new(AtomicUsize::new(0));
+    let executor = Arc::new(executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Gate {
                 entered: entered.clone(),
                 release: release.clone(),
-            }))
-            .after(Arc::new(CountPost(post_calls.clone())))
-            .build(),
-    );
+            })],
+            after: vec![Arc::new(Count(after.clone()))],
+            ..Default::default()
+        },
+    ));
     let task = tokio::spawn(async move {
-        runner
-            .run(ctx("async-chain"), TurnRunOptions::default(), ctrl())
+        let mut batch = batch(&["work"]);
+        executor
+            .bind(invocation(), control())
             .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap();
+        batch
     });
     entered.notified().await;
-    assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(post_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+    assert_eq!(after.load(Ordering::SeqCst), 0);
     release.add_permits(1);
-    let outcome = task.await.unwrap();
-    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
-    assert_eq!(post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(task.await.unwrap().completed_len(), 1);
+    assert_eq!(tool.count.load(Ordering::SeqCst), 1);
+    assert_eq!(after.load(Ordering::SeqCst), 1);
 }
-
-#[tokio::test]
-async fn all_pre_rejections_still_reach_post_processor_without_execution() {
-    let executions = Arc::new(AtomicUsize::new(0));
-    let post_calls = Arc::new(AtomicUsize::new(0));
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_calls_output(
-            "",
-            vec![draft("first", json!({})), draft("second", json!({}))],
-        )),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![
-            Arc::new(NamedTool("first", executions.clone())),
-            Arc::new(NamedTool("second", executions.clone())),
-        ])),
-        ToolProcessingChain::builder()
-            .before(Arc::new(RejectAllProcessor::new("approval denied")))
-            .after(Arc::new(CountPost(post_calls.clone())))
-            .build(),
-    );
-    let outcome = runner
-        .run(ctx("all-rejected"), TurnRunOptions::default(), ctrl())
-        .await;
-    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
-    assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(post_calls.load(Ordering::SeqCst), 1);
-    let statuses = outcome
-        .context
-        .blocks()
-        .iter()
-        .filter_map(|block| match block.content() {
-            BlockContent::ToolResult(result) => Some(result.status.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(statuses, vec![ToolResultStatus::Rejected; 2]);
-}
-
-struct ReverseResults;
-
+struct Reject;
 #[async_trait]
-impl ToolBatchProcessor for ReverseResults {
+impl ToolBatchProcessor for Reject {
     async fn process(
         &self,
         batch: &mut ToolBatch,
-        _ctx: &ProcessorContext<'_>,
+        _context: &ProcessorContext<'_>,
     ) -> Result<(), ProcessorError> {
+        while let Some(entry) = batch.calls().first() {
+            let output = result(entry.call(), ToolResultStatus::Rejected, json!("denied"));
+            batch
+                .resolve_at(batch.completed_len(), new_block_id(), output)
+                .unwrap();
+        }
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn before_can_complete_all_calls_and_after_still_runs() {
+    let tool = NamedTool::new("work");
+    let after = Arc::new(AtomicUsize::new(0));
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Reject)],
+            after: vec![Arc::new(Count(after.clone()))],
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["work", "work"]);
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::Rejected; 2]);
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+    assert_eq!(after.load(Ordering::SeqCst), 1);
+}
+struct Rewrite {
+    name: &'static str,
+}
+#[async_trait]
+impl ToolBatchProcessor for Rewrite {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        assert_eq!(context.turn_id, &invocation().turn_id);
+        assert_eq!(context.round_id, invocation().round_id);
+        for entry in batch.calls_mut() {
+            assert!(
+                context
+                    .declaration_order
+                    .contains(&entry.call().call_block_id)
+            );
+            entry.input_mut().unwrap().tool_name = self.name.into();
+            entry.input_mut().unwrap().arguments = json!({"changed": true});
+            entry.push_note(TextPayload::new("before note"));
+        }
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn original_unadvertised_name_cannot_be_rescued_by_before() {
+    let tool = NamedTool::new("real");
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Rewrite { name: "real" })],
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["unadvertised alias"]);
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::Rejected]);
+    assert_eq!(
+        batch.results()[0].call().input.tool_name,
+        "unadvertised alias"
+    );
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn legal_name_rewritten_outside_binding_is_rejected() {
+    let tool = NamedTool::new("real");
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Rewrite { name: "outside" })],
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["real"]);
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::Rejected]);
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        batch.results()[0].result().unwrap().1.notes,
+        vec![TextPayload::new("before note")]
+    );
+}
+#[tokio::test]
+async fn legal_name_rewritten_inside_binding_dispatches_the_fixed_target() {
+    let first = NamedTool::labeled("first", "first object");
+    let second = NamedTool::labeled("second", "second object");
+    let executor = executor(
+        vec![first.clone(), second.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Rewrite { name: "second" })],
+            ..Default::default()
+        },
+    );
+    let mut batch = batch(&["first"]);
+    let id = batch.declaration_ids()[0];
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    let output = batch.results()[0].result().unwrap().1;
+    assert_eq!(output.call_block_id, id);
+    assert_eq!(
+        output.output.content,
+        json!({"object": "second object", "arguments": {"changed": true}})
+    );
+    assert_eq!(
+        output.notes,
+        [
+            TextPayload::new("before note"),
+            TextPayload::new("tool note")
+        ]
+    );
+    assert_eq!(first.count.load(Ordering::SeqCst), 0);
+    assert_eq!(second.count.load(Ordering::SeqCst), 1);
+}
+struct Reverse(Mutex<Vec<BlockId>>);
+#[async_trait]
+impl ToolBatchProcessor for Reverse {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        *self.0.lock().unwrap() = batch.declaration_ids();
         batch.results_mut().reverse();
         Ok(())
     }
 }
-
 #[tokio::test]
-async fn postprocessor_order_is_the_committed_result_order() {
-    let executions = Arc::new(AtomicUsize::new(0));
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_calls_output(
-            "",
-            vec![draft("first", json!({})), draft("second", json!({}))],
-        )),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![
-            Arc::new(NamedTool("first", executions.clone())),
-            Arc::new(NamedTool("second", executions)),
-        ])),
-        ToolProcessingChain::builder()
-            .after(Arc::new(ReverseResults))
-            .build(),
-    );
-    let outcome = runner
-        .run(ctx("post-order"), TurnRunOptions::default(), ctrl())
-        .await;
-    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
-    let results = outcome
-        .context
-        .blocks()
-        .iter()
-        .filter_map(|block| match block.content() {
-            BlockContent::ToolResult(result) => {
-                Some((result.call_block_id, result.output.content.clone()))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let calls = outcome
-        .context
-        .blocks()
-        .iter()
-        .filter_map(|block| match block.content() {
-            BlockContent::ToolCall(call) => Some((block.id(), call.tool_name.as_str())),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(calls[0].1, "first");
-    assert_eq!(calls[1].1, "second");
-    assert_eq!(results[0].0, calls[1].0);
-    assert_eq!(results[0].1, json!("second"));
-    assert_eq!(results[1].0, calls[0].0);
-    assert_eq!(results[1].1, json!("first"));
-}
-
-#[tokio::test]
-async fn session_submit_returns_running_receipt_and_later_observes_same_new_id() {
-    struct Gate {
-        entered: Arc<Notify>,
-        release: Arc<Semaphore>,
-    }
-    #[async_trait]
-    impl ToolBatchProcessor for Gate {
-        async fn process(
-            &self,
-            _batch: &mut ToolBatch,
-            _ctx: &ProcessorContext<'_>,
-        ) -> Result<(), ProcessorError> {
-            self.entered.notify_one();
-            self.release.acquire().await.expect("gate is open").forget();
-            Ok(())
-        }
-    }
-
-    let entered = Arc::new(Notify::new());
-    let release = Arc::new(Semaphore::new(0));
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_calls_output("", vec![draft("echo", json!({}))])),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)])),
-        ToolProcessingChain::builder()
-            .before(Arc::new(Gate {
-                entered: entered.clone(),
-                release: release.clone(),
-            }))
-            .build(),
-    );
-    let session = Session::new(
-        ConversationState::new(ConversationId("long-task".into())),
-        Arc::new(runner),
-        TurnRunOptions {
-            policy: TurnPolicy {
-                limits: TurnLimits {
-                    max_model_rounds: 3,
-                    max_tool_calls: 3,
-                },
-                ..Default::default()
-            },
+async fn after_reorder_preserves_results_and_is_the_returned_order() {
+    let reverse = Arc::new(Reverse(Mutex::new(vec![])));
+    let executor = executor(
+        vec![NamedTool::new("a"), NamedTool::new("b")],
+        ToolExecutorOptions {
+            after: vec![reverse.clone()],
             ..Default::default()
         },
-        SessionConfig::default(),
-    )
-    .expect("session initializes");
-    let handle = session.handle();
-    let receipt = handle
-        .submit(SubmitRequest {
-            request_key: "long-work".into(),
-            parts: vec![ContentPart::Text(TextPayload::new("go"))],
-        })
-        .expect("submit returns without waiting for runner");
-    entered.notified().await;
-    let running = handle
-        .wait(&receipt.work, Duration::from_millis(5))
+    );
+    let mut batch = batch(&["a", "b"]);
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
         .await
         .unwrap();
-    assert_eq!(running.end, WaitEnd::TimedOut);
-    assert_eq!(running.observation.state, WorkState::Running);
-    assert_eq!(running.observation.work, receipt.work);
-    release.add_permits(1);
-    let finished = handle
-        .wait(&receipt.work, Duration::from_secs(2))
-        .await
-        .unwrap();
-    assert_eq!(finished.end, WaitEnd::ReachedState);
-    assert_eq!(finished.observation.state, WorkState::Finished);
-    assert_eq!(finished.observation.work.turn_id, receipt.work.turn_id);
+    let mut prior = reverse.0.lock().unwrap().clone();
+    prior.reverse();
+    assert_eq!(batch.declaration_ids(), prior);
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::Succeeded; 2]);
 }
-
-fn resolved_batch(
-    tool_name: &str,
-    content: serde_json::Value,
-    notes: Vec<TextPayload>,
-    media: Vec<MediaRef>,
-) -> (ToolBatch, causa_kernel::BlockId) {
-    let call_id = new_block_id();
-    let mut batch = ToolBatch::new(vec![ToolCallContext::from_declaration(
-        call_id,
-        &causa_kernel::ToolCallPayload {
-            tool_name: tool_name.to_owned(),
-            arguments: json!({}),
+struct ModifyThenFail;
+#[async_trait]
+impl ToolBatchProcessor for ModifyThenFail {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        for entry in batch.calls_mut() {
+            entry.push_note(TextPayload::new("kept mutation"));
+        }
+        for entry in batch.results_mut() {
+            entry.output_mut().unwrap().content = json!("kept mutation");
+        }
+        Err(ProcessorError::Failed("original processor failure".into()))
+    }
+}
+#[tokio::test]
+async fn before_and_after_errors_keep_edits_original_error_and_skip_later_processors() {
+    for phase in [ToolProcessorPhase::Before, ToolProcessorPhase::After] {
+        let tool = NamedTool::new("work");
+        let count = Arc::new(AtomicUsize::new(0));
+        let sequence: Vec<Arc<dyn ToolBatchProcessor>> = vec![
+            Arc::new(Count(Arc::new(AtomicUsize::new(0)))),
+            Arc::new(ModifyThenFail),
+            Arc::new(Count(count.clone())),
+        ];
+        let options = match phase {
+            ToolProcessorPhase::Before => ToolExecutorOptions {
+                before: sequence,
+                ..Default::default()
+            },
+            ToolProcessorPhase::After => ToolExecutorOptions {
+                after: sequence,
+                ..Default::default()
+            },
+        };
+        let executor = executor(vec![tool.clone()], options);
+        let mut batch = batch(&["work"]);
+        let parent = control();
+        let error = executor
+            .bind(invocation(), parent.clone())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ToolProcessingError::Processor { phase: actual, index: 1, error: ProcessorError::Failed(message) } if actual == phase && message == "original processor failure")
+        );
+        assert!(!parent.is_cancelled());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        if phase == ToolProcessorPhase::Before {
+            assert_eq!(
+                batch.calls()[0].call().result_notes,
+                [TextPayload::new("kept mutation")]
+            );
+            assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+        } else {
+            assert_eq!(
+                batch.results()[0].result().unwrap().1.output.content,
+                json!("kept mutation")
+            );
+            assert_eq!(tool.count.load(Ordering::SeqCst), 1);
+        }
+    }
+}
+#[tokio::test]
+async fn precompleted_input_is_rejected_unchanged_without_processors_or_calls() {
+    let tool = NamedTool::new("work");
+    let count = Arc::new(AtomicUsize::new(0));
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Count(count.clone()))],
+            ..Default::default()
         },
-    )])
-    .unwrap();
+    );
+    let mut batch = batch(&["work"]);
+    let call = batch.calls()[0].call().clone();
     batch
         .resolve_at(
             0,
             new_block_id(),
-            ToolResultPayload {
-                call_block_id: call_id,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(content),
-                media,
-                notes,
-            },
+            result(&call, ToolResultStatus::Succeeded, json!("already")),
         )
         .unwrap();
-    (batch, call_id)
-}
-
-struct CountTokens;
-impl TokenCounter for CountTokens {
-    fn estimate(&self, _blocks: &[causa_kernel::ContextBlock]) -> usize {
-        0
-    }
-
-    fn estimate_value(&self, value: &serde_json::Value) -> usize {
-        value
-            .as_str()
-            .map_or_else(|| value.to_string().len(), str::len)
-    }
-
-    fn estimate_media(&self, _media: &MediaRef) -> Option<usize> {
-        Some(10)
-    }
-}
-
-fn processor_context<'a>(
-    turn_id: &'a TurnId,
-    declaration_order: &'a [causa_kernel::BlockId],
-    control: &'a CallControl,
-) -> ProcessorContext<'a> {
-    ProcessorContext {
-        conversation_id: None,
-        turn_id,
-        round_id: causa_kernel::RoundId(0),
-        declaration_order,
-        control,
-    }
-}
-
-#[tokio::test]
-async fn output_budget_counts_notes_and_media_and_preserves_result_facts() {
-    let media = MediaRef::new("image/png", "chart-1");
-    let notes = vec![TextPayload::new("audit note")];
-    let (mut batch, call_id) = resolved_batch(
-        "bounded",
-        json!("x".repeat(400)),
-        notes.clone(),
-        vec![media.clone()],
-    );
-    let control = CallControl::new(tokio_util::sync::CancellationToken::new(), None);
-    let turn_id = TurnId::new("budget");
-    let ids = batch.declaration_ids();
-    let ctx = processor_context(&turn_id, &ids, &control);
-    let processor = ToolOutputBudgetProcessor::new(usize::MAX)
-        .for_tool("bounded", 80)
-        .with_token_counter(Arc::new(CountTokens));
-    processor.process(&mut batch, &ctx).await.unwrap();
-
-    let (result_id, result) = batch.results()[0].result().unwrap();
-    assert_ne!(*result_id, call_id);
-    assert_eq!(result.call_block_id, call_id);
-    assert_eq!(result.status, ToolResultStatus::Succeeded);
-    assert_eq!(result.notes, notes);
-    assert_eq!(result.media, vec![media]);
-    assert_eq!(result.output.truncation, Truncation::Middle);
-    let text = result.output.content.as_str().unwrap();
-    assert!(text.len() < 400);
-    assert!(text.contains("output truncated"));
-    assert_eq!(
-        result.output.meta.as_ref().unwrap().original_tokens,
-        Some(400)
-    );
-}
-
-#[tokio::test]
-async fn output_budget_rejects_unestimated_media_and_preserves_current_result() {
-    let (mut batch, _) = resolved_batch(
-        "bounded",
-        json!("large text"),
-        vec![],
-        vec![MediaRef::new("image/png", "image-1")],
-    );
-    let before = batch.results()[0].result().unwrap().1.clone();
-    let control = CallControl::new(tokio_util::sync::CancellationToken::new(), None);
-    let turn_id = TurnId::new("media");
-    let ids = batch.declaration_ids();
-    let ctx = processor_context(&turn_id, &ids, &control);
-    let error = ToolOutputBudgetProcessor::new(1)
-        .process(&mut batch, &ctx)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("media token estimator"));
-    assert_eq!(batch.results()[0].result().unwrap().1, &before);
-}
-
-#[tokio::test]
-async fn output_budget_keeps_unlimited_media_results_without_estimator() {
-    let media = MediaRef::new("image/png", "image-1");
-    let (mut batch, _) =
-        resolved_batch("image", json!("x".repeat(100)), vec![], vec![media.clone()]);
-    let control = CallControl::new(tokio_util::sync::CancellationToken::new(), None);
-    let turn_id = TurnId::new("unlimited");
-    let ids = batch.declaration_ids();
-    let ctx = processor_context(&turn_id, &ids, &control);
-    ToolOutputBudgetProcessor::new(usize::MAX)
-        .for_tool("bounded", 10)
-        .process(&mut batch, &ctx)
-        .await
-        .unwrap();
-    let result = batch.results()[0].result().unwrap().1;
-    assert_eq!(result.output.truncation, Truncation::None);
-    assert_eq!(result.media, vec![media]);
-}
-
-#[tokio::test]
-async fn output_budget_keeps_notes_and_fails_when_irreducible_material_exceeds_limit() {
-    let notes = vec![TextPayload::new(
-        "mandatory audit note that cannot be dropped",
-    )];
-    let (mut batch, _) = resolved_batch("bounded", json!("large output"), notes.clone(), vec![]);
-    let before = batch.results()[0].result().unwrap().1.clone();
-    let control = CallControl::new(tokio_util::sync::CancellationToken::new(), None);
-    let turn_id = TurnId::new("irreducible");
-    let ids = batch.declaration_ids();
-    let ctx = processor_context(&turn_id, &ids, &control);
-    let error = ToolOutputBudgetProcessor::new(8)
-        .with_token_counter(Arc::new(CountTokens))
-        .process(&mut batch, &ctx)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("notes and media"));
-    let after = batch.results()[0].result().unwrap().1;
-    assert_eq!(after.status, ToolResultStatus::Succeeded);
-    assert_eq!(after.notes, notes);
-    assert_eq!(after.output.content, before.output.content);
-}
-
-#[tokio::test]
-async fn output_budget_spills_exact_original_and_replaces_stale_artifact() {
-    struct CaptureStore(std::sync::Mutex<Vec<u8>>);
-    #[async_trait]
-    impl ArtifactStore for CaptureStore {
-        async fn persist(
-            &self,
-            data: &[u8],
-            _hint: ArtifactHint,
-        ) -> Result<ArtifactRef, StoreError> {
-            *self.0.lock().unwrap() = data.to_vec();
-            Ok(ArtifactRef {
-                id: "fresh-artifact".into(),
-                size_bytes: data.len(),
-                kind: ArtifactKind::FullOutput,
-                persisted: true,
-            })
-        }
-        async fn read(
-            &self,
-            _id: &str,
-            _range: Option<std::ops::Range<u64>>,
-        ) -> Result<Vec<u8>, StoreError> {
-            Ok(Vec::new())
-        }
-    }
-
-    let original = json!({"text":"original text ".repeat(50)});
-    let original_bytes = serde_json::to_vec(&original).unwrap();
-    let (mut batch, _) = resolved_batch("bounded", original.clone(), vec![], vec![]);
-    batch.results_mut()[0].output_mut().unwrap().artifact = Some(ArtifactRef {
-        id: "stale-artifact".into(),
-        size_bytes: 1,
-        kind: ArtifactKind::FullOutput,
-        persisted: true,
-    });
-    let store = Arc::new(CaptureStore(std::sync::Mutex::new(Vec::new())));
-    let control = CallControl::new(tokio_util::sync::CancellationToken::new(), None);
-    let turn_id = TurnId::new("spill");
-    let ids = batch.declaration_ids();
-    let ctx = processor_context(&turn_id, &ids, &control);
-    ToolOutputBudgetProcessor::new(60)
-        .with_token_counter(Arc::new(CountTokens))
-        .with_artifact_store(store.clone())
-        .process(&mut batch, &ctx)
-        .await
-        .unwrap();
-    assert_eq!(*store.0.lock().unwrap(), original_bytes);
-    let result = batch.results()[0].result().unwrap().1;
-    assert_eq!(
-        result.output.artifact.as_ref().unwrap().id,
-        "fresh-artifact"
-    );
-    assert_ne!(
-        result.output.artifact.as_ref().unwrap().id,
-        "stale-artifact"
-    );
-    assert!(
-        result
-            .output
-            .content
-            .as_str()
+    let input = format!("{batch:?}");
+    assert!(matches!(
+        executor
+            .bind(invocation(), control())
+            .await
             .unwrap()
-            .contains("truncated")
+            .process(&mut batch)
+            .await,
+        Err(ToolProcessingError::NotFreshBatch { completed: 1 })
+    ));
+    assert_eq!(format!("{batch:?}"), input);
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+}
+struct Replace {
+    reopen: bool,
+    remove_notes: bool,
+    change_status: bool,
+}
+#[async_trait]
+impl ToolBatchProcessor for Replace {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        let original: Vec<_> = batch
+            .results()
+            .iter()
+            .chain(batch.calls())
+            .map(|entry| {
+                (
+                    entry.call().clone(),
+                    entry.result().map(|(id, value)| (*id, value.clone())),
+                )
+            })
+            .collect();
+        let calls = original
+            .iter()
+            .map(|(call, _)| {
+                let mut call = call.clone();
+                if self.remove_notes {
+                    call.result_notes.clear();
+                }
+                call
+            })
+            .collect();
+        let mut replacement = ToolBatch::new(calls).unwrap();
+        if !self.reopen {
+            for (call, output) in original {
+                if let Some((id, mut output)) = output {
+                    if self.change_status {
+                        output.status = ToolResultStatus::Succeeded;
+                    }
+                    if self.remove_notes {
+                        output.notes.clear();
+                    }
+                    let index = replacement.completed_len()
+                        + replacement
+                            .calls()
+                            .iter()
+                            .position(|entry| entry.call().call_block_id == call.call_block_id)
+                            .unwrap();
+                    replacement.resolve_at(index, id, output).unwrap();
+                }
+            }
+        }
+        *batch = replacement;
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn rejected_results_cannot_reopen_change_status_or_lose_notes() {
+    for replacement in [
+        Replace {
+            reopen: true,
+            remove_notes: false,
+            change_status: false,
+        },
+        Replace {
+            reopen: false,
+            remove_notes: false,
+            change_status: true,
+        },
+        Replace {
+            reopen: false,
+            remove_notes: true,
+            change_status: false,
+        },
+    ] {
+        let tool = NamedTool::new("work");
+        let executor = executor(
+            vec![tool.clone()],
+            ToolExecutorOptions {
+                before: vec![
+                    Arc::new(Rewrite { name: "work" }),
+                    Arc::new(Reject),
+                    Arc::new(replacement),
+                ],
+                ..Default::default()
+            },
+        );
+        let mut batch = batch(&["work"]);
+        assert!(matches!(
+            executor
+                .bind(invocation(), control())
+                .await
+                .unwrap()
+                .process(&mut batch)
+                .await,
+            Err(ToolProcessingError::Handoff {
+                phase: ToolProcessorPhase::Before,
+                index: 2,
+                ..
+            })
+        ));
+        assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+    }
+}
+struct Foreign;
+#[async_trait]
+impl ToolBatchProcessor for Foreign {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        *batch = tool_fixtures::batch(&["work"]);
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn foreign_membership_is_rejected_at_handoff_without_dispatch() {
+    let tool = NamedTool::new("work");
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Foreign)],
+            ..Default::default()
+        },
     );
+    let mut batch = batch(&["work"]);
+    assert!(matches!(
+        executor
+            .bind(invocation(), control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await,
+        Err(ToolProcessingError::Handoff {
+            phase: ToolProcessorPhase::Before,
+            index: 0,
+            ..
+        })
+    ));
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
 }
 
+struct ChangeCompletedFact {
+    identity: bool,
+}
+#[async_trait]
+impl ToolBatchProcessor for ChangeCompletedFact {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        let entry = &batch.results()[0];
+        let mut call = entry.call().clone();
+        let (result_id, result) = entry.result().unwrap();
+        let result = result.clone();
+        let result_id = if self.identity {
+            new_block_id()
+        } else {
+            call.input.arguments = json!({"changed after execution": true});
+            *result_id
+        };
+        let mut replacement = ToolBatch::new(vec![call]).unwrap();
+        replacement.resolve_at(0, result_id, result).unwrap();
+        *batch = replacement;
+        Ok(())
+    }
+}
 #[tokio::test]
-async fn dedup_rejects_later_declaration_but_allows_same_content_next_round() {
-    let gateway = RecordingGateway::scripted(vec![
-        Ok(tooluse_calls_output(
-            "",
-            vec![draft("echo", json!({"x":1})), draft("echo", json!({"x":1}))],
-        )),
-        Ok(tooluse_calls_output(
-            "",
-            vec![draft("echo", json!({"x":1}))],
-        )),
-        Ok(endturn_output("done")),
-    ]);
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(EchoTool)])),
-        ToolProcessingChain::builder()
-            .before(Arc::new(DeduplicateProcessor))
-            .build(),
+async fn after_cannot_change_result_identity_or_completed_input() {
+    for identity in [false, true] {
+        let tool = NamedTool::new("work");
+        let executor = executor(
+            vec![tool.clone()],
+            ToolExecutorOptions {
+                after: vec![Arc::new(ChangeCompletedFact { identity })],
+                ..Default::default()
+            },
+        );
+        let mut batch = batch(&["work"]);
+        assert!(matches!(
+            executor
+                .bind(invocation(), control())
+                .await
+                .unwrap()
+                .process(&mut batch)
+                .await,
+            Err(ToolProcessingError::Handoff {
+                phase: ToolProcessorPhase::After,
+                index: 0,
+                ..
+            })
+        ));
+        assert_eq!(tool.count.load(Ordering::SeqCst), 1);
+    }
+}
+#[tokio::test]
+async fn pending_notes_cannot_be_removed_by_recreating_the_same_declaration() {
+    let tool = NamedTool::new("work");
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![
+                Arc::new(Rewrite { name: "work" }),
+                Arc::new(Replace {
+                    reopen: false,
+                    remove_notes: true,
+                    change_status: false,
+                }),
+            ],
+            ..Default::default()
+        },
     );
-    let outcome = runner
-        .run(ctx("dedup"), TurnRunOptions::default(), ctrl())
-        .await;
-    assert!(matches!(outcome.result, TurnResult::Completed { .. }));
-    let statuses = outcome
-        .context
-        .blocks()
-        .iter()
-        .filter_map(|block| match block.content() {
-            BlockContent::ToolResult(result) => Some(result.status.clone()),
-            _ => None,
+    let mut batch = batch(&["work"]);
+    assert!(matches!(
+        executor
+            .bind(invocation(), control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await,
+        Err(ToolProcessingError::Handoff {
+            phase: ToolProcessorPhase::Before,
+            index: 1,
+            ..
         })
-        .collect::<Vec<_>>();
-    assert_eq!(statuses.len(), 3);
-    assert_eq!(
-        statuses
-            .iter()
-            .filter(|status| **status == ToolResultStatus::Rejected)
-            .count(),
-        1
+    ));
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn original_out_of_bounds_rejection_cannot_be_reopened() {
+    let tool = NamedTool::new("work");
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions {
+            before: vec![Arc::new(Replace {
+                reopen: true,
+                remove_notes: false,
+                change_status: false,
+            })],
+            ..Default::default()
+        },
     );
-    assert_eq!(
-        statuses
-            .iter()
-            .filter(|status| **status == ToolResultStatus::Succeeded)
-            .count(),
-        2
-    );
+    let mut batch = batch(&["outside"]);
+    assert!(matches!(
+        executor
+            .bind(invocation(), control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await,
+        Err(ToolProcessingError::Handoff {
+            phase: ToolProcessorPhase::Before,
+            index: 0,
+            ..
+        })
+    ));
+    assert_eq!(tool.count.load(Ordering::SeqCst), 0);
 }

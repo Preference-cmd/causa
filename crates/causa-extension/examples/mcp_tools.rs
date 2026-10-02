@@ -11,17 +11,18 @@
 //! Tools enter the executor under the `mcp_{server_id}_{tool}`
 //! namespace, cached until the server notifies `tools/list_changed`.
 //! From here the model-facing flow is identical to local tools: hand
-//! `executor.tool_surface()` to a turn's `TurnInvocation` and the driver
-//! routes dispatch by listing membership (see
+//! the assembled executor to a `TurnRunner`, which binds its directory and
+//! execution targets together before each model request (see
 //! `causa-provider/examples/quickstart.rs` for the model-side half).
 
 use causa_extension::McpToolSource;
-use causa_runtime::ToolExecutor;
+use causa_kernel::{CallControl, CancellationToken, InvocationId, RoundId, TurnId};
+use causa_runtime::{ToolExecutor, ToolExecutorOptions};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let executor = ToolExecutor::from_vec(Vec::new());
+    let executor = ToolExecutor::new(Vec::new(), ToolExecutorOptions::default())?;
 
     // --- stdio: spawn a local MCP server as a child process ----------------
     let mut argv = std::env::args().skip(1);
@@ -45,7 +46,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- the merged model-facing surface ------------------------------------
-    let surface = executor.tool_surface().await;
+    let bound = executor
+        .bind(
+            InvocationId {
+                turn_id: TurnId::new("catalog-preview"),
+                round_id: RoundId(0),
+            },
+            CallControl::new(CancellationToken::new(), None),
+        )
+        .await?;
+    let surface = bound.surface();
     println!("registered sources: {:?}", executor.dynamic_ids());
     println!("model-facing tools:");
     for definition in &surface.definitions {
@@ -55,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sessions end when the sources drop; for a bounded shutdown
     // handshake instead, unregister from the executor and call
     // `McpToolSource::close` on the owned source (see its docs).
+    drop(bound);
     drop(executor);
     println!("done");
     Ok(())

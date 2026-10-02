@@ -1,233 +1,317 @@
-//! Standalone tool-dispatch evidence: the executor accepts declaration
-//! context with explicit block identity and returns a result paired to it.
-
+//! Independent binding consumers: concrete objects, identity, and host storage.
+mod tool_fixtures;
 use async_trait::async_trait;
-use causa_kernel::{
-    ArtifactHint, ArtifactRef, ArtifactStore, BlockId, CallControl, DynamicToolSource, MediaRef,
-    ProcessorContext, RoundId, SourceError, StoreError, TextPayload, Tool, ToolBatch,
-    ToolBatchProcessor, ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+use causa_kernel::*;
+use causa_runtime::{
+    ToolBridge, ToolCatalogError, ToolExecutor, ToolExecutorOptions, ToolRegistryError,
 };
-use causa_runtime::{TokenCounter, ToolExecutor, ToolOutputBudgetProcessor, new_block_id};
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, atomic::Ordering};
+use tool_fixtures::*;
 
-fn call_context(name: &str, args: serde_json::Value) -> ToolCallContext {
-    ToolCallContext::from_declaration(
-        new_block_id(),
-        &ToolCallPayload {
-            tool_name: name.into(),
-            arguments: args,
-        },
-    )
+#[tokio::test]
+async fn standalone_batch_dispatch_preserves_identity_and_duplicate_calls() {
+    let tool = NamedTool::new("echo");
+    let executor = executor(vec![tool.clone()], ToolExecutorOptions::default());
+    let binding = executor.bind(invocation(), control()).await.unwrap();
+    assert_eq!(binding.surface().definitions, vec![definition("echo")]);
+    let mut batch = batch(&["echo", "echo"]);
+    let ids = batch.declaration_ids();
+    binding.process(&mut batch).await.unwrap();
+    assert_eq!(tool.count.load(Ordering::SeqCst), 2);
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::Succeeded; 2]);
+    for id in ids {
+        assert!(
+            batch
+                .results()
+                .iter()
+                .any(|entry| entry.result().unwrap().1.call_block_id == id)
+        );
+    }
+    let mut next = tool_fixtures::batch(&["echo", "echo"]);
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut next)
+        .await
+        .unwrap();
+    assert_eq!(
+        tool.count.load(Ordering::SeqCst),
+        4,
+        "no hidden cross-binding deduplication"
+    );
 }
 
-fn ctrl() -> CallControl {
-    CallControl::new(tokio_util::sync::CancellationToken::new(), None)
+#[tokio::test]
+async fn catalog_order_is_static_then_registration_then_list_order() {
+    let executor = executor(
+        vec![NamedTool::new("z"), NamedTool::new("a")],
+        ToolExecutorOptions::default(),
+    );
+    executor
+        .register_dynamic(Source::new("two", "two", &["d", "c"]))
+        .unwrap();
+    executor
+        .register_dynamic(Source::new("one", "one", &["b"]))
+        .unwrap();
+    assert_eq!(executor.dynamic_ids(), ["two", "one"]);
+    let binding = executor.bind(invocation(), control()).await.unwrap();
+    assert_eq!(
+        binding
+            .surface()
+            .definitions
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        ["z", "a", "d", "c", "b"]
+    );
 }
 
-struct EchoTool;
+#[tokio::test]
+async fn old_binding_keeps_actual_source_after_unregister_and_replacement() {
+    let old = Source::new("source", "old object", &["work"]);
+    let new = Source::new("source", "new object", &["work"]);
+    let executor = executor(vec![], ToolExecutorOptions::default());
+    executor.register_dynamic(old.clone()).unwrap();
+    let old_binding = executor.bind(invocation(), control()).await.unwrap();
+    executor.unregister_dynamic("source").unwrap();
+    executor.register_dynamic(new.clone()).unwrap();
+    let new_binding = executor.bind(invocation(), control()).await.unwrap();
+    let mut old_batch = batch(&["work"]);
+    let mut new_batch = batch(&["work"]);
+    old_binding.process(&mut old_batch).await.unwrap();
+    new_binding.process(&mut new_batch).await.unwrap();
+    assert_eq!(
+        old_batch.results()[0].result().unwrap().1.output.content["object"],
+        "old object"
+    );
+    assert_eq!(
+        new_batch.results()[0].result().unwrap().1.output.content["object"],
+        "new object"
+    );
+    assert_eq!(old.invocations.load(Ordering::SeqCst), 1);
+    assert_eq!(new.invocations.load(Ordering::SeqCst), 1);
+}
 
-#[async_trait]
-impl Tool for EchoTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".into(),
-            description: "echo arguments".into(),
-            parameters: json!({"type": "object"}),
+#[tokio::test]
+async fn static_name_drift_fails_new_binding_but_does_not_change_old_target() {
+    let tool = NamedTool::new("old");
+    let executor = executor(vec![tool.clone()], ToolExecutorOptions::default());
+    let bound = executor.bind(invocation(), control()).await.unwrap();
+    *tool.name.lock().unwrap() = "new".into();
+    assert!(
+        matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::StaticNameChanged { registered, actual }) if registered == "old" && actual == "new")
+    );
+    let mut batch = batch(&["old"]);
+    bound.process(&mut batch).await.unwrap();
+    assert_eq!(tool.count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn registry_rejects_duplicate_static_names_and_source_ids() {
+    let tool = NamedTool::new("same");
+    assert!(
+        matches!(ToolExecutor::new(vec![tool.clone(), tool], ToolExecutorOptions::default()), Err(ToolRegistryError::DuplicateTool { name }) if name == "same")
+    );
+    let executor = executor(vec![], ToolExecutorOptions::default());
+    let source = Source::new("same", "same", &[]);
+    executor.register_dynamic(source.clone()).unwrap();
+    assert_eq!(source.lists.load(Ordering::SeqCst), 0);
+    assert!(
+        matches!(executor.register_dynamic(source), Err(ToolRegistryError::DuplicateSource { source_id }) if source_id == "same")
+    );
+    assert!(
+        matches!(executor.unregister_dynamic("absent"), Err(ToolRegistryError::UnknownSource { source_id }) if source_id == "absent")
+    );
+}
+
+#[tokio::test]
+async fn bind_rejects_same_source_cross_source_and_static_dynamic_duplicates() {
+    for (static_names, sources) in [
+        (vec![], vec![("a", vec!["same", "same"])]),
+        (vec![], vec![("a", vec!["same"]), ("b", vec!["same"])]),
+        (vec!["same"], vec![("a", vec!["same"])]),
+    ] {
+        let executor = executor(
+            static_names
+                .iter()
+                .map(|name| NamedTool::new(name) as Arc<dyn Tool>)
+                .collect(),
+            ToolExecutorOptions::default(),
+        );
+        for (id, names) in sources {
+            executor
+                .register_dynamic(Source::new(id, id, &names))
+                .unwrap();
         }
-    }
-
-    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(ctx.input.arguments.clone()),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        assert!(
+            matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::DuplicateTool { name }) if name == "same")
+        );
     }
 }
 
-struct StubSource;
-
+#[derive(Default)]
+struct Store(Mutex<Vec<(Vec<u8>, BlockId)>>);
 #[async_trait]
-impl DynamicToolSource for StubSource {
-    fn id(&self) -> &str {
-        "stub"
-    }
-
-    async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError> {
-        Ok(vec![ToolDefinition {
-            name: "mcp_echo".into(),
-            description: "dynamic echo".into(),
-            parameters: json!({"type": "object"}),
-        }])
-    }
-
-    async fn invoke(
-        &self,
-        ctx: &ToolCallContext,
-        _control: &CallControl,
-    ) -> Result<ToolResultPayload, ToolExecutionError> {
-        Ok(ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(ctx.input.arguments.clone()),
-            media: Vec::new(),
-            notes: Vec::new(),
+impl ArtifactStore for Store {
+    async fn persist(&self, data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((data.to_vec(), hint.call_block_id));
+        Ok(ArtifactRef {
+            id: "image".into(),
+            size_bytes: data.len(),
+            kind: hint.kind,
+            persisted: true,
         })
     }
-}
-
-#[tokio::test]
-async fn standalone_executor_dispatches_with_declaration_identity() {
-    let executor = ToolExecutor::from_vec(vec![Arc::new(EchoTool)]);
-    let context = call_context("echo", json!({"q": 1}));
-    let call_block_id = context.call_block_id;
-
-    let result = executor.execute(context, ctrl(), None).await.unwrap();
-
-    assert_eq!(result.call_block_id, call_block_id);
-    assert_eq!(result.status, ToolResultStatus::Succeeded);
-    assert_eq!(result.output.content, json!({"q": 1}));
-}
-
-#[tokio::test]
-async fn dynamic_dispatch_uses_the_same_identity_bearing_context() {
-    let executor = ToolExecutor::from_vec(vec![]);
-    executor.register_dynamic(Arc::new(StubSource)).unwrap();
-    let surface = executor.tool_surface().await;
-    assert!(surface.definitions.iter().any(|d| d.name == "mcp_echo"));
-
-    let context = call_context("mcp_echo", json!({"hello": "world"}));
-    let call_block_id = context.call_block_id;
-    let result = executor.execute(context, ctrl(), None).await.unwrap();
-
-    assert_eq!(result.call_block_id, call_block_id);
-    assert_eq!(result.output.content, json!({"hello": "world"}));
-}
-
-struct EmptyStore;
-
-#[async_trait]
-impl ArtifactStore for EmptyStore {
-    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
-        Err(StoreError::Persist("unused".into()))
-    }
-
     async fn read(
         &self,
         _id: &str,
         _range: Option<std::ops::Range<u64>>,
     ) -> Result<Vec<u8>, StoreError> {
-        Err(StoreError::Read("unused".into()))
+        unreachable!()
     }
 }
-
-struct StoreAwareTool;
-
+struct MediaSource;
 #[async_trait]
-impl Tool for StoreAwareTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "store-aware".into(),
-            description: "reports whether the configured store was forwarded".into(),
-            parameters: json!({"type": "object"}),
-        }
+impl DynamicToolSource for MediaSource {
+    fn id(&self) -> &str {
+        "media"
     }
-
-    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({"store": false})),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+    async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError> {
+        Ok(vec![definition("image")])
     }
-
-    async fn execute_with_store(
+    async fn invoke(
         &self,
-        ctx: &ToolCallContext,
+        _call: &ToolCallContext,
+        _control: &CallControl,
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
+        panic!("store-aware path required")
+    }
+    async fn invoke_with_store(
+        &self,
+        call: &ToolCallContext,
         _control: &CallControl,
         store: Option<&dyn ArtifactStore>,
-    ) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({"store": store.is_some()})),
-            media: Vec::new(),
-            notes: Vec::new(),
+    ) -> Result<ToolResultPayload, ToolExecutionError> {
+        let artifact = store
+            .unwrap()
+            .persist(
+                &[1, 2, 3],
+                ArtifactHint {
+                    tool_name: "image".into(),
+                    call_block_id: call.call_block_id,
+                    kind: ArtifactKind::Binary,
+                },
+            )
+            .await
+            .unwrap();
+        let mut output = result(call, ToolResultStatus::Succeeded, json!("x".repeat(4000)));
+        output.media.push(MediaRef::new("image/png", artifact.id));
+        output.notes.push(TextPayload::new("kept note"));
+        Ok(output)
+    }
+}
+struct Shorten;
+#[async_trait]
+impl ToolBatchProcessor for Shorten {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        _context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        for entry in batch.results_mut() {
+            entry.output_mut().unwrap().content = json!("short");
         }
+        Ok(())
     }
 }
-
 #[tokio::test]
-async fn executor_forwards_the_configured_artifact_store_to_tools() {
-    let executor = ToolExecutor::from_vec(vec![Arc::new(StoreAwareTool)]);
-    let result = executor
-        .execute(
-            call_context("store-aware", json!({})),
-            ctrl(),
-            Some(Arc::new(EmptyStore)),
-        )
-        .await
-        .unwrap();
-    assert_eq!(result.output.content, json!({"store": true}));
-}
-
-struct Counter;
-
-impl TokenCounter for Counter {
-    fn estimate(&self, _blocks: &[causa_kernel::ContextBlock]) -> usize {
-        0
-    }
-
-    fn estimate_value(&self, value: &serde_json::Value) -> usize {
-        value.as_str().map_or(0, |text| text.len().div_ceil(4))
-    }
-
-    fn estimate_media(&self, _media: &MediaRef) -> Option<usize> {
-        Some(2)
-    }
-}
-
-#[tokio::test]
-async fn output_budget_retains_media_sidecars_while_truncating_text() {
-    let declaration = call_context("echo", json!({}));
-    let call_block_id = declaration.call_block_id;
-    let mut batch = ToolBatch::new(vec![declaration]).unwrap();
-    let media = vec![MediaRef::new("image/png", "asset-1")];
-    batch
-        .resolve_at(
-            0,
-            new_block_id(),
-            ToolResultPayload {
-                call_block_id,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!("x".repeat(4_000))),
-                media: media.clone(),
-                notes: vec![TextPayload::new("kept note")],
+async fn artifact_store_passes_through_dynamic_bridge_and_output_edits_keep_media() {
+    for dynamic in [false, true] {
+        let store = Arc::new(Store::default());
+        let source: Arc<dyn DynamicToolSource> = Arc::new(MediaSource);
+        let tools: Vec<Arc<dyn Tool>> = if dynamic {
+            vec![]
+        } else {
+            vec![Arc::new(ToolBridge::new(
+                source.clone(),
+                definition("image"),
+            ))]
+        };
+        let executor = executor(
+            tools,
+            ToolExecutorOptions {
+                artifact_store: Some(store.clone()),
+                after: vec![Arc::new(Shorten)],
+                ..Default::default()
             },
+        );
+        if dynamic {
+            executor.register_dynamic(source).unwrap();
+        }
+        let mut batch = batch(&["image"]);
+        let id = batch.declaration_ids()[0];
+        executor
+            .bind(invocation(), control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap();
+        assert_eq!(*store.0.lock().unwrap(), vec![(vec![1, 2, 3], id)]);
+        let result = batch.results()[0].result().unwrap().1;
+        assert_eq!(result.output.content, json!("short"));
+        assert_eq!(result.media, vec![MediaRef::new("image/png", "image")]);
+        assert_eq!(result.notes, vec![TextPayload::new("kept note")]);
+    }
+}
+
+#[tokio::test]
+async fn empty_bind_and_empty_batch_complete_without_helpers() {
+    let executor = executor(vec![], ToolExecutorOptions::default());
+    let bound = executor.bind(invocation(), control()).await.unwrap();
+    assert!(bound.surface().definitions.is_empty());
+    bound.process(&mut batch(&[])).await.unwrap();
+}
+
+struct DescribedTool(Mutex<ToolDefinition>);
+#[async_trait]
+impl Tool for DescribedTool {
+    fn definition(&self) -> ToolDefinition {
+        self.0.lock().unwrap().clone()
+    }
+    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+        result(
+            call,
+            ToolResultStatus::Succeeded,
+            json!("same concrete object"),
         )
-        .unwrap();
-
-    let ids: [BlockId; 1] = [call_block_id];
-    let control = ctrl();
-    let turn_id = TurnId::new("budget");
-    let context = ProcessorContext {
-        conversation_id: None,
-        turn_id: &turn_id,
-        round_id: RoundId(0),
-        declaration_order: &ids,
-        control: &control,
-    };
-    let processor = ToolOutputBudgetProcessor::new(100).with_token_counter(Arc::new(Counter));
-    processor.process(&mut batch, &context).await.unwrap();
-
-    let (_, result) = batch.results()[0].result().unwrap();
-    assert_eq!(result.output.truncation, causa_kernel::Truncation::Middle);
-    assert_eq!(result.media, media, "media references remain untouched");
-    assert_eq!(result.notes, [TextPayload::new("kept note")]);
+    }
+}
+#[tokio::test]
+async fn static_description_and_schema_change_only_enter_new_bindings() {
+    let tool = Arc::new(DescribedTool(Mutex::new(definition("static"))));
+    let executor = executor(vec![tool.clone()], ToolExecutorOptions::default());
+    let old = executor.bind(invocation(), control()).await.unwrap();
+    let old_definition = old.surface().definitions[0].clone();
+    tool.0.lock().unwrap().description = "new description".into();
+    tool.0.lock().unwrap().parameters =
+        json!({"type": "object", "properties": {"new": {"type": "boolean"}}});
+    let new = executor.bind(invocation(), control()).await.unwrap();
+    assert_eq!(old.surface().definitions[0], old_definition);
+    assert_eq!(new.surface().definitions[0].description, "new description");
+    assert_eq!(
+        new.surface().definitions[0].parameters,
+        tool.0.lock().unwrap().parameters
+    );
+    let mut old_batch = batch(&["static"]);
+    old.process(&mut old_batch).await.unwrap();
+    assert_eq!(
+        old_batch.results()[0].result().unwrap().1.output.content,
+        json!("same concrete object")
+    );
 }

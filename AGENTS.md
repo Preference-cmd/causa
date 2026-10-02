@@ -13,11 +13,9 @@ as the default entry. Dual-licensed `MIT OR Apache-2.0`.
 ```text
 crates/causa               # facade: `kernel` always on; default = runtime + providers
 crates/causa-kernel        # facts + contracts only (no I/O, no transport, no policy)
-crates/causa-runtime       # optional, reference components: execution stack (turn loop,
-                           # dispatch, streaming, tool-processing chains) + session aggregate
-                           # (ConversationState/Store, Session/SessionHandle)
-                           # + budget/interaction seams, unknown-outcome policy and
-                           # optional output processors
+crates/causa-runtime       # optional material-returning turn runner, borrowed observations,
+                           # bound tool execution and ordered processing chains;
+                           # history, input admission, budgets and persistence are host-owned
 crates/causa-protocol      # wire-protocol translation, transport-free
 crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)
@@ -62,6 +60,8 @@ and this file together.
 
 ```bash
 cargo test --workspace                    # full suite (also builds examples)
+cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked
+cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --locked
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check                   # CI fails otherwise; run `cargo fmt --all` first
 bash .github/scripts/check-dependency-directions.sh   # layering guard, same as CI
@@ -140,16 +140,16 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   implementations and formats rather than adding compatibility adapters.
   During `0.0.x`, patch releases may break API / wire compatibility; record
   breaking changes and migrations at the top of CHANGELOG. Starting with
-  `0.1.0`, wire-serde breaks require a minor bump. The previous Session checkpoint
-  and approval-resume interfaces have been removed; the current API has no
-  separate checkpoint schema version.
+  `0.1.0`, wire-serde breaks require a minor bump. The previous `TurnContext`, Session, implicit trace, checkpoint and
+  approval-resume interfaces have been removed. `Context` stores only blocks;
+  execution identities are explicit runner inputs.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
 - Library module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard
   rejects it under `crates/*/src`; test fixtures may use `tests/common/mod.rs`).
   `foo.rs` is a thin index — docs, `mod` declarations,
   re-exports — and the code lives in `foo/*.rs`. Private submodules
-  re-exported at `foo.rs` keep the path flat (`crate::session::WorkRef`);
+  re-exported at `foo.rs` keep the path flat (`crate::driver::TurnOutcome`);
   `pub mod` only for nested surfaces (`ports`, `context`).
 - Commit style: Conventional Commits (`feat:`, `fix:`, `refactor!:`,
   `chore:`, `docs:`). One logical change per commit.

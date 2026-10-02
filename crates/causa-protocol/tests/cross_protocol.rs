@@ -7,15 +7,14 @@
 //! match the expected literal — covering role sequence, system position,
 //! and tool pairing (`call_id → provider id → tool_use_id` round trip).
 //!
-//! `ConversationState` (the session aggregate) lives in `causa-runtime`;
-//! this test tree stays kernel-only and materializes the merged projection
-//! directly through `merged_frame` over sealed turns — the same
-//! projection the session aggregate produces.
+//! The caller explicitly selects and combines independently retained materials.
+//! No session aggregate, hidden history or runtime dependency constructs the frame.
 
 use causa_kernel::{
-    BlockId, ContextFrame, ConversationId, GenerationOptions, InvocationId, MediaRef, ModelRef,
-    ModelResponse, ModelStopReason, RoundId, TextPayload, ToolCallDraft, ToolOutput,
-    ToolResultPayload, ToolResultStatus, ToolSurface, TurnContext, TurnId, merged_frame,
+    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame,
+    EditFailure, GenerationOptions, MediaRef, ModelRef, ModelResponse, ModelStopReason,
+    TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface,
+    validate_tool_result_append,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::openai_chat::render_openai_chat_messages;
@@ -31,54 +30,103 @@ fn block_id() -> BlockId {
     ))
 }
 
-fn invocation(turn: &str, round: u32) -> InvocationId {
-    InvocationId {
-        turn_id: TurnId::new(turn),
-        round_id: RoundId(round),
+// Fixture helpers exercise the public pure conversion and atomic edit APIs.
+trait FixtureAppend {
+    fn push_text(
+        &mut self,
+        id: BlockId,
+        text: TextPayload,
+        source: &str,
+    ) -> Result<(), EditFailure>;
+    fn push_response(
+        &mut self,
+        response: &ModelResponse,
+        stop: ModelStopReason,
+        ids: Vec<BlockId>,
+    ) -> Result<Vec<BlockId>, Box<dyn std::error::Error>>;
+    fn push_results(
+        &mut self,
+        results: Vec<(BlockId, ToolResultPayload)>,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+}
+impl FixtureAppend for Context {
+    fn push_text(
+        &mut self,
+        id: BlockId,
+        text: TextPayload,
+        source: &str,
+    ) -> Result<(), EditFailure> {
+        self.edit()
+            .append([ContextBlock::new(
+                id,
+                BlockContent::Parts(vec![ContentPart::Text(text)]),
+                BlockMeta {
+                    source: Some(source.into()),
+                    ..Default::default()
+                },
+            )])
+            .commit()
+    }
+    fn push_response(
+        &mut self,
+        response: &ModelResponse,
+        stop: ModelStopReason,
+        ids: Vec<BlockId>,
+    ) -> Result<Vec<BlockId>, Box<dyn std::error::Error>> {
+        let blocks = response.to_blocks(stop, &ids)?;
+        let calls = blocks
+            .iter()
+            .filter_map(|block| {
+                matches!(block.content(), BlockContent::ToolCall(_)).then_some(block.id())
+            })
+            .collect();
+        self.edit().append(blocks).commit()?;
+        Ok(calls)
+    }
+    fn push_results(
+        &mut self,
+        results: Vec<(BlockId, ToolResultPayload)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        validate_tool_result_append(self.blocks(), &results)?;
+        self.edit()
+            .append(results.into_iter().map(|(id, result)| {
+                ContextBlock::new(id, BlockContent::ToolResult(result), BlockMeta::default())
+            }))
+            .commit()?;
+        Ok(())
     }
 }
 
-/// Build a turn, seal it, and return it as history material —
-/// what a session's `commit` would admit into history.
-fn sealed_turn<F>(turn: &str, build: F) -> TurnContext
-where
-    F: FnOnce(&mut TurnContext),
-{
-    let mut ctx = TurnContext::new(TurnId::new(turn));
-    build(&mut ctx);
-    ctx.seal();
-    ctx
+fn material(build: impl FnOnce(&mut Context)) -> Context {
+    let mut context = Context::new();
+    build(&mut context);
+    context
 }
 
-/// The merged frame over a history of sealed turns plus an active
-/// (possibly sealed) turn — the lossless conversation projection.
-fn session_frame(
-    conversation_id: &str,
-    history: Vec<TurnContext>,
-    active: TurnContext,
-) -> ContextFrame {
-    merged_frame(
-        &ConversationId(conversation_id.into()),
-        &history,
-        &active,
-        RoundId(0),
-    )
+// Selection is explicit caller behavior; each retained value stays independent.
+fn joined_frame(retained: Vec<Context>, current: Context) -> ContextFrame {
+    ContextFrame {
+        blocks: retained
+            .into_iter()
+            .chain([current])
+            .flat_map(Context::into_blocks)
+            .collect(),
+    }
 }
 
 /// Build the shared scenario: a system preamble, a user request, a model
 /// turn that calls `read`, its tool result, then a second turn where the
 /// model finishes.
 fn scenario_frame() -> ContextFrame {
-    let history = vec![sealed_turn("t1", |active| {
+    let history = vec![material(|active| {
         active
-            .append_input(block_id(), TextPayload::new("be terse"), "system")
+            .push_text(block_id(), TextPayload::new("be terse"), "system")
             .unwrap();
         active
-            .append_input(block_id(), TextPayload::new("find the file"), "user")
+            .push_text(block_id(), TextPayload::new("find the file"), "user")
             .unwrap();
         let applied = active
-            .append_model_output(
-                invocation("t1", 0),
+            .push_response(
                 &ModelResponse {
                     text: TextPayload::new("reading"),
                     tool_calls: vec![ToolCallDraft {
@@ -91,9 +139,9 @@ fn scenario_frame() -> ContextFrame {
                 vec![block_id(), block_id()],
             )
             .unwrap();
-        let call_block_id = applied.tool_calls[0].0;
+        let call_block_id = applied[0];
         active
-            .append_tool_results(vec![(
+            .push_results(vec![(
                 block_id(),
                 ToolResultPayload {
                     call_block_id,
@@ -106,13 +154,12 @@ fn scenario_frame() -> ContextFrame {
             .unwrap();
     })];
 
-    let mut active = TurnContext::new(TurnId::new("t2"));
+    let mut active = Context::new();
     active
-        .append_input(block_id(), TextPayload::new("and now?"), "user")
+        .push_text(block_id(), TextPayload::new("and now?"), "user")
         .unwrap();
     active
-        .append_model_output(
-            invocation("t2", 0),
+        .push_response(
             &ModelResponse {
                 text: TextPayload::new("done"),
                 tool_calls: vec![],
@@ -121,8 +168,8 @@ fn scenario_frame() -> ContextFrame {
             vec![block_id()],
         )
         .unwrap();
-    active.seal();
-    session_frame("c1", history, active)
+
+    joined_frame(history, active)
 }
 
 fn render(frame: &ContextFrame) -> (Value, Value, Value) {
@@ -165,12 +212,11 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
 fn tool_result_notes_and_media_render_with_their_own_result() {
     use causa_protocol::translation::media::{MediaPayload, MediaSet};
 
-    let mut turn = TurnContext::new(TurnId::new("notes"));
-    turn.append_input(block_id(), TextPayload::new("search"), "user")
+    let mut turn = Context::new();
+    turn.push_text(block_id(), TextPayload::new("search"), "user")
         .unwrap();
     let applied = turn
-        .append_model_output(
-            invocation("notes", 0),
+        .push_response(
             &ModelResponse {
                 text: TextPayload::new(""),
                 tool_calls: vec![ToolCallDraft {
@@ -184,10 +230,10 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         )
         .unwrap();
     let media_ref = MediaRef::new("image/png", "search-image");
-    turn.append_tool_results(vec![(
+    turn.push_results(vec![(
         block_id(),
         ToolResultPayload {
-            call_block_id: applied.tool_calls[0].0,
+            call_block_id: applied[0],
             status: ToolResultStatus::Succeeded,
             output: ToolOutput::new(json!({"found": 1})),
             media: vec![media_ref.clone()],
@@ -198,8 +244,8 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         },
     )])
     .unwrap();
-    turn.seal();
-    let frame = session_frame("notes", vec![], turn);
+
+    let frame = joined_frame(vec![], turn);
     let mut media = MediaSet::new();
     media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
     let model = ModelRef::new("test-model");
@@ -260,7 +306,6 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     assert_eq!(responses["input"][3]["content"][1]["type"], "input_image");
 
     let stored_result = frame
-        .model_context
         .blocks
         .iter()
         .find_map(|block| match block.content() {
@@ -523,13 +568,12 @@ fn content_shapes_survive_all_three_renderers() {
     // A non-string tool observation stringifies identically everywhere:
     // one turn (input + failed tool round trip) held as the active slot.
     let history = vec![];
-    let mut active = TurnContext::new(TurnId::new("t1"));
+    let mut active = Context::new();
     active
-        .append_input(block_id(), TextPayload::new("go"), "user")
+        .push_text(block_id(), TextPayload::new("go"), "user")
         .unwrap();
     let applied = active
-        .append_model_output(
-            invocation("t1", 0),
+        .push_response(
             &ModelResponse {
                 text: TextPayload::new("listing"),
                 tool_calls: vec![ToolCallDraft {
@@ -543,10 +587,10 @@ fn content_shapes_survive_all_three_renderers() {
         )
         .unwrap();
     active
-        .append_tool_results(vec![(
+        .push_results(vec![(
             block_id(),
             ToolResultPayload {
-                call_block_id: applied.tool_calls[0].0,
+                call_block_id: applied[0],
                 status: ToolResultStatus::Failed,
                 output: ToolOutput::new(json!({"error": "denied"})),
                 media: Vec::new(),
@@ -554,8 +598,8 @@ fn content_shapes_survive_all_three_renderers() {
             },
         )])
         .unwrap();
-    active.seal();
-    let frame = session_frame("c1", history, active);
+
+    let frame = joined_frame(history, active);
 
     let (anthropic, chat, responses) = render(&frame);
     let expected_payload = json!({"error": "denied"}).to_string();
@@ -577,15 +621,14 @@ fn content_shapes_survive_all_three_renderers() {
 /// Identical call contents in distinct turns keep distinct declaration
 /// identities and their respective external provider IDs.
 #[test]
-fn tool_result_ids_stay_scoped_to_their_own_turn() {
+fn tool_results_keep_their_declaration_identity_across_selected_materials() {
     let mut history = Vec::new();
     for (turn_name, wire_id) in [("t1", "provider_first"), ("t2", "provider_second")] {
-        history.push(sealed_turn(turn_name, |turn| {
-            turn.append_input(block_id(), TextPayload::new("read again"), "user")
+        history.push(material(|turn| {
+            turn.push_text(block_id(), TextPayload::new("read again"), "user")
                 .unwrap();
             let applied = turn
-                .append_model_output(
-                    invocation(turn_name, 0),
+                .push_response(
                     &ModelResponse {
                         text: TextPayload::new(""),
                         tool_calls: vec![ToolCallDraft {
@@ -598,10 +641,10 @@ fn tool_result_ids_stay_scoped_to_their_own_turn() {
                     vec![block_id()],
                 )
                 .unwrap();
-            turn.append_tool_results(vec![(
+            turn.push_results(vec![(
                 block_id(),
                 ToolResultPayload {
-                    call_block_id: applied.tool_calls[0].0,
+                    call_block_id: applied[0],
                     status: ToolResultStatus::Succeeded,
                     output: ToolOutput::new(json!(turn_name)),
                     media: Vec::new(),
@@ -611,11 +654,11 @@ fn tool_result_ids_stay_scoped_to_their_own_turn() {
             .unwrap();
         }));
     }
-    let mut active = TurnContext::new(TurnId::new("t3"));
+    let mut active = Context::new();
     active
-        .append_input(block_id(), TextPayload::new("next"), "user")
+        .push_text(block_id(), TextPayload::new("next"), "user")
         .unwrap();
-    let frame = session_frame("repeat", history, active);
+    let frame = joined_frame(history, active);
 
     let (anthropic, chat, responses) = render(&frame);
 

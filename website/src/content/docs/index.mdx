@@ -55,14 +55,14 @@ cargo run --example conversation_persistence -p causa-runtime
 
 <CardGrid>
   <Card title="Facts, not magic" icon="document">
-    The kernel is a conversation fact machine plus the behavior ports third
-    parties implement against (`ModelGateway`, `Tool`, `ArtifactStore`). Pure,
+    The kernel holds editable material plus the ports third parties implement
+    against (`ModelGateway`, `ContextPreparer`, `Tool`, `ArtifactStore`). Pure,
     offline, auditable — the layer CI forbids from touching I/O.
   </Card>
   <Card title="A driver with visible defaults" icon="setting">
-    Turn loop, tool dispatch, streaming, tool-processing chains, unknown-outcome and
-    output-retention policy: config objects and documented component defaults.
-    Swappable, never hidden, never a trait seam for a single policy.
+    Turn execution returns material directly, with optional borrowed observations
+    and invocation-bound tool processing. Applications supply preparation,
+    output retention and storage policies.
   </Card>
   <Card title="Adapters, not opinions" icon="puzzle">
     Providers translate wire protocols; extensions translate tool sources.
@@ -84,7 +84,7 @@ no sibling crate. [Read the concepts →](/concepts/)
 | ----- | ---- |
 | `causa` | facade — kernel always on, defaults add runtime + providers |
 | `causa-kernel` | facts + contracts, no I/O |
-| `causa-runtime` | optional, reference components: turns, dispatch, streaming, tool-processing chains, sessions |
+| `causa-runtime` | material-returning turn runner, borrowed observations and bound tool execution |
 | `causa-protocol` | pure Anthropic / OpenAI Chat / Responses translation |
 | `causa-provider` | reqwest `ModelGateway` adapters |
 | `causa-extension` | `mcp` feature: MCP client tool sources |
@@ -105,6 +105,6 @@ Run these commands from the repository root after cloning as shown above.
 <CtaBand />
 
 > **Status: experimental 0.0.1.** API and serialized formats may
-> change in 0.0.x patch releases. The 0.1 gate remains functional completeness:
-> multimodal I/O and subagents.
+> change in 0.0.x patch releases. The current checkout has unreleased material-flow
+> APIs; applications own sessions and subagent orchestration.
 > [Status & changelog →](/status/)

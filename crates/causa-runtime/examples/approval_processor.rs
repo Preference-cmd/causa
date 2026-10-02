@@ -11,10 +11,10 @@ use causa_kernel::{
     ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse, ModelStopReason,
     ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch, ToolBatchProcessor,
     ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus, TurnContext, TurnId,
+    ToolResultStatus, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolProcessingChain, TurnResult, TurnRunOptions, TurnRunner,
+    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
     new_block_id,
 };
 use std::sync::Arc;
@@ -34,7 +34,7 @@ impl ModelGateway for ScriptedGateway {
     async fn invoke(
         &self,
         _request: &ModelRequest,
-        _control: &causa_kernel::AttemptControl,
+        _control: &causa_kernel::CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         let mut outputs = self.0.lock().await;
         if outputs.is_empty() {
@@ -178,24 +178,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = request.reply.send(request.path == "notes.txt");
         }
     });
-    let chain = ToolProcessingChain::builder()
-        .before(Arc::new(ApprovalProcessor(requests)))
-        .build();
-    let runner = TurnRunner::with_tool_processors(
-        gateway,
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(ReadFile)])),
-        chain,
-    );
-    let mut context = TurnContext::new(TurnId::new("approval-demo"));
-    context.append_input(
-        new_block_id(),
-        TextPayload::new("Read the two files."),
-        "user",
+    let executor = ToolExecutor::new(
+        vec![Arc::new(ReadFile)],
+        ToolExecutorOptions {
+            before: vec![Arc::new(ApprovalProcessor(requests))],
+            ..Default::default()
+        },
     )?;
+    let runner = TurnRunner::new(gateway, Arc::new(executor));
+    let mut context = causa_kernel::Context::new();
+    context
+        .edit()
+        .append([causa_kernel::ContextBlock::new(
+            new_block_id(),
+            causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                TextPayload::new("Read the two files."),
+            )]),
+            causa_kernel::BlockMeta {
+                source: Some("user".into()),
+                ..Default::default()
+            },
+        )])
+        .commit()?;
     let outcome = runner
         .run(
+            TurnId::new("approval_processor"),
             context,
-            TurnRunOptions::default(),
+            TurnRunOptions::new(causa_kernel::ModelRef::new("offline-demo")),
             RunControl::new(Default::default(), None),
         )
         .await;

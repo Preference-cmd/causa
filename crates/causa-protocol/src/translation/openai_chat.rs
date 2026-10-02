@@ -24,7 +24,7 @@
 //!   content.
 //! - Tool-result media **hoists**: a tool message cannot carry images,
 //!   so each result's attachments render as a user message immediately
-//!   after it — one provenance text part naming the call, then the
+//!   after the result group — one provenance text part naming the call, then the
 //!   images (data-URL `image_url` parts); placeholders degrade to text
 //!   parts in the same message.
 //! - Media parts in user position render as `image_url` content-array
@@ -69,13 +69,18 @@ pub fn render_openai_chat_messages(
     model: &ModelRef,
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
+    super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media);
 
     // A run of assistant text + tool call segments coalesces into one
     // assistant message; any other segment closes the open run.
     let mut messages: Vec<Value> = Vec::new();
     let mut run: Option<AssistantRun> = None;
+    let mut result_media = Vec::new();
     for segment in &normalized.segments {
+        if !matches!(segment, Segment::ToolResult { .. }) {
+            messages.append(&mut result_media);
+        }
         let closes_run = !matches!(
             segment,
             Segment::Text {
@@ -173,7 +178,7 @@ pub fn render_openai_chat_messages(
                     "content": context_frame::result_text_with_notes(content, notes),
                 }));
                 // A tool message cannot carry images: hoist the result's
-                // media into a user message right after it, provenance
+                // media into a user message after the result group, provenance
                 // first, one part per attachment in payload order.
                 if !media.is_empty() {
                     let mut parts = vec![json!({
@@ -192,7 +197,7 @@ pub fn render_openai_chat_messages(
                             json!({"type": "text", "text": text})
                         }
                     }));
-                    messages.push(json!({"role": "user", "content": parts}));
+                    result_media.push(json!({"role": "user", "content": parts}));
                 }
             }
         }
@@ -200,6 +205,9 @@ pub fn render_openai_chat_messages(
     if let Some(finished) = run.take() {
         messages.push(assistant_message(finished));
     }
+
+    messages.append(&mut result_media);
+    super::tool_history::validate_chat(&messages)?;
 
     if messages.is_empty() {
         return Err(ModelInvokeError::new(
@@ -438,7 +446,10 @@ mod tests {
 
     #[test]
     fn assistant_tool_calls_only_omits_empty_content() {
-        let f = frame(vec![call(0, "kc1", Some("toolu_a"), "read", json!({}))]);
+        let f = frame(vec![
+            call(0, "kc1", Some("toolu_a"), "read", json!({})),
+            result(1, "kc1", ToolResultStatus::Succeeded, json!("ok")),
+        ]);
         let v = render(&f);
         assert_eq!(
             v["messages"][0],
@@ -461,10 +472,11 @@ mod tests {
             text(0, "first", None),
             call(1, "kc1", Some("toolu_a"), "read", json!({})),
             text(2, "second", None),
+            result(3, "kc1", ToolResultStatus::Succeeded, json!("ok")),
         ]);
         let v = render(&f);
         let msgs = v["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["role"], "assistant");
         assert_eq!(msgs[0]["content"], json!("first\nsecond"));
         assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 1);
@@ -479,19 +491,23 @@ mod tests {
     }
 
     #[test]
-    fn unpaired_tool_result_falls_back_to_declaration_uuid() {
-        let fallback_id = call(0, "orphan", None, "ignored", json!({}))
-            .id()
-            .0
-            .to_string();
+    fn unpaired_tool_result_is_invalid_before_http() {
         let f = frame(vec![result(
             0,
             "orphan",
             ToolResultStatus::Succeeded,
             json!("x"),
         )]);
-        let v = render(&f);
-        assert_eq!(v["messages"][0]["tool_call_id"], json!(fallback_id));
+        let error = render_openai_chat_messages(
+            &f,
+            &MediaSet::new(),
+            &ToolSurface::empty(),
+            &GenerationOptions::default(),
+            &ModelRef::new("test"),
+            CacheDirective::None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
     }
 
     #[test]
@@ -722,17 +738,20 @@ mod tests {
     #[test]
     fn hoisted_placeholders_stay_in_payload_order() {
         let fallback_id = label_id("kc1").0.to_string();
-        let f = frame(vec![result_with_media(
-            0,
-            "kc1",
-            ToolResultStatus::Succeeded,
-            json!("mixed"),
-            vec![
-                MediaRef::new("image/png", "good"),
-                MediaRef::new("image/png", "missing"),
-                MediaRef::new("application/pdf", "doc"),
-            ],
-        )]);
+        let f = frame(vec![
+            call(0, "kc1", None, "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("mixed"),
+                vec![
+                    MediaRef::new("image/png", "good"),
+                    MediaRef::new("image/png", "missing"),
+                    MediaRef::new("application/pdf", "doc"),
+                ],
+            ),
+        ]);
         let mut media = MediaSet::new();
         media.insert("good", MediaPayload::new("image/png", "AAAA"));
         media.insert("doc", MediaPayload::new("application/pdf", "BBBB"));
@@ -747,7 +766,7 @@ mod tests {
         .unwrap();
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(
-            msgs[1]["content"],
+            msgs[2]["content"],
             json!([
                 {"type": "text", "text": format!("[tool result media for call {fallback_id}]")},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},

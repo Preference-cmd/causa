@@ -1,10 +1,10 @@
-//! Direct consumer tests for Slice 8 TurnContext editing (Q4/Q5).
+//! Direct consumer tests for Slice 8 Context editing (Q4/Q5).
 //!
 //! Copy into `crates/causa-kernel/tests/` once the edit API is implemented.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, Replacement, RoundId, TextPayload,
-    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
+    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, Replacement, TextPayload,
+    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use serde_json::json;
 use std::ops::Range;
@@ -59,13 +59,13 @@ fn replacement(range: Range<usize>, with: Vec<ContextBlock>) -> Replacement {
     Replacement { range, with }
 }
 
-fn context(blocks: Vec<ContextBlock>) -> TurnContext {
-    TurnContext::from_validated_blocks(TurnId::new("consumer-turn"), blocks).unwrap()
+fn context(blocks: Vec<ContextBlock>) -> Context {
+    Context::from_blocks(blocks).unwrap()
 }
 
-fn assert_frame_is_current(ctx: &TurnContext) {
-    let frame = ctx.frame(RoundId(9));
-    assert_eq!(frame.model_context.blocks, ctx.blocks());
+fn assert_frame_is_current(ctx: &Context) {
+    let frame = ctx.frame();
+    assert_eq!(frame.blocks, ctx.blocks());
 }
 
 #[test]
@@ -84,7 +84,6 @@ fn saved_material_and_full_turn_survive_local_summary_reuse_and_later_edit() {
     let mut ctx = context(original_blocks.clone());
     let selected = ctx.blocks()[1..3].to_vec();
     let full_turn = ctx.clone();
-    let selected_lifecycle = ctx.lifecycle();
 
     // Replace only the first round's call/result pair with a local summary.
     ctx.apply(
@@ -100,7 +99,6 @@ fn saved_material_and_full_turn_survive_local_summary_reuse_and_later_edit() {
     assert_eq!(ctx.blocks()[2..], original_blocks[3..]);
     assert_eq!(selected, original_blocks[1..3]);
     assert_eq!(full_turn.blocks(), original_blocks);
-    assert_eq!(full_turn.lifecycle(), selected_lifecycle);
     assert_frame_is_current(&ctx);
 
     // Explicitly reinsert caller-owned saved materials, preserving their
@@ -122,7 +120,6 @@ fn saved_material_and_full_turn_survive_local_summary_reuse_and_later_edit() {
     assert!(ctx.blocks().iter().all(|block| block.id() != id(3)));
     assert_eq!(selected, original_blocks[1..3]);
     assert_eq!(full_turn.blocks(), original_blocks);
-    assert_eq!(full_turn.lifecycle(), selected_lifecycle);
     assert_frame_is_current(&ctx);
 }
 
@@ -160,24 +157,14 @@ fn generic_edit_accepts_local_tool_material_without_pairing_or_execution_policy(
 }
 
 #[test]
-fn turn_context_serializes_exactly_three_fields_and_clones_keep_lifecycle() {
-    let open = context(vec![note(40, "open material", "host")]);
-    let open_clone = open.clone();
-    assert_eq!(open_clone.blocks(), open.blocks());
-    assert_eq!(open_clone.lifecycle(), open.lifecycle());
-
-    let mut sealed = open.clone();
-    sealed.seal();
-    let sealed_clone = sealed.clone();
-    assert_eq!(sealed_clone.blocks(), sealed.blocks());
-    assert_eq!(sealed_clone.lifecycle(), sealed.lifecycle());
-
-    for turn in [&open, &sealed] {
-        let encoded = serde_json::to_value(turn).unwrap();
-        let object = encoded.as_object().unwrap();
-        assert_eq!(object.len(), 3, "unexpected serialized fields: {object:?}");
-        assert!(object.contains_key("turn_id"));
-        assert!(object.contains_key("blocks"));
-        assert!(object.contains_key("lifecycle"));
-    }
+fn context_serializes_only_blocks_and_clones_preserve_material() {
+    let context = context(vec![note(40, "material", "host")]);
+    let cloned = context.clone();
+    assert_eq!(cloned.blocks(), context.blocks());
+    let encoded = serde_json::to_value(&context).unwrap();
+    let object = encoded.as_object().unwrap();
+    assert_eq!(object.len(), 1, "unexpected serialized fields: {object:?}");
+    assert!(object.contains_key("blocks"));
+    let restored: Context = serde_json::from_value(encoded).unwrap();
+    assert_eq!(restored.into_blocks(), context.into_blocks());
 }

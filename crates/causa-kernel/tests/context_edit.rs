@@ -1,9 +1,9 @@
-//! Independent external integration tests for the Slice 8 TurnContext edit API.
+//! Independent external integration tests for the Slice 8 Context edit API.
 //!
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, EditError, Replacement,
-    TextPayload, TurnContext, TurnId,
+    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, EditError, Replacement,
+    TextPayload,
 };
 use std::ops::Range;
 
@@ -23,11 +23,11 @@ fn empty_parts_block(n: u128) -> ContextBlock {
     ContextBlock::new(id(n), BlockContent::Parts(Vec::new()), BlockMeta::default())
 }
 
-fn context(blocks: Vec<ContextBlock>) -> TurnContext {
-    TurnContext::from_validated_blocks(TurnId::new("edit-test"), blocks).unwrap()
+fn context(blocks: Vec<ContextBlock>) -> Context {
+    Context::from_blocks(blocks).unwrap()
 }
 
-fn labels(ctx: &TurnContext) -> Vec<String> {
+fn labels(ctx: &Context) -> Vec<String> {
     labels_slice(ctx.blocks())
 }
 
@@ -424,28 +424,15 @@ fn builder_reads_original_blocks_and_drop_does_not_commit() {
 }
 
 #[test]
-fn sealed_check_has_priority_over_range_errors_and_rejects_empty_commit() {
+fn empty_edit_succeeds_and_invalid_range_still_returns_input() {
     let mut ctx = context(vec![text_block(1, "I")]);
-    ctx.seal();
-
-    let failure = ctx
-        .apply(
-            vec![replacement(0..9, vec![text_block(2, "bad range")])],
-            Vec::new(),
-        )
-        .unwrap_err();
-    assert!(matches!(failure.reason, EditError::SealedTurn));
-    assert_eq!(failure.replacements[0].range, 0..9);
-    assert_eq!(
-        failure.replacements[0].with,
-        vec![text_block(2, "bad range")]
-    );
+    ctx.apply(Vec::new(), Vec::new()).unwrap();
+    let candidate = vec![replacement(0..9, vec![text_block(2, "bad range")])];
+    let failure = ctx.apply(candidate.clone(), Vec::new()).unwrap_err();
+    assert!(matches!(failure.reason, EditError::InvalidRange { .. }));
+    assert_eq!(failure.replacements, candidate);
+    assert!(failure.appended.is_empty());
     assert_eq!(labels(&ctx), ["I"]);
-
-    let empty_failure = ctx.apply(Vec::new(), Vec::new()).unwrap_err();
-    assert!(matches!(empty_failure.reason, EditError::SealedTurn));
-    assert!(empty_failure.replacements.is_empty());
-    assert!(empty_failure.appended.is_empty());
 }
 
 #[test]
@@ -661,38 +648,12 @@ fn assert_failure_payload(
     assert_eq!(failure.appended, appended);
 }
 
-fn assert_wire_unchanged(ctx: &TurnContext, before: &serde_json::Value) {
+fn assert_wire_unchanged(ctx: &Context, before: &serde_json::Value) {
     assert_eq!(&serde_json::to_value(ctx).unwrap(), before);
 }
 
 #[test]
 fn all_edit_errors_return_every_input_and_leave_context_wire_unchanged() {
-    // Sealed is first and also applies through the builder commit path.
-    let mut sealed = context(vec![tagged_block(1, "original", "source-original")]);
-    sealed.seal();
-    let before = serde_json::to_value(&sealed).unwrap();
-    let sealed_replacements = vec![replacement(
-        Range { start: 0, end: 9 },
-        vec![tagged_block(10, "sealed replacement", "sealed-source")],
-    )];
-    let sealed_appended = vec![tagged_block(11, "sealed append", "append-source")];
-    let failure = sealed
-        .edit()
-        .replace(
-            sealed_replacements[0].range.clone(),
-            sealed_replacements[0].with.clone(),
-        )
-        .append(sealed_appended.clone())
-        .commit()
-        .unwrap_err();
-    assert_failure_payload(
-        failure,
-        EditError::SealedTurn,
-        &sealed_replacements,
-        &sealed_appended,
-    );
-    assert_wire_unchanged(&sealed, &before);
-
     // Every original range is checked, including one hidden by the later edit.
     let mut invalid = context(vec![
         tagged_block(20, "A", "source-A"),

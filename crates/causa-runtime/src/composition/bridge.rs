@@ -15,8 +15,8 @@ use causa_kernel::{
 /// out-of-catalog name is `Rejected`, unavailability and protocol
 /// failures are `Failed` with a model-readable message. The bridge returns
 /// the recorded result only — what an `UnknownOutcome` result does next is
-/// the caller's configuration (the runner resolves it; a standalone
-/// bridge consumer chooses).
+/// caller's responsibility (the runner commits the complete batch and
+/// stops; a standalone bridge consumer chooses how to use its result).
 ///
 /// Snapshot semantics: the [`ToolDefinition`] is fixed at construction —
 /// listing changes after bridging are not picked up. For live catalogs

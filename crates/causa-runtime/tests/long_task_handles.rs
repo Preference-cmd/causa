@@ -4,14 +4,13 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    AttemptControl, BlockContent, CallControl, ModelGateway, ModelInvokeError,
-    ModelInvokeErrorKind, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream,
-    ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch, ToolBatchProcessor,
-    ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus,
+    BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
+    ModelRequest, ModelResponse, ModelStopReason, ModelStream, ProcessorContext, ProcessorError,
+    TextPayload, Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft,
+    ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolProcessingChain, TurnInterruption, TurnResult, TurnRunOptions,
+    RunControl, ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions,
     TurnRunner,
 };
 use serde_json::{Value, json};
@@ -123,7 +122,7 @@ impl ModelGateway for ScriptedGateway {
     async fn invoke(
         &self,
         _request: &ModelRequest,
-        _control: &AttemptControl,
+        _control: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some((finish_index, job)) = &self.finish_job_before_call
@@ -146,7 +145,7 @@ impl ModelGateway for ScriptedGateway {
     async fn stream(
         &self,
         _request: &ModelRequest,
-        _control: &AttemptControl,
+        _control: &CallControl,
     ) -> Result<ModelStream, ModelInvokeError> {
         Err(ModelInvokeError::new(
             ModelInvokeErrorKind::Permanent,
@@ -281,19 +280,26 @@ async fn model_queries_long_task_handle_until_complete_without_framework_polling
         2,
         job.clone(),
     );
-    let runner = TurnRunner::with_tool_processors(
+    let runner = TurnRunner::new(
         gateway.clone(),
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(JobTool(job.clone()))])),
-        ToolProcessingChain::builder()
-            .after(Arc::new(CountPost(post_calls.clone())))
-            .build(),
+        Arc::new(
+            ToolExecutor::new(
+                vec![Arc::new(JobTool(job.clone()))],
+                ToolExecutorOptions {
+                    after: vec![Arc::new(CountPost(post_calls.clone()))],
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        ),
     );
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(2),
         runner.run(
-            causa_kernel::TurnContext::new(causa_kernel::TurnId::new("long-job")),
-            TurnRunOptions::default(),
+            causa_kernel::TurnId::new("long-job"),
+            causa_kernel::Context::new(),
+            TurnRunOptions::new(causa_kernel::ModelRef::new("fixture-model")),
             causa_runtime::RunControl::new(tokio_util::sync::CancellationToken::new(), None),
         ),
     )
@@ -345,12 +351,18 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
         tool_call("start", None),
         tool_call("query", Some(HANDLE)),
     ]);
-    let runner = TurnRunner::with_tool_processors(
+    let runner = TurnRunner::new(
         gateway.clone(),
-        Arc::new(ToolExecutor::from_vec(vec![Arc::new(JobTool(job.clone()))])),
-        ToolProcessingChain::builder()
-            .after(Arc::new(CountPost(post_calls.clone())))
-            .build(),
+        Arc::new(
+            ToolExecutor::new(
+                vec![Arc::new(JobTool(job.clone()))],
+                ToolExecutorOptions {
+                    after: vec![Arc::new(CountPost(post_calls.clone()))],
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        ),
     );
 
     let token = tokio_util::sync::CancellationToken::new();
@@ -358,8 +370,9 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
     let task = tokio::spawn(async move {
         runner
             .run(
-                causa_kernel::TurnContext::new(causa_kernel::TurnId::new("cancel-query")),
-                TurnRunOptions::default(),
+                causa_kernel::TurnId::new("cancel-query"),
+                causa_kernel::Context::new(),
+                TurnRunOptions::new(causa_kernel::ModelRef::new("fixture-model")),
                 RunControl::new(run_token, None),
             )
             .await
@@ -374,7 +387,7 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
     assert!(matches!(
         outcome.result,
         TurnResult::Interrupted {
-            cause: TurnInterruption::ExplicitCancellation
+            cause: TurnInterruption::Cancelled { .. }
         }
     ));
     assert_eq!(gateway.calls.load(Ordering::SeqCst), 2);
@@ -412,7 +425,7 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
     assert_eq!(query_result.status, ToolResultStatus::UnknownOutcome);
     assert_eq!(
         query_result.output.content,
-        json!({"error":"tool was started but no result was observed before the batch stopped"})
+        json!({"error":"tool was started but no acceptable result was observed before the batch stopped"})
     );
     // The worker can still receive its own completion signal after the turn
     // stops; cancellation did not abort or take ownership of it.

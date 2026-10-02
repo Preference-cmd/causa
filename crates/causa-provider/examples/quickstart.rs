@@ -18,12 +18,14 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, CancellationToken, ModelRef, TextPayload, Tool, ToolCallContext, ToolDefinition,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnContext, TurnId,
+    BlockContent, BlockMeta, CallControl, CancellationToken, ContentPart, Context, ContextBlock,
+    ModelRef, TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
+    ToolResultStatus, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
-    RunControl, ToolExecutor, TurnInvocation, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
+    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
+    new_block_id,
 };
 use std::sync::Arc;
 
@@ -70,7 +72,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Ports out, driver in: the executor holds the tools, the gateway
     // adapter talks to the provider, the runner loops the turn.
-    let executor = Arc::new(ToolExecutor::from_vec(vec![Arc::new(WordCount)]));
+    let executor = Arc::new(ToolExecutor::new(
+        vec![Arc::new(WordCount)],
+        ToolExecutorOptions::default(),
+    )?);
     // Media: inject the host's asset table so fact-level
     // media references resolve to inline payloads at render time. The
     // table is prefetched before the turn; misses degrade to a
@@ -85,27 +90,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let runner = TurnRunner::new(gateway, executor.clone());
 
-    let mut context = TurnContext::new(TurnId::new("quickstart"));
-    context.append_input(
+    let context = Context::from_blocks(vec![ContextBlock::new(
         new_block_id(),
-        TextPayload::new(
-            "How many words are in \"the quick brown fox jumps over the lazy dog\"? \
-             Use the word_count tool, then answer with just the number.",
-        ),
-        "user",
-    )?;
-
-    let options = TurnRunOptions {
-        invocation: TurnInvocation {
-            model: ModelRef::new("claude-sonnet-4-5"),
-            tool_surface: executor.tool_surface().await,
+        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
+            "How many words are in \"the quick brown fox jumps over the lazy dog\"? Use the word_count tool, then answer with just the number.",
+        ))]),
+        BlockMeta {
+            source: Some("user".into()),
             ..Default::default()
         },
-        ..Default::default()
-    };
+    )])?;
+    let options = TurnRunOptions::new(ModelRef::new("claude-sonnet-4-5"));
 
     let outcome = runner
         .run(
+            TurnId::new("quickstart"),
             context,
             options,
             RunControl::new(CancellationToken::new(), None),
@@ -119,6 +118,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("turn interrupted: {cause:?}").into());
         }
     }
-    println!("rounds: {}", outcome.trace.rounds.len());
+    println!("retained blocks: {}", outcome.context.blocks().len());
     Ok(())
 }
