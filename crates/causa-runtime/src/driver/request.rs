@@ -5,6 +5,8 @@ use super::model::{control_cause, stopped, wait_for_stop};
 use crate::{RunControl, TurnRunOptions};
 use causa_kernel::{Context, InvocationId, ModelRequest, RoundInfo, ToolSurface};
 
+// TurnInterruption intentionally owns failed inputs for caller recovery.
+#[allow(clippy::result_large_err)]
 pub(super) async fn prepare(
     context: &mut Context,
     invocation_id: &InvocationId,
