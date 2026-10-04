@@ -1,0 +1,140 @@
+---
+title: Streaming
+description: Consume provider increments while preserving complete-output ownership.
+---
+
+:::note[Unreleased implementation]
+This page describes the current `main` checkout. The published Causa `0.0.2`
+already has streaming ports and a runner, but its built-in HTTP gateways use
+the default single-`Done` fallback. Real provider SSE requires the new implementation.
+:::
+
+## Choose a consumer
+
+All three built-in gateways implement `ModelGateway::stream()`. Call it directly
+when your application owns the model loop. Use `TurnRunner::run_streaming()`
+when you want Causa to drive model rounds and tool execution.
+
+For the runner, assign an `Arc` callback to `TurnRunOptions::observer`. A
+`RunEvent::ModelDelta` carries the invocation identity and a borrowed text,
+reasoning, tool-call or usage observation. Copy only what your application
+needs and return promptly. The callback is synchronous; your application owns
+any queue, batching, display or persistence.
+
+The runner does not include `Done` or `Error` in `ModelDelta` observations.
+It reports an accepted complete output through `RunEvent::ModelOutput`, then
+converts and commits materials. The returned `TurnOutcome` remains the source
+for the run's final state and any uncommitted tool batch.
+
+Direct consumers inspect every delta themselves. The following helper works
+with a prepared request and control; add `futures-util = "0.3"` to use `StreamExt`:
+
+```rust
+use causa::kernel::{
+    CallControl, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRequest, StreamDelta,
+};
+use futures_util::StreamExt;
+
+async fn consume(
+    gateway: &dyn ModelGateway,
+    request: &ModelRequest,
+    control: &CallControl,
+) -> Result<ModelOutput, ModelInvokeError> {
+    let mut stream = gateway.stream(request, control).await?;
+    while let Some(delta) = stream.next().await {
+        match delta {
+            StreamDelta::TextDelta { delta } => print!("{delta}"),
+            StreamDelta::Done { final_output, .. } => return Ok(final_output),
+            StreamDelta::Error { kind, message } => {
+                return Err(ModelInvokeError::new(kind, message));
+            }
+            _ => {}
+        }
+    }
+    Err(ModelInvokeError::new(
+        ModelInvokeErrorKind::UnknownOutcome,
+        "stream ended without a complete output",
+    ))
+}
+```
+
+## Incremental observations and final material
+
+Deltas are provisional observations, not instructions to reconstruct a trusted
+model output. In particular, tool arguments can be incomplete JSON and usage
+updates are snapshots, not amounts to sum. A final provider snapshot can differ
+from text shown during generation. Reconcile your display with `final_output`.
+
+Only a valid protocol terminal produces `Done`. Truncation, malformed events,
+invalid tool arguments and explicit provider errors cannot become successful
+partial tool declarations. The runner does not execute tools from deltas.
+Earlier successfully committed rounds remain available when a later round stops.
+
+| Protocol | Incremental scope | Completion boundary |
+| --- | --- | --- |
+| OpenAI Chat Completions | One choice, text and function-tool fragments; trailing usage | Valid finish reason followed by `[DONE]` |
+| OpenAI Responses | Text, reasoning summary and function arguments | Complete terminal response, with explicit incomplete/failed classification |
+| Anthropic Messages | Text, thinking/signature, function input and cumulative usage | Closed content blocks and a valid `message_stop` |
+
+The stream uses the same request rendering, media resolution and tool-history
+checks as `invoke()`, plus protocol-specific streaming options. Successful HTTP
+responses must use `Content-Type: text/event-stream`. There is no fallback
+request for endpoints that return a complete JSON body instead.
+
+This does not add audio/image generation streams, provider-hosted tools,
+multi-choice Chat output, proprietary reasoning fields or cross-turn thinking
+replay. Reasoning is exposed only when the provider actually sends a supported
+event; the adapter does not add a new option to request thinking.
+
+## Cancellation and resources
+
+`CallControl` applies during stream establishment and consumption, including
+when you call the gateway without a runner. Cancellation and absolute deadlines
+are checked between bounded byte-processing steps and events. Parsing one
+complete JSON event is synchronous, so cancellation does not interrupt that
+individual parse midway.
+
+The implementation reads on demand, with no detached reader task or unlimited
+background queue. Dropping the stream releases local HTTP and parsing state;
+accepting a terminal stops reading without waiting for connection EOF. This
+does not prove that remote model computation has stopped. No automatic retry,
+reconnect or continuation request occurs after a partial result or failure.
+The default HTTP client disables protocol retries and redirects. If you inject
+a client with `with_http_client`, its transport policies remain yours; disable
+retries and redirects on that client when you require the same single-request
+behavior.
+
+Use `causa::providers::StreamLimits` with `gateway.with_stream_limits(limits)`
+to choose explicit positive limits:
+
+| Limit | Default |
+| --- | ---: |
+| Line and SSE event | 32 MiB each |
+| Total consumed wire bytes, including comments and unknown events | 64 MiB |
+| Cumulative output/metadata budget, including terminal snapshots | 16 MiB |
+| Output items/tool declarations | 1,024 |
+| Pending deltas from one event | 4,096 |
+
+Limits bound logical buffers, not total process RSS. JSON values, raw events,
+assembled strings and the final snapshot can coexist; a large Responses
+snapshot needs budget in addition to its earlier deltas. Exceeding a limit is
+a `Permanent` error, not truncated success. Zero limits are rejected before HTTP.
+
+## Protocol-only decoding and verification
+
+`causa::protocol::translation::streaming::StreamDecoder` is transport-free.
+Feed borrowed byte slices through `decode`, retaining each unconsumed suffix;
+continue draining returned deltas even when that suffix is empty. `finish()`
+checks EOF without inventing a missing terminal. `SseParser` provides the lower
+level byte framing when you do not need provider-specific assembly.
+
+The isolated public consumer runs real local HTTP servers and holds back each
+provider's terminal until the consumer observes text:
+
+```sh
+cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
+```
+
+The path dependency tests the current checkout. A release must separately pass
+the repository's registry-only publication verification.

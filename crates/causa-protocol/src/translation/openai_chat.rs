@@ -305,8 +305,7 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
                 .get("name")
                 .and_then(Value::as_str)
                 .ok_or_else(|| permanent("tool_calls[].function: missing `name` string"))?;
-            // The wire carries arguments as a JSON string; an empty string
-            // degrades to an empty object (shared OpenAI-family codec).
+            // Completed calls require a complete JSON-encoded argument value.
             let arguments = context_frame::decode_wire_arguments(function.get("arguments"))?;
             tool_calls.push(ToolCallDraft {
                 tool_name: name.to_string(),
@@ -864,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_arguments_string_degrades_to_empty_object() {
+    fn empty_arguments_string_is_permanent_error() {
         let v = json!({
             "choices": [{
                 "message": {"tool_calls": [
@@ -873,7 +872,7 @@ mod tests {
                 "finish_reason": "tool_calls",
             }],
         });
-        let out = parse_openai_chat_response(&v).unwrap();
-        assert_eq!(out.response.tool_calls[0].arguments, json!({}));
+        let error = parse_openai_chat_response(&v).unwrap_err();
+        assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
     }
 }

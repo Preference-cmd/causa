@@ -8,6 +8,11 @@
 //! `causa_kernel::ModelGateway` seam and is consumed by `causa-provider`'s
 //! gateways. It is transport-free.
 //!
+//! [`translation::streaming::StreamDecoder`] incrementally decodes raw SSE bytes
+//! into kernel observations and a complete terminal output. [`SseParser`] is
+//! the lower-level bounded byte framer. Neither owns HTTP, execution control,
+//! retries, event history or a background task.
+//!
 //! Layering:
 //!
 //! ```text

@@ -32,7 +32,8 @@
 //! - Stop-reason derivation: the Responses wire has no `finish_reason`.
 //!   A refusal output item wins, then `incomplete` + `max_output_tokens`
 //!   → MaxTokens, then any `function_call` output → ToolUse, else
-//!   EndTurn. `incomplete` with other reasons degrades to EndTurn.
+//!   EndTurn. `incomplete/content_filter` maps to Refusal; unknown incomplete
+//!   reasons are UnknownOutcome. Failed responses return a classified error.
 //! - Reasoning output items contribute their summary texts (signature
 //!   stays `None`; `encrypted_content` is not represented in the kernel
 //!   envelope).
@@ -209,6 +210,44 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
     }
 
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| permanent("missing status"))?;
+    let incomplete_reason = match status {
+        "completed" => None,
+        "failed" => {
+            return Err(crate::translation::streaming::common::provider_error(
+                value.get("error").unwrap_or(&Value::Null),
+            ));
+        }
+        "incomplete" => {
+            let reason = value
+                .get("incomplete_details")
+                .and_then(|d| d.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if !matches!(reason, "max_output_tokens" | "content_filter") {
+                return Err(ModelInvokeError::new(
+                    ModelInvokeErrorKind::UnknownOutcome,
+                    "Responses incomplete: unrecognized reason",
+                ));
+            }
+            Some(reason)
+        }
+        _ => {
+            return Err(ModelInvokeError::new(
+                ModelInvokeErrorKind::UnknownOutcome,
+                match status {
+                    "queued" => "Responses non-terminal status: queued",
+                    "in_progress" => "Responses non-terminal status: in_progress",
+                    "cancelled" => "Responses non-terminal status: cancelled",
+                    _ => "Responses unrecognized status",
+                },
+            ));
+        }
+    };
+
     let empty = Vec::new();
     let output = match value.get("output") {
         None | Some(Value::Null) => &empty,
@@ -283,30 +322,13 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         }
     }
 
-    let status = value
-        .get("status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| permanent("missing status"))?;
-    let incomplete_reason = if status == "incomplete" {
-        Some(
-            value
-                .get("incomplete_details")
-                .and_then(|d| d.get("reason"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown"),
-        )
-    } else {
-        None
-    };
-    let stop_reason = if refusal {
+    let stop_reason = if refusal || incomplete_reason == Some("content_filter") {
         ModelStopReason::Refusal
     } else if incomplete_reason == Some("max_output_tokens") {
         ModelStopReason::MaxTokens
     } else if !tool_calls.is_empty() {
         ModelStopReason::ToolUse
     } else {
-        // "completed", or `incomplete` with an undocumented reason —
-        // degrade to EndTurn rather than inventing an interruption.
         ModelStopReason::EndTurn
     };
 
@@ -704,7 +726,7 @@ mod tests {
         ))
         .unwrap();
         assert!(matches!(out.stop_reason, ModelStopReason::MaxTokens));
-        // incomplete with undocumented reason → EndTurn (no invented interrupt)
+        // A content-filter interruption is an explicit refusal.
         let out = parse_openai_responses_output(&with_output(
             json!([]),
             json!({
@@ -713,7 +735,7 @@ mod tests {
             }),
         ))
         .unwrap();
-        assert!(matches!(out.stop_reason, ModelStopReason::EndTurn));
+        assert!(matches!(out.stop_reason, ModelStopReason::Refusal));
         // refusal output item wins
         let out = parse_openai_responses_output(&with_output(
             json!([{"type": "refusal", "refusal": "no"}]),

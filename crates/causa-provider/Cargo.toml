@@ -15,6 +15,7 @@ license.workspace = true
 causa-protocol = { path = "../causa-protocol", version = "0.0.2" }
 causa-kernel = { path = "../causa-kernel", version = "0.0.2" }
 async-trait = { workspace = true }
+futures-util = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
@@ -23,7 +24,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 causa-runtime = { path = "../causa-runtime", version = "0.0.2" }
 uuid.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync"] }
 wiremock = "0.6"
 # `agent.http` span assertions
 tracing-subscriber = { workspace = true }

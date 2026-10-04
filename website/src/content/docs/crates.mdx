@@ -14,9 +14,9 @@ crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
 | ----- | ---- |
 | `causa` | facade over the family |
 | `causa-kernel` | editable context material + contracts for models, preparation and tools, no I/O |
-| `causa-protocol` | wire-protocol translation (Anthropic / OpenAI Chat / OpenAI Responses) |
+| `causa-protocol` | request/response and incremental SSE translation (Anthropic / OpenAI Chat / OpenAI Responses) |
 | `causa-runtime` | optional material-returning turn runner, borrowed observations and bound tool execution |
-| `causa-provider` | reqwest adapters for the `ModelGateway` port |
+| `causa-provider` | reqwest complete-response and streaming adapters for the `ModelGateway` port |
 | `causa-extension` | extension adapters (`mcp` feature: MCP client) |
 
 ## Feature selection
@@ -33,6 +33,10 @@ A provider renders through the protocol crate, so `providers` implies
 Extensions stay opt-in because `rmcp` is a heavier dependency that offline
 hosts should not pay for.
 
+Real HTTP provider streaming is currently an unreleased change on `main`;
+the published `0.0.2` gateways still use the single-completed-output fallback.
+See [Streaming](/streaming/) for the development API and supported scope.
+
 Full API docs for every crate: [docs.rs/crate/causa](https://docs.rs/causa)
 (built with `all-features`).
 
@@ -48,4 +52,5 @@ Public facade consumers are also checked independently of the workspace:
 ```bash
 cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked
 cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --locked
+cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
 ```

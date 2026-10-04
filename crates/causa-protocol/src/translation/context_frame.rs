@@ -260,21 +260,22 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
     NormalizedFrame { segments }
 }
 
-/// OpenAI-family function-arguments wire codec: arguments travel as a
-/// JSON string; an empty or absent string degrades to an empty object;
-/// anything else the provider sent inline passes through.
+/// OpenAI-family function-arguments wire codec. A completed call must carry
+/// a JSON string containing a complete value; zero-parameter calls carry
+/// `"{}"`. Missing, empty and inline values are unusable provider responses.
 pub(crate) fn decode_wire_arguments(raw: Option<&Value>) -> Result<Value, ModelInvokeError> {
-    match raw {
-        None | Some(Value::Null) => Ok(serde_json::json!({})),
-        Some(Value::String(s)) if s.trim().is_empty() => Ok(serde_json::json!({})),
-        Some(Value::String(s)) => serde_json::from_str(s).map_err(|e| {
-            ModelInvokeError::new(
-                ModelInvokeErrorKind::Permanent,
-                format!("function arguments: {e}"),
-            )
-        }),
-        Some(other) => Ok(other.clone()),
-    }
+    let raw = raw.and_then(Value::as_str).ok_or_else(|| {
+        ModelInvokeError::new(
+            ModelInvokeErrorKind::Permanent,
+            "function arguments: expected a JSON string",
+        )
+    })?;
+    serde_json::from_str(raw).map_err(|_| {
+        ModelInvokeError::new(
+            ModelInvokeErrorKind::Permanent,
+            "function arguments: invalid or incomplete JSON",
+        )
+    })
 }
 
 /// The per-wire envelope for a tool definition. The field mapping is

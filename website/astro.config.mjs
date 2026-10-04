@@ -37,6 +37,7 @@ export default defineConfig({
         { label: 'Getting started', slug: 'getting-started' },
         { label: 'Concepts', slug: 'concepts' },
         { label: 'Editing turn context', slug: 'context-editing' },
+        { label: 'Streaming', slug: 'streaming' },
         { label: 'Crates', slug: 'crates' },
         { label: 'Examples', slug: 'examples' },
         { label: 'Status & changelog', slug: 'status' },

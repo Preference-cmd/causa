@@ -12,6 +12,41 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Breaking
+
+- OpenAI-family function arguments must be an encoded, complete JSON string.
+  Missing, null, blank or inline non-string arguments now fail rather than
+  becoming `{}` or passing through. Zero-parameter calls must supply `"{}"`.
+- The default HTTP client no longer retries protocol failures or follows
+  redirects. A host-injected client retains its own retry/redirect settings.
+- `KernelGatewayConfig` implementations now declare their `PROTOCOL` so the
+  HTTP adapter can select the matching stream decoder. The three built-in
+  configs supply it; hosts implementing a config must add it explicitly.
+- `SseParser` now consumes borrowed byte slices through `decode` and validates
+  EOF through `finish`. Replace `feed`/`flush`/`overflowed`; errors are returned
+  explicitly, oversized events fail closed, and EOF no longer invents a final
+  event delimiter. Split UTF-8 characters and LF/CRLF/CR line endings are supported.
+- OpenAI Responses parsing rejects failed responses and unknown incomplete
+  reasons instead of accepting them as `EndTurn`. The known incomplete reasons
+  `max_output_tokens` and `content_filter` map to `MaxTokens` and `Refusal`.
+
+### Added
+
+- Real HTTP SSE for all built-in Anthropic Messages, OpenAI Chat Completions
+  and OpenAI Responses gateways. `stream()` yields incremental observations
+  and one authoritative complete output, with cancellation/deadline control,
+  bounded parsing and prompt local resource release. There is no automatic
+  reconnect, hidden retry or non-streaming fallback.
+- Transport-free `StreamDecoder` and configurable `StreamLimits`, exposed by
+  the provider gateway through `with_stream_limits`. Text, supported reasoning,
+  function-tool fragments and cumulative usage preserve complete-output semantics.
+- The reqwest minimum is now 0.12.28 to configure its retry policy explicitly;
+  provider uses the existing workspace futures-util library for a pull-driven
+  stream with no background reader task.
+- Gated local HTTP tests and an isolated public facade consumer prove that an
+  increment is visible before the server sends its terminal response. Runtime
+  integration checks prevent partial model output or tool execution on failure.
+
 ## [0.0.2] - 2026-10-02
 
 An experimental release separating editable context material from execution

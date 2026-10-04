@@ -93,6 +93,20 @@ ID, then run `cargo run`. This example makes a real network request. To add a
 local tool, see the
 [provider quickstart](https://github.com/Preference-cmd/causa/blob/main/crates/causa-provider/examples/quickstart.rs).
 
+### Streaming on main (unreleased)
+
+The built-in Anthropic Messages, OpenAI Chat Completions and OpenAI Responses
+gateways now implement real HTTP SSE through `ModelGateway::stream()`.
+Use `TurnRunner::run_streaming()` with `TurnRunOptions::observer` to observe
+increments during a run. Deltas are provisional; only the complete terminal
+output supplies context material. Cancellation, deadlines and dropping the
+stream stop local consumption without an automatic retry.
+
+This provider implementation is not in the published `0.0.2` crates, whose
+built-in gateways return a single completed output from the stream entry.
+See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
+for supported events, resource limits and direct consumption.
+
 ### Choose your features
 
 The default includes the kernel, runtime and provider adapters. MCP is opt-in.
@@ -140,8 +154,8 @@ provides storage, credentials, tools and the policies it needs.
 | `causa` | Facade and feature selection — the default entry point |
 | `causa-kernel` | Editable context material and contracts for models, preparation and tools |
 | `causa-runtime` | Material-returning turn runner, borrowed observations and bound tool execution |
-| `causa-protocol` | Pure translation for Anthropic and OpenAI wire formats |
-| `causa-provider` | HTTP adapters implementing the model gateway contract |
+| `causa-protocol` | Pure request/response and incremental SSE translation for Anthropic and OpenAI |
+| `causa-provider` | HTTP adapters implementing complete and streaming model gateway calls |
 | `causa-extension` | Dynamic tool-source adapters, currently MCP |
 
 All six crates share one release version and can also be used directly.
@@ -179,8 +193,9 @@ execution of external tools.
 
 See [AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
 repository layout, conventions and verification commands. Public facade consumers
-are checked with `cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked`
-and the same command with `--features runtime`. The
+are checked with `cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked`,
+the same command with `--features runtime`, and
+`cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked`. The
 [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
 covers the manual publishing workflow.
 

@@ -62,6 +62,7 @@ and this file together.
 cargo test --workspace                    # full suite (also builds examples)
 cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked
 cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --locked
+cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check                   # CI fails otherwise; run `cargo fmt --all` first
 bash .github/scripts/check-dependency-directions.sh   # layering guard, same as CI

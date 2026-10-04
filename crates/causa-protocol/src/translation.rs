@@ -48,6 +48,7 @@ pub mod media;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod sse_parser;
+pub mod streaming;
 mod tool_history;
 pub mod usage;
 
