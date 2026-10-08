@@ -44,7 +44,10 @@
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
 //!   emitter, decoded by the shared `super::context_frame` codec);
 //!   parsing rejects a non-JSON arguments string as `Permanent`.
-//! - `max_tokens` is optional for OpenAI (no default injected).
+//! - Output limits use `max_completion_tokens`, including reasoning tokens;
+//!   no default limit is injected. Effort renders as `reasoning_effort`.
+//!   Active effort combined with temperature is rejected before transport.
+//!   Model-specific effort and tool support must be validated by the host.
 
 use serde_json::{Value, json};
 
@@ -85,6 +88,7 @@ pub fn render_openai_chat_messages(
     model: &ModelRef,
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
+    super::generation::validate_openai(generation)?;
     super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media, Protocol::OpenAiChatCompletions);
 
@@ -242,7 +246,10 @@ pub fn render_openai_chat_messages(
         body["temperature"] = json!(temperature);
     }
     if let Some(max_tokens) = generation.max_tokens {
-        body["max_tokens"] = json!(max_tokens);
+        body["max_completion_tokens"] = json!(max_tokens);
+    }
+    if let Some(effort) = generation.reasoning_effort {
+        body["reasoning_effort"] = json!(effort);
     }
     if let Some(schema) = &generation.output_schema {
         body["response_format"] = json!({
@@ -611,7 +618,7 @@ mod tests {
             CacheDirective::None,
         )
         .unwrap();
-        assert_eq!(v2["max_tokens"], json!(100));
+        assert_eq!(v2["max_completion_tokens"], json!(100));
         let again = render_openai_chat_messages(
             &f,
             &MediaSet::new(),

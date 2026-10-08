@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use causa::kernel::{
     CacheDirective, CallControl, CancellationToken, Context, ControlError, GenerationOptions,
     InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
-    ModelRequest, ModelItem, ModelResponse, ModelStopReason, ModelStream, ModelUsage, RoundId, StreamDelta,
-    TextPayload, ToolSurface, TurnId,
+    ModelItem, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage,
+    ReasoningEffort, RoundId, StreamDelta, ToolSurface, TurnId,
 };
 use futures_util::{StreamExt, stream};
 use std::collections::VecDeque;
@@ -32,6 +32,7 @@ fn request() -> ModelRequest {
         tool_surface: ToolSurface::empty(),
         generation: GenerationOptions {
             max_tokens: Some(16),
+            reasoning_effort: Some(ReasoningEffort::High),
             ..Default::default()
         },
         cache: CacheDirective::StablePrefix,

@@ -5,6 +5,8 @@
 //! third-party model, preparation, tool and cancellation contracts. It performs
 //! no I/O, execution policy or conversation management. Reference execution
 //! lives in causa-runtime; concrete transports live in edge crates.
+//! [`GenerationOptions`] and [`ReasoningEffort`] describe requested generation
+//! settings; hosts own model capability selection and persisted definitions.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -37,8 +39,8 @@ pub use ports::batch::{
 pub use ports::control::{CallControl, ControlError};
 pub use ports::gateway::{
     CacheDirective, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage, ReasoningPayload, StreamDelta,
-    ToolSurface, completed_model_stream,
+    ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage, ReasoningEffort,
+    ReasoningPayload, StreamDelta, ToolSurface, completed_model_stream,
 };
 pub use ports::prepare::{ContextPreparer, PrepareError, RoundInfo};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};

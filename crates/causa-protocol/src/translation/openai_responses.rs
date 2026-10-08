@@ -47,6 +47,10 @@
 //! - Reasoning output items contribute their summary texts (signature
 //!   stays `None`; `encrypted_content` is not represented in the kernel
 //!   envelope).
+//! - `reasoning_effort` renders as `reasoning.effort`; output limits use
+//!   `max_output_tokens`, including reasoning tokens. Active effort combined
+//!   with temperature is rejected. Hosts validate model-specific support.
+//!   Effort selection does not add provider reasoning-state replay.
 
 use serde_json::{Value, json};
 
@@ -76,6 +80,7 @@ pub fn render_openai_responses_input(
     model: &ModelRef,
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
+    super::generation::validate_openai(generation)?;
     super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media, Protocol::OpenAiResponses);
 
@@ -216,6 +221,9 @@ pub fn render_openai_responses_input(
     }
     if let Some(max_tokens) = generation.max_tokens {
         body["max_output_tokens"] = json!(max_tokens);
+    }
+    if let Some(effort) = generation.reasoning_effort {
+        body["reasoning"] = json!({"effort": effort});
     }
     if let Some(schema) = &generation.output_schema {
         body["text"] = json!({

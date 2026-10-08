@@ -12,6 +12,17 @@
 //! fact-level references into inline render payloads; the kernel never
 //! touches bytes.
 //!
+//! # Generation options
+//!
+//! [`causa_kernel::GenerationOptions`] carries explicit sampling, output-token
+//! limits and optional [`causa_kernel::ReasoningEffort`]. Both call entrances
+//! render the same options. Unsupported protocol combinations return
+//! `InvalidRequest` before HTTP; fields are never silently dropped. Anthropic
+//! effort and output schemas are unsupported by this adapter. Effort selection
+//! supplies no reasoning-history replay. Hosts validate model-specific effort
+//! values, sampling/default compatibility and protocol/tool availability;
+//! model identifiers remain opaque to Causa.
+//!
 //! # Streaming
 //!
 //! All built-in gateways implement real SSE through

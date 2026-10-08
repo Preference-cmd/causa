@@ -24,19 +24,55 @@ impl ModelRef {
     }
 }
 
-/// Sampling knobs a caller may pin for the invocation. `None` means
-/// "unspecified": renderers omit the knob and the provider default applies.
+/// Requested reasoning effort. Availability and meaning depend on the model;
+/// hosts must validate the selected model's supported values before admission.
+/// This contract does not enable thinking replay or retain provider state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    /// Explicitly request no reasoning effort, where supported.
+    None,
+    /// Minimal reasoning effort, where supported.
+    Minimal,
+    /// Low reasoning effort.
+    Low,
+    /// Medium reasoning effort.
+    Medium,
+    /// High reasoning effort.
+    High,
+    /// Extra-high reasoning effort, where supported.
+    #[serde(rename = "xhigh")]
+    XHigh,
+    /// Maximum reasoning effort, where supported.
+    Max,
+}
+
+/// Generation knobs a caller may pin for the invocation. `None` leaves the
+/// provider default in force, except Anthropic's required output-token limit
+/// (the built-in renderer supplies its documented default).
+/// Protocol adapters reject options they cannot faithfully render. Hosts own
+/// model-specific capability validation, defaults, and aggregate budgets.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GenerationOptions {
     /// Sampling temperature; `None` leaves the provider default in force.
     pub temperature: Option<f32>,
-    /// Upper bound on generated tokens; `None` omits the limit from the
-    /// request.
+    /// Upper bound on generated tokens, including reasoning tokens where the
+    /// provider counts them. OpenAI Chat renders `max_completion_tokens`,
+    /// Responses renders `max_output_tokens`, and Anthropic renders `max_tokens`.
+    /// `None` omits the limit except for Anthropic's required default.
     pub max_tokens: Option<u32>,
+    /// Requested reasoning effort. `None` leaves the provider default in force;
+    /// `Some(ReasoningEffort::None)` explicitly requests no reasoning.
+    /// OpenAI Chat and Responses render this natively. The built-in Anthropic
+    /// adapter rejects it because complete thinking replay is unsupported.
+    /// Active effort and temperature cannot be combined in built-in OpenAI
+    /// adapters. Model-specific support remains the host's responsibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// JSON Schema the final response should satisfy, rendered natively
     /// where the provider supports it (Chat `response_format`, Responses
-    /// `text.format`; Anthropic has no native mapping — schema validation
-    /// and corrective retry stay host-side). `None` omits the knob.
+    /// `text.format`; the built-in Anthropic adapter rejects this option).
+    /// Schema validation and corrective retry stay host-side. `None` omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
 }

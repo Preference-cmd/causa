@@ -107,6 +107,18 @@ built-in gateways return a single completed output from the stream entry.
 See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
 for supported events, resource limits and direct consumption.
 
+### Generation options on main (unreleased)
+
+On unreleased `main`, `GenerationOptions::reasoning_effort` selects a
+serializable `ReasoningEffort`. OpenAI Chat renders `reasoning_effort` and
+`max_completion_tokens`; Responses renders `reasoning.effort` and
+`max_output_tokens`. Limits include reasoning tokens where counted by the
+provider. Omitted effort leaves the provider default in force; explicit `none`
+requests no reasoning. Active effort with temperature is rejected locally.
+Hosts validate per-model support and default/sampling compatibility. This adds
+no reasoning-history replay; Anthropic effort and output schemas are rejected
+by the built-in adapter.
+
 ### Choose your features
 
 The default includes the kernel, runtime and provider adapters. MCP is opt-in.

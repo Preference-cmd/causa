@@ -48,6 +48,9 @@
 //! - `reasoning` is parsed as a wire envelope only. The kernel does not
 //!   persist reasoning as facts, so cross-turn thinking replay is out of
 //!   scope here (the adapter sees fact-layer blocks each round).
+//!   Explicit `reasoning_effort` is rejected, including `none`; this adapter
+//!   does not implement effort or adaptive thinking. `output_schema` is also
+//!   rejected because there is no mapping in this adapter.
 //! - `redacted_thinking` and unknown content block types are skipped for
 //!   forward compatibility with provider extensions.
 
@@ -83,6 +86,7 @@ pub fn render_anthropic_messages(
     model: &ModelRef,
     cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
+    super::generation::validate_anthropic(generation)?;
     super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media, Protocol::AnthropicMessages);
 

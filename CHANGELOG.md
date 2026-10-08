@@ -65,6 +65,12 @@ adapters or data converters.
   resolves to `/v1/v1/...`. Default endpoints and `with_endpoint` are
   unchanged. The `path` field of the `agent.http` span reports the same
   shortened protocol path.
+- `GenerationOptions` adds optional `reasoning_effort`; explicit struct literals
+  must include it or use `..Default::default()`. OpenAI Chat output limits now
+  render as `max_completion_tokens`, including visible and reasoning tokens.
+  Generation rendering rejects invalid temperatures, zero output limits, active
+  OpenAI effort with temperature, and unsupported Anthropic effort/output schema
+  options before HTTP instead of dropping or coercing them.
 - OpenAI-family function arguments must be an encoded, complete JSON string.
   Missing, null, blank or inline non-string arguments now fail rather than
   becoming `{}` or passing through. Zero-parameter calls must supply `"{}"`.
@@ -83,6 +89,12 @@ adapters or data converters.
 
 ### Added
 
+- Serializable `ReasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`) and optional `GenerationOptions::reasoning_effort`. OpenAI
+  Chat maps `reasoning_effort`; Responses maps `reasoning.effort` in batch and
+  streaming requests. Omission preserves the provider default. Hosts validate
+  model-specific supported values, sampling defaults and tool compatibility.
+  This adds no reasoning-state replay; Anthropic effort remains unsupported.
 - Real HTTP SSE for all built-in Anthropic Messages, OpenAI Chat Completions
   and OpenAI Responses gateways. `stream()` yields incremental observations
   and one authoritative complete output, with cancellation/deadline control,
