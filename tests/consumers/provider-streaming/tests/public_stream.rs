@@ -37,7 +37,7 @@ async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() 
     let (round, release) = Round::gated(responses_prefix("preview"), responses_terminal("saved"));
     let mut server = Server::start(vec![round]);
     let runner = TurnRunner::new(
-        Arc::new(OpenAiResponsesGateway::new("fixture-key").with_base_url(&server.url)),
+        Arc::new(OpenAiResponsesGateway::new("fixture-key").with_base_url(format!("{}/v1", server.url))),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
     let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
@@ -83,17 +83,17 @@ async fn facade_direct_stream_observes_all_three_gateways_before_terminal() {
         let gateway: Arc<dyn ModelGateway> = match protocol {
             0 => Arc::new(
                 OpenAiChatCompletionsGateway::new("fixture-key")
-                    .with_base_url(&server.url)
+                    .with_base_url(format!("{}/v1", server.url))
                     .with_stream_limits(StreamLimits::default()),
             ),
             1 => Arc::new(
                 OpenAiResponsesGateway::new("fixture-key")
-                    .with_base_url(&server.url)
+                    .with_base_url(format!("{}/v1", server.url))
                     .with_stream_limits(StreamLimits::default()),
             ),
             _ => Arc::new(
                 AnthropicMessagesGateway::new("fixture-key")
-                    .with_base_url(&server.url)
+                    .with_base_url(format!("{}/v1", server.url))
                     .with_stream_limits(StreamLimits::default()),
             ),
         };

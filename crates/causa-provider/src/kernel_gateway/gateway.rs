@@ -78,7 +78,10 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
     }
 
     /// Point at a non-default host (test doubles, gateways). `C::PATH`
-    /// is appended to the given base URL.
+    /// is appended to the given base URL, which must carry its own version
+    /// segment: `https://api.anthropic.com/v1`, `https://api.openai.com/v1`,
+    /// or `https://host/provider/v1` for a compatible provider. A base
+    /// without a version segment is used as given.
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.core = self.core.with_base_url(base_url, C::PATH);
         self

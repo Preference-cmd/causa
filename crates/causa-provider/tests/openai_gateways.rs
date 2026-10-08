@@ -94,7 +94,7 @@ async fn chat_invoke_round_trips_complete_model_output() {
         .mount(&server)
         .await;
 
-    let gw = OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri());
+    let gw = OpenAiChatCompletionsGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let out = gw
         .invoke(&request(user_frame()), &ctrl(None))
         .await
@@ -129,7 +129,8 @@ async fn chat_error_rows_map_to_their_kinds() {
         post_mock(status, "/v1/chat/completions", body.clone())
             .mount(&server)
             .await;
-        let gw = OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri());
+        let gw =
+            OpenAiChatCompletionsGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
         let e = gw
             .invoke(&request(user_frame()), &ctrl(None))
             .await
@@ -151,7 +152,7 @@ async fn chat_unparseable_2xx_body_is_permanent() {
         .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
         .mount(&server)
         .await;
-    let gw = OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri());
+    let gw = OpenAiChatCompletionsGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let e = gw
         .invoke(&request(user_frame()), &ctrl(None))
         .await
@@ -186,7 +187,7 @@ async fn responses_invoke_round_trips_complete_model_output() {
         .mount(&server)
         .await;
 
-    let gw = OpenAiResponsesGateway::new(KEY).with_base_url(server.uri());
+    let gw = OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let out = gw
         .invoke(&request(user_frame()), &ctrl(None))
         .await
@@ -220,7 +221,7 @@ async fn responses_error_rows_map_to_their_kinds() {
         post_mock(status, "/v1/responses", body.clone())
             .mount(&server)
             .await;
-        let gw = OpenAiResponsesGateway::new(KEY).with_base_url(server.uri());
+        let gw = OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
         let e = gw
             .invoke(&request(user_frame()), &ctrl(None))
             .await
@@ -241,7 +242,7 @@ async fn responses_unparseable_2xx_body_is_permanent() {
         .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
         .mount(&server)
         .await;
-    let gw = OpenAiResponsesGateway::new(KEY).with_base_url(server.uri());
+    let gw = OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let e = gw
         .invoke(&request(user_frame()), &ctrl(None))
         .await
@@ -292,10 +293,13 @@ async fn deadline_yields_timed_out_promptly_on_both_paths() {
             .mount(&server)
             .await;
         let gw: Box<dyn ModelGateway> = match path_suffix {
-            "/v1/chat/completions" => {
-                Box::new(OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri()))
-            }
-            _ => Box::new(OpenAiResponsesGateway::new(KEY).with_base_url(server.uri())),
+            "/v1/chat/completions" => Box::new(
+                OpenAiChatCompletionsGateway::new(KEY)
+                    .with_base_url(format!("{}/v1", server.uri())),
+            ),
+            _ => Box::new(
+                OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri())),
+            ),
         };
         let deadline = Instant::now() + Duration::from_millis(100);
         let started = Instant::now();
@@ -331,10 +335,13 @@ async fn cancelled_token_yields_cancelled_promptly_on_both_paths() {
         });
         let attempt = CallControl::new(token.clone(), None);
         let gw: Box<dyn ModelGateway> = match path_suffix {
-            "/v1/chat/completions" => {
-                Box::new(OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri()))
-            }
-            _ => Box::new(OpenAiResponsesGateway::new(KEY).with_base_url(server.uri())),
+            "/v1/chat/completions" => Box::new(
+                OpenAiChatCompletionsGateway::new(KEY)
+                    .with_base_url(format!("{}/v1", server.uri())),
+            ),
+            _ => Box::new(
+                OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri())),
+            ),
         };
         let started = Instant::now();
         let e = gw
@@ -362,7 +369,7 @@ async fn pre_cancelled_control_never_reaches_the_wire_on_both_paths() {
     token.cancel();
     let attempt = CallControl::new(token.clone(), None);
 
-    let chat = OpenAiChatCompletionsGateway::new(KEY).with_base_url(server.uri());
+    let chat = OpenAiChatCompletionsGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let e = chat
         .invoke(&request(user_frame()), &attempt)
         .await
@@ -372,7 +379,7 @@ async fn pre_cancelled_control_never_reaches_the_wire_on_both_paths() {
         "got {e}"
     );
 
-    let responses = OpenAiResponsesGateway::new(KEY).with_base_url(server.uri());
+    let responses = OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let e = responses
         .invoke(&request(user_frame()), &attempt)
         .await

@@ -58,9 +58,16 @@ async fn all_builtin_gateways_observe_http_text_before_terminal_and_commit_only_
         let (round, release) = Round::gated(prefix, suffix);
         let mut server = Server::start(vec![round]);
         let gateway: Arc<dyn ModelGateway> = match protocol {
-            0 => Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url)),
-            1 => Arc::new(OpenAiResponsesGateway::new("key").with_base_url(&server.url)),
-            _ => Arc::new(AnthropicMessagesGateway::new("key").with_base_url(&server.url)),
+            0 => Arc::new(
+                OpenAiChatCompletionsGateway::new("key")
+                    .with_base_url(format!("{}/v1", server.url)),
+            ),
+            1 => Arc::new(
+                OpenAiResponsesGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+            ),
+            _ => Arc::new(
+                AnthropicMessagesGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+            ),
         };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = seen.clone();
@@ -198,7 +205,9 @@ async fn terminal_tool_executes_once_with_round_identity_and_provider_id_then_ne
         } => assert_eq!(*invocation_id, &invocation(1)),
         _ => {}
     }));
-    let gateway = Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url));
+    let gateway = Arc::new(
+        OpenAiChatCompletionsGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+    );
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
         runner(gateway, vec![echo(calls.clone())]).run_streaming(
@@ -256,7 +265,10 @@ async fn stream_error_missing_terminal_and_truncated_tool_leave_original_context
         let saved = serde_json::to_value(&original).unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let outcome = runner(
-            Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url)),
+            Arc::new(
+                OpenAiChatCompletionsGateway::new("key")
+                    .with_base_url(format!("{}/v1", server.url)),
+            ),
             vec![echo(calls.clone())],
         )
         .run_streaming(
@@ -310,7 +322,9 @@ async fn observer_cancelled_partial_second_round_preserves_completed_first_round
         }
     }));
     let outcome = runner(
-        Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url)),
+        Arc::new(
+            OpenAiChatCompletionsGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+        ),
         vec![echo(calls.clone())],
     )
     .run_streaming(
@@ -356,7 +370,9 @@ async fn cancellation_after_declaration_commit_returns_complete_pending_tool_bat
         }
     }));
     let outcome = runner(
-        Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url)),
+        Arc::new(
+            OpenAiChatCompletionsGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+        ),
         vec![echo(calls.clone())],
     )
     .run_streaming(
@@ -388,7 +404,9 @@ async fn failed_later_round_preserves_completed_tool_material_and_original_block
     let first = original.blocks()[0].clone();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let outcome = runner(
-        Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url)),
+        Arc::new(
+            OpenAiChatCompletionsGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+        ),
         vec![echo(calls.clone())],
     )
     .run_streaming(
@@ -420,7 +438,9 @@ async fn unknown_tool_result_commits_and_stops_without_another_model_round() {
         status: ToolResultStatus::UnknownOutcome,
     });
     let outcome = runner(
-        Arc::new(OpenAiChatCompletionsGateway::new("key").with_base_url(&server.url)),
+        Arc::new(
+            OpenAiChatCompletionsGateway::new("key").with_base_url(format!("{}/v1", server.url)),
+        ),
         vec![tool],
     )
     .run_streaming(

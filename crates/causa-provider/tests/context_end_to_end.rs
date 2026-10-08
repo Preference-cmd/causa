@@ -88,7 +88,7 @@ async fn direct_runner_completes_two_tool_round_trips_over_http() {
         .await;
 
     let gateway: Arc<dyn ModelGateway> =
-        Arc::new(AnthropicMessagesGateway::new(KEY).with_base_url(server.uri()));
+        Arc::new(AnthropicMessagesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri())));
     let runner = TurnRunner::new(
         gateway,
         Arc::new(

@@ -45,9 +45,13 @@ fn result(value: u128, target: u128) -> ContextBlock {
 async fn invalid_tool_material_never_reaches_http_for_any_gateway() {
     let server = MockServer::start().await;
     let gateways: Vec<Box<dyn ModelGateway>> = vec![
-        Box::new(AnthropicMessagesGateway::new("test").with_base_url(server.uri())),
-        Box::new(OpenAiChatCompletionsGateway::new("test").with_base_url(server.uri())),
-        Box::new(OpenAiResponsesGateway::new("test").with_base_url(server.uri())),
+        Box::new(
+            AnthropicMessagesGateway::new("test").with_base_url(format!("{}/v1", server.uri())),
+        ),
+        Box::new(
+            OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", server.uri())),
+        ),
+        Box::new(OpenAiResponsesGateway::new("test").with_base_url(format!("{}/v1", server.uri()))),
     ];
     let cases = [
         vec![result(2, 1)],

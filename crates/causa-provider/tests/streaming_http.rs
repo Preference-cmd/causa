@@ -226,11 +226,18 @@ async fn all_protocols_yield_before_server_releases_terminal_and_close_without_e
         )
         .await;
         let gateway: Box<dyn ModelGateway> = match index {
-            0 => {
-                Box::new(OpenAiChatCompletionsGateway::new("test-key").with_base_url(&fixture.url))
-            }
-            1 => Box::new(OpenAiResponsesGateway::new("test-key").with_base_url(&fixture.url)),
-            _ => Box::new(AnthropicMessagesGateway::new("test-key").with_base_url(&fixture.url)),
+            0 => Box::new(
+                OpenAiChatCompletionsGateway::new("test-key")
+                    .with_base_url(format!("{}/v1", fixture.url)),
+            ),
+            1 => Box::new(
+                OpenAiResponsesGateway::new("test-key")
+                    .with_base_url(format!("{}/v1", fixture.url)),
+            ),
+            _ => Box::new(
+                AnthropicMessagesGateway::new("test-key")
+                    .with_base_url(format!("{}/v1", fixture.url)),
+            ),
         };
         let mut stream = gateway.stream(&request(), &control()).await.unwrap();
         let captured = (&mut fixture.request).await.unwrap();
@@ -315,7 +322,7 @@ async fn standalone_control_covers_waiting_headers_and_silent_body_with_timeout_
                 (!cancellation).then(|| Instant::now() + Duration::from_millis(100)),
             );
             let gateway = OpenAiChatCompletionsGateway::new("test")
-                .with_base_url(&fixture.url)
+                .with_base_url(format!("{}/v1", fixture.url))
                 .with_http_client(reqwest::Client::builder().build().unwrap());
             let req = request();
             let cancel = async {
@@ -374,7 +381,8 @@ async fn dropping_stream_closes_unfinished_response_without_polling_background_r
         false,
     )
     .await;
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
     let stream = gateway.stream(&request(), &control()).await.unwrap();
     drop(stream);
     fixture.advance();
@@ -426,7 +434,8 @@ async fn http_and_content_type_errors_are_pre_stream_failures_and_read_errors_en
         )
         .await;
         fixture.advance();
-        let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+        let gateway =
+            OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
         let error = match gateway.stream(&request(), &control()).await {
             Err(error) => error,
             Ok(_) => panic!("invalid response accepted"),
@@ -447,7 +456,8 @@ async fn http_and_content_type_errors_are_pre_stream_failures_and_read_errors_en
         let mut fixture =
             Fixture::new(200, "text/event-stream", body, String::new(), false, true).await;
         fixture.advance();
-        let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+        let gateway =
+            OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
         let mut stream = gateway.stream(&request(), &control()).await.unwrap();
         let actual = loop {
             match stream.next().await.unwrap() {
@@ -473,7 +483,8 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
         false,
     )
     .await;
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
     let token = CancellationToken::new();
     let call = CallControl::new(token.clone(), None);
     let mut stream = gateway.stream(&request(), &call).await.unwrap();
@@ -507,7 +518,7 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
         ..StreamLimits::default()
     };
     let gateway = OpenAiChatCompletionsGateway::new("test")
-        .with_base_url(&fixture.url)
+        .with_base_url(format!("{}/v1", fixture.url))
         .with_stream_limits(limits);
     let mut stream = gateway.stream(&request(), &control()).await.unwrap();
     assert!(matches!(
@@ -582,17 +593,17 @@ async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoi
         let gateway: Box<dyn ModelGateway> = match index {
             0 => Box::new(
                 OpenAiChatCompletionsGateway::new("parity")
-                    .with_base_url(server.uri())
+                    .with_base_url(format!("{}/v1", server.uri()))
                     .with_media_resolver(media.clone()),
             ),
             1 => Box::new(
                 OpenAiResponsesGateway::new("parity")
-                    .with_base_url(server.uri())
+                    .with_base_url(format!("{}/v1", server.uri()))
                     .with_media_resolver(media.clone()),
             ),
             _ => Box::new(
                 AnthropicMessagesGateway::new("parity")
-                    .with_base_url(server.uri())
+                    .with_base_url(format!("{}/v1", server.uri()))
                     .with_media_resolver(media.clone())
                     .with_anthropic_version("2023-06-01"),
             ),
@@ -644,7 +655,8 @@ async fn ready_deltas_yield_to_cancellation_and_slow_consumption_defers_parsing(
         false,
     )
     .await;
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
     let token = CancellationToken::new();
     let call = CallControl::new(token.clone(), None);
     let mut stream = gateway.stream(&request(), &call).await.unwrap();
@@ -685,7 +697,8 @@ async fn ready_deltas_yield_to_cancellation_and_slow_consumption_defers_parsing(
         false,
     )
     .await;
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
     let call = control();
     let mut stream = gateway.stream(&request(), &call).await.unwrap();
     assert!(matches!(
@@ -719,7 +732,8 @@ async fn bounded_error_bodies_honor_control_and_never_echo_request_material() {
     )
     .await;
     fixture.advance();
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
     let error = match gateway.stream(&request(), &control()).await {
         Err(error) => error,
         Ok(_) => panic!("HTTP error accepted"),
@@ -737,7 +751,7 @@ async fn bounded_error_bodies_honor_control_and_never_echo_request_material() {
     )
     .await;
     let gateway = OpenAiChatCompletionsGateway::new("test")
-        .with_base_url(&fixture.url)
+        .with_base_url(format!("{}/v1", fixture.url))
         .with_http_client(reqwest::Client::new());
     let call = CallControl::new(
         CancellationToken::new(),
@@ -794,7 +808,8 @@ async fn invoke_error_envelope_diagnostics_are_bounded() {
         )
         .mount(&server)
         .await;
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(server.uri());
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", server.uri()));
     let error = gateway.invoke(&request(), &control()).await.unwrap_err();
     assert_eq!(error.kind, ModelInvokeErrorKind::Transient);
     assert!(error.message.len() < 300);
@@ -812,7 +827,8 @@ async fn truncated_chunked_http_body_is_transient_and_emits_one_error() {
         false,
     )
     .await;
-    let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(&fixture.url);
+    let gateway =
+        OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", fixture.url));
     let mut stream = gateway.stream(&request(), &control()).await.unwrap();
     assert!(matches!(
         stream.next().await,
@@ -843,7 +859,8 @@ async fn default_client_does_not_follow_redirects_or_resubmit_http_errors() {
             )
             .mount(&server)
             .await;
-        let gateway = OpenAiChatCompletionsGateway::new("test").with_base_url(server.uri());
+        let gateway =
+            OpenAiChatCompletionsGateway::new("test").with_base_url(format!("{}/v1", server.uri()));
         assert!(gateway.stream(&request(), &control()).await.is_err());
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
@@ -857,7 +874,7 @@ async fn invalid_stream_limits_fail_before_http() {
         ..StreamLimits::default()
     };
     let gateway = OpenAiChatCompletionsGateway::new("test")
-        .with_base_url(server.uri())
+        .with_base_url(format!("{}/v1", server.uri()))
         .with_stream_limits(limits);
     let error = match gateway.stream(&request(), &control()).await {
         Err(error) => error,

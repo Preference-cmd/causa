@@ -14,6 +14,13 @@ adapters or data converters.
 
 ### Breaking
 
+- `with_base_url` no longer appends the `/v1` version segment. The base URL
+  must carry it: pass `https://host/v1` where `https://host` worked before.
+  The appended paths are now `/messages`, `/chat/completions` and
+  `/responses`, so a provider base that already ends in `/v1` no longer
+  resolves to `/v1/v1/...`. Default endpoints and `with_endpoint` are
+  unchanged. The `path` field of the `agent.http` span reports the same
+  shortened protocol path.
 - OpenAI-family function arguments must be an encoded, complete JSON string.
   Missing, null, blank or inline non-string arguments now fail rather than
   becoming `{}` or passing through. Zero-parameter calls must supply `"{}"`.

@@ -53,7 +53,7 @@ fn request(frame: ContextFrame) -> ModelRequest {
 }
 
 fn gateway(server: &MockServer) -> AnthropicMessagesGateway {
-    AnthropicMessagesGateway::new(KEY).with_base_url(server.uri())
+    AnthropicMessagesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()))
 }
 
 fn messages_mock(status: u16, body: Value) -> Mock {
@@ -380,7 +380,7 @@ async fn invoke_emits_the_agent_http_span() {
         "missing provider field: {text}"
     );
     assert!(
-        text.contains("path=\"/v1/messages\""),
+        text.contains("path=\"/messages\""),
         "missing path field: {text}"
     );
 }

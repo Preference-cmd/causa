@@ -34,6 +34,7 @@ pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
     /// Full endpoint URL used unless the host overrides it.
     const DEFAULT_ENDPOINT: &'static str;
     /// Protocol path appended by [`crate::KernelHttpGateway::with_base_url`].
+    /// It has no version segment; the base URL supplies one.
     const PATH: &'static str;
     /// Provider label used in transport errors and tracing spans.
     const PROVIDER: &'static str;
@@ -83,7 +84,7 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
     }
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.anthropic.com/v1/messages";
-    const PATH: &'static str = "/v1/messages";
+    const PATH: &'static str = "/messages";
     const PROVIDER: &'static str = "anthropic";
 }
 
@@ -117,7 +118,7 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
     }
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.openai.com/v1/chat/completions";
-    const PATH: &'static str = "/v1/chat/completions";
+    const PATH: &'static str = "/chat/completions";
     const PROVIDER: &'static str = "openai";
 }
 
@@ -151,6 +152,6 @@ impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
     }
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.openai.com/v1/responses";
-    const PATH: &'static str = "/v1/responses";
+    const PATH: &'static str = "/responses";
     const PROVIDER: &'static str = "openai";
 }
