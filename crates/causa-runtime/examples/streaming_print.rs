@@ -17,8 +17,8 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse,
-    ModelStopReason, StreamDelta, TextPayload, ToolCallDraft, TurnId,
+    CallControl, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest,
+    ModelResponse, ModelStopReason, StreamDelta, TextPayload, TurnId,
 };
 use causa_runtime::{
     RunControl, RunEvent, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
@@ -89,8 +89,7 @@ fn print_observation(event: &RunEvent<'_>) {
 fn turn_output(text: &str) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: Vec::<ToolCallDraft>::new(),
+            items: vec![ModelItem::text(text)],
         },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
@@ -148,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // `Done` carried this same output; print it once more as the
             // canonical record (a UI would render it incrementally).
             println!("--- canonical output ---");
-            println!("{}", final_output.response.text.0);
+            println!("{}", final_output.response.text());
         }
         other => return Err(format!("turn did not complete: {other:?}").into()),
     }

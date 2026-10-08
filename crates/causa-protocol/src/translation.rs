@@ -26,15 +26,36 @@
 //! | anything else             | user role (documented open-vocabulary fallback)         |
 //!
 //! Shared structural policy (applied once in `context_frame`, so the
-//! three renderers cannot drift): empty text blocks are skipped
-//! (mirroring the kernel model door); adjacent same-role text blocks
-//! join into one text with `\n`; tool ids come from
+//! three renderers cannot drift): zero-length text is skipped
+//! (mirroring the kernel model door; whitespace-only text is content);
+//! no text is joined across block seams, for any role, and no renderer
+//! inserts a character the model did not produce; tool ids come from
 //! `meta.provider_call_id` with the declaration `BlockId` UUID as fallback,
 //! and tool result ids resolve through their declaration block identity
 //! (unpaired, duplicate, incomplete or ambiguously identified exchanges
 //! fail with InvalidRequest before HTTP); non-string tool observations
 //! serialize to a string. Ordered result notes render with the same tool
 //! result, while remaining separate from the stored output payload.
+//!
+//! # Wire fidelity
+//!
+//! Model output the host has not edited is rendered back value-equal to what
+//! the provider returned, item for item and in order, on the format it came
+//! from. Each parser splits a wire item into the facts it understands (text,
+//! tool name, arguments, call id) and keeps every other field in
+//! `BlockMeta::wire` (`WireMeta { format, fields }`, the format being
+//! `Protocol::as_str()`); message-level Chat fields such as
+//! `reasoning_content` travel as a `ContentPart::Sealed` part. A renderer
+//! starts from `fields` only when `wire.format` is its own and writes the
+//! fact-derived fields over them; a block of another format, a block without
+//! `wire` and an edited block render from facts alone. A sealed part of the
+//! renderer's own format is written verbatim, one of another format is
+//! skipped, and one outside assistant position is an `InvalidRequest`.
+//! OpenAI-family tool calls keep the provider's `arguments` string in
+//! `fields`; it is sent unchanged only while it parses to the fact's value.
+//! Reasoning replay is a separate change: `thinking` (Anthropic) and
+//! `reasoning` (Responses) items feed the reasoning observation and are not
+//! stored.
 
 /// The schema name rendered into OpenAI-family structured-output envelopes
 /// (Chat `response_format.json_schema.name`, Responses `text.format.name`).

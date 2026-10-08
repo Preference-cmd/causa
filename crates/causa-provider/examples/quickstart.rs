@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     match outcome.result {
         TurnResult::Completed { final_output } => {
-            println!("answer: {}", final_output.response.text.0);
+            println!("answer: {}", final_output.response.text());
         }
         TurnResult::Interrupted { cause } => {
             return Err(format!("turn interrupted: {cause:?}").into());

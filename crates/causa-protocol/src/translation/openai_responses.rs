@@ -5,7 +5,7 @@
 //! the reqwest adapter in `causa-provider` owns HTTP.
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
-//! text joining, tool id pairing, observation stringification) lives in
+//! no cross-block text join, tool id pairing, observation stringification) lives in
 //! `super::context_frame`; this module only shapes the Responses wire.
 //!
 //! # Responses-specific structural rules
@@ -34,6 +34,16 @@
 //!   → MaxTokens, then any `function_call` output → ToolUse, else
 //!   EndTurn. `incomplete/content_filter` maps to Refusal; unknown incomplete
 //!   reasons are UnknownOutcome. Failed responses return a classified error.
+//! - Wire fidelity. Each `message` output item parses to one `Parts` item (one
+//!   text part per `output_text` part) whose `wire.fields` is the item with
+//!   the `text` of each `output_text` part removed; each `function_call` item
+//!   parses to a tool-call item whose `wire.fields` is the item minus
+//!   `call_id` and `name`, keeping `id` and the raw `arguments` string. A
+//!   block with matching `wire` renders as one item built from `fields`
+//!   (message: each text goes back into its `output_text` slot, falling back
+//!   to facts when the counts differ; call: `call_id`, `name` and, unless the
+//!   raw string still parses to the fact's value, `arguments` are written
+//!   over it). Own-format sealed parts are emitted verbatim as input items.
 //! - Reasoning output items contribute their summary texts (signature
 //!   stays `None`; `encrypted_content` is not represented in the kernel
 //!   envelope).
@@ -41,13 +51,14 @@
 use serde_json::{Value, json};
 
 use causa_kernel::{
-    CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
-    ToolCallDraft, ToolSurface,
+    CacheDirective, ContentPart, ContextFrame, GenerationOptions, ModelInvokeError,
+    ModelInvokeErrorKind, ModelItem, ModelItemContent, ModelOutput, ModelRef, ModelResponse,
+    ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolSurface,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use crate::Protocol;
 
 /// Render a [`ContextFrame`] into an OpenAI Responses API request body.
 /// Deterministic: identical inputs produce byte-identical JSON.
@@ -66,19 +77,25 @@ pub fn render_openai_responses_input(
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
     super::tool_history::validate_frame(frame)?;
-    let normalized = context_frame::normalize(frame, media);
+    let normalized = context_frame::normalize(frame, media, Protocol::OpenAiResponses);
 
     let mut instructions: Vec<String> = Vec::new();
     let mut items: Vec<Value> = Vec::new();
-    for segment in &normalized.segments {
+    let segments = &normalized.segments;
+    let mut next = 0;
+    while next < segments.len() {
+        let segment = &segments[next];
+        next += 1;
         match segment {
             Segment::Text {
                 role: Role::System,
                 text,
+                ..
             } => instructions.push(text.clone()),
             Segment::Text {
                 role: Role::User,
                 text,
+                ..
             } => items.push(json!({
                 "role": "user",
                 "content": [{"type": "input_text", "text": text}],
@@ -86,10 +103,27 @@ pub fn render_openai_responses_input(
             Segment::Text {
                 role: Role::Assistant,
                 text,
-            } => items.push(json!({
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            })),
+                origin,
+            } => {
+                let run = context_frame::same_block_run(segments, next - 1);
+                let message = origin
+                    .wire
+                    .as_ref()
+                    .filter(|_| run == origin.parts)
+                    .and_then(|fields| {
+                        message_from_wire(fields, segments[next - 1..next - 1 + run].iter())
+                    });
+                if let Some(message) = message {
+                    items.push(message);
+                    next += run - 1;
+                } else {
+                    items.push(json!({
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }));
+                }
+            }
+            Segment::Sealed(item) => items.push(item.clone()),
             Segment::Media { role, media } => match (role, media) {
                 (Role::System, ResolvedMedia::Placeholder(text)) => {
                     instructions.push(text.clone());
@@ -115,12 +149,16 @@ pub fn render_openai_responses_input(
                     "content": [{"type": "input_text", "text": text}],
                 })),
             },
-            Segment::ToolCall(call) => items.push(json!({
-                "type": "function_call",
-                "call_id": call.wire_id,
-                "name": call.name,
-                "arguments": call.arguments.to_string(),
-            })),
+            Segment::ToolCall(call) => {
+                let mut item = context_frame::residue_object(call.wire.as_ref());
+                item.entry("type").or_insert_with(|| json!("function_call"));
+                item.insert("call_id".into(), json!(call.wire_id));
+                item.insert("name".into(), json!(call.name));
+                let arguments =
+                    context_frame::wire_arguments_string(item.get("arguments"), &call.arguments);
+                item.insert("arguments".into(), json!(arguments));
+                items.push(Value::Object(item));
+            }
             Segment::ToolResult {
                 wire_id,
                 content,
@@ -198,6 +236,36 @@ pub fn render_openai_responses_input(
     Ok(body)
 }
 
+/// Rebuild a recorded `message` item around its text facts: each text goes
+/// back into the `output_text` slot at the same position. `None` when the
+/// recorded item does not have exactly one slot per text, in which case the
+/// caller renders from facts.
+fn message_from_wire<'a>(
+    fields: &Value,
+    texts: impl Iterator<Item = &'a Segment>,
+) -> Option<Value> {
+    let mut item = context_frame::residue_object(Some(fields));
+    let slots = item.get_mut("content")?.as_array_mut()?;
+    let mut slots: Vec<&mut Value> = slots
+        .iter_mut()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .collect();
+    let texts: Vec<&String> = texts
+        .filter_map(|segment| match segment {
+            Segment::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    if slots.len() != texts.len() {
+        return None;
+    }
+    for (slot, text) in slots.iter_mut().zip(texts) {
+        slot["text"] = json!(text);
+    }
+    item.insert("role".into(), json!("assistant"));
+    Some(Value::Object(item))
+}
+
 /// The inline data URL for a resolved image payload (`input_image`).
 fn data_url(media_type: &str, data_base64: &str) -> String {
     format!("data:{media_type};base64,{data_base64}")
@@ -255,8 +323,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         Some(_) => return Err(permanent("output: expected an array")),
     };
 
-    let mut texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ToolCallDraft> = Vec::new();
+    let mut items: Vec<ModelItem> = Vec::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut refusal = false;
     for item in output {
@@ -269,6 +336,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                         return Err(permanent("output[].message.content: expected an array"));
                     }
                 };
+                let mut parts = Vec::new();
                 for part in content {
                     match part.get("type").and_then(Value::as_str) {
                         Some("output_text") => {
@@ -276,13 +344,31 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                                 .get("text")
                                 .and_then(Value::as_str)
                                 .ok_or_else(|| permanent("output_text: missing `text` string"))?;
-                            texts.push(text.to_string());
+                            parts.push(ContentPart::Text(TextPayload::new(text)));
                         }
                         // Refusal content inside a message marks the stop.
                         Some("refusal") => refusal = true,
                         _ => {}
                     }
                 }
+                // The item minus the text it holds: every `output_text` part
+                // keeps its other keys (`annotations`, `logprobs`, ...) in
+                // place, and other part types stay untouched.
+                let mut fields = item.clone();
+                if let Some(Value::Array(slots)) = fields.get_mut("content") {
+                    for slot in slots
+                        .iter_mut()
+                        .filter(|p| p.get("type").and_then(Value::as_str) == Some("output_text"))
+                    {
+                        if let Some(map) = slot.as_object_mut() {
+                            map.remove("text");
+                        }
+                    }
+                }
+                items.push(ModelItem {
+                    content: ModelItemContent::Parts(parts),
+                    wire: Some(context_frame::wire_meta(Protocol::OpenAiResponses, fields)),
+                });
             }
             Some("function_call") => {
                 let call_id = item
@@ -294,10 +380,16 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                     .and_then(Value::as_str)
                     .ok_or_else(|| permanent("function_call: missing `name` string"))?;
                 let arguments = context_frame::decode_wire_arguments(item.get("arguments"))?;
-                tool_calls.push(ToolCallDraft {
-                    tool_name: name.to_string(),
-                    arguments,
-                    provider_call_id: Some(call_id.to_string()),
+                items.push(ModelItem {
+                    wire: Some(context_frame::wire_meta(
+                        Protocol::OpenAiResponses,
+                        context_frame::without_keys(item, &["call_id", "name"]),
+                    )),
+                    ..ModelItem::tool_call(ToolCallDraft {
+                        tool_name: name.to_string(),
+                        arguments,
+                        provider_call_id: Some(call_id.to_string()),
+                    })
                 });
             }
             Some("reasoning") => {
@@ -313,7 +405,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
             Some("refusal") => {
                 refusal = true;
                 if let Some(text) = item.get("refusal").and_then(Value::as_str) {
-                    texts.push(text.to_string());
+                    items.push(ModelItem::text(text));
                 }
             }
             // Unknown output item types are skipped (forward
@@ -322,11 +414,14 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         }
     }
 
+    let has_tool_call = items
+        .iter()
+        .any(|item| matches!(item.content, ModelItemContent::ToolCall(_)));
     let stop_reason = if refusal || incomplete_reason == Some("content_filter") {
         ModelStopReason::Refusal
     } else if incomplete_reason == Some("max_output_tokens") {
         ModelStopReason::MaxTokens
-    } else if !tool_calls.is_empty() {
+    } else if has_tool_call {
         ModelStopReason::ToolUse
     } else {
         ModelStopReason::EndTurn
@@ -338,10 +433,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         .map(crate::translation::usage::model_usage_from_openai_responses);
 
     Ok(ModelOutput {
-        response: ModelResponse {
-            text: TextPayload::new(texts.join("\n")),
-            tool_calls,
-        },
+        response: ModelResponse { items },
         usage,
         stop_reason,
         reasoning: if reasoning_parts.is_empty() {
@@ -393,8 +485,9 @@ mod tests {
         assert_eq!(v["instructions"], json!("be terse"));
         let input = v["input"].as_array().unwrap();
         // assistant(None) / user / assistant("assistant") /
-        // user("inject:note" + unknown merged)
-        assert_eq!(input.len(), 4);
+        // user("inject:note") / user(unknown): user texts are never joined
+        // across block seams
+        assert_eq!(input.len(), 5);
         assert_eq!(
             input[0],
             json!({"role": "assistant", "content": [{"type": "output_text", "text": "model said"}]})
@@ -409,9 +502,11 @@ mod tests {
         );
         assert_eq!(
             input[3],
-            json!({"role": "user", "content": [
-                {"type": "input_text", "text": "injected\nunknown tag"},
-            ]})
+            json!({"role": "user", "content": [{"type": "input_text", "text": "injected"}]})
+        );
+        assert_eq!(
+            input[4],
+            json!({"role": "user", "content": [{"type": "input_text", "text": "unknown tag"}]})
         );
     }
 
@@ -688,9 +783,9 @@ mod tests {
             },
         });
         let out = parse_openai_responses_output(&v).unwrap();
-        assert_eq!(out.response.text.0, "Let me check.");
-        assert_eq!(out.response.tool_calls.len(), 1);
-        let tc = &out.response.tool_calls[0];
+        assert_eq!(out.response.text(), "Let me check.");
+        assert_eq!(out.response.tool_calls().count(), 1);
+        let tc = &out.response.tool_calls().next().unwrap();
         assert_eq!(tc.tool_name, "read");
         assert_eq!(tc.arguments, json!({"path": "a"}));
         assert_eq!(tc.provider_call_id.as_deref(), Some("call_9"));
@@ -743,7 +838,7 @@ mod tests {
         ))
         .unwrap();
         assert!(matches!(out.stop_reason, ModelStopReason::Refusal));
-        assert_eq!(out.response.text.0, "no");
+        assert_eq!(out.response.text(), "no");
     }
 
     #[test]
@@ -775,7 +870,7 @@ mod tests {
             "status": "completed",
         });
         let out = parse_openai_responses_output(&v).unwrap();
-        assert_eq!(out.response.text.0, "a");
-        assert!(out.response.tool_calls.is_empty());
+        assert_eq!(out.response.text(), "a");
+        assert!(out.response.tool_calls().next().is_none());
     }
 }

@@ -12,7 +12,7 @@
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame,
-    EditFailure, GenerationOptions, MediaRef, ModelRef, ModelResponse, ModelStopReason,
+    EditFailure, GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason,
     TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface,
     validate_tool_result_append,
 };
@@ -128,12 +128,14 @@ fn scenario_frame() -> ContextFrame {
         let applied = active
             .push_response(
                 &ModelResponse {
-                    text: TextPayload::new("reading"),
-                    tool_calls: vec![ToolCallDraft {
-                        tool_name: "read".into(),
-                        arguments: json!({"path": "a"}),
-                        provider_call_id: Some("toolu_1".into()),
-                    }],
+                    items: vec![
+                        ModelItem::text("reading"),
+                        ModelItem::tool_call(ToolCallDraft {
+                            tool_name: "read".into(),
+                            arguments: json!({"path": "a"}),
+                            provider_call_id: Some("toolu_1".into()),
+                        }),
+                    ],
                 },
                 ModelStopReason::ToolUse,
                 vec![block_id(), block_id()],
@@ -161,8 +163,7 @@ fn scenario_frame() -> ContextFrame {
     active
         .push_response(
             &ModelResponse {
-                text: TextPayload::new("done"),
-                tool_calls: vec![],
+                items: vec![ModelItem::text("done")],
             },
             ModelStopReason::EndTurn,
             vec![block_id()],
@@ -218,12 +219,11 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let applied = turn
         .push_response(
             &ModelResponse {
-                text: TextPayload::new(""),
-                tool_calls: vec![ToolCallDraft {
+                items: vec![ModelItem::tool_call(ToolCallDraft {
                     tool_name: "search".into(),
                     arguments: json!({"limit": 20}),
                     provider_call_id: Some("external-call-7".into()),
-                }],
+                })],
             },
             ModelStopReason::ToolUse,
             vec![block_id()],
@@ -575,12 +575,14 @@ fn content_shapes_survive_all_three_renderers() {
     let applied = active
         .push_response(
             &ModelResponse {
-                text: TextPayload::new("listing"),
-                tool_calls: vec![ToolCallDraft {
-                    tool_name: "list".into(),
-                    arguments: json!({"dir": "/"}),
-                    provider_call_id: None,
-                }],
+                items: vec![
+                    ModelItem::text("listing"),
+                    ModelItem::tool_call(ToolCallDraft {
+                        tool_name: "list".into(),
+                        arguments: json!({"dir": "/"}),
+                        provider_call_id: None,
+                    }),
+                ],
             },
             ModelStopReason::ToolUse,
             vec![block_id(), block_id()],
@@ -630,12 +632,11 @@ fn tool_results_keep_their_declaration_identity_across_selected_materials() {
             let applied = turn
                 .push_response(
                     &ModelResponse {
-                        text: TextPayload::new(""),
-                        tool_calls: vec![ToolCallDraft {
+                        items: vec![ModelItem::tool_call(ToolCallDraft {
                             tool_name: "read".into(),
                             arguments: json!({"path": "same"}),
                             provider_call_id: Some(wire_id.into()),
-                        }],
+                        })],
                     },
                     ModelStopReason::ToolUse,
                     vec![block_id()],

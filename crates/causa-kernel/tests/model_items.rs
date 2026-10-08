@@ -1,0 +1,275 @@
+//! One model item becomes one block: ordering, wire pass-through, text
+//! retention and the stored shape of the new fields.
+
+mod common;
+
+use causa_kernel::{
+    BlockContent, BlockMeta, ContentPart, Context, ContextBlock, ModelBlockError, ModelItem,
+    ModelItemContent, ModelResponse, ModelStopReason, SealedPart, TextPayload, ToolCallDraft,
+    WireMeta,
+};
+use serde_json::json;
+
+fn wire(format: &str, fields: serde_json::Value) -> Option<WireMeta> {
+    Some(WireMeta {
+        format: format.into(),
+        fields,
+    })
+}
+
+fn parts_item(parts: Vec<ContentPart>, wire: Option<WireMeta>) -> ModelItem {
+    ModelItem {
+        content: ModelItemContent::Parts(parts),
+        wire,
+    }
+}
+
+fn text_part(text: &str) -> ContentPart {
+    ContentPart::Text(TextPayload::new(text))
+}
+
+fn call(name: &str, id: &str) -> ToolCallDraft {
+    ToolCallDraft {
+        tool_name: name.into(),
+        arguments: json!({"n": name}),
+        provider_call_id: Some(id.into()),
+    }
+}
+
+#[test]
+fn interleaved_items_become_blocks_in_item_order() {
+    let response = ModelResponse {
+        items: vec![
+            ModelItem::text("first"),
+            ModelItem::tool_call(call("a", "id-a")),
+            ModelItem::text("second"),
+            ModelItem::tool_call(call("b", "id-b")),
+            ModelItem::text("third"),
+        ],
+    };
+    assert_eq!(response.block_count(), 5);
+    let ids = common::block_ids_for(&response);
+    let blocks = response.to_blocks(ModelStopReason::ToolUse, &ids).unwrap();
+    assert_eq!(blocks.iter().map(ContextBlock::id).collect::<Vec<_>>(), ids);
+    let shapes: Vec<String> = blocks
+        .iter()
+        .map(|b| match b.content() {
+            BlockContent::Parts(parts) => match &parts[0] {
+                ContentPart::Text(t) => t.0.clone(),
+                other => panic!("unexpected part {other:?}"),
+            },
+            BlockContent::ToolCall(call) => format!("call:{}", call.tool_name),
+            BlockContent::ToolResult(_) => unreachable!(),
+        })
+        .collect();
+    assert_eq!(shapes, ["first", "call:a", "second", "call:b", "third"]);
+    assert_eq!(blocks[1].meta().provider_call_id.as_deref(), Some("id-a"));
+    assert_eq!(blocks[3].meta().provider_call_id.as_deref(), Some("id-b"));
+}
+
+#[test]
+fn readers_follow_item_order() {
+    let response = ModelResponse {
+        items: vec![
+            ModelItem::text("a"),
+            ModelItem::tool_call(call("x", "1")),
+            parts_item(
+                vec![
+                    text_part("b"),
+                    ContentPart::Sealed(SealedPart {
+                        format: "f".into(),
+                        item: json!({"hidden": true}),
+                    }),
+                    text_part(" c"),
+                ],
+                None,
+            ),
+            ModelItem::tool_call(call("y", "2")),
+        ],
+    };
+    // concatenated in order, no separator; sealed parts contribute nothing
+    assert_eq!(response.text(), "ab c");
+    let names: Vec<&str> = response
+        .tool_calls()
+        .map(|c| c.tool_name.as_str())
+        .collect();
+    assert_eq!(names, ["x", "y"]);
+}
+
+#[test]
+fn whitespace_only_text_is_kept_and_zero_length_is_dropped() {
+    let response = ModelResponse {
+        items: vec![
+            ModelItem::text(" \n\t"),
+            ModelItem::text(""),
+            parts_item(vec![text_part(""), text_part("kept"), text_part("")], None),
+            parts_item(vec![], None),
+        ],
+    };
+    assert_eq!(response.block_count(), 2);
+    let ids = common::block_ids_for(&response);
+    let blocks = response.to_blocks(ModelStopReason::EndTurn, &ids).unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(
+        blocks[0].content(),
+        &BlockContent::Parts(vec![text_part(" \n\t")])
+    );
+    assert_eq!(
+        blocks[1].content(),
+        &BlockContent::Parts(vec![text_part("kept")])
+    );
+}
+
+#[test]
+fn an_item_left_without_parts_produces_no_block_and_loses_its_wire() {
+    let response = ModelResponse {
+        items: vec![parts_item(
+            vec![text_part("")],
+            wire("openai_responses", json!({"id": "msg_1"})),
+        )],
+    };
+    assert_eq!(response.block_count(), 0);
+    assert!(
+        response
+            .to_blocks(ModelStopReason::EndTurn, &[])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn item_wire_is_copied_to_block_meta_untouched() {
+    let parts_wire = wire(
+        "openai_responses",
+        json!({"id": "msg_1", "phase": "commentary"}),
+    );
+    let call_wire = wire(
+        "openai_responses",
+        json!({"id": "fc_1", "arguments": "{ }"}),
+    );
+    let response = ModelResponse {
+        items: vec![
+            parts_item(vec![text_part("hi")], parts_wire.clone()),
+            ModelItem {
+                content: ModelItemContent::ToolCall(call("a", "id-a")),
+                wire: call_wire.clone(),
+            },
+            ModelItem::text("plain"),
+        ],
+    };
+    let ids = common::block_ids_for(&response);
+    let blocks = response.to_blocks(ModelStopReason::ToolUse, &ids).unwrap();
+    assert_eq!(blocks[0].meta().wire, parts_wire);
+    assert_eq!(blocks[0].meta().provider_call_id, None);
+    assert_eq!(blocks[1].meta().wire, call_wire);
+    assert_eq!(blocks[1].meta().provider_call_id.as_deref(), Some("id-a"));
+    assert_eq!(blocks[2].meta().wire, None);
+}
+
+#[test]
+fn stop_reason_pairing_and_tool_checks_use_the_tool_call_items() {
+    let response = ModelResponse {
+        items: vec![
+            ModelItem::text("x"),
+            ModelItem::tool_call(call("ok", "1")),
+            ModelItem::text("y"),
+            ModelItem::tool_call(ToolCallDraft {
+                tool_name: "bad".into(),
+                arguments: json!([1]),
+                provider_call_id: None,
+            }),
+        ],
+    };
+    let ids = common::block_ids_for(&response);
+    assert_eq!(
+        response
+            .to_blocks(ModelStopReason::EndTurn, &ids)
+            .unwrap_err(),
+        ModelBlockError::EndTurnWithToolCalls { count: 2 }
+    );
+    // `tool_index` counts tool-call items, not all items
+    assert_eq!(
+        response
+            .to_blocks(ModelStopReason::ToolUse, &ids)
+            .unwrap_err(),
+        ModelBlockError::ArgumentsNotObject { tool_index: 1 }
+    );
+    assert_eq!(
+        ModelResponse {
+            items: vec![ModelItem::text("only text")]
+        }
+        .to_blocks(ModelStopReason::ToolUse, &[common::block_id()])
+        .unwrap_err(),
+        ModelBlockError::ToolUseWithoutToolCalls
+    );
+}
+
+#[test]
+fn blocks_written_before_the_wire_field_still_load() {
+    let old = r#"{
+        "id": "00000000-0000-0000-0000-000000000001",
+        "content": {"shape": "parts", "value": [{"part": "text", "value": "hello"}]},
+        "meta": {"source": "user"}
+    }"#;
+    let block: ContextBlock = serde_json::from_str(old).unwrap();
+    assert_eq!(block.meta().source.as_deref(), Some("user"));
+    assert_eq!(block.meta().wire, None);
+    // and a block without wire is written without the key
+    let written = serde_json::to_value(&block).unwrap();
+    assert!(written["meta"].get("wire").is_none());
+
+    let meta: BlockMeta = serde_json::from_str("{}").unwrap();
+    assert_eq!(meta, BlockMeta::default());
+}
+
+#[test]
+fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
+    let sealed = ContentPart::Sealed(SealedPart {
+        format: "openai_chat_completions".into(),
+        item: json!({"reasoning_content": "think", "content": null, "n": [1, 2.5]}),
+    });
+    let block = ContextBlock::new(
+        common::block_id(),
+        BlockContent::Parts(vec![sealed, text_part("hi")]),
+        BlockMeta {
+            wire: wire("anthropic_messages", json!({"type": "text", "x": {"a": 1}})),
+            ..BlockMeta::default()
+        },
+    );
+    let call_block = ContextBlock::new(
+        common::block_id(),
+        BlockContent::ToolCall(causa_kernel::ToolCallPayload {
+            tool_name: "t".into(),
+            arguments: json!({}),
+        }),
+        BlockMeta {
+            provider_call_id: Some("c1".into()),
+            wire: wire("openai_responses", json!({"id": "fc", "arguments": "{ }"})),
+            ..BlockMeta::default()
+        },
+    );
+    let context = Context::from_blocks(vec![block, call_block]).unwrap();
+    let stored = serde_json::to_string(&context).unwrap();
+    assert!(stored.contains(r#""part":"sealed""#));
+    let restored: Context = serde_json::from_str(&stored).unwrap();
+    assert_eq!(restored.blocks(), context.blocks());
+}
+
+#[test]
+fn model_response_round_trips_through_serde() {
+    let response = ModelResponse {
+        items: vec![
+            parts_item(
+                vec![text_part("hi")],
+                wire("anthropic_messages", json!({"type": "text"})),
+            ),
+            ModelItem::tool_call(call("a", "id-a")),
+        ],
+    };
+    let again: ModelResponse =
+        serde_json::from_value(serde_json::to_value(&response).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&again).unwrap(),
+        serde_json::to_value(&response).unwrap()
+    );
+}

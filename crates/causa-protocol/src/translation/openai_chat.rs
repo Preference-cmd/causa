@@ -5,7 +5,7 @@
 //! Transport-free; the reqwest adapter in `causa-provider` owns HTTP.
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
-//! text joining, tool id pairing, observation stringification) lives in
+//! no cross-block text join, tool id pairing, observation stringification) lives in
 //! `super::context_frame`; this module only shapes the chat wire.
 //!
 //! # Chat-specific structural rules
@@ -13,11 +13,22 @@
 //! - `system` text segments stay in frame position as `role: "system"`
 //!   messages (OpenAI carries system inline, unlike Anthropic's
 //!   top-level parameter).
-//! - A run of assistant text segments and tool call segments coalesces
-//!   into ONE assistant message. The wire carries assistant content as a
-//!   single string, so text around tool calls joins in frame order; a
-//!   run with no text omits `content`, a run with no calls omits
-//!   `tool_calls`.
+//! - A run of assistant text segments, tool call segments and own-format
+//!   sealed parts coalesces into ONE assistant message (the exception to one
+//!   item per block). The wire carries assistant content as a single string,
+//!   so the run's texts concatenate in frame order with no separator. The
+//!   message starts from the run's first sealed object (later ones are
+//!   ignored), then `role`, `content` (only when non-empty) and
+//!   `tool_calls` (only when non-empty) are written over it. A tool call
+//!   with matching `wire` starts from its `fields` and writes `id`,
+//!   `function.name` and `function.arguments`; the provider's arguments
+//!   string is kept while it parses to the fact's value.
+//! - Parsing a message emits, in order: one sealed item holding every
+//!   message key other than `role`, `tool_calls` and a non-empty string
+//!   `content` (`reasoning_content`, a null or empty `content`, unknown
+//!   keys), when any remain; one text item for non-empty `content`; one
+//!   tool-call item per call, with `wire.fields` the call minus `id` and
+//!   `function.name`.
 //! - Each tool result segment renders as its own `role: "tool"` message
 //!   — `tool_call_id` pairing requires one message per call. There is no
 //!   `is_error` flag on this wire; error information travels in the
@@ -38,19 +49,24 @@
 use serde_json::{Value, json};
 
 use causa_kernel::{
-    CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
-    ToolCallDraft, ToolSurface,
+    CacheDirective, ContentPart, ContextFrame, GenerationOptions, ModelInvokeError,
+    ModelInvokeErrorKind, ModelItem, ModelItemContent, ModelOutput, ModelRef, ModelResponse,
+    ModelStopReason, ReasoningPayload, SealedPart, ToolCallDraft, ToolSurface,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use crate::Protocol;
 
 /// A run of assistant text + tool call segments coalescing into one
 /// assistant message.
+#[derive(Default)]
 struct AssistantRun {
     text: String,
     calls: Vec<Value>,
+    /// The first sealed message-level object of the run; later ones are
+    /// ignored.
+    sealed: Option<Value>,
 }
 
 /// Render a [`ContextFrame`] into an OpenAI Chat Completions request body.
@@ -70,7 +86,7 @@ pub fn render_openai_chat_messages(
     _cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
     super::tool_history::validate_frame(frame)?;
-    let normalized = context_frame::normalize(frame, media);
+    let normalized = context_frame::normalize(frame, media, Protocol::OpenAiChatCompletions);
 
     // A run of assistant text + tool call segments coalesces into one
     // assistant message; any other segment closes the open run.
@@ -87,6 +103,7 @@ pub fn render_openai_chat_messages(
                 role: Role::Assistant,
                 ..
             } | Segment::ToolCall(_)
+                | Segment::Sealed(_)
         );
         if closes_run && let Some(finished) = run.take() {
             messages.push(assistant_message(finished));
@@ -95,12 +112,14 @@ pub fn render_openai_chat_messages(
             Segment::Text {
                 role: Role::System,
                 text,
+                ..
             } => {
                 messages.push(json!({"role": "system", "content": text}));
             }
             Segment::Text {
                 role: Role::User,
                 text,
+                ..
             } => {
                 messages.push(json!({"role": "user", "content": text}));
             }
@@ -134,36 +153,35 @@ pub fn render_openai_chat_messages(
             Segment::Text {
                 role: Role::Assistant,
                 text,
-            } => match &mut run {
-                Some(state) => {
-                    state.text.push('\n');
-                    state.text.push_str(text);
+                ..
+            } => run
+                .get_or_insert_with(AssistantRun::default)
+                .text
+                .push_str(text),
+            Segment::Sealed(item) => {
+                let state = run.get_or_insert_with(AssistantRun::default);
+                if state.sealed.is_none() {
+                    state.sealed = Some(item.clone());
                 }
-                None => {
-                    run = Some(AssistantRun {
-                        text: text.clone(),
-                        calls: Vec::new(),
-                    })
-                }
-            },
+            }
             Segment::ToolCall(call) => {
-                let wire_call = json!({
-                    "id": call.wire_id,
-                    "type": "function",
-                    "function": {
-                        "name": call.name,
-                        "arguments": call.arguments.to_string(),
-                    },
-                });
-                match &mut run {
-                    Some(state) => state.calls.push(wire_call),
-                    None => {
-                        run = Some(AssistantRun {
-                            text: String::new(),
-                            calls: vec![wire_call],
-                        })
-                    }
-                }
+                let mut wire_call = context_frame::residue_object(call.wire.as_ref());
+                wire_call.entry("type").or_insert_with(|| json!("function"));
+                wire_call.insert("id".into(), json!(call.wire_id));
+                let mut function = match wire_call.remove("function") {
+                    Some(Value::Object(function)) => function,
+                    _ => serde_json::Map::new(),
+                };
+                function.insert("name".into(), json!(call.name));
+                let arguments = context_frame::wire_arguments_string(
+                    function.get("arguments"),
+                    &call.arguments,
+                );
+                function.insert("arguments".into(), json!(arguments));
+                wire_call.insert("function".into(), Value::Object(function));
+                run.get_or_insert_with(AssistantRun::default)
+                    .calls
+                    .push(Value::Object(wire_call));
             }
             Segment::ToolResult {
                 wire_id,
@@ -245,18 +263,22 @@ pub fn render_openai_chat_messages(
     Ok(body)
 }
 
-/// Materialize an assistant run: empty text is omitted (a calls-only
-/// message carries no `content`), a text-only message carries no
-/// `tool_calls` key.
+/// Materialize an assistant run. The message starts from the run's sealed
+/// message-level object when it has one; `role`, `content` (the run's texts
+/// concatenated with no separator, only when non-empty) and `tool_calls`
+/// (only when non-empty) are written over it. Without a sealed object, empty
+/// text is omitted (a calls-only message carries no `content`) and a
+/// text-only message carries no `tool_calls` key.
 fn assistant_message(run: AssistantRun) -> Value {
-    let mut message = json!({"role": "assistant"});
+    let mut message = context_frame::residue_object(run.sealed.as_ref());
+    message.insert("role".into(), json!("assistant"));
     if !run.text.is_empty() {
-        message["content"] = json!(run.text);
+        message.insert("content".into(), json!(run.text));
     }
     if !run.calls.is_empty() {
-        message["tool_calls"] = json!(run.calls);
+        message.insert("tool_calls".into(), json!(run.calls));
     }
-    message
+    Value::Object(message)
 }
 
 /// The inline data URL for a resolved image payload (`image_url` shape).
@@ -291,7 +313,29 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         Some(_) => return Err(permanent("choices[0].message.content: expected a string")),
     };
 
-    let mut tool_calls = Vec::new();
+    let mut items: Vec<ModelItem> = Vec::new();
+    // Message-level keys the facts do not hold (`reasoning_content`, a null
+    // or empty `content`, and anything unknown) travel as one sealed item,
+    // first, so the renderer can rebuild the message around it.
+    let mut residue = message.as_object().cloned().unwrap_or_default();
+    residue.remove("role");
+    residue.remove("tool_calls");
+    if !text.is_empty() {
+        residue.remove("content");
+    }
+    if !residue.is_empty() {
+        items.push(ModelItem {
+            content: ModelItemContent::Parts(vec![ContentPart::Sealed(SealedPart {
+                format: Protocol::OpenAiChatCompletions.as_str().to_owned(),
+                item: Value::Object(residue),
+            })]),
+            wire: None,
+        });
+    }
+    if !text.is_empty() {
+        items.push(ModelItem::text(text));
+    }
+
     if let Some(wire_calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in wire_calls {
             let id = call
@@ -307,10 +351,22 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
                 .ok_or_else(|| permanent("tool_calls[].function: missing `name` string"))?;
             // Completed calls require a complete JSON-encoded argument value.
             let arguments = context_frame::decode_wire_arguments(function.get("arguments"))?;
-            tool_calls.push(ToolCallDraft {
-                tool_name: name.to_string(),
-                arguments,
-                provider_call_id: Some(id.to_string()),
+            // The entry minus `id` and `function.name`: `type`, `index` and
+            // the raw `function.arguments` string stay.
+            let mut fields = context_frame::without_keys(call, &["id"]);
+            if let Some(function) = fields.get_mut("function").and_then(Value::as_object_mut) {
+                function.remove("name");
+            }
+            items.push(ModelItem {
+                wire: Some(context_frame::wire_meta(
+                    Protocol::OpenAiChatCompletions,
+                    fields,
+                )),
+                ..ModelItem::tool_call(ToolCallDraft {
+                    tool_name: name.to_string(),
+                    arguments,
+                    provider_call_id: Some(id.to_string()),
+                })
             });
         }
     }
@@ -341,10 +397,7 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         .map(crate::translation::usage::model_usage_from_openai_chat);
 
     Ok(ModelOutput {
-        response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls,
-        },
+        response: ModelResponse { items },
         usage,
         stop_reason,
         reasoning,
@@ -388,8 +441,9 @@ mod tests {
         let v = render(&f);
         let msgs = v["messages"].as_array().unwrap();
         // system stays inline as a message; assistant(None) / user /
-        // assistant("assistant") / user("inject:note" + unknown merged)
-        assert_eq!(msgs.len(), 5);
+        // assistant("assistant") / user("inject:note") / user(unknown):
+        // user texts are never joined across block seams
+        assert_eq!(msgs.len(), 6);
         assert_eq!(msgs[0], json!({"role": "system", "content": "be terse"}));
         assert_eq!(
             msgs[1],
@@ -397,10 +451,8 @@ mod tests {
         );
         assert_eq!(msgs[2], json!({"role": "user", "content": "user said"}));
         assert_eq!(msgs[3], json!({"role": "assistant", "content": "replayed"}));
-        assert_eq!(
-            msgs[4],
-            json!({"role": "user", "content": "injected\nunknown tag"})
-        );
+        assert_eq!(msgs[4], json!({"role": "user", "content": "injected"}));
+        assert_eq!(msgs[5], json!({"role": "user", "content": "unknown tag"}));
     }
 
     #[test]
@@ -464,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_assistant_texts_join_into_one_message() {
+    fn adjacent_assistant_texts_concatenate_into_one_message() {
         // Assistant text runs coalesce across calls too — the wire
         // carries assistant content as a single string.
         let f = frame(vec![
@@ -477,15 +529,16 @@ mod tests {
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["role"], "assistant");
-        assert_eq!(msgs[0]["content"], json!("first\nsecond"));
+        assert_eq!(msgs[0]["content"], json!("firstsecond"));
         assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 1);
 
-        // no calls in between: still one message, text joined
+        // no calls in between: still one message, texts concatenated with
+        // no separator
         let f = frame(vec![text(0, "a", None), text(1, "b", None)]);
         let v = render(&f);
         assert_eq!(
             v["messages"],
-            json!([{"role": "assistant", "content": "a\nb"}])
+            json!([{"role": "assistant", "content": "ab"}])
         );
     }
 
@@ -802,9 +855,9 @@ mod tests {
             },
         });
         let out = parse_openai_chat_response(&v).unwrap();
-        assert_eq!(out.response.text.0, "Let me check.");
-        assert_eq!(out.response.tool_calls.len(), 1);
-        let tc = &out.response.tool_calls[0];
+        assert_eq!(out.response.text(), "Let me check.");
+        assert_eq!(out.response.tool_calls().count(), 1);
+        let tc = &out.response.tool_calls().next().unwrap();
         assert_eq!(tc.tool_name, "read");
         assert_eq!(tc.arguments, json!({"path": "a"}));
         assert_eq!(tc.provider_call_id.as_deref(), Some("call_9"));

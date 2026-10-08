@@ -241,8 +241,8 @@ pub fn completed_model_stream(output: ModelOutput) -> ModelStream {
 
 /// One incremental observation from a streaming provider.
 ///
-/// Contract: `Done` MUST carry the fully-assembled [`ModelOutput`] (text,
-/// tool-call drafts with stable ids, usage) — deltas are advisory
+/// Contract: `Done` MUST carry the fully-assembled [`ModelOutput`] (ordered
+/// items, tool-call drafts with stable ids, usage) — deltas are advisory
 /// observations for hosts, never the source of truth. A stream that ends
 /// without `Done` is an `UnknownOutcome`-shaped failure at the driver.
 #[derive(Debug, Clone)]

@@ -64,18 +64,19 @@ impl ModelGateway for Gateway {
         let first = self.count.fetch_add(1, Ordering::SeqCst) == 0;
         Ok(ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new(if first { "" } else { "done" }),
-                tool_calls: if first {
+                items: if first {
                     self.names
                         .iter()
-                        .map(|name| ToolCallDraft {
-                            tool_name: (*name).into(),
-                            arguments: json!({}),
-                            provider_call_id: Some(format!("provider-{name}")),
+                        .map(|name| {
+                            ModelItem::tool_call(ToolCallDraft {
+                                tool_name: (*name).into(),
+                                arguments: json!({}),
+                                provider_call_id: Some(format!("provider-{name}")),
+                            })
                         })
                         .collect()
                 } else {
-                    vec![]
+                    vec![ModelItem::text("done")]
                 },
             },
             usage: None,

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use causa::kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, Context,
     ContextBlock, ContextFrame, ContextPreparer, GenerationOptions, MediaRef, ModelGateway,
-    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ModelItem, ModelResponse,
     ModelStopReason, PrepareError, RoundInfo, TextPayload, Tool, ToolCallContext, ToolCallDraft,
     ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
@@ -31,15 +31,17 @@ fn text(value: u128, content: &str) -> ContextBlock {
 fn output(tool_use: bool) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(if tool_use { "checking" } else { "done" }),
-            tool_calls: if tool_use {
-                vec![ToolCallDraft {
-                    tool_name: "echo".into(),
-                    arguments: json!({}),
-                    provider_call_id: Some("provider-echo".into()),
-                }]
+            items: if tool_use {
+                vec![
+                    ModelItem::text("checking"),
+                    ModelItem::tool_call(ToolCallDraft {
+                        tool_name: "echo".into(),
+                        arguments: json!({}),
+                        provider_call_id: Some("provider-echo".into()),
+                    }),
+                ]
             } else {
-                vec![]
+                vec![ModelItem::text("done")]
             },
         },
         usage: None,

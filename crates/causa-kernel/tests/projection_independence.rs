@@ -4,15 +4,17 @@ mod common;
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame, MediaRef,
-    ModelResponse, ModelStopReason, TextPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
-    validate_tool_result_append,
+    ModelItem, ModelResponse, ModelStopReason, TextPayload, ToolOutput, ToolResultPayload,
+    ToolResultStatus, validate_tool_result_append,
 };
 use serde_json::json;
 
 fn declaration(context: &mut Context, name: &str) -> BlockId {
     let response = ModelResponse {
-        text: TextPayload::new("calling"),
-        tool_calls: vec![common::draft(name, json!({"path":"notes.txt"}))],
+        items: vec![
+            ModelItem::text("calling"),
+            ModelItem::tool_call(common::draft(name, json!({"path":"notes.txt"}))),
+        ],
     };
     let ids = common::block_ids_for(&response);
     context

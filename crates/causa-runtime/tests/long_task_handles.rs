@@ -4,9 +4,9 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
-    ModelRequest, ModelResponse, ModelStopReason, ModelStream, ProcessorContext, ProcessorError,
-    TextPayload, Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft,
+    BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelItem,
+    ModelOutput, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ProcessorContext,
+    ProcessorError, Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft,
     ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa_runtime::{
@@ -226,12 +226,11 @@ fn tool_call(action: &str, handle: Option<&str>) -> ModelOutput {
     }
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(""),
-            tool_calls: vec![ToolCallDraft {
+            items: vec![ModelItem::tool_call(ToolCallDraft {
                 tool_name: "job".into(),
                 arguments: Value::Object(arguments),
                 provider_call_id: None,
-            }],
+            })],
         },
         usage: None,
         stop_reason: ModelStopReason::ToolUse,
@@ -242,8 +241,7 @@ fn tool_call(action: &str, handle: Option<&str>) -> ModelOutput {
 fn end_turn(text: &str) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: Vec::new(),
+            items: vec![ModelItem::text(text)],
         },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,

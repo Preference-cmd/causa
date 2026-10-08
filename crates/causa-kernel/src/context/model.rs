@@ -4,4 +4,4 @@ mod conversion;
 mod value;
 
 pub use conversion::ModelBlockError;
-pub use value::{ModelResponse, ModelStopReason, ToolCallDraft};
+pub use value::{ModelItem, ModelItemContent, ModelResponse, ModelStopReason, ToolCallDraft};

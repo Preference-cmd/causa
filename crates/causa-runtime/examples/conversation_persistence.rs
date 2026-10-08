@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use causa_kernel::{
     BlockContent, BlockMeta, CallControl, ContentPart, Context, ContextBlock, MediaRef,
-    ModelGateway, ModelInvokeError, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
     ModelStopReason, TextPayload, TurnId,
 };
 use causa_runtime::{
@@ -26,11 +26,10 @@ impl ModelGateway for AckGateway {
     ) -> Result<ModelOutput, ModelInvokeError> {
         Ok(ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new(format!(
+                items: vec![ModelItem::text(format!(
                     "ack: {} material blocks",
                     request.frame.blocks.len()
-                )),
-                tool_calls: vec![],
+                ))],
             },
             usage: None,
             stop_reason: ModelStopReason::EndTurn,
@@ -64,7 +63,7 @@ async fn run(
         )
         .await;
     match outcome.result {
-        TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),
+        TurnResult::Completed { final_output } => println!("{}", final_output.response.text()),
         other => return Err(format!("execution failed: {other:?}").into()),
     }
     Ok(outcome.context)

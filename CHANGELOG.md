@@ -14,6 +14,50 @@ adapters or data converters.
 
 ### Breaking
 
+- `ModelResponse` is now an ordered list of items:
+  `ModelResponse { items: Vec<ModelItem> }`, where a `ModelItem` holds
+  `ModelItemContent::Parts(Vec<ContentPart>)` or
+  `ModelItemContent::ToolCall(ToolCallDraft)` plus an optional
+  `wire: Option<WireMeta>`. The `text` and `tool_calls` fields are gone; use
+  `ModelItem::text`, `ModelItem::tool_call`, `ModelResponse::text()` (all text
+  parts concatenated in order, no separator) and `ModelResponse::tool_calls()`.
+- One model item becomes one block, in item order (`to_blocks`/`block_count`).
+  A response with text, a call and more text is three blocks, not a text block
+  followed by call blocks. Only zero-length text is dropped; whitespace-only
+  model text is now kept verbatim, where it used to be omitted as blank.
+- `BlockMeta` gained `wire: Option<WireMeta>` (`format`, `fields`), the
+  residue of the provider item that the block's facts do not hold, and
+  `ContentPart` gained `Sealed(SealedPart)` (`format`, `item`), a model-issued
+  wire item the kernel carries and never interprets. Hosts that list every
+  `BlockMeta` field or match `ContentPart` exhaustively must update. The
+  stored format gained these fields; blocks written before this change still
+  load (`wire` defaults to absent and is not written when absent).
+- Model output the host has not edited is rendered back value-equal to what
+  the provider returned, item for item and in order, on the format it came
+  from. OpenAI Responses `message` items keep `id`, `phase`, `annotations`
+  and their boundaries, and `function_call` items keep `id` and the original
+  `arguments` string (sent unchanged while it parses to the fact's value).
+  Anthropic `text` and `tool_use` blocks keep every other field, such as
+  `citations` and `caller`. Chat Completions assistant messages keep
+  `reasoning_content` and every other message-level key, which fixes the
+  400 DeepSeek returns on the second request of a thinking-mode tool loop.
+  Fields kept from one protocol are used only by renderers of that protocol;
+  blocks carrying another format's `wire`, or edited blocks, render from facts.
+  Unknown fields survive without a code change.
+- Renderers no longer join text across block seams, for any role: adjacent
+  same-role blocks render as separate content blocks (Anthropic), messages
+  (Chat user text) or items (Responses). The Chat assistant message joins its
+  texts with no separator where it used to insert `\n`.
+- A `ContentPart::Sealed` part in a user- or system-position block is rejected
+  with `InvalidRequest` before any HTTP; one of another protocol's format in
+  assistant position is skipped. Reasoning replay (Anthropic `thinking`,
+  Responses `reasoning` items) is not part of this change; those items still
+  feed only the reasoning observation.
+- Streaming assembles the same material as batch parsing: Chat streaming
+  carries `reasoning_content` into the assembled message, and Anthropic
+  streaming keeps the extra fields of `text` and `tool_use` blocks, including
+  `citations_delta`. Fields a stream cannot deliver (a Chat `content: null`,
+  per-call `index`) are not invented.
 - `with_base_url` no longer appends the `/v1` version segment. The base URL
   must carry it: pass `https://host/v1` where `https://host` worked before.
   The appended paths are now `/messages`, `/chat/completions` and

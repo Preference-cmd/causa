@@ -4,16 +4,19 @@ mod common;
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, EditError, MediaRef,
-    ModelBlockError, ModelResponse, ModelStopReason, ModelUsage, ReasoningPayload, TextPayload,
-    ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultError, ToolResultPayload,
-    ToolResultStatus, validate_tool_result_append,
+    ModelBlockError, ModelItem, ModelItemContent, ModelResponse, ModelStopReason, ModelUsage,
+    ReasoningPayload, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultError,
+    ToolResultPayload, ToolResultStatus, validate_tool_result_append,
 };
 use serde_json::json;
 
 fn response(text: &str, calls: Vec<ToolCallDraft>) -> ModelResponse {
+    let text = (!text.is_empty()).then(|| ModelItem::text(text));
     ModelResponse {
-        text: TextPayload::new(text),
-        tool_calls: calls,
+        items: text
+            .into_iter()
+            .chain(calls.into_iter().map(ModelItem::tool_call))
+            .collect(),
     }
 }
 
@@ -63,7 +66,10 @@ fn pure_conversion_validates_in_documented_order_and_preserves_inputs() {
         ModelBlockError::EmptyToolName { tool_index: 0 }
     );
     assert_eq!(serde_json::to_value(&value).unwrap(), original);
-    value.tool_calls[0].tool_name = "valid".into();
+    let ModelItemContent::ToolCall(call) = &mut value.items[1].content else {
+        panic!("second item is the tool call");
+    };
+    call.tool_name = "valid".into();
     assert_eq!(
         value.to_blocks(ModelStopReason::ToolUse, &ids).unwrap_err(),
         ModelBlockError::ArgumentsNotObject { tool_index: 0 }
@@ -112,7 +118,7 @@ fn conversion_binds_text_then_calls_preserving_provider_ids_names_and_arguments(
     assert_eq!(blocks.iter().map(ContextBlock::id).collect::<Vec<_>>(), ids);
     assert_eq!(
         blocks[0].content(),
-        &BlockContent::Parts(vec![ContentPart::Text(value.text.clone())])
+        &BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(value.text()))])
     );
     assert!(
         matches!(blocks[1].content(), BlockContent::ToolCall(call) if call.tool_name == " echo " && call.arguments == json!({"a":1}))
@@ -130,8 +136,10 @@ fn conversion_binds_text_then_calls_preserving_provider_ids_names_and_arguments(
 }
 
 #[test]
-fn blank_output_requires_no_ids_and_terminal_recording_policy_remains_external() {
-    let blank = response(" \n\t", vec![]);
+fn empty_output_requires_no_ids_and_terminal_recording_policy_remains_external() {
+    let blank = ModelResponse {
+        items: vec![ModelItem::text("")],
+    };
     assert_eq!(blank.block_count(), 0);
     assert!(
         blank
@@ -374,6 +382,7 @@ fn fidelity_fields_are_serde_additive() {
     let full_meta = BlockMeta {
         provider_call_id: Some("abc".into()),
         source: Some("kernel".into()),
+        wire: None,
     };
     let back: BlockMeta =
         serde_json::from_str(&serde_json::to_string(&full_meta).unwrap()).unwrap();

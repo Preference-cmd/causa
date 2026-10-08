@@ -14,8 +14,8 @@ use output_budget::{TokenCounter, ToolOutputBudgetProcessor};
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, MediaRef, ModelGateway,
-    ModelInvokeError, ModelOutput, ModelRequest, ModelResponse, ModelStopReason, StoreError,
-    TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
+    ModelInvokeError, ModelItem, ModelOutput, ModelRequest, ModelResponse, ModelStopReason,
+    StoreError, TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
     ToolResultStatus,
 };
 use causa_runtime::{
@@ -103,12 +103,11 @@ impl ModelGateway for Recorder {
         Ok(if n == 1 {
             ModelOutput {
                 response: ModelResponse {
-                    text: TextPayload::new(""),
-                    tool_calls: vec![causa_kernel::ToolCallDraft {
+                    items: vec![ModelItem::tool_call(causa_kernel::ToolCallDraft {
                         tool_name: "render_chart".into(),
                         arguments: serde_json::json!({}),
                         provider_call_id: None,
-                    }],
+                    })],
                 },
                 usage: None,
                 stop_reason: ModelStopReason::ToolUse,
@@ -117,8 +116,7 @@ impl ModelGateway for Recorder {
         } else {
             ModelOutput {
                 response: ModelResponse {
-                    text: TextPayload::new("I see the chart"),
-                    tool_calls: vec![],
+                    items: vec![ModelItem::text("I see the chart")],
                 },
                 usage: None,
                 stop_reason: ModelStopReason::EndTurn,

@@ -293,6 +293,7 @@ fn reusing_an_id_after_removal_requires_the_original_content_and_metadata() {
         BlockMeta {
             source: Some("kept-source".into()),
             provider_call_id: None,
+            wire: None,
         },
     );
     let mut ctx = context(vec![
@@ -345,6 +346,7 @@ fn reusing_an_id_after_removal_requires_the_original_content_and_metadata() {
         BlockMeta {
             source: Some("rewritten-source".into()),
             provider_call_id: None,
+            wire: None,
         },
     );
     let failure = ctx
@@ -633,6 +635,7 @@ fn tagged_block(n: u128, text: &str, source: &str) -> ContextBlock {
         BlockMeta {
             source: Some(source.to_owned()),
             provider_call_id: Some(format!("provider-{n}")),
+            wire: None,
         },
     )
 }

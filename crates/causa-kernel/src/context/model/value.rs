@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::context::block::TextPayload;
+use crate::context::block::{ContentPart, TextPayload, WireMeta};
 
 /// A tool call as the model proposed it, before the caller assigns its declaration `BlockId`. Exactly what the gateway parsed off the wire.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -39,13 +39,79 @@ pub enum ModelStopReason {
     Refusal,
 }
 
-/// The model door's fact shape: what the model said (text) and asked (tool
-/// calls). Named for the participant, not for any wire role.
+/// The model door's fact shape: what the model produced, as an ordered list
+/// of items. One item becomes one block on commit, in item order. Named for
+/// the participant, not for any wire role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponse {
-    /// What the model said. Blank text produces no fact block on commit.
-    pub text: TextPayload,
-    /// What the model asked for, in its draft order; ids are assigned at
-    /// commit.
-    pub tool_calls: Vec<ToolCallDraft>,
+    /// What the model said and asked, in the order the provider returned it.
+    pub items: Vec<ModelItem>,
+}
+
+impl ModelResponse {
+    /// The tool calls the model asked for, in item order; ids are assigned
+    /// at commit.
+    pub fn tool_calls(&self) -> impl Iterator<Item = &ToolCallDraft> {
+        self.items.iter().filter_map(|item| match &item.content {
+            ModelItemContent::ToolCall(call) => Some(call),
+            ModelItemContent::Parts(_) => None,
+        })
+    }
+
+    /// Every text part of every readable item, concatenated in order with no
+    /// separator. Media and sealed parts contribute nothing.
+    pub fn text(&self) -> String {
+        let mut text = String::new();
+        for item in &self.items {
+            if let ModelItemContent::Parts(parts) = &item.content {
+                for part in parts {
+                    if let ContentPart::Text(t) = part {
+                        text.push_str(&t.0);
+                    }
+                }
+            }
+        }
+        text
+    }
+}
+
+/// One item the model produced: its content plus the wire fields that
+/// content does not hold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelItem {
+    /// What the item says or asks.
+    pub content: ModelItemContent,
+    /// What the provider's item carried beyond `content`; copied to
+    /// [`BlockMeta::wire`](crate::BlockMeta::wire) on commit. The kernel
+    /// never reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<WireMeta>,
+}
+
+impl ModelItem {
+    /// An item of one text part and no wire fields.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            content: ModelItemContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
+            wire: None,
+        }
+    }
+
+    /// A tool-call item with no wire fields.
+    pub fn tool_call(call: ToolCallDraft) -> Self {
+        Self {
+            content: ModelItemContent::ToolCall(call),
+            wire: None,
+        }
+    }
+}
+
+/// The content of a [`ModelItem`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ModelItemContent {
+    /// Ordered content parts (text and sealed items) that commit as one
+    /// `Parts` block.
+    Parts(Vec<ContentPart>),
+    /// A tool call that commits as one `ToolCall` block.
+    ToolCall(ToolCallDraft),
 }

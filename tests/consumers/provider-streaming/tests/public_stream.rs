@@ -132,7 +132,7 @@ async fn facade_direct_stream_observes_all_three_gateways_before_terminal() {
         while let Some(delta) = stream.next().await {
             match delta {
                 StreamDelta::Done { final_output, .. } => {
-                    assert_eq!(final_output.response.text.0, "你好🙂");
+                    assert_eq!(final_output.response.text(), "你好🙂");
                     terminals += 1;
                 }
                 StreamDelta::Error { kind, message } => panic!("{kind:?}: {message}"),

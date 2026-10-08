@@ -31,6 +31,7 @@ pub(crate) fn block(
         BlockMeta {
             provider_call_id: provider_call_id.map(String::from),
             source: source.map(String::from),
+            wire: None,
         },
     )
 }
@@ -70,6 +71,7 @@ pub(crate) fn call(
         BlockMeta {
             provider_call_id: provider.map(String::from),
             source: None,
+            wire: None,
         },
     )
 }

@@ -9,8 +9,7 @@ use std::sync::{Arc, Mutex};
 pub fn endturn_output(text: &str) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: vec![],
+            items: vec![ModelItem::text(text)],
         },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
@@ -25,8 +24,9 @@ pub fn tooluse_output(text: &str, tool_name: &str, args: serde_json::Value) -> M
 pub fn tooluse_calls_output(text: &str, calls: Vec<ToolCallDraft>) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: calls,
+            items: std::iter::once(ModelItem::text(text))
+                .chain(calls.into_iter().map(ModelItem::tool_call))
+                .collect(),
         },
         usage: None,
         stop_reason: ModelStopReason::ToolUse,

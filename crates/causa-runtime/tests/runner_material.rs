@@ -41,7 +41,7 @@ async fn complete_output_and_actual_options_are_preserved() {
     let TurnResult::Completed { final_output } = out.result else {
         panic!("must complete")
     };
-    assert_eq!(final_output.response.text.0, " done ");
+    assert_eq!(final_output.response.text(), " done ");
     assert_eq!(final_output.usage.unwrap().input_tokens, 12);
     assert_eq!(
         final_output.reasoning.unwrap().signature.as_deref(),
@@ -96,8 +96,7 @@ async fn context_reuse_and_import_never_reexecute_old_declarations() {
     }
     // Context can also carry an unmatched old declaration; it is never a queue.
     let old = ModelResponse {
-        text: TextPayload::new(""),
-        tool_calls: vec![draft("echo", json!({}))],
+        items: vec![ModelItem::tool_call(draft("echo", json!({})))],
     }
     .to_blocks(ModelStopReason::ToolUse, &[new_block_id()])
     .unwrap();
@@ -226,7 +225,10 @@ async fn model_round_limit_stops_before_another_binding_or_request() {
 #[tokio::test]
 async fn malformed_model_output_retains_output_ids_and_provider_metadata() {
     let mut output = tooluse_output("text", " ", json!({}));
-    output.response.tool_calls[0].provider_call_id = Some("provider-id".into());
+    let ModelItemContent::ToolCall(call) = &mut output.response.items[1].content else {
+        panic!("second item is the tool call");
+    };
+    call.provider_call_id = Some("provider-id".into());
     let gateway = RecordingGateway::scripted(vec![Ok(output)]);
     let out = runner_with(gateway, vec![])
         .run(TurnId::new("invalid"), Context::new(), options(), ctrl())
@@ -245,7 +247,13 @@ async fn malformed_model_output_retains_output_ids_and_provider_metadata() {
         ModelBlockError::EmptyToolName { tool_index: 0 }
     ));
     assert_eq!(
-        output.response.tool_calls[0].provider_call_id.as_deref(),
+        output
+            .response
+            .tool_calls()
+            .next()
+            .unwrap()
+            .provider_call_id
+            .as_deref(),
         Some("provider-id")
     );
     assert_eq!(block_ids.len(), 2);
@@ -590,7 +598,7 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
         match stop {
             ModelStopReason::EndTurn => assert!(matches!(out.result, TurnResult::Completed { .. })),
             ModelStopReason::MaxTokens => assert!(
-                matches!(cause(&out),TurnInterruption::ModelMaxTokens {output,..} if output.response.text.0=="retained body")
+                matches!(cause(&out),TurnInterruption::ModelMaxTokens {output,..} if output.response.text()=="retained body")
             ),
             ModelStopReason::Refusal => {
                 assert!(matches!(cause(&out), TurnInterruption::ModelRefusal { .. }))

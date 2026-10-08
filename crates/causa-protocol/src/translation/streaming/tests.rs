@@ -79,7 +79,7 @@ fn chat_interleaved_tools_and_trailing_usage_match_full_response() {
     ];
     let mut bytes = wire(&events);
     bytes.extend_from_slice(b"data: [DONE]\n\n");
-    let expected = parse_openai_chat_response(&json!({"choices":[{"message":{"content":"你好🦀","tool_calls":[{"id":"c0","function":{"name":"first","arguments":"{\"a\":1}"}},{"id":"c1","function":{"name":"second","arguments":"{\"b\":2}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}})).unwrap();
+    let expected = parse_openai_chat_response(&json!({"choices":[{"message":{"content":"你好🦀","role":"assistant","tool_calls":[{"id":"c0","type":"function","function":{"name":"first","arguments":"{\"a\":1}"}},{"id":"c1","type":"function","function":{"name":"second","arguments":"{\"b\":2}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}})).unwrap();
     let deltas = paired(Protocol::OpenAiChatCompletions, &bytes, &expected);
     assert!(deltas.iter().any(|d| matches!(d,StreamDelta::ToolCallDelta{call_index:1,arguments_delta:Some(a),..} if a=="\"b\":2}")));
     assert!(matches!(&deltas[deltas.len()-2],StreamDelta::Usage(u) if u.output_tokens==3));
@@ -434,7 +434,7 @@ fn unknown_anthropic_block_extensions_are_not_retained() {
         },
     )
     .unwrap();
-    assert_eq!(output(&deltas).response.text.0, "");
+    assert_eq!(output(&deltas).response.text(), "");
 }
 
 #[test]
@@ -472,7 +472,9 @@ fn completed_arguments_require_explicit_json_in_full_and_streamed_calls() {
         parse_openai_responses_output(&response)
             .unwrap()
             .response
-            .tool_calls[0]
+            .tool_calls()
+            .next()
+            .unwrap()
             .arguments,
         json!({})
     );
@@ -544,12 +546,24 @@ fn large_tool_identity_is_not_copied_into_every_argument_fragment() {
         assert_eq!(identities.len(), 1, "{protocol}");
         assert_eq!(identities[0], &call_id);
         assert_eq!(
-            output(&deltas).response.tool_calls[0]
+            output(&deltas)
+                .response
+                .tool_calls()
+                .next()
+                .unwrap()
                 .provider_call_id
                 .as_ref(),
             Some(&call_id)
         );
-        assert_eq!(output(&deltas).response.tool_calls[0].arguments, json!({}));
+        assert_eq!(
+            output(&deltas)
+                .response
+                .tool_calls()
+                .next()
+                .unwrap()
+                .arguments,
+            json!({})
+        );
     }
 }
 

@@ -119,7 +119,7 @@ async fn direct_runner_completes_two_tool_round_trips_over_http() {
         TurnResult::Completed { final_output } => final_output,
         other => panic!("expected completion, got {other:?}"),
     };
-    assert_eq!(final_output.response.text.0, "done");
+    assert_eq!(final_output.response.text(), "done");
     let results: Vec<_> = outcome
         .context
         .blocks()

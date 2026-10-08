@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              RunControl::new(CancellationToken::new(), None))
         .await;
     match outcome.result {
-        TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),
+        TurnResult::Completed { final_output } => println!("{}", final_output.response.text()),
         result => return Err(format!("turn did not complete: {result:?}").into()),
     }
     Ok(())

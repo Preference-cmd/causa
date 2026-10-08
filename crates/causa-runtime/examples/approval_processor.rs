@@ -8,10 +8,10 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    ModelGateway, ModelInvokeError, ModelOutput, ModelRequest, ModelResponse, ModelStopReason,
-    ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch, ToolBatchProcessor,
-    ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus, TurnId,
+    ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest, ModelResponse,
+    ModelStopReason, ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch,
+    ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
     RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
@@ -147,14 +147,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = ScriptedGateway::new(vec![
         ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new("Read the requested files."),
-                tool_calls: ["notes.txt", "private.txt"]
-                    .into_iter()
-                    .map(|path| ToolCallDraft {
-                        tool_name: "read_file".into(),
-                        arguments: serde_json::json!({"path": path}),
-                        provider_call_id: None,
-                    })
+                items: std::iter::once(ModelItem::text("Read the requested files."))
+                    .chain(["notes.txt", "private.txt"].into_iter().map(|path| {
+                        ModelItem::tool_call(ToolCallDraft {
+                            tool_name: "read_file".into(),
+                            arguments: serde_json::json!({"path": path}),
+                            provider_call_id: None,
+                        })
+                    }))
                     .collect(),
             },
             usage: None,
@@ -163,8 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new("Read notes.txt; private.txt was denied."),
-                tool_calls: Vec::new(),
+                items: vec![ModelItem::text("Read notes.txt; private.txt was denied.")],
             },
             usage: None,
             stop_reason: ModelStopReason::EndTurn,
@@ -209,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await;
     match outcome.result {
-        TurnResult::Completed { final_output } => println!("{}", final_output.response.text.0),
+        TurnResult::Completed { final_output } => println!("{}", final_output.response.text()),
         other => return Err(format!("turn did not complete: {other:?}").into()),
     }
     drop(runner);

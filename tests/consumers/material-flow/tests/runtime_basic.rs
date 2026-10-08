@@ -15,10 +15,7 @@ impl ModelGateway for Recorder {
     ) -> Result<ModelOutput, ModelInvokeError> {
         self.0.lock().unwrap().push(request.clone());
         Ok(ModelOutput {
-            response: ModelResponse {
-                text: TextPayload::new("answer"),
-                tool_calls: vec![],
-            },
+            response: ModelResponse { items: vec![ModelItem::text("answer")] },
             stop_reason: ModelStopReason::EndTurn,
             usage: None,
             reasoning: None,
@@ -105,15 +102,14 @@ impl ModelGateway for Scripted {
         requests.push(request.clone());
         Ok(ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new(if first { "" } else { "final answer" }),
-                tool_calls: if first {
-                    vec![ToolCallDraft {
+                items: if first {
+                    vec![ModelItem::tool_call(ToolCallDraft {
                         tool_name: "fetch".into(),
                         arguments: serde_json::json!({}),
                         provider_call_id: Some("call-fetch".into()),
-                    }]
+                    })]
                 } else {
-                    vec![]
+                    vec![ModelItem::text("final answer")]
                 },
             },
             stop_reason: if first {

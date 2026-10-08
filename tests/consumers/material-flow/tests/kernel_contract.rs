@@ -2,7 +2,7 @@
 
 use causa::kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, EditError,
-    ModelBlockError, ModelResponse, ModelStopReason, TextPayload, ToolBatch, ToolCallContext,
+    ModelBlockError, ModelItem, ModelResponse, ModelStopReason, TextPayload, ToolBatch, ToolCallContext,
     ToolCallDraft, ToolOutput, ToolResultError, ToolResultPayload, ToolResultStatus,
     validate_tool_result_append,
 };
@@ -20,12 +20,14 @@ fn text(value: u128, content: &str) -> ContextBlock {
 }
 fn response(tool: &str) -> ModelResponse {
     ModelResponse {
-        text: TextPayload::new("selected output"),
-        tool_calls: vec![ToolCallDraft {
-            tool_name: tool.into(),
-            arguments: json!({"query":"same"}),
-            provider_call_id: Some("provider-new".into()),
-        }],
+        items: vec![
+            ModelItem::text("selected output"),
+            ModelItem::tool_call(ToolCallDraft {
+                tool_name: tool.into(),
+                arguments: json!({"query":"same"}),
+                provider_call_id: Some("provider-new".into()),
+            }),
+        ],
     }
 }
 
@@ -124,7 +126,7 @@ fn pure_errors_leave_response_ids_and_batch_available_to_the_caller() {
         }
     );
     assert_eq!(
-        response.tool_calls[0].provider_call_id.as_deref(),
+        response.tool_calls().next().unwrap().provider_call_id.as_deref(),
         Some("provider-new")
     );
     assert_eq!(ids, [id(1)]);

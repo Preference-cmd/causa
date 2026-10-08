@@ -88,7 +88,7 @@ async fn all_builtin_gateways_observe_http_text_before_terminal_and_commit_only_
                 output,
             } => {
                 assert_eq!(*invocation_id, &invocation(0));
-                assert_eq!(output.response.text.0, expected);
+                assert_eq!(output.response.text(), expected);
                 recorded.lock().unwrap().push("output");
             }
             RunEvent::BlocksCommitted { .. } => recorded.lock().unwrap().push("commit"),

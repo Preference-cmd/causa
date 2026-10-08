@@ -5,9 +5,10 @@ mod common;
 use causa_kernel::{
     BlockContent, BlockMeta, CacheDirective, CallControl, CancellationToken, Context, ContextFrame,
     ContextPreparer, GenerationOptions, InvocationId, ModelGateway, ModelInvokeError,
-    ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ModelResponse, ModelStopReason,
-    ModelUsage, PrepareError, ReasoningPayload, RoundId, RoundInfo, TextPayload, ToolOutput,
-    ToolResultPayload, ToolResultStatus, ToolSurface, TurnId, validate_tool_result_append,
+    ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelStopReason, ModelUsage, PrepareError, ReasoningPayload, RoundId, RoundInfo, TextPayload,
+    ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface, TurnId,
+    validate_tool_result_append,
 };
 use serde_json::json;
 use std::sync::Mutex;
@@ -41,8 +42,7 @@ async fn external_single_shot_driver_uses_independent_execution_identity_and_dir
     let gateway = OneShotGateway {
         output: ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new("hello"),
-                tool_calls: vec![],
+                items: vec![ModelItem::text("hello")],
             },
             usage: Some(ModelUsage {
                 input_tokens: 10,
@@ -101,8 +101,7 @@ async fn external_single_shot_driver_uses_independent_execution_identity_and_dir
 #[test]
 fn external_tool_driver_converts_only_new_material_and_validates_results_before_commit() {
     let old = ModelResponse {
-        text: TextPayload::new(""),
-        tool_calls: vec![common::draft("old", json!({}))],
+        items: vec![ModelItem::tool_call(common::draft("old", json!({})))],
     };
     let mut context = Context::from_blocks(
         old.to_blocks(ModelStopReason::ToolUse, &common::block_ids_for(&old))
@@ -110,8 +109,10 @@ fn external_tool_driver_converts_only_new_material_and_validates_results_before_
     )
     .unwrap();
     let response = ModelResponse {
-        text: TextPayload::new("new"),
-        tool_calls: vec![common::draft("echo", json!({"message":"hi"}))],
+        items: vec![
+            ModelItem::text("new"),
+            ModelItem::tool_call(common::draft("echo", json!({"message":"hi"}))),
+        ],
     };
     let ids = common::block_ids_for(&response);
     let new_blocks = response.to_blocks(ModelStopReason::ToolUse, &ids).unwrap();
@@ -295,7 +296,7 @@ async fn logical_gateway_wrapper_keeps_invocation_request_values_stable() {
         .invoke(&request, &CallControl::new(CancellationToken::new(), None))
         .await
         .unwrap();
-    assert_eq!(result.response.text.0, "after retries");
+    assert_eq!(result.response.text(), "after retries");
     let requests = gateway.inner.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     assert!(requests.windows(2).all(|pair| pair[0] == pair[1]));

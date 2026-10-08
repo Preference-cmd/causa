@@ -9,13 +9,23 @@
 //!   table in the [`super`] docs is public contract).
 //! - Empty text is not conversation content: an empty `Text` part is
 //!   dropped, and a Parts block left with nothing renders nothing
-//!   (mirroring the kernel model door's commit policy; the host door can
-//!   commit them).
-//! - Two-tier adjacency. Part boundaries inside one Parts block are
-//!   preserved to the wire (adjacent `Text` parts render as separate
-//!   content blocks). Block boundaries are envelope-only: same-role text
-//!   meeting across a block seam joins with `\n`, and only at the seam —
-//!   the join is attempted for a block's FIRST text emission only.
+//!   (mirroring the kernel model door's commit policy, which drops only
+//!   zero-length text; the host door can commit them). Whitespace-only text
+//!   is content and is kept verbatim.
+//! - No text is joined across block seams, for any role: one part renders
+//!   as one content block, and no renderer inserts a character the model
+//!   did not produce. Where a wire format carries one string per message
+//!   (Chat assistant content), the emitter concatenates the group's texts
+//!   with no separator.
+//! - Wire fidelity. Each segment carries the index of the frame block it
+//!   came from, and that block's `wire.fields` only when `wire.format`
+//!   equals the rendering protocol's name; a block of another format
+//!   renders from facts exactly like a block without `wire`. A
+//!   [`ContentPart::Sealed`] part of the rendering protocol's format
+//!   becomes a [`Segment::Sealed`] the emitter writes verbatim; one of
+//!   another format is skipped silently. A sealed part outside assistant
+//!   position is a malformed frame, rejected by frame validation before
+//!   the walk runs.
 //! - Media: each [`MediaRef`] resolves through the caller's
 //!   [`MediaSet`]. A resolved `image/*` payload renders inline, but only
 //!   in user position (no protocol accepts assistant- or system-authored
@@ -42,10 +52,11 @@ use serde_json::Value;
 
 use causa_kernel::{
     BlockContent, ContentPart, ContextFrame, MediaRef, ModelInvokeError, ModelInvokeErrorKind,
-    ToolResultStatus, ToolSurface,
+    ToolResultStatus, ToolSurface, WireMeta,
 };
 
 use super::media::MediaSet;
+use crate::Protocol;
 
 /// The wire role a text block renders as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,17 +118,96 @@ pub(crate) struct PreparedCall {
     pub wire_id: String,
     pub name: String,
     pub arguments: Value,
+    /// The block's `wire.fields`, present only when the block's wire format
+    /// is the rendering protocol's.
+    pub wire: Option<Value>,
+}
+
+/// Where a text segment came from, so an emitter can put a block's wire
+/// fields back around its facts.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Origin {
+    /// Index of the source block in the frame.
+    pub block: usize,
+    /// Number of parts the source block holds, including parts the walk
+    /// dropped or turned into other segments.
+    pub parts: usize,
+    /// The block's `wire.fields`, present only when the block's wire format
+    /// is the rendering protocol's.
+    pub wire: Option<Value>,
+}
+
+/// Length of the run of assistant text segments from `from` that came from
+/// the same block as `segments[from]`.
+pub(crate) fn same_block_run(segments: &[Segment], from: usize) -> usize {
+    let Some(Segment::Text { origin, .. }) = segments.get(from) else {
+        return 0;
+    };
+    segments[from..]
+        .iter()
+        .take_while(|segment| {
+            matches!(
+                segment,
+                Segment::Text { role: Role::Assistant, origin: o, .. } if o.block == origin.block
+            )
+        })
+        .count()
+}
+
+/// A copy of a JSON object without the named keys (any other value is
+/// copied unchanged). Parsers use it to split a wire item into the facts they
+/// read and the residue they keep.
+pub(crate) fn without_keys(value: &Value, keys: &[&str]) -> Value {
+    let mut copy = value.clone();
+    if let Value::Object(map) = &mut copy {
+        for key in keys {
+            map.remove(*key);
+        }
+    }
+    copy
+}
+
+/// The residue of a wire item as block wire metadata for `protocol`.
+pub(crate) fn wire_meta(protocol: Protocol, fields: Value) -> WireMeta {
+    WireMeta {
+        format: protocol.as_str().to_owned(),
+        fields,
+    }
+}
+
+/// The object a wire item is rebuilt on: the stored residue when it is an
+/// object, otherwise an empty one.
+pub(crate) fn residue_object(fields: Option<&Value>) -> serde_json::Map<String, Value> {
+    match fields {
+        Some(Value::Object(map)) => map.clone(),
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// The `arguments` string to send for a tool call. The provider's original
+/// string is sent unchanged when it still parses to the fact's value;
+/// otherwise (edited arguments, or no original) the facts are encoded.
+pub(crate) fn wire_arguments_string(raw: Option<&Value>, facts: &Value) -> String {
+    if let Some(raw) = raw.and_then(Value::as_str)
+        && serde_json::from_str::<Value>(raw).is_ok_and(|parsed| parsed == *facts)
+    {
+        return raw.to_owned();
+    }
+    facts.to_string()
 }
 
 /// One normalized, frame-order-preserving piece of the conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Segment {
-    /// Adjacent same-role text joined across block seams; empty texts
-    /// skipped.
+    /// One non-empty text part. Never joined with its neighbours.
     Text {
         role: Role,
         text: String,
+        origin: Origin,
     },
+    /// A sealed part of the rendering protocol's own format, in assistant
+    /// position; the emitter writes it verbatim.
+    Sealed(Value),
     /// A media part from a Parts block, resolved or degraded.
     Media {
         role: Role,
@@ -154,9 +244,13 @@ pub(crate) fn result_text_with_notes(content: &str, notes: &[String]) -> String 
     text
 }
 
-/// Run the shared policy walk over a frame, resolving media through
-/// `media`.
-pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFrame {
+/// Run the shared policy walk over a frame for `protocol`, resolving media
+/// through `media`.
+pub(crate) fn normalize(
+    frame: &ContextFrame,
+    media: &MediaSet,
+    protocol: Protocol,
+) -> NormalizedFrame {
     let blocks = &frame.blocks;
 
     // Block identity is stable across turns and directly joins declarations
@@ -176,12 +270,17 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
     }
 
     let mut segments: Vec<Segment> = Vec::new();
-    for block in blocks {
-        // Whether this block has emitted any segment yet. The cross-block
-        // text join is attempted only for a block's first emission, so
-        // part boundaries INSIDE one block stay preserved while block
-        // seams stay envelope-only.
-        let mut block_emitted = false;
+    for (block_index, block) in blocks.iter().enumerate() {
+        // The block's wire fields are visible to this renderer only when
+        // they were recorded for its own format.
+        let own_wire = || {
+            block
+                .meta()
+                .wire
+                .as_ref()
+                .filter(|wire| wire.format == protocol.as_str())
+                .map(|wire| wire.fields.clone())
+        };
         match block.content() {
             BlockContent::Parts(parts) => {
                 let role = text_role(block.meta().source.as_deref());
@@ -192,29 +291,33 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
                             if t.0.is_empty() {
                                 continue;
                             }
-                            if !block_emitted
-                                && let Some(Segment::Text {
-                                    role: last_role,
-                                    text: last_text,
-                                }) = segments.last_mut()
-                                && *last_role == role
-                            {
-                                last_text.push('\n');
-                                last_text.push_str(&t.0);
-                            } else {
-                                segments.push(Segment::Text {
-                                    role,
-                                    text: t.0.clone(),
-                                });
-                            }
-                            block_emitted = true;
+                            segments.push(Segment::Text {
+                                role,
+                                text: t.0.clone(),
+                                origin: Origin {
+                                    block: block_index,
+                                    parts: parts.len(),
+                                    wire: if role == Role::Assistant {
+                                        own_wire()
+                                    } else {
+                                        None
+                                    },
+                                },
+                            });
                         }
                         ContentPart::Media(r) => {
                             segments.push(Segment::Media {
                                 role,
                                 media: resolve_media(r, role, media),
                             });
-                            block_emitted = true;
+                        }
+                        ContentPart::Sealed(sealed) => {
+                            // Frame validation rejects sealed parts outside
+                            // assistant position; another format's item is
+                            // not ours to write.
+                            if role == Role::Assistant && sealed.format == protocol.as_str() {
+                                segments.push(Segment::Sealed(sealed.item.clone()));
+                            }
                         }
                     }
                 }
@@ -228,6 +331,7 @@ pub(crate) fn normalize(frame: &ContextFrame, media: &MediaSet) -> NormalizedFra
                         .unwrap_or_else(|| block.id().0.to_string()),
                     name: call.tool_name.clone(),
                     arguments: call.arguments.clone(),
+                    wire: own_wire(),
                 }));
             }
             BlockContent::ToolResult(result) => {

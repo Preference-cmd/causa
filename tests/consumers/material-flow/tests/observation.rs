@@ -14,10 +14,7 @@ impl ModelGateway for Refusal {
         _: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         Ok(ModelOutput {
-            response: ModelResponse {
-                text: TextPayload::new("retained refusal"),
-                tool_calls: vec![],
-            },
+            response: ModelResponse { items: vec![ModelItem::text("retained refusal")] },
             stop_reason: ModelStopReason::Refusal,
             usage: Some(ModelUsage {
                 input_tokens: 7,
@@ -45,7 +42,7 @@ async fn host_can_copy_selected_observations_and_recover_output_without_them() {
                     copies
                         .lock()
                         .unwrap()
-                        .push(((*invocation_id).clone(), output.response.text.0.clone()));
+                        .push(((*invocation_id).clone(), output.response.text()));
                     cancel.cancel();
                 }
             }));
@@ -68,7 +65,7 @@ async fn host_can_copy_selected_observations_and_recover_output_without_them() {
         else {
             panic!("refusal must survive callback cancellation")
         };
-        assert_eq!(output.response.text.0, "retained refusal");
+        assert_eq!(output.response.text(), "retained refusal");
         assert_eq!(output.usage.unwrap().input_tokens, 7);
         assert!(out.context.blocks().is_empty());
         assert!(out.uncommitted_tool_batch.is_none());

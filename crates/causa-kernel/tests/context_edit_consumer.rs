@@ -20,6 +20,7 @@ fn note(id_value: u128, text: &str, source: &str) -> ContextBlock {
         BlockMeta {
             source: Some(source.to_owned()),
             provider_call_id: None,
+            wire: None,
         },
     )
 }
@@ -34,6 +35,7 @@ fn call(id_value: u128, name: &str) -> ContextBlock {
         BlockMeta {
             source: Some("model".to_owned()),
             provider_call_id: Some(format!("provider-call-{id_value}")),
+            wire: None,
         },
     )
 }
@@ -51,6 +53,7 @@ fn result(id_value: u128, call_block_id: BlockId, value: &str) -> ContextBlock {
         BlockMeta {
             source: Some("tool-result".to_owned()),
             provider_call_id: None,
+            wire: None,
         },
     )
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use causa::kernel::{
     CacheDirective, CallControl, CancellationToken, Context, ControlError, GenerationOptions,
     InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
-    ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage, RoundId, StreamDelta,
+    ModelRequest, ModelItem, ModelResponse, ModelStopReason, ModelStream, ModelUsage, RoundId, StreamDelta,
     TextPayload, ToolSurface, TurnId,
 };
 use futures_util::{StreamExt, stream};
@@ -15,10 +15,7 @@ use tokio::sync::Notify;
 
 fn output() -> ModelOutput {
     ModelOutput {
-        response: ModelResponse {
-            text: TextPayload::new("complete"),
-            tool_calls: vec![],
-        },
+        response: ModelResponse { items: vec![ModelItem::text("complete")] },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
@@ -236,7 +233,7 @@ async fn invoke_retries_real_failures_with_every_request_field_unchanged() {
         )
         .await
         .unwrap();
-    assert_eq!(output.response.text.0, "complete");
+    assert_eq!(output.response.text(), "complete");
     let records = inner.requests.lock().unwrap();
     assert_eq!(records.len(), 3);
     assert!(records.windows(2).all(|pair| pair[0] == pair[1]));

@@ -7,9 +7,9 @@ use causa_extension::McpToolSource;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, BlockId, BlockMeta,
     CallControl, CancellationToken, ContentPart, Context, ContextBlock, DynamicToolSource,
-    InvocationId, MediaRef, ModelGateway, ModelInvokeError, ModelOutput, ModelRef, ModelRequest,
-    ModelResponse, ModelStopReason, RoundId, SourceError, StoreError, TextPayload, ToolBatch,
-    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    InvocationId, MediaRef, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef,
+    ModelRequest, ModelResponse, ModelStopReason, RoundId, SourceError, StoreError, TextPayload,
+    ToolBatch, ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
@@ -527,12 +527,14 @@ impl ModelGateway for ScriptedGateway {
 fn tool_use_output(tool: &str, args: serde_json::Value) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new("calling"),
-            tool_calls: vec![causa_kernel::ToolCallDraft {
-                tool_name: tool.into(),
-                arguments: args,
-                provider_call_id: None,
-            }],
+            items: vec![
+                ModelItem::text("calling"),
+                ModelItem::tool_call(causa_kernel::ToolCallDraft {
+                    tool_name: tool.into(),
+                    arguments: args,
+                    provider_call_id: None,
+                }),
+            ],
         },
         usage: None,
         stop_reason: ModelStopReason::ToolUse,
@@ -543,8 +545,7 @@ fn tool_use_output(tool: &str, args: serde_json::Value) -> ModelOutput {
 fn end_turn(text: &str) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: vec![],
+            items: vec![ModelItem::text(text)],
         },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,

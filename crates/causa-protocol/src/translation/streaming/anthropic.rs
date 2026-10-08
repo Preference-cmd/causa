@@ -159,17 +159,36 @@ impl Anthropic {
                     }
                     _ => {}
                 }
-                // Keep only fields the complete parser consumes. Provider
-                // extensions and opaque redacted blocks must not accumulate.
-                let retained = match block_type.as_str() {
-                    "text" => vec!["type", "text"],
-                    "thinking" => vec!["type", "thinking", "signature"],
-                    "tool_use" => vec!["type", "id", "name", "input"],
-                    _ => vec!["type"],
-                };
-                wire.as_object_mut()
-                    .ok_or_else(|| permanent("Anthropic block must be an object"))?
-                    .retain(|key, _| retained.contains(&key.as_str()));
+                // Thinking and unknown blocks keep only what the complete
+                // parser consumes: opaque provider data must not accumulate.
+                // `text` and `tool_use` blocks keep every field the stream
+                // delivers, because the parser stores them as the block's
+                // wire residue; that residue is budgeted like any output.
+                let object = wire
+                    .as_object_mut()
+                    .ok_or_else(|| permanent("Anthropic block must be an object"))?;
+                match block_type.as_str() {
+                    "text" | "tool_use" => {
+                        let known: &[&str] = if block_type == "text" {
+                            &["type", "text"]
+                        } else {
+                            &["type", "id", "name", "input"]
+                        };
+                        for (key, value) in object.iter() {
+                            if !known.contains(&key.as_str()) {
+                                self.budget.add(
+                                    key.len()
+                                        + serde_json::to_vec(value)
+                                            .map_err(|_| permanent("Anthropic invalid field"))?
+                                            .len(),
+                                )?;
+                            }
+                        }
+                    }
+                    "thinking" => object
+                        .retain(|key, _| ["type", "thinking", "signature"].contains(&key.as_str())),
+                    _ => object.retain(|key, _| key == "type"),
+                }
                 if block_type == "tool_use" {
                     self.budget.add(
                         serde_json::to_vec(&wire["input"])
@@ -221,6 +240,28 @@ impl Anthropic {
                             name_delta: None,
                             arguments_delta: Some(text.into()),
                         });
+                        return Ok(deltas);
+                    }
+                    "citations_delta" if block_type == "text" => {
+                        // Citations arrive as deltas and belong to the block's
+                        // wire residue, appended in delivery order.
+                        let citation = delta
+                            .get("citation")
+                            .ok_or_else(|| permanent("Anthropic missing citation"))?;
+                        self.budget.add(
+                            serde_json::to_vec(citation)
+                                .map_err(|_| permanent("Anthropic invalid citation"))?
+                                .len(),
+                        )?;
+                        let object = block.wire.as_object_mut().expect("validated block");
+                        let citations = object.entry("citations").or_insert_with(|| json!([]));
+                        if !citations.is_array() {
+                            *citations = json!([]);
+                        }
+                        citations
+                            .as_array_mut()
+                            .expect("citations array")
+                            .push(citation.clone());
                         return Ok(deltas);
                     }
                     "text_delta" | "thinking_delta" | "signature_delta" | "input_json_delta" => {

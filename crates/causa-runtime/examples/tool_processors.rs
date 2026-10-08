@@ -11,10 +11,10 @@ use policy::DeduplicateProcessor;
 
 use async_trait::async_trait;
 use causa_kernel::{
-    BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelOutput, ModelRequest,
-    ModelResponse, ModelStopReason, ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch,
-    ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
-    ToolResultPayload, ToolResultStatus, TurnId,
+    BlockContent, CallControl, ModelGateway, ModelInvokeError, ModelItem, ModelOutput,
+    ModelRequest, ModelResponse, ModelStopReason, ProcessorContext, ProcessorError, TextPayload,
+    Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
     RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
@@ -97,21 +97,24 @@ impl ModelGateway for ResearchGateway {
             .any(|block| matches!(block.content(), BlockContent::ToolResult(_)));
         Ok(ModelOutput {
             response: ModelResponse {
-                text: TextPayload::new(if has_results {
-                    "Research complete."
-                } else {
-                    ""
-                }),
-                tool_calls: if has_results {
-                    Vec::new()
+                items: if has_results {
+                    vec![ModelItem::text("Research complete.")]
                 } else {
                     // Distinct declarations become identical effective calls
                     // after LimitResults, so only the first reaches Search.
-                    [20, 10].into_iter().map(|limit| ToolCallDraft {
-                        tool_name: "search".into(),
-                        arguments: serde_json::json!({"query": "video generation", "limit": limit}),
-                        provider_call_id: None,
-                    }).collect()
+                    [20, 10]
+                        .into_iter()
+                        .map(|limit| {
+                            ModelItem::tool_call(ToolCallDraft {
+                                tool_name: "search".into(),
+                                arguments: serde_json::json!({
+                                    "query": "video generation",
+                                    "limit": limit
+                                }),
+                                provider_call_id: None,
+                            })
+                        })
+                        .collect()
                 },
             },
             usage: None,

@@ -33,6 +33,7 @@ fn user_frame() -> ContextFrame {
             BlockMeta {
                 provider_call_id: None,
                 source: Some("user".into()),
+                wire: None,
             },
         )],
     }
@@ -101,10 +102,15 @@ async fn invoke_round_trips_complete_model_output() {
         .invoke(&request(user_frame()), &ctrl(None))
         .await
         .unwrap();
-    assert_eq!(out.response.text.0, "reading");
-    assert_eq!(out.response.tool_calls.len(), 1);
+    assert_eq!(out.response.text(), "reading");
+    assert_eq!(out.response.tool_calls().count(), 1);
     assert_eq!(
-        out.response.tool_calls[0].provider_call_id.as_deref(),
+        out.response
+            .tool_calls()
+            .next()
+            .unwrap()
+            .provider_call_id
+            .as_deref(),
         Some("toolu_1")
     );
     assert!(matches!(out.stop_reason, ModelStopReason::ToolUse));
@@ -403,6 +409,7 @@ fn media_frame() -> ContextFrame {
             BlockMeta {
                 provider_call_id: None,
                 source: Some("user".into()),
+                wire: None,
             },
         )],
     }

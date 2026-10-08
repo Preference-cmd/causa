@@ -5,9 +5,10 @@ mod common;
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, Context, InvocationId, ModelGateway, ModelInvokeError, ModelOutput, ModelRef,
-    ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage, ReasoningPayload,
-    RoundId, StreamDelta, TextPayload, ToolSurface, TurnId, completed_model_stream,
+    CallControl, Context, InvocationId, ModelGateway, ModelInvokeError, ModelItem, ModelOutput,
+    ModelRef, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage,
+    ReasoningPayload, RoundId, StreamDelta, TextPayload, ToolSurface, TurnId,
+    completed_model_stream,
 };
 use futures_util::StreamExt;
 
@@ -28,8 +29,7 @@ fn request(ctx: &Context) -> ModelRequest {
 fn output(text: &str) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: vec![],
+            items: vec![ModelItem::text(text)],
         },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
@@ -80,7 +80,7 @@ async fn default_stream_degenerates_to_single_done() {
             final_output,
         } => {
             assert_eq!(*stop_reason, ModelStopReason::EndTurn);
-            assert_eq!(final_output.response.text.0, "hello");
+            assert_eq!(final_output.response.text(), "hello");
         }
         other => panic!("expected Done, got {other:?}"),
     }

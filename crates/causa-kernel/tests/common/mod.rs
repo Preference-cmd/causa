@@ -7,8 +7,8 @@
 #![allow(dead_code)]
 
 use causa_kernel::{
-    BlockId, Context, ModelOutput, ModelResponse, ModelStopReason, TextPayload, ToolCallDraft,
-    TurnId,
+    BlockId, Context, ModelItem, ModelOutput, ModelResponse, ModelStopReason, TextPayload,
+    ToolCallDraft, TurnId,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,8 +38,7 @@ pub fn ctx(_s: &str) -> Context {
 pub fn endturn_output(text: &str) -> ModelOutput {
     ModelOutput {
         response: ModelResponse {
-            text: TextPayload::new(text),
-            tool_calls: vec![],
+            items: vec![ModelItem::text(text)],
         },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,

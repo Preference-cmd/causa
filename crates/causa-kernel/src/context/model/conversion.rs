@@ -1,6 +1,6 @@
 //! Pure model response validation and block construction.
 
-use super::{ModelResponse, ModelStopReason};
+use super::{ModelItemContent, ModelResponse, ModelStopReason};
 use crate::context::block::{BlockContent, BlockMeta, ContentPart, ContextBlock, ToolCallPayload};
 use crate::context::ids::BlockId;
 
@@ -39,30 +39,40 @@ pub enum ModelBlockError {
 }
 
 impl ModelResponse {
-    /// Counts one block for nonblank text, plus one per tool declaration.
+    /// Counts the blocks `to_blocks` produces: one per item, except that a
+    /// `Parts` item whose parts are all zero-length text produces none.
     pub fn block_count(&self) -> usize {
-        usize::from(!self.text.0.trim().is_empty()) + self.tool_calls.len()
+        self.items
+            .iter()
+            .filter(|item| match &item.content {
+                ModelItemContent::Parts(parts) => parts.iter().any(keeps_part),
+                ModelItemContent::ToolCall(_) => true,
+            })
+            .count()
     }
 
     /// Validates and constructs material without changing or consuming inputs.
     ///
-    /// Text precedes declarations, which retain their original order, arguments,
-    /// names and provider identifiers. Blank text is omitted; other text is
-    /// preserved verbatim. Duplicate block identities are checked on context
-    /// submission rather than here. MaxTokens and Refusal policy belongs to the
-    /// caller.
+    /// One item becomes one block, in item order. A `Parts` item becomes a
+    /// `Parts` block and a tool-call item a `ToolCall` block carrying its
+    /// provider identifier. An item's `wire` is copied to the block's
+    /// [`BlockMeta::wire`]. Only zero-length text parts are omitted
+    /// (whitespace-only text is kept verbatim); a `Parts` item left with no
+    /// parts produces no block and its `wire` is dropped. The kernel never
+    /// reads `wire` or sealed items. Duplicate block identities are checked
+    /// on context submission rather than here. MaxTokens and Refusal policy
+    /// belongs to the caller.
     pub fn to_blocks(
         &self,
         stop_reason: ModelStopReason,
         block_ids: &[BlockId],
     ) -> Result<Vec<ContextBlock>, ModelBlockError> {
+        let tool_count = self.tool_calls().count();
         match stop_reason {
-            ModelStopReason::EndTurn if !self.tool_calls.is_empty() => {
-                return Err(ModelBlockError::EndTurnWithToolCalls {
-                    count: self.tool_calls.len(),
-                });
+            ModelStopReason::EndTurn if tool_count > 0 => {
+                return Err(ModelBlockError::EndTurnWithToolCalls { count: tool_count });
             }
-            ModelStopReason::ToolUse if self.tool_calls.is_empty() => {
+            ModelStopReason::ToolUse if tool_count == 0 => {
                 return Err(ModelBlockError::ToolUseWithoutToolCalls);
             }
             _ => {}
@@ -74,7 +84,7 @@ impl ModelResponse {
                 actual: block_ids.len(),
             });
         }
-        for (tool_index, call) in self.tool_calls.iter().enumerate() {
+        for (tool_index, call) in self.tool_calls().enumerate() {
             if call.tool_name.trim().is_empty() {
                 return Err(ModelBlockError::EmptyToolName { tool_index });
             }
@@ -84,26 +94,45 @@ impl ModelResponse {
         }
         let mut ids = block_ids.iter().copied();
         let mut blocks = Vec::with_capacity(expected);
-        if !self.text.0.trim().is_empty() {
-            blocks.push(ContextBlock::new(
-                ids.next().expect("identity count validated"),
-                BlockContent::Parts(vec![ContentPart::Text(self.text.clone())]),
-                BlockMeta::default(),
-            ));
-        }
-        for call in &self.tool_calls {
-            blocks.push(ContextBlock::new(
-                ids.next().expect("identity count validated"),
-                BlockContent::ToolCall(ToolCallPayload {
-                    tool_name: call.tool_name.clone(),
-                    arguments: call.arguments.clone(),
-                }),
-                BlockMeta {
-                    provider_call_id: call.provider_call_id.clone(),
-                    ..BlockMeta::default()
-                },
-            ));
+        for item in &self.items {
+            match &item.content {
+                ModelItemContent::Parts(parts) => {
+                    let parts: Vec<ContentPart> =
+                        parts.iter().filter(|p| keeps_part(p)).cloned().collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
+                    blocks.push(ContextBlock::new(
+                        ids.next().expect("identity count validated"),
+                        BlockContent::Parts(parts),
+                        BlockMeta {
+                            wire: item.wire.clone(),
+                            ..BlockMeta::default()
+                        },
+                    ));
+                }
+                ModelItemContent::ToolCall(call) => {
+                    blocks.push(ContextBlock::new(
+                        ids.next().expect("identity count validated"),
+                        BlockContent::ToolCall(ToolCallPayload {
+                            tool_name: call.tool_name.clone(),
+                            arguments: call.arguments.clone(),
+                        }),
+                        BlockMeta {
+                            provider_call_id: call.provider_call_id.clone(),
+                            wire: item.wire.clone(),
+                            ..BlockMeta::default()
+                        },
+                    ));
+                }
+            }
         }
         Ok(blocks)
     }
+}
+
+/// Whether a part from a `Parts` item survives conversion: only text of zero
+/// length is dropped.
+fn keeps_part(part: &ContentPart) -> bool {
+    !matches!(part, ContentPart::Text(t) if t.0.is_empty())
 }

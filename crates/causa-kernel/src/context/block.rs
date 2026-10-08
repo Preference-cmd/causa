@@ -12,6 +12,9 @@
 //! atom (ordered, identity-free, shares the envelope). Media enters as
 //! a [`MediaRef`] — a cheap durable reference; bytes never enter facts,
 //! they appear only in resolved render payloads (provider side).
+//! Model-issued wire items the framework cannot read travel as
+//! [`SealedPart`]s, and the wire fields of a readable item ride in
+//! [`BlockMeta::wire`].
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +32,24 @@ pub struct BlockMeta {
     /// Origin tag (e.g. "user", "provider:gpt-4o", "host"). Optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+
+    /// What the provider's item carried beyond the facts in this block.
+    /// Written by the model door, read only by the protocol renderer whose
+    /// format matches; the kernel never interprets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<WireMeta>,
+}
+
+/// Wire-level residue of one provider item: every field the translator did
+/// not turn into block content, kept uninterpreted so a renderer of the same
+/// format can send the item back as returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireMeta {
+    /// Wire format the fields belong to (the protocol's stable name, for
+    /// example `openai_responses`).
+    pub format: String,
+    /// The item as returned, minus the fields the block's content holds.
+    pub fields: serde_json::Value,
 }
 
 /// A single string of text. Serializes transparently as the inner string.
@@ -138,4 +159,18 @@ pub enum ContentPart {
     Text(TextPayload),
     /// A media reference; bytes never enter facts.
     Media(MediaRef),
+    /// A model-issued wire item the kernel carries and never interprets.
+    Sealed(SealedPart),
+}
+
+/// A model-issued wire item carried as content the kernel cannot read.
+///
+/// Only a renderer of the matching `format` writes it back; every other
+/// renderer skips it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedPart {
+    /// Wire format of `item`; interpreted only by the matching renderer.
+    pub format: String,
+    /// The item exactly as the provider returned it.
+    pub item: serde_json::Value,
 }

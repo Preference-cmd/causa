@@ -6,7 +6,7 @@
 //! adapter in `causa-provider` owns HTTP.
 //!
 //! The renderer-independent policy (source vocabulary, empty-text skip,
-//! text joining, tool id pairing, observation stringification) lives in
+//! no cross-block text join, tool id pairing, observation stringification) lives in
 //! `super::context_frame`; this module only shapes the Anthropic wire.
 //!
 //! # Anthropic-specific structural rules
@@ -39,6 +39,12 @@
 //!   one carries this round's dispatched `tool_result` blocks, the
 //!   final message otherwise). [`CacheDirective::None`] renders
 //!   byte-identically to a body without any cache key.
+//! - Wire fidelity. Each `text` and `tool_use` block parses to one item
+//!   whose `wire.fields` is the block minus the keys its content holds
+//!   (`text`; `id`, `name`, `input`); the renderer starts from those fields
+//!   and writes the fact-derived keys over them. Text fields apply only to a
+//!   block of exactly one text part. An own-format sealed part is emitted
+//!   verbatim as an assistant content block.
 //! - `reasoning` is parsed as a wire envelope only. The kernel does not
 //!   persist reasoning as facts, so cross-turn thinking replay is out of
 //!   scope here (the adapter sees fact-layer blocks each round).
@@ -49,12 +55,13 @@ use serde_json::{Value, json};
 
 use causa_kernel::{
     CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload, TextPayload,
+    ModelItem, ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload,
     ToolCallDraft, ToolResultStatus, ToolSurface,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use crate::Protocol;
 
 /// Anthropic requires `max_tokens`; this is the documented default when
 /// `GenerationOptions::max_tokens` is `None`.
@@ -77,7 +84,7 @@ pub fn render_anthropic_messages(
     cache: CacheDirective,
 ) -> Result<Value, ModelInvokeError> {
     super::tool_history::validate_frame(frame)?;
-    let normalized = context_frame::normalize(frame, media);
+    let normalized = context_frame::normalize(frame, media, Protocol::AnthropicMessages);
 
     // Group consecutive same-wire-role segments into one message
     // (Anthropic requires strictly alternating roles).
@@ -88,22 +95,32 @@ pub fn render_anthropic_messages(
             Segment::Text {
                 role: Role::System,
                 text,
+                ..
             } => system_parts.push(text.clone()),
             Segment::Text {
                 role: Role::User,
                 text,
+                ..
             } => {
                 append_message(&mut messages, "user", json!({"type": "text", "text": text}));
             }
             Segment::Text {
                 role: Role::Assistant,
                 text,
+                origin,
             } => {
-                append_message(
-                    &mut messages,
-                    "assistant",
-                    json!({"type": "text", "text": text}),
-                );
+                // The provider's fields ride along only for a block that is
+                // exactly one text part: they describe that one wire block.
+                let mut block = match origin.wire.as_ref().filter(|_| origin.parts == 1) {
+                    Some(fields) => context_frame::residue_object(Some(fields)),
+                    None => serde_json::Map::new(),
+                };
+                block.entry("type").or_insert_with(|| json!("text"));
+                block.insert("text".into(), json!(text));
+                append_message(&mut messages, "assistant", Value::Object(block));
+            }
+            Segment::Sealed(item) => {
+                append_message(&mut messages, "assistant", item.clone());
             }
             Segment::Media { role, media } => match media {
                 ResolvedMedia::Image {
@@ -128,16 +145,14 @@ pub fn render_anthropic_messages(
                     }
                 }
             },
-            Segment::ToolCall(call) => append_message(
-                &mut messages,
-                "assistant",
-                json!({
-                    "type": "tool_use",
-                    "id": call.wire_id,
-                    "name": call.name,
-                    "input": call.arguments,
-                }),
-            ),
+            Segment::ToolCall(call) => {
+                let mut block = context_frame::residue_object(call.wire.as_ref());
+                block.entry("type").or_insert_with(|| json!("tool_use"));
+                block.insert("id".into(), json!(call.wire_id));
+                block.insert("name".into(), json!(call.name));
+                block.insert("input".into(), call.arguments.clone());
+                append_message(&mut messages, "assistant", Value::Object(block));
+            }
             Segment::ToolResult {
                 wire_id,
                 status,
@@ -283,10 +298,12 @@ fn media_block_json(media: &ResolvedMedia) -> Value {
 /// Parse an Anthropic Messages response body into a kernel
 /// [`ModelOutput`].
 ///
-/// `text` blocks join into the response text; `tool_use` blocks become
-/// tool call drafts with `provider_call_id` carrying the provider id;
-/// `thinking` blocks join into the reasoning envelope (last signature
-/// wins). `stop_reason` is required; unknown values degrade to
+/// Each `text` block becomes one text item and each `tool_use` block one
+/// tool-call item (`provider_call_id` carries the provider id), in the
+/// order returned. An item's `wire` holds the block minus the fields its
+/// content holds (`text`; `id`, `name` and `input`), so the renderer can
+/// send the block back as returned. `thinking` blocks join into the
+/// reasoning envelope (last signature wins) and are not stored. `stop_reason` is required; unknown values degrade to
 /// [`ModelStopReason::EndTurn`] rather than inventing an interruption
 /// the provider did not report.
 pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvokeError> {
@@ -301,8 +318,7 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
         Some(_) => return Err(permanent("content: expected an array")),
     };
 
-    let mut texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ToolCallDraft> = Vec::new();
+    let mut items: Vec<ModelItem> = Vec::new();
     let mut thinking_parts: Vec<String> = Vec::new();
     let mut signature: Option<String> = None;
     for block in content {
@@ -312,7 +328,13 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                     .get("text")
                     .and_then(Value::as_str)
                     .ok_or_else(|| permanent("text block: missing `text` string"))?;
-                texts.push(text.to_string());
+                items.push(ModelItem {
+                    wire: Some(context_frame::wire_meta(
+                        Protocol::AnthropicMessages,
+                        context_frame::without_keys(block, &["text"]),
+                    )),
+                    ..ModelItem::text(text)
+                });
             }
             Some("tool_use") => {
                 let id = block
@@ -323,10 +345,16 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| permanent("tool_use block: missing `name` string"))?;
-                tool_calls.push(ToolCallDraft {
-                    tool_name: name.to_string(),
-                    arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                    provider_call_id: Some(id.to_string()),
+                items.push(ModelItem {
+                    wire: Some(context_frame::wire_meta(
+                        Protocol::AnthropicMessages,
+                        context_frame::without_keys(block, &["id", "name", "input"]),
+                    )),
+                    ..ModelItem::tool_call(ToolCallDraft {
+                        tool_name: name.to_string(),
+                        arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
+                        provider_call_id: Some(id.to_string()),
+                    })
                 });
             }
             Some("thinking") => {
@@ -363,10 +391,7 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
         .map(crate::translation::usage::model_usage_from_anthropic);
 
     Ok(ModelOutput {
-        response: ModelResponse {
-            text: TextPayload::new(texts.join("\n")),
-            tool_calls,
-        },
+        response: ModelResponse { items },
         usage,
         stop_reason,
         reasoning: if thinking_parts.is_empty() {
@@ -440,10 +465,15 @@ mod tests {
         assert_eq!(msgs[1]["role"], "user");
         assert_eq!(msgs[2]["role"], "assistant");
         assert_eq!(msgs[3]["role"], "user");
-        // adjacent same-role texts join into one block (shared policy)
+        // adjacent same-role texts stay separate content blocks: no text is
+        // joined across block seams
         assert_eq!(
             msgs[3]["content"],
-            json!([{"type": "text", "text": "injected\nbare inject\nunknown tag"}])
+            json!([
+                {"type": "text", "text": "injected"},
+                {"type": "text", "text": "bare inject"},
+                {"type": "text", "text": "unknown tag"},
+            ])
         );
     }
 
@@ -873,14 +903,14 @@ mod tests {
             CacheDirective::StablePrefix,
         )
         .unwrap();
-        // the second block's first text joins the seam (block boundaries
-        // are envelope-only), so both user blocks render as one message:
-        // [text "hi\nsee", image]
+        // same-role blocks share one message but their texts stay separate
+        // content blocks: [text "hi", text "see", image]
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["content"][0], json!({"type": "text", "text": "hi"}));
         assert_eq!(
-            msgs[0]["content"][0],
-            json!({"type": "text", "text": "hi\nsee"})
+            msgs[0]["content"][1],
+            json!({"type": "text", "text": "see"})
         );
         // the final message carries no tool_result, so it anchors itself
         assert!(
@@ -908,9 +938,9 @@ mod tests {
             "usage": {"input_tokens": 10, "output_tokens": 5},
         });
         let out = parse_anthropic_response(&v).unwrap();
-        assert_eq!(out.response.text.0, "Let me check.");
-        assert_eq!(out.response.tool_calls.len(), 1);
-        let tc = &out.response.tool_calls[0];
+        assert_eq!(out.response.text(), "Let me check.");
+        assert_eq!(out.response.tool_calls().count(), 1);
+        let tc = &out.response.tool_calls().next().unwrap();
         assert_eq!(tc.tool_name, "read");
         assert_eq!(tc.arguments, json!({"path": "a"}));
         assert_eq!(tc.provider_call_id.as_deref(), Some("toolu_9"));
@@ -978,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_texts_join_and_exotic_blocks_are_skipped() {
+    fn each_text_block_is_one_item_and_exotic_blocks_are_skipped() {
         let v = json!({
             "content": [
                 {"type": "redacted_thinking", "data": "encrypted"},
@@ -989,8 +1019,10 @@ mod tests {
             "stop_reason": "end_turn",
         });
         let out = parse_anthropic_response(&v).unwrap();
-        assert_eq!(out.response.text.0, "a\nb");
-        assert!(out.response.tool_calls.is_empty());
+        // one item per text block, no separator
+        assert_eq!(out.response.items.len(), 2);
+        assert_eq!(out.response.text(), "ab");
+        assert!(out.response.tool_calls().next().is_none());
         assert!(out.reasoning.is_none());
     }
 

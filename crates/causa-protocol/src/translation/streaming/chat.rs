@@ -23,6 +23,7 @@ pub(super) struct Chat {
     budget: Budget,
     id: Option<String>,
     text: String,
+    reasoning: String,
     tools: BTreeMap<usize, Tool>,
     finish: Option<String>,
     usage: Value,
@@ -35,6 +36,7 @@ impl Chat {
             budget: Budget::new(limits),
             id: None,
             text: String::new(),
+            reasoning: String::new(),
             tools: BTreeMap::new(),
             finish: None,
             usage: json!({}),
@@ -60,7 +62,19 @@ impl Chat {
                     .map_err(|_| permanent("Chat malformed or missing tool arguments"))?;
                 calls.push(json!({"id":id,"type":"function","function":{"name":tool.name,"arguments":tool.arguments}}));
             }
-            let mut wire = json!({"choices":[{"message":{"content":self.text,"tool_calls":calls},"finish_reason":finish}]});
+            // The assembled message mirrors what a batch response carries, so
+            // the batch parser derives the same items (including the sealed
+            // message-level item for `reasoning_content`). Fields the stream
+            // never delivers are not invented: `content` is absent when no
+            // text arrived.
+            let mut message = json!({"role": "assistant", "tool_calls": calls});
+            if !self.text.is_empty() {
+                message["content"] = json!(self.text);
+            }
+            if !self.reasoning.is_empty() {
+                message["reasoning_content"] = json!(self.reasoning);
+            }
+            let mut wire = json!({"choices":[{"message":message,"finish_reason":finish}]});
             if self.has_usage {
                 wire["usage"] = std::mem::take(&mut self.usage);
             }
@@ -112,6 +126,13 @@ impl Chat {
                 if !text.is_empty() {
                     deltas.push(StreamDelta::TextDelta { delta: text.into() });
                 }
+            }
+            if let Some(reasoning) = delta.get("reasoning_content").filter(|v| !v.is_null()) {
+                let reasoning = reasoning
+                    .as_str()
+                    .ok_or_else(|| permanent("Chat reasoning_content delta must be a string"))?;
+                self.budget.add(reasoning.len())?;
+                self.reasoning.push_str(reasoning);
             }
             if delta.contains_key("function_call") {
                 return Err(permanent("Chat legacy function_call is unsupported"));

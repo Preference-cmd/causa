@@ -14,14 +14,17 @@ mod ports;
 
 // --- context: the external rule interface ------------------------------------
 pub use context::block::{
-    BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload, ToolCallPayload,
+    BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, SealedPart, TextPayload,
+    ToolCallPayload, WireMeta,
 };
 pub use context::ids::{BlockId, InvocationId, RoundId, TurnId};
 pub use context::material::{
     Context, ContextEdit, ContextFrame, EditError, EditFailure, Replacement, ToolResultError,
     validate_tool_result_append,
 };
-pub use context::model::{ModelBlockError, ModelResponse, ModelStopReason, ToolCallDraft};
+pub use context::model::{
+    ModelBlockError, ModelItem, ModelItemContent, ModelResponse, ModelStopReason, ToolCallDraft,
+};
 pub use context::tool_data::{
     ArtifactKind, ArtifactRef, ToolCallId, ToolOutput, ToolOutputMeta, ToolResultPayload,
     ToolResultStatus, Truncation,

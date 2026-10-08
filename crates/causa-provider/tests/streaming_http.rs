@@ -288,7 +288,7 @@ async fn all_protocols_yield_before_server_releases_terminal_and_close_without_e
                 .unwrap()
             {
                 StreamDelta::Done { final_output, .. } => {
-                    assert!(!final_output.response.text.0.is_empty());
+                    assert!(!final_output.response.text().is_empty());
                     break;
                 }
                 StreamDelta::Error { kind, message } => panic!("{kind:?}: {message}"),

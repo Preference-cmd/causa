@@ -3,8 +3,8 @@
 mod common;
 
 use causa_kernel::{
-    BlockContent, BlockId, Context, EditError, ModelResponse, ModelStopReason, TextPayload,
-    ToolCallDraft,
+    BlockContent, BlockId, Context, EditError, ModelItem, ModelResponse, ModelStopReason,
+    TextPayload, ToolCallDraft,
 };
 use serde_json::json;
 
@@ -21,12 +21,14 @@ fn block_id_is_a_uuid_value_with_no_legacy_position_shape() {
 fn identical_calls_have_distinct_material_ids() {
     let mut context = Context::new();
     let response = ModelResponse {
-        text: TextPayload::new(" "),
-        tool_calls: vec![ToolCallDraft {
-            tool_name: "lookup".into(),
-            arguments: json!({"query":"same"}),
-            provider_call_id: None,
-        }],
+        items: vec![
+            ModelItem::text(""),
+            ModelItem::tool_call(ToolCallDraft {
+                tool_name: "lookup".into(),
+                arguments: json!({"query":"same"}),
+                provider_call_id: None,
+            }),
+        ],
     };
     assert_eq!(response.block_count(), 1);
     for _ in 0..2 {
@@ -65,12 +67,16 @@ fn duplicate_appends_reject_atomically_and_return_all_material() {
 }
 
 #[test]
-fn model_count_ignores_blank_text_and_counts_each_declaration() {
+fn model_count_keeps_whitespace_text_drops_zero_length_and_counts_each_declaration() {
     let response = ModelResponse {
-        text: TextPayload::new("\n  \t"),
-        tool_calls: vec![common::draft("a", json!({})), common::draft("b", json!({}))],
+        items: vec![
+            ModelItem::text("\n  \t"),
+            ModelItem::text(""),
+            ModelItem::tool_call(common::draft("a", json!({}))),
+            ModelItem::tool_call(common::draft("b", json!({}))),
+        ],
     };
-    assert_eq!(response.block_count(), 2);
+    assert_eq!(response.block_count(), 3);
 }
 
 #[test]
@@ -97,8 +103,10 @@ fn pure_conversion_and_atomic_submission_have_distinct_validation_responsibiliti
     )])
     .unwrap();
     let response = ModelResponse {
-        text: TextPayload::new("searching"),
-        tool_calls: vec![common::draft("search", json!({}))],
+        items: vec![
+            ModelItem::text("searching"),
+            ModelItem::tool_call(common::draft("search", json!({}))),
+        ],
     };
     let a = common::block_id();
     let b = common::block_id();
