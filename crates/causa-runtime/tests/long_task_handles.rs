@@ -235,6 +235,7 @@ fn tool_call(action: &str, handle: Option<&str>) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::ToolUse,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 
@@ -246,6 +247,7 @@ fn end_turn(text: &str) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 

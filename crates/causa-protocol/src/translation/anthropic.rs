@@ -11,10 +11,12 @@
 //!
 //! # Anthropic-specific structural rules
 //!
-//! - `system` text segments move to the top-level `system` parameter
-//!   (joined with `\n`); Anthropic has no system message role. Media in
-//!   a system-role block degrades to its placeholder text there — the
-//!   system parameter carries no image blocks.
+//! - The leading run of `system` text segments moves to the top-level
+//!   `system` parameter, always as a block array with no join; a `system`
+//!   block after conversation content renders at its position as a
+//!   `system` message, an append like any other. Media in a leading
+//!   system-role block degrades to its placeholder text in the parameter —
+//!   the parameter carries no image blocks.
 //! - Consecutive segments with the same wire role merge into one
 //!   message; Anthropic requires strictly alternating `user` /
 //!   `assistant` roles.
@@ -30,7 +32,8 @@
 //!   is Anthropic-only; OpenAI-family wires carry error information in
 //!   the content).
 //! - `GenerationOptions::max_tokens` is required by Anthropic; a `None`
-//!   renders as [`DEFAULT_MAX_TOKENS`].
+//!   fails with `InvalidRequest` before HTTP. The adapter sends no default
+//!   ceiling. [`AnthropicRenderOptions`] carries the Anthropic-only choices.
 //! - [`CacheDirective::StablePrefix`] marks three `cache_control`
 //!   breakpoints: the last tool definition, the `system` parameter
 //!   (rendered as a block array so the anchor can attach — Anthropic
@@ -45,39 +48,43 @@
 //!   and writes the fact-derived keys over them. Text fields apply only to a
 //!   block of exactly one text part. An own-format sealed part is emitted
 //!   verbatim as an assistant content block.
-//! - `reasoning` is parsed as a wire envelope only. The kernel does not
-//!   persist reasoning as facts, so cross-turn thinking replay is out of
-//!   scope here (the adapter sees fact-layer blocks each round).
-//!   Explicit `reasoning_effort` is rejected, including `none`; this adapter
-//!   does not implement effort or adaptive thinking. `output_schema` is also
-//!   rejected because there is no mapping in this adapter.
-//! - `redacted_thinking` and unknown content block types are skipped for
-//!   forward compatibility with provider extensions.
+//! - Reasoning is material. Every `thinking` block, `redacted_thinking` block
+//!   and content block of a type this adapter has no vocabulary for is kept
+//!   as one sealed item in place, with its stored value written back verbatim
+//!   on the next turn; the readable `thinking` text additionally fills the
+//!   reasoning observation, which is display-only. `reasoning_effort` renders
+//!   the effort table: unset leaves the `thinking` field out, `None` renders
+//!   `thinking: {"type": "disabled"}`, and `Low`..`Max` render
+//!   `thinking: {"type": "adaptive"}` plus `output_config.effort`.
+//!   `Minimal` has no wire level and is rejected before HTTP, as is
+//!   `output_schema` (no mapping in this adapter).
+//! - `AnthropicRenderOptions::prefix_mismatch_behavior` renders as
+//!   `thinking.block_binding.prefix_mismatch_behavior` whenever a `thinking`
+//!   object is rendered; with `reasoning_effort` unset it renders nothing.
 
 use serde_json::{Value, json};
 
 use causa_kernel::{
     CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelItem, ModelOutput, ModelRef, ModelResponse, ModelStopReason, ReasoningPayload,
+    ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningEffort, ReasoningPayload,
     ToolCallDraft, ToolResultStatus, ToolSurface,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use super::render_options::AnthropicRenderOptions;
 use crate::Protocol;
-
-/// Anthropic requires `max_tokens`; this is the documented default when
-/// `GenerationOptions::max_tokens` is `None`.
-pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 /// Render a [`ContextFrame`] into an Anthropic Messages request body.
 ///
 /// The body is complete: `model`, `max_tokens`, `messages`, plus `system`,
-/// `temperature`, and `tools` when the inputs call for them. Media
-/// references resolve through `media`; unresolvable or non-image
-/// references degrade to the shared text placeholder. Rendering is
-/// deterministic — the same frame, surface, generation, model, media
-/// table, and cache directive always produce byte-identical JSON.
+/// `temperature`, `tools`, the effort `thinking` shape and `output_config`
+/// when the inputs call for them. Media references resolve through `media`;
+/// unresolvable or non-image references degrade to the shared text
+/// placeholder. `options` carries the Anthropic-only choices; see
+/// [`AnthropicRenderOptions`]. Rendering is deterministic — the same frame,
+/// surface, generation, model, media table, cache directive and options
+/// always produce byte-identical JSON.
 pub fn render_anthropic_messages(
     frame: &ContextFrame,
     media: &MediaSet,
@@ -85,22 +92,54 @@ pub fn render_anthropic_messages(
     generation: &GenerationOptions,
     model: &ModelRef,
     cache: CacheDirective,
+    options: &AnthropicRenderOptions,
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_anthropic(generation)?;
     super::tool_history::validate_frame(frame)?;
     let normalized = context_frame::normalize(frame, media, Protocol::AnthropicMessages);
 
+    // Only the leading system run belongs in the top-level `system`
+    // parameter; a system block appended after conversation content renders at
+    // its position as a `system` message, exactly where the fact sits. Nothing
+    // is hoisted.
+    let segments = &normalized.segments;
+    let leading = context_frame::leading_system_len(segments);
+    let (leading_segments, conversation) = segments.split_at(leading);
+    let mut system_blocks: Vec<Value> = leading_segments
+        .iter()
+        .filter_map(|segment| match segment {
+            Segment::Text {
+                role: Role::System,
+                text,
+                ..
+            } => Some(json!({"type": "text", "text": text})),
+            Segment::Media {
+                role: Role::System,
+                media: ResolvedMedia::Placeholder(text),
+            } => Some(json!({"type": "text", "text": text})),
+            _ => None,
+        })
+        .collect();
+
     // Group consecutive same-wire-role segments into one message
     // (Anthropic requires strictly alternating roles).
-    let mut system_parts: Vec<String> = Vec::new();
     let mut messages: Vec<(&'static str, Vec<Value>)> = Vec::new();
-    for segment in &normalized.segments {
+    // Positions of verbatim sealed blocks in `messages`; the cache anchor
+    // never lands on one, because a sealed block is never modified. The
+    // stored item can be any content-block type, so the position is tracked
+    // rather than guessed from the block's `type`.
+    let mut sealed_blocks: Vec<(usize, usize)> = Vec::new();
+    for segment in conversation {
         match segment {
             Segment::Text {
                 role: Role::System,
                 text,
                 ..
-            } => system_parts.push(text.clone()),
+            } => append_message(
+                &mut messages,
+                "system",
+                json!({"type": "text", "text": text}),
+            ),
             Segment::Text {
                 role: Role::User,
                 text,
@@ -113,6 +152,12 @@ pub fn render_anthropic_messages(
                 text,
                 origin,
             } => {
+                // A whitespace-only assistant text part is omitted from the
+                // request (as `pi-ai` does); the fact stays in the Context.
+                // This is a listed exception to the round-trip property.
+                if context_frame::is_blank_text(text) {
+                    continue;
+                }
                 // The provider's fields ride along only for a block that is
                 // exactly one text part: they describe that one wire block.
                 let mut block = match origin.wire.as_ref().filter(|_| origin.parts == 1) {
@@ -124,7 +169,7 @@ pub fn render_anthropic_messages(
                 append_message(&mut messages, "assistant", Value::Object(block));
             }
             Segment::Sealed(item) => {
-                append_message(&mut messages, "assistant", item.clone());
+                sealed_blocks.push(append_sealed(&mut messages, item.clone()));
             }
             Segment::Media { role, media } => match media {
                 ResolvedMedia::Image {
@@ -136,17 +181,14 @@ pub fn render_anthropic_messages(
                     image_block(media_type, data_base64),
                 ),
                 ResolvedMedia::Placeholder(text) => {
-                    // System media degraded in the walk; its placeholder
-                    // joins the system parameter like any system text.
-                    if *role == Role::System {
-                        system_parts.push(text.clone());
-                    } else {
-                        append_message(
-                            &mut messages,
-                            role_name(*role),
-                            json!({"type": "text", "text": text}),
-                        );
-                    }
+                    // A leading system placeholder went into the system
+                    // parameter; one after conversation content stays at its
+                    // position like any other system content.
+                    append_message(
+                        &mut messages,
+                        role_name(*role),
+                        json!({"type": "text", "text": text}),
+                    );
                 }
             },
             Segment::ToolCall(call) => {
@@ -202,20 +244,31 @@ pub fn render_anthropic_messages(
         ));
     }
 
-    // Stable-prefix anchor: the frame is append-only, so every rendered
-    // message is byte-stable across rounds and retries; the anchor skips
-    // the final message only when it carries this round's dispatched
-    // tool results.
-    if matches!(cache, CacheDirective::StablePrefix)
-        && let Some(anchor_blocks) = stable_prefix_message(&mut messages)
-        && let Some(last_block) = anchor_blocks.last_mut()
-    {
-        last_block["cache_control"] = json!({"type": "ephemeral"});
+    // Stable-prefix anchors: within the system parameter the marker goes on
+    // the last block; within the conversation on the last content block that is
+    // not a sealed item, searching backward from the anchor message because a
+    // sealed item is written verbatim and never modified.
+    if matches!(cache, CacheDirective::StablePrefix) {
+        if let Some(last) = system_blocks.last_mut() {
+            last["cache_control"] = json!({"type": "ephemeral"});
+        }
+        if let Some(last_block) = anchor_block(&mut messages, &sealed_blocks) {
+            last_block["cache_control"] = json!({"type": "ephemeral"});
+        }
     }
 
+    // `validate_anthropic` rejected a missing limit, so this is always `Some`;
+    // the error is repeated here rather than panicking if that invariant ever
+    // changes.
+    let max_tokens = generation.max_tokens.ok_or_else(|| {
+        ModelInvokeError::new(
+            ModelInvokeErrorKind::InvalidRequest,
+            "max_tokens is required by the Anthropic Messages API; the adapter sends no default",
+        )
+    })?;
     let mut body = json!({
         "model": model.0,
-        "max_tokens": generation.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        "max_tokens": max_tokens,
         "messages": messages
             .into_iter()
             .map(|(role, content)| json!({"role": role, "content": content}))
@@ -224,18 +277,10 @@ pub fn render_anthropic_messages(
     if let Some(temperature) = generation.temperature {
         body["temperature"] = json!(temperature);
     }
-    if !system_parts.is_empty() {
-        if matches!(cache, CacheDirective::StablePrefix) {
-            // A string parameter cannot carry the anchor; the block-array
-            // form is the documented equivalent.
-            body["system"] = json!([{
-                "type": "text",
-                "text": system_parts.join("\n"),
-                "cache_control": {"type": "ephemeral"},
-            }]);
-        } else {
-            body["system"] = json!(system_parts.join("\n"));
-        }
+    if !system_blocks.is_empty() {
+        // Always the block-array form: one block per leading system part, no
+        // join, so the value does not change shape with the cache directive.
+        body["system"] = json!(system_blocks);
     }
     if !tool_surface.definitions.is_empty() {
         let mut tools =
@@ -247,28 +292,62 @@ pub fn render_anthropic_messages(
         }
         body["tools"] = json!(tools);
     }
+    // The effort table. `Minimal` was rejected by validation: the wire has no
+    // such level. `None` disables thinking; every other level renders adaptive
+    // thinking plus its `output_config.effort`.
+    if let Some(effort) = generation.reasoning_effort {
+        let mut thinking = if effort == ReasoningEffort::None {
+            json!({"type": "disabled"})
+        } else {
+            body["output_config"] = json!({"effort": effort});
+            json!({"type": "adaptive"})
+        };
+        // Rendered only alongside a `thinking` object; setting the option does
+        // not add the beta header the field needs (the host's header list).
+        if let Some(behavior) = options.prefix_mismatch_behavior {
+            thinking["block_binding"] = json!({"prefix_mismatch_behavior": behavior.as_str()});
+        }
+        body["thinking"] = thinking;
+    }
     Ok(body)
 }
 
-/// The message the stable-prefix cache anchor lands on: the previous
-/// message when the final one carries this round's dispatched
-/// `tool_result` blocks, the final message otherwise. Anchoring the
-/// message before the fresh dispatch keeps the cached prefix clear of
-/// content the current round just appended.
-fn stable_prefix_message<'a>(
+/// The content block the stable-prefix cache anchor lands on: the last block
+/// of the anchor message that did not come from a sealed item, searching
+/// backward through earlier messages when the anchor holds only sealed items.
+/// A sealed item is written verbatim and must never be modified, so it cannot
+/// carry the marker; `sealed` holds the `(message, block)` positions of those
+/// blocks. The anchor message is the previous one when the final message
+/// carries this round's dispatched `tool_result` blocks, the final message
+/// otherwise: anchoring before the fresh dispatch keeps the cached prefix
+/// clear of content the current round just appended.
+fn anchor_block<'a>(
     messages: &'a mut [(&'static str, Vec<Value>)],
-) -> Option<&'a mut Vec<Value>> {
+    sealed: &[(usize, usize)],
+) -> Option<&'a mut Value> {
     let last = messages.last()?;
     let dispatching = last
         .1
         .iter()
         .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"));
-    let index = if dispatching && messages.len() > 1 {
+    let start = if dispatching && messages.len() > 1 {
         messages.len() - 2
     } else {
         messages.len() - 1
     };
-    Some(&mut messages[index].1)
+    for (message_index, message) in messages[..=start].iter_mut().enumerate().rev() {
+        let found = message
+            .1
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(block_index, _)| !sealed.contains(&(message_index, *block_index)))
+            .map(|(_, block)| block);
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 
 fn role_name(role: Role) -> &'static str {
@@ -306,10 +385,14 @@ fn media_block_json(media: &ResolvedMedia) -> Value {
 /// tool-call item (`provider_call_id` carries the provider id), in the
 /// order returned. An item's `wire` holds the block minus the fields its
 /// content holds (`text`; `id`, `name` and `input`), so the renderer can
-/// send the block back as returned. `thinking` blocks join into the
-/// reasoning envelope (last signature wins) and are not stored. `stop_reason` is required; unknown values degrade to
-/// [`ModelStopReason::EndTurn`] rather than inventing an interruption
-/// the provider did not report.
+/// send the block back as returned. Every `thinking` block,
+/// `redacted_thinking` block and unknown block type becomes one sealed item
+/// **in place**, holding the block exactly as returned, so the turn can be
+/// echoed back; the readable `thinking` text additionally fills the reasoning
+/// observation, which is display-only. `stop_reason` is required; a value the kernel has no meaning for maps to
+/// [`causa_kernel::ModelStopReason::Unrecognized`] rather than being guessed, and the raw
+/// wire value is preserved on [`ModelOutput::raw_stop_reason`]. One mapping
+/// table is shared with the streaming decoder.
 pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvokeError> {
     fn permanent(message: impl Into<String>) -> ModelInvokeError {
         ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
@@ -324,7 +407,6 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
 
     let mut items: Vec<ModelItem> = Vec::new();
     let mut thinking_parts: Vec<String> = Vec::new();
-    let mut signature: Option<String> = None;
     for block in content {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
@@ -367,27 +449,31 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                     .and_then(Value::as_str)
                     .ok_or_else(|| permanent("thinking block: missing `thinking` string"))?;
                 thinking_parts.push(text.to_string());
-                if let Some(sig) = block.get("signature").and_then(Value::as_str) {
-                    signature = Some(sig.to_string());
-                }
+                // The block, signature included, is sealed material; the text
+                // above is the display-only observation.
+                items.push(context_frame::sealed_item(
+                    Protocol::AnthropicMessages,
+                    block.clone(),
+                ));
             }
-            // redacted_thinking has no kernel representation; unknown
-            // block types are skipped (forward compatibility).
-            _ => {}
+            // `redacted_thinking` and every block type this adapter has no
+            // vocabulary for are kept as sealed items in place, so the turn
+            // can be echoed back as returned.
+            _ => items.push(context_frame::sealed_item(
+                Protocol::AnthropicMessages,
+                block.clone(),
+            )),
         }
     }
 
-    let stop_reason = match value.get("stop_reason") {
-        Some(Value::String(s)) => match s.as_str() {
-            "end_turn" => ModelStopReason::EndTurn,
-            "tool_use" => ModelStopReason::ToolUse,
-            "max_tokens" => ModelStopReason::MaxTokens,
-            "refusal" => ModelStopReason::Refusal,
-            _ => ModelStopReason::EndTurn,
-        },
-        None | Some(Value::Null) => return Err(permanent("missing stop_reason")),
-        Some(_) => return Err(permanent("stop_reason: expected a string")),
+    let raw_stop_reason = match crate::translation::stop_reason::anthropic_raw(value) {
+        Some(raw) => raw.to_owned(),
+        None if matches!(value.get("stop_reason"), Some(Value::String(_))) => {
+            return Err(permanent("stop_reason: expected a string"));
+        }
+        None => return Err(permanent("missing stop_reason")),
     };
+    let stop_reason = crate::translation::stop_reason::anthropic(&raw_stop_reason);
 
     let usage = value
         .get("usage")
@@ -398,12 +484,12 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
         response: ModelResponse { items },
         usage,
         stop_reason,
+        raw_stop_reason: Some(raw_stop_reason),
         reasoning: if thinking_parts.is_empty() {
             None
         } else {
             Some(ReasoningPayload {
                 text: thinking_parts.join("\n"),
-                signature,
             })
         },
     })
@@ -420,24 +506,52 @@ fn append_message(
     }
 }
 
+/// Append one verbatim sealed block to the open assistant message, or open a
+/// new assistant message for it. Returns its `(message, block)` position so
+/// the cache anchor can skip it.
+fn append_sealed(messages: &mut Vec<(&'static str, Vec<Value>)>, block: Value) -> (usize, usize) {
+    if matches!(messages.last(), Some(("assistant", _))) {
+        let content = &mut messages
+            .last_mut()
+            .expect("assistant message checked above")
+            .1;
+        let index = content.len();
+        content.push(block);
+        (messages.len() - 1, index)
+    } else {
+        messages.push(("assistant", vec![block]));
+        (messages.len() - 1, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use causa_kernel::{MediaRef, ModelUsage, ToolDefinition};
+    use causa_kernel::{MediaRef, ModelStopReason, ModelUsage, ToolDefinition};
 
     use crate::translation::media::{MediaPayload, MediaSet};
+    use crate::translation::render_options::PrefixMismatchBehavior;
     use crate::translation::test_support::{
         call, frame, media_part, parts, result, result_with_media, text, text_part,
     };
+
+    /// Anthropic requires `max_tokens`; the renderer tests always supply one.
+    fn test_generation() -> GenerationOptions {
+        GenerationOptions {
+            max_tokens: Some(4096),
+            ..GenerationOptions::default()
+        }
+    }
 
     fn render(frame: &ContextFrame) -> Value {
         render_anthropic_messages(
             frame,
             &MediaSet::new(),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap()
     }
@@ -456,7 +570,8 @@ mod tests {
             text(6, "unknown tag", Some("provider:gpt-x")),
         ]);
         let v = render(&f);
-        assert_eq!(v["system"], json!("be terse"));
+        // The top-level system parameter is always the block-array form.
+        assert_eq!(v["system"], json!([{"type": "text", "text": "be terse"}]));
         let msgs = v["messages"].as_array().unwrap();
         // assistant(None) / user("user") / assistant("assistant") /
         // user("inject:note" + "inject" + unknown merged)
@@ -560,9 +675,10 @@ mod tests {
             &f,
             &MediaSet::new(),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap_err();
         assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
@@ -579,7 +695,7 @@ mod tests {
 
         let generation = GenerationOptions {
             temperature: Some(0.5),
-            max_tokens: None,
+            max_tokens: Some(4096),
             ..GenerationOptions::default()
         };
         let v = render_anthropic_messages(
@@ -589,11 +705,11 @@ mod tests {
             &generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v["model"], json!("claude-test"));
         assert_eq!(v["temperature"], json!(0.5));
-        // Anthropic requires max_tokens; None renders as the default
         assert_eq!(v["max_tokens"], json!(4096));
         assert_eq!(
             v["tools"],
@@ -616,6 +732,7 @@ mod tests {
             &generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v2["max_tokens"], json!(100));
@@ -627,6 +744,7 @@ mod tests {
             &generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -635,6 +753,130 @@ mod tests {
         );
     }
 
+    // --- effort table and render options -----------------------------------
+
+    fn render_with(
+        generation: &GenerationOptions,
+        options: &AnthropicRenderOptions,
+    ) -> Result<Value, ModelInvokeError> {
+        let f = frame(vec![text(0, "hi", Some("user"))]);
+        render_anthropic_messages(
+            &f,
+            &MediaSet::new(),
+            &ToolSurface::empty(),
+            generation,
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+            options,
+        )
+    }
+
+    #[test]
+    fn effort_table_renders_every_level() {
+        // unset: no thinking field at all
+        let body = render_with(&test_generation(), &AnthropicRenderOptions::default()).unwrap();
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+
+        // None: thinking explicitly disabled, no effort level
+        let generation = GenerationOptions {
+            max_tokens: Some(64),
+            reasoning_effort: Some(ReasoningEffort::None),
+            ..GenerationOptions::default()
+        };
+        let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        assert!(body.get("output_config").is_none());
+
+        // Low..Max: adaptive thinking plus output_config.effort
+        for (effort, wire) in [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
+        ] {
+            let generation = GenerationOptions {
+                max_tokens: Some(64),
+                reasoning_effort: Some(effort),
+                ..GenerationOptions::default()
+            };
+            let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
+            assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{wire}");
+            assert_eq!(body["output_config"], json!({"effort": wire}), "{wire}");
+        }
+    }
+
+    #[test]
+    fn minimal_effort_and_missing_max_tokens_fail_before_rendering() {
+        let generation = GenerationOptions {
+            max_tokens: Some(64),
+            reasoning_effort: Some(ReasoningEffort::Minimal),
+            ..GenerationOptions::default()
+        };
+        let error = render_with(&generation, &AnthropicRenderOptions::default()).unwrap_err();
+        assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
+        assert!(error.message.contains("minimal"), "{error}");
+
+        // No default ceiling: a missing max_tokens is rejected, never filled.
+        let error = render_with(
+            &GenerationOptions::default(),
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
+        assert!(error.message.contains("max_tokens"), "{error}");
+
+        // Active effort and temperature stay mutually exclusive; an explicit
+        // `None` effort is not active.
+        let generation = GenerationOptions {
+            max_tokens: Some(64),
+            temperature: Some(1.0),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..GenerationOptions::default()
+        };
+        assert_eq!(
+            render_with(&generation, &AnthropicRenderOptions::default())
+                .unwrap_err()
+                .kind,
+            ModelInvokeErrorKind::InvalidRequest
+        );
+        let generation = GenerationOptions {
+            max_tokens: Some(64),
+            temperature: Some(1.0),
+            reasoning_effort: Some(ReasoningEffort::None),
+            ..GenerationOptions::default()
+        };
+        assert!(render_with(&generation, &AnthropicRenderOptions::default()).is_ok());
+    }
+
+    #[test]
+    fn prefix_mismatch_behavior_renders_only_with_a_thinking_object() {
+        let options = AnthropicRenderOptions {
+            prefix_mismatch_behavior: Some(PrefixMismatchBehavior::DropBlock),
+        };
+        // Effort unset: there is no thinking object to bind, so nothing renders.
+        let body = render_with(&test_generation(), &options).unwrap();
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+
+        let generation = GenerationOptions {
+            max_tokens: Some(64),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..GenerationOptions::default()
+        };
+        let body = render_with(&generation, &options).unwrap();
+        assert_eq!(
+            body["thinking"],
+            json!({
+                "type": "adaptive",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            })
+        );
+        // The default renders no block_binding at all.
+        let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
+        assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+    }
     #[test]
     fn empty_frame_is_invalid_request() {
         let f = frame(vec![]);
@@ -642,9 +884,10 @@ mod tests {
             &f,
             &MediaSet::new(),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("m"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
@@ -665,9 +908,10 @@ mod tests {
             &f,
             &MediaSet::new(),
             &surface,
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert!(!serde_json::to_string(&v).unwrap().contains("cache_control"));
@@ -690,9 +934,10 @@ mod tests {
             &f,
             &MediaSet::new(),
             &surface,
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         // system renders as a block array carrying the anchor
@@ -720,9 +965,10 @@ mod tests {
             &f,
             &MediaSet::new(),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         let msgs = v["messages"].as_array().unwrap();
@@ -752,9 +998,10 @@ mod tests {
             &f,
             &resolved("asset-1"),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         // part boundaries are preserved: text, image, text as separate blocks
@@ -779,9 +1026,10 @@ mod tests {
             &f,
             &MediaSet::new(),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -803,9 +1051,10 @@ mod tests {
             &f,
             &media,
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -824,13 +1073,18 @@ mod tests {
             &f,
             &resolved("asset-1"),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
-        // the system parameter is text-only; the walk degraded it
-        assert_eq!(v["system"], json!("[media: image/png asset-1]"));
+        // the system parameter is text-only; the walk degraded it, and the
+        // block-array form carries the placeholder
+        assert_eq!(
+            v["system"],
+            json!([{"type": "text", "text": "[media: image/png asset-1]"}])
+        );
     }
 
     #[test]
@@ -855,9 +1109,10 @@ mod tests {
             &f,
             &media,
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -880,9 +1135,10 @@ mod tests {
             &f,
             &resolved("unused"),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v["messages"][1]["content"][0]["content"], json!("ok"));
@@ -902,9 +1158,10 @@ mod tests {
             &f,
             &resolved("asset-1"),
             &ToolSurface::empty(),
-            &GenerationOptions::default(),
+            &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap();
         // same-role blocks share one message but their texts stay separate
@@ -949,9 +1206,35 @@ mod tests {
         assert_eq!(tc.arguments, json!({"path": "a"}));
         assert_eq!(tc.provider_call_id.as_deref(), Some("toolu_9"));
         assert!(matches!(out.stop_reason, ModelStopReason::ToolUse));
+        // The whole block, signature included, is sealed material in place:
+        // item order is the wire order, and the text/tool items follow it.
+        assert_eq!(out.response.items.len(), 3);
+        assert_eq!(
+            sealed_items(&out),
+            vec![json!({
+                "type": "thinking", "thinking": "hmm", "signature": "sig1"
+            })]
+        );
         let reasoning = out.reasoning.unwrap();
         assert_eq!(reasoning.text, "hmm");
-        assert_eq!(reasoning.signature.as_deref(), Some("sig1"));
+    }
+
+    /// The stored value of every sealed part of a response, in item order.
+    fn sealed_items(out: &ModelOutput) -> Vec<Value> {
+        out.response
+            .items
+            .iter()
+            .flat_map(|item| match &item.content {
+                causa_kernel::ModelItemContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        causa_kernel::ContentPart::Sealed(sealed) => Some(sealed.item.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
     }
 
     #[test]
@@ -984,14 +1267,20 @@ mod tests {
     }
 
     #[test]
-    fn stop_reason_mapping_full_and_unknown_degrades_to_end_turn() {
+    fn stop_reason_mapping_full_and_unknown_is_unrecognized() {
         for (wire, expected) in [
             ("end_turn", ModelStopReason::EndTurn),
+            ("stop_sequence", ModelStopReason::EndTurn),
             ("tool_use", ModelStopReason::ToolUse),
             ("max_tokens", ModelStopReason::MaxTokens),
             ("refusal", ModelStopReason::Refusal),
-            // unknown values degrade to EndTurn, not a fabricated interrupt
-            ("model_context_overflow", ModelStopReason::EndTurn),
+            (
+                "model_context_window_exceeded",
+                ModelStopReason::ContextWindowExceeded,
+            ),
+            ("pause_turn", ModelStopReason::Unrecognized),
+            // An unknown value is reported as what it is, never guessed.
+            ("model_context_overflow", ModelStopReason::Unrecognized),
         ] {
             let v = json!({"content": [], "stop_reason": wire});
             let out = parse_anthropic_response(&v).unwrap();
@@ -1000,6 +1289,8 @@ mod tests {
                 std::mem::discriminant(&expected),
                 "wire stop_reason = {wire}"
             );
+            // The wire value reaches the host unchanged.
+            assert_eq!(out.raw_stop_reason.as_deref(), Some(wire));
         }
     }
 
@@ -1012,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn each_text_block_is_one_item_and_exotic_blocks_are_skipped() {
+    fn exotic_blocks_are_sealed_in_place_not_skipped() {
         let v = json!({
             "content": [
                 {"type": "redacted_thinking", "data": "encrypted"},
@@ -1023,11 +1314,19 @@ mod tests {
             "stop_reason": "end_turn",
         });
         let out = parse_anthropic_response(&v).unwrap();
-        // one item per text block, no separator
-        assert_eq!(out.response.items.len(), 2);
+        // one item per content block, in wire order, nothing skipped: the two
+        // text blocks stay separate and the two unknown blocks are sealed
+        assert_eq!(out.response.items.len(), 4);
         assert_eq!(out.response.text(), "ab");
         assert!(out.response.tool_calls().next().is_none());
         assert!(out.reasoning.is_none());
+        assert_eq!(
+            sealed_items(&out),
+            vec![
+                json!({"type": "redacted_thinking", "data": "encrypted"}),
+                json!({"type": "server_tool_use", "id": "x", "name": "web_search"}),
+            ]
+        );
     }
 
     #[test]

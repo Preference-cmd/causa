@@ -27,7 +27,11 @@ fn request() -> ModelRequest {
         frame: Context::from_blocks(vec![block]).unwrap().frame(),
         model: ModelRef::new("test"),
         tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
+        // The Anthropic leg requires `max_tokens`; the OpenAI legs ignore it.
+        generation: GenerationOptions {
+            max_tokens: Some(1024),
+            ..GenerationOptions::default()
+        },
         cache: CacheDirective::None,
     }
 }

@@ -94,6 +94,7 @@ fn turn_output(text: &str) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 
@@ -106,7 +107,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             delta: text.to_string(),
         },
         StreamDelta::Done {
-            stop_reason: ModelStopReason::EndTurn,
             final_output: turn_output(text),
         },
     ]]);

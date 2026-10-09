@@ -1,6 +1,9 @@
 //! Gateway configuration and shared request preparation.
 
-use super::config::{AnthropicGatewayConfig, KernelGatewayConfig};
+use super::config::{
+    AnthropicGatewayConfig, KernelGatewayConfig, OpenAiChatGatewayConfig,
+    OpenAiResponsesGatewayConfig,
+};
 use super::stream::{establish_stream, model_stream};
 use crate::gateway_transport::{GatewayCore, check_control, finish_response, send_with_control};
 use crate::media::MediaResolver;
@@ -10,6 +13,7 @@ use causa_kernel::{
     ModelRequest,
 };
 use causa_protocol::translation::media::MediaSet;
+use causa_protocol::translation::render_options::PrefixMismatchBehavior;
 use causa_protocol::translation::streaming::{
     StreamDecoder, StreamLimits, configure_stream_request,
 };
@@ -184,6 +188,65 @@ impl KernelHttpGateway<AnthropicGatewayConfig> {
         self.config.anthropic_version = version.into();
         self
     }
+
+    /// Set `thinking.block_binding.prefix_mismatch_behavior` for this gateway
+    /// (provider default: unset, which is `error`). It renders only when the
+    /// request also renders a `thinking` object, that is, only with a
+    /// `GenerationOptions::reasoning_effort` set. Setting it does not add the
+    /// `anthropic-beta` header the field needs: list that with
+    /// [`Self::with_beta`], or the provider answers 400.
+    ///
+    /// The choice is per gateway value, not per request: a host that needs a
+    /// different behavior for one request builds a second gateway, which can
+    /// share the HTTP client, base URL and media resolver.
+    pub fn with_prefix_mismatch_behavior(
+        mut self,
+        behavior: Option<PrefixMismatchBehavior>,
+    ) -> Self {
+        self.config.render_options.prefix_mismatch_behavior = behavior;
+        self
+    }
+
+    /// Append one extra `anthropic-beta` value for this gateway. Values are
+    /// sent as one comma-separated `anthropic-beta` header, in the order
+    /// listed; nothing is sent by default and no model table decides headers.
+    pub fn with_beta(mut self, value: impl Into<String>) -> Self {
+        self.config.beta.push(value.into());
+        self
+    }
+}
+
+impl KernelHttpGateway<OpenAiChatGatewayConfig> {
+    /// Replay sealed `reasoning_content` message-level items (default `true`).
+    ///
+    /// DeepSeek requires `reasoning_content` back on every request that
+    /// carries `tools`; turning this off removes the key from the renderer's
+    /// own sealed items and changes nothing else. The choice is per gateway
+    /// value, not per request: a host that needs both holds two gateways.
+    pub fn with_reasoning_content_replay(mut self, replay: bool) -> Self {
+        self.config.render_options.replay_reasoning_content = replay;
+        self
+    }
+}
+
+impl KernelHttpGateway<OpenAiResponsesGatewayConfig> {
+    /// Send `include: ["reasoning.encrypted_content"]` (default `true`).
+    ///
+    /// Without it a reasoning item cannot be meaningfully replayed under
+    /// `store: false` or zero data retention. The choice is per gateway value,
+    /// not per request: a host that needs both holds two gateways.
+    pub fn with_encrypted_reasoning(mut self, include: bool) -> Self {
+        self.config.render_options.include_encrypted_reasoning = include;
+        self
+    }
+
+    /// Render `store`; `None` omits the field (default `Some(false)`, as Codex
+    /// and `pi-ai` send it). The host owns the data-retention choice. The
+    /// choice is per gateway value, not per request.
+    pub fn with_store(mut self, store: Option<bool>) -> Self {
+        self.config.render_options.store = store;
+        self
+    }
 }
 
 #[async_trait]
@@ -231,8 +294,8 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
                 .config
                 .decorate_request(self.core.post(), &self.api_key)
                 .json(&body);
-            let (status, text) = send_with_control(req, control).await?;
-            finish_response(status, &text, C::PROVIDER, |v| self.config.parse(v))
+            let response = send_with_control(req, control).await?;
+            finish_response(response, C::PROVIDER, |v| self.config.parse(v))
         }
         .instrument(span)
         .await

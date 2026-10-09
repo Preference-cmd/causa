@@ -31,6 +31,11 @@ tempfile = "3"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 axum = "0.8"
 thiserror = "2"
+# Runtime retry jitter (`fastrand`) and provider `retry-after` dates
+# (`httpdate`); both are already resolved in Cargo.lock through tempfile and
+# hyper, so the edges add no new package version, source or checksum.
+fastrand = "2"
+httpdate = "1"
 # rmcp — official Model Context Protocol Rust SDK (client role only;
 # server features are used by causa-extension's dev-dependencies for the
 # in-process test fixture)

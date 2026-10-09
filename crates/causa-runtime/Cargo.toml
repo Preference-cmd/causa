@@ -19,13 +19,15 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
 thiserror = { workspace = true }
+# jitter for the optional retry wrapper's own backoff
+fastrand = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 
 [dev-dependencies]
 # `fs` is example-only (direct Context persistence): the lib's
 # normal graph stays fs-free (first-principles item 7.5).
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "fs", "test-util"] }
 tempfile = { workspace = true }
 # driver tests hash fixture payloads; blake3 stays out of the lib itself
 blake3 = "1"

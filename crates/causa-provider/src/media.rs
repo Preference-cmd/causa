@@ -15,6 +15,37 @@
 //! like misses), and the renderers inline only `image/*`. Hosts should
 //! pre-filter their asset table to the supported set (`image/png`,
 //! `image/jpeg`, `image/gif`, `image/webp`).
+//!
+//! # Degradation is not an error
+//!
+//! A reference this resolver cannot serve, a payload of a non-image type,
+//! an empty payload, or one over the inline ceiling all render as the
+//! deterministic text placeholder `[media: <type> <reference>]`. The
+//! request is still sent; nothing is dropped silently and nothing fails.
+//!
+//! # The answer must be stable while the context lives
+//!
+//! **Every request re-resolves every reference in the frame, including the
+//! ones in old messages.** The wire value of an earlier message is whatever
+//! the resolver answers at that moment, so the same reference must keep
+//! answering the same payload — the same bytes, or consistently unserved —
+//! for as long as any context containing it is sent, across runs and not
+//! only within one. The inline ceiling and the resolver itself must not
+//! change under a live context either.
+//!
+//! A changed answer rewrites a prefix the provider already saw. With
+//! Anthropic thinking enabled that invalidates the bound thinking blocks and
+//! every later one, and it also drops the prompt cache from that message on.
+//! The symptom does not name media: it is a provider 400 about thinking
+//! blocks, or reasoning that silently stops being replayed. Using a content
+//! hash as `MediaRef::reference` rules out one reference mapping to
+//! different bytes, which is why it is the recommended form.
+//!
+//! Deliberately not chosen: failing on an unresolved reference (it turns the
+//! legitimate "keep only recent images" use into an error) and a per-gateway
+//! switch between degrading and failing (configuration nobody asked for).
+//! Detecting a changed answer would need a digest stored in the fact and
+//! could still only end in an error.
 
 use std::collections::HashMap;
 

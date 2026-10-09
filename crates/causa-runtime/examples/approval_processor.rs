@@ -160,6 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             usage: None,
             stop_reason: ModelStopReason::ToolUse,
             reasoning: None,
+            raw_stop_reason: None,
         },
         ModelOutput {
             response: ModelResponse {
@@ -168,6 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             usage: None,
             stop_reason: ModelStopReason::EndTurn,
             reasoning: None,
+            raw_stop_reason: None,
         },
     ]);
     let (requests, mut receiver) = mpsc::channel::<ApprovalRequest>(1);

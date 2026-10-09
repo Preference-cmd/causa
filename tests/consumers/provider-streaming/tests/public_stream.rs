@@ -37,7 +37,9 @@ async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() 
     let (round, release) = Round::gated(responses_prefix("preview"), responses_terminal("saved"));
     let mut server = Server::start(vec![round]);
     let runner = TurnRunner::new(
-        Arc::new(OpenAiResponsesGateway::new("fixture-key").with_base_url(format!("{}/v1", server.url))),
+        Arc::new(
+            OpenAiResponsesGateway::new("fixture-key").with_base_url(format!("{}/v1", server.url)),
+        ),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
     let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
@@ -105,7 +107,11 @@ async fn facade_direct_stream_observes_all_three_gateways_before_terminal() {
             frame: input().frame(),
             model: ModelRef::new("fixture"),
             tool_surface: ToolSurface::empty(),
-            generation: GenerationOptions::default(),
+            // The Anthropic wire requires an explicit output limit.
+            generation: GenerationOptions {
+                max_tokens: Some(1024),
+                ..GenerationOptions::default()
+            },
             cache: CacheDirective::None,
         };
         let mut stream = gateway
@@ -135,7 +141,7 @@ async fn facade_direct_stream_observes_all_three_gateways_before_terminal() {
                     assert_eq!(final_output.response.text(), "你好🙂");
                     terminals += 1;
                 }
-                StreamDelta::Error { kind, message } => panic!("{kind:?}: {message}"),
+                StreamDelta::Error { error } => panic!("{error:?}"),
                 _ => {}
             }
         }

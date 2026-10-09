@@ -44,6 +44,13 @@
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
 //!   emitter, decoded by the shared `super::context_frame` codec);
 //!   parsing rejects a non-JSON arguments string as `Permanent`.
+//! - Sealed `reasoning_content` is replayed by default: the run's sealed
+//!   object becomes the assistant message, so a thinking-mode tool loop under
+//!   an API that requires the field back (DeepSeek) keeps working.
+//!   [`ChatRenderOptions::replay_reasoning_content`] turns that off; with it
+//!   off the renderer removes the `reasoning_content` key from its own sealed
+//!   items — skipping an item left empty, like one of another format — and
+//!   changes nothing else. Other sealed message fields always replay.
 //! - Output limits use `max_completion_tokens`, including reasoning tokens;
 //!   no default limit is injected. Effort renders as `reasoning_effort`.
 //!   Active effort combined with temperature is rejected before transport.
@@ -52,13 +59,13 @@
 use serde_json::{Value, json};
 
 use causa_kernel::{
-    CacheDirective, ContentPart, ContextFrame, GenerationOptions, ModelInvokeError,
-    ModelInvokeErrorKind, ModelItem, ModelItemContent, ModelOutput, ModelRef, ModelResponse,
-    ModelStopReason, ReasoningPayload, SealedPart, ToolCallDraft, ToolSurface,
+    CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
+    ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningPayload, ToolCallDraft, ToolSurface,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use super::render_options::ChatRenderOptions;
 use crate::Protocol;
 
 /// A run of assistant text + tool call segments coalescing into one
@@ -79,7 +86,8 @@ struct AssistantRun {
 /// providers cache server-side, so the directive has no wire
 /// representation on this protocol. `GenerationOptions::output_schema`
 /// renders as `response_format` (structured output); schema validation
-/// and corrective retry stay host-side.
+/// and corrective retry stay host-side. `options` carries the Chat-only
+/// `reasoning_content` replay choice; see [`ChatRenderOptions`].
 pub fn render_openai_chat_messages(
     frame: &ContextFrame,
     media: &MediaSet,
@@ -87,6 +95,7 @@ pub fn render_openai_chat_messages(
     generation: &GenerationOptions,
     model: &ModelRef,
     _cache: CacheDirective,
+    options: &ChatRenderOptions,
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_openai(generation)?;
     super::tool_history::validate_frame(frame)?;
@@ -98,6 +107,18 @@ pub fn render_openai_chat_messages(
     let mut run: Option<AssistantRun> = None;
     let mut result_media = Vec::new();
     for segment in &normalized.segments {
+        // A whitespace-only assistant text part is omitted from the request
+        // (as \`pi-ai\` does); the fact stays in the Context. This is a listed
+        // exception to the round-trip property.
+        if let Segment::Text {
+            role: Role::Assistant,
+            text,
+            ..
+        } = segment
+            && context_frame::is_blank_text(text)
+        {
+            continue;
+        }
         if !matches!(segment, Segment::ToolResult { .. }) {
             messages.append(&mut result_media);
         }
@@ -163,9 +184,19 @@ pub fn render_openai_chat_messages(
                 .text
                 .push_str(text),
             Segment::Sealed(item) => {
-                let state = run.get_or_insert_with(AssistantRun::default);
-                if state.sealed.is_none() {
-                    state.sealed = Some(item.clone());
+                // With replay off, only `reasoning_content` is removed; other
+                // sealed message fields still replay, and an item left empty
+                // is skipped like one of another format.
+                let item = if options.replay_reasoning_content {
+                    Some(item.clone())
+                } else {
+                    without_reasoning_content(item)
+                };
+                if let Some(item) = item {
+                    let state = run.get_or_insert_with(AssistantRun::default);
+                    if state.sealed.is_none() {
+                        state.sealed = Some(item);
+                    }
                 }
             }
             Segment::ToolCall(call) => {
@@ -288,6 +319,17 @@ fn assistant_message(run: AssistantRun) -> Value {
     Value::Object(message)
 }
 
+/// The sealed Chat object without its `reasoning_content` key; `None` when
+/// that leaves it empty. A non-object sealed item is returned unchanged.
+fn without_reasoning_content(item: &Value) -> Option<Value> {
+    let Value::Object(map) = item else {
+        return Some(item.clone());
+    };
+    let mut map = map.clone();
+    map.remove("reasoning_content");
+    (!map.is_empty()).then_some(Value::Object(map))
+}
+
 /// The inline data URL for a resolved image payload (`image_url` shape).
 fn data_url(media_type: &str, data_base64: &str) -> String {
     format!("data:{media_type};base64,{data_base64}")
@@ -296,10 +338,14 @@ fn data_url(media_type: &str, data_base64: &str) -> String {
 /// Parse an OpenAI Chat Completions response body into a kernel
 /// [`ModelOutput`].
 ///
-/// Unknown `finish_reason` values degrade to [`ModelStopReason::EndTurn`]
-/// rather than inventing an interruption the provider did not report;
-/// `reasoning_content` (the OpenAI-compatible reasoning extension) maps to
-/// the reasoning envelope with no signature.
+/// A `finish_reason` the kernel has no meaning for maps to
+/// [`causa_kernel::ModelStopReason::Unrecognized`] rather than being guessed, and the raw
+/// wire value is preserved on [`ModelOutput::raw_stop_reason`]. The mapping
+/// table is shared with the streaming decoder, so batch and streaming cannot
+/// disagree. `reasoning_content` (the OpenAI-compatible reasoning extension)
+/// is kept as a sealed message-level item — so the renderer can send it back
+/// — and additionally maps to the reasoning observation, which is
+/// display-only.
 pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInvokeError> {
     fn permanent(message: impl Into<String>) -> ModelInvokeError {
         ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
@@ -331,13 +377,10 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         residue.remove("content");
     }
     if !residue.is_empty() {
-        items.push(ModelItem {
-            content: ModelItemContent::Parts(vec![ContentPart::Sealed(SealedPart {
-                format: Protocol::OpenAiChatCompletions.as_str().to_owned(),
-                item: Value::Object(residue),
-            })]),
-            wire: None,
-        });
+        items.push(context_frame::sealed_item(
+            Protocol::OpenAiChatCompletions,
+            Value::Object(residue),
+        ));
     }
     if !text.is_empty() {
         items.push(ModelItem::text(text));
@@ -378,24 +421,20 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         }
     }
 
-    let stop_reason = match choice.get("finish_reason") {
-        Some(Value::String(s)) => match s.as_str() {
-            "stop" => ModelStopReason::EndTurn,
-            "tool_calls" => ModelStopReason::ToolUse,
-            "length" => ModelStopReason::MaxTokens,
-            "content_filter" => ModelStopReason::Refusal,
-            _ => ModelStopReason::EndTurn,
-        },
-        None | Some(Value::Null) => return Err(permanent("missing choices[0].finish_reason")),
-        Some(_) => return Err(permanent("choices[0].finish_reason: expected a string")),
+    let raw_stop_reason = match crate::translation::stop_reason::chat_raw(choice) {
+        Some(raw) => raw.to_owned(),
+        None if matches!(choice.get("finish_reason"), Some(Value::String(_))) => {
+            return Err(permanent("choices[0].finish_reason: expected a string"));
+        }
+        None => return Err(permanent("missing choices[0].finish_reason")),
     };
+    let stop_reason = crate::translation::stop_reason::chat(&raw_stop_reason);
 
     let reasoning = message
         .get("reasoning_content")
         .and_then(Value::as_str)
         .map(|text| ReasoningPayload {
             text: text.to_string(),
-            signature: None,
         });
 
     let usage = value
@@ -407,6 +446,7 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         response: ModelResponse { items },
         usage,
         stop_reason,
+        raw_stop_reason: Some(raw_stop_reason),
         reasoning,
     })
 }
@@ -414,7 +454,9 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
 #[cfg(test)]
 mod tests {
     use super::*;
-    use causa_kernel::{ModelUsage, ToolDefinition, ToolResultStatus};
+    use causa_kernel::{
+        ModelItemContent, ModelStopReason, ModelUsage, ToolDefinition, ToolResultStatus,
+    };
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
@@ -429,6 +471,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap()
     }
@@ -564,6 +607,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap_err();
         assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
@@ -590,6 +634,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v["model"], json!("gpt-test"));
@@ -616,6 +661,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v2["max_completion_tokens"], json!(100));
@@ -626,6 +672,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -648,6 +695,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -669,6 +717,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::StablePrefix,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v, cached);
@@ -683,6 +732,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("m"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
@@ -716,6 +766,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         // part boundaries preserved: each text part is its own message,
@@ -745,6 +796,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -778,6 +830,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         let msgs = v["messages"].as_array().unwrap();
@@ -821,6 +874,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap();
         let msgs = v["messages"].as_array().unwrap();
@@ -837,6 +891,24 @@ mod tests {
     }
 
     // --- parsing -----------------------------------------------------------
+
+    /// The stored value of every sealed part of a response, in item order.
+    fn sealed_items(out: &ModelOutput) -> Vec<Value> {
+        out.response
+            .items
+            .iter()
+            .flat_map(|item| match &item.content {
+                ModelItemContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        causa_kernel::ContentPart::Sealed(sealed) => Some(sealed.item.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
 
     #[test]
     fn parse_full_message_shape_with_provider_id_passthrough() {
@@ -869,9 +941,14 @@ mod tests {
         assert_eq!(tc.arguments, json!({"path": "a"}));
         assert_eq!(tc.provider_call_id.as_deref(), Some("call_9"));
         assert!(matches!(out.stop_reason, ModelStopReason::ToolUse));
+        // The message residue, `reasoning_content` included, is sealed material
+        // so the renderer can send it back verbatim.
+        assert_eq!(
+            sealed_items(&out),
+            vec![json!({"reasoning_content": "hmm"})]
+        );
         let reasoning = out.reasoning.unwrap();
         assert_eq!(reasoning.text, "hmm");
-        assert_eq!(reasoning.signature, None);
         let u: ModelUsage = out.usage.unwrap();
         assert_eq!((u.input_tokens, u.output_tokens), (100, 20));
         assert_eq!(u.cache_read_tokens, Some(11));
@@ -880,13 +957,16 @@ mod tests {
     }
 
     #[test]
-    fn finish_reason_mapping_full_and_unknown_degrades_to_end_turn() {
+    fn finish_reason_mapping_full_and_unknown_is_unrecognized() {
         for (wire, expected) in [
             ("stop", ModelStopReason::EndTurn),
+            ("end", ModelStopReason::EndTurn),
             ("tool_calls", ModelStopReason::ToolUse),
+            ("function_call", ModelStopReason::ToolUse),
             ("length", ModelStopReason::MaxTokens),
             ("content_filter", ModelStopReason::Refusal),
-            ("some_new_reason", ModelStopReason::EndTurn),
+            // An unknown value is reported as what it is, never guessed.
+            ("some_new_reason", ModelStopReason::Unrecognized),
         ] {
             let v = json!({"choices": [{"message": {"content": ""}, "finish_reason": wire}]});
             let out = parse_openai_chat_response(&v).unwrap();
@@ -895,6 +975,7 @@ mod tests {
                 std::mem::discriminant(&expected),
                 "finish_reason = {wire}"
             );
+            assert_eq!(out.raw_stop_reason.as_deref(), Some(wire));
         }
     }
 

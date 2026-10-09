@@ -223,9 +223,8 @@ impl Chat {
                 let reason = reason
                     .as_str()
                     .ok_or_else(|| permanent("Chat invalid finish_reason"))?;
-                if !matches!(reason, "stop" | "tool_calls" | "length" | "content_filter") {
-                    return Err(permanent("Chat unsupported finish_reason"));
-                }
+                // Accepted verbatim: the shared mapping table classifies it, so
+                // an unknown value becomes Unrecognized rather than an error.
                 self.finish = Some(reason.into());
             }
         }

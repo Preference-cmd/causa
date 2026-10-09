@@ -14,13 +14,16 @@ impl ModelGateway for Refusal {
         _: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         Ok(ModelOutput {
-            response: ModelResponse { items: vec![ModelItem::text("retained refusal")] },
+            response: ModelResponse {
+                items: vec![ModelItem::text("retained refusal")],
+            },
             stop_reason: ModelStopReason::Refusal,
             usage: Some(ModelUsage {
                 input_tokens: 7,
                 ..Default::default()
             }),
             reasoning: None,
+            raw_stop_reason: None,
         })
     }
 }

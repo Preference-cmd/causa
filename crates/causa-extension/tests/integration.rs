@@ -539,6 +539,7 @@ fn tool_use_output(tool: &str, args: serde_json::Value) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::ToolUse,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 
@@ -550,6 +551,7 @@ fn end_turn(text: &str) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 

@@ -15,10 +15,13 @@ impl ModelGateway for Recorder {
     ) -> Result<ModelOutput, ModelInvokeError> {
         self.0.lock().unwrap().push(request.clone());
         Ok(ModelOutput {
-            response: ModelResponse { items: vec![ModelItem::text("answer")] },
+            response: ModelResponse {
+                items: vec![ModelItem::text("answer")],
+            },
             stop_reason: ModelStopReason::EndTurn,
             usage: None,
             reasoning: None,
+            raw_stop_reason: None,
         })
     }
 }
@@ -119,6 +122,7 @@ impl ModelGateway for Scripted {
             },
             usage: None,
             reasoning: None,
+            raw_stop_reason: None,
         })
     }
 }

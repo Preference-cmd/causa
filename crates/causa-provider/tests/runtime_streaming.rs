@@ -72,6 +72,8 @@ async fn all_builtin_gateways_observe_http_text_before_terminal_and_commit_only_
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = seen.clone();
         let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
+        // The Anthropic leg requires an explicit output limit.
+        options.generation.max_tokens = Some(1024);
         options.observer = Some(Arc::new(move |event| match event {
             RunEvent::ModelDelta {
                 invocation_id,

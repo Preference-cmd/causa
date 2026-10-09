@@ -9,6 +9,9 @@ use causa_protocol::translation::openai_chat::{
 use causa_protocol::translation::openai_responses::{
     parse_openai_responses_output, render_openai_responses_input,
 };
+use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 use serde_json::Value;
 
 /// Protocol-specific rendering, parsing, and auth decoration for a kernel gateway.
@@ -40,18 +43,24 @@ pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
     const PROVIDER: &'static str;
 }
 
-/// Anthropic Messages gateway config — the only variant with extra state
-/// (`anthropic-version` header). Stored in `config: C` so the generic
-/// struct holds all protocol state uniformly.
+/// Anthropic Messages gateway config: the `anthropic-version` header, the
+/// Anthropic-only render options, and the extra `anthropic-beta` values.
+/// Stored in `config: C` so the generic struct holds all protocol state
+/// uniformly. The setters live on [`crate::KernelHttpGateway`].
 #[derive(Debug, Clone)]
 pub struct AnthropicGatewayConfig {
     pub(super) anthropic_version: String,
+    pub(super) render_options: AnthropicRenderOptions,
+    /// Extra `anthropic-beta` values, sent as one comma-separated header.
+    pub(super) beta: Vec<String>,
 }
 
 impl Default for AnthropicGatewayConfig {
     fn default() -> Self {
         Self {
             anthropic_version: "2023-06-01".into(),
+            render_options: AnthropicRenderOptions::default(),
+            beta: Vec::new(),
         }
     }
 }
@@ -66,6 +75,7 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
             &request.generation,
             &request.model,
             request.cache,
+            &self.render_options,
         )
     }
 
@@ -78,9 +88,16 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
         builder: reqwest::RequestBuilder,
         api_key: &str,
     ) -> reqwest::RequestBuilder {
-        builder
+        let builder = builder
             .header("x-api-key", api_key)
-            .header("anthropic-version", &self.anthropic_version)
+            .header("anthropic-version", &self.anthropic_version);
+        if self.beta.is_empty() {
+            builder
+        } else {
+            // One comma-separated header, exactly the values the host listed;
+            // no model table decides headers.
+            builder.header("anthropic-beta", self.beta.join(","))
+        }
     }
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.anthropic.com/v1/messages";
@@ -88,9 +105,11 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
     const PROVIDER: &'static str = "anthropic";
 }
 
-/// OpenAI Chat Completions gateway config — stateless.
+/// OpenAI Chat Completions gateway config: the Chat-only render options.
 #[derive(Debug, Clone, Default)]
-pub struct OpenAiChatGatewayConfig;
+pub struct OpenAiChatGatewayConfig {
+    pub(super) render_options: ChatRenderOptions,
+}
 
 impl KernelGatewayConfig for OpenAiChatGatewayConfig {
     const PROTOCOL: causa_protocol::Protocol = causa_protocol::Protocol::OpenAiChatCompletions;
@@ -102,6 +121,7 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
             &request.generation,
             &request.model,
             request.cache,
+            &self.render_options,
         )
     }
 
@@ -122,9 +142,11 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
     const PROVIDER: &'static str = "openai";
 }
 
-/// OpenAI Responses gateway config — stateless.
+/// OpenAI Responses gateway config: the Responses-only render options.
 #[derive(Debug, Clone, Default)]
-pub struct OpenAiResponsesGatewayConfig;
+pub struct OpenAiResponsesGatewayConfig {
+    pub(super) render_options: ResponsesRenderOptions,
+}
 
 impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
     const PROTOCOL: causa_protocol::Protocol = causa_protocol::Protocol::OpenAiResponses;
@@ -136,6 +158,7 @@ impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
             &request.generation,
             &request.model,
             request.cache,
+            &self.render_options,
         )
     }
 

@@ -27,7 +27,6 @@ async fn complete_output_and_actual_options_are_preserved() {
     });
     output.reasoning = Some(ReasoningPayload {
         text: "reason".into(),
-        signature: Some("signature".into()),
     });
     let gateway = RecordingGateway::scripted(vec![Ok(output)]);
     let runner = runner_with(gateway.clone(), vec![]);
@@ -43,10 +42,7 @@ async fn complete_output_and_actual_options_are_preserved() {
     };
     assert_eq!(final_output.response.text(), " done ");
     assert_eq!(final_output.usage.unwrap().input_tokens, 12);
-    assert_eq!(
-        final_output.reasoning.unwrap().signature.as_deref(),
-        Some("signature")
-    );
+    assert_eq!(final_output.reasoning.unwrap().text, "reason");
     assert_eq!(out.context.blocks().len(), 2);
     assert!(out.uncommitted_tool_batch.is_none());
     let requests = gateway.recorded.lock().unwrap();
@@ -559,6 +555,8 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
         ModelStopReason::EndTurn,
         ModelStopReason::MaxTokens,
         ModelStopReason::Refusal,
+        ModelStopReason::ContextWindowExceeded,
+        ModelStopReason::Unrecognized,
         ModelStopReason::ToolUse,
     ] {
         let mut output = if stop == ModelStopReason::ToolUse {
@@ -572,8 +570,10 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
         let cancel = token.clone();
         let mut opts = options();
         opts.observer = Some(Arc::new(move |e| match e {
+            // Every non-committing reason selects its interruption before the
+            // observer runs; the callback is where this test cancels.
             RunEvent::ModelOutput { .. }
-                if matches!(stop, ModelStopReason::MaxTokens | ModelStopReason::Refusal) =>
+                if !matches!(stop, ModelStopReason::EndTurn | ModelStopReason::ToolUse) =>
             {
                 cancel.cancel()
             }
@@ -603,6 +603,16 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
             ModelStopReason::Refusal => {
                 assert!(matches!(cause(&out), TurnInterruption::ModelRefusal { .. }))
             }
+            ModelStopReason::ContextWindowExceeded => assert!(matches!(
+                cause(&out),
+                TurnInterruption::ModelContextWindowExceeded { output, .. }
+                    if output.response.text() == "retained body"
+            )),
+            ModelStopReason::Unrecognized => assert!(matches!(
+                cause(&out),
+                TurnInterruption::ModelStopUnrecognized { output, .. }
+                    if output.response.text() == "retained body"
+            )),
             ModelStopReason::ToolUse => {
                 assert!(matches!(
                     cause(&out),

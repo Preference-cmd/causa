@@ -368,12 +368,16 @@ fn fidelity_fields_are_serde_additive() {
     );
     let reasoning = ReasoningPayload {
         text: "thinking".into(),
-        signature: Some("sig-abc".into()),
     };
     let back: ReasoningPayload =
         serde_json::from_str(&serde_json::to_string(&reasoning).unwrap()).unwrap();
     assert_eq!(back.text, "thinking");
-    assert_eq!(back.signature.as_deref(), Some("sig-abc"));
+    // The removed `signature` field is a plain unknown-field skip: a payload
+    // persisted before the removal still deserializes, and the signature now
+    // lives only inside the sealed provider item.
+    let legacy: ReasoningPayload =
+        serde_json::from_str(r#"{"text":"thinking","signature":"sig-abc"}"#).unwrap();
+    assert_eq!(legacy.text, "thinking");
     // provider_call_id is on BlockMeta (envelope-level); verify BlockMeta
     // serde-additivity.
     let legacy_meta: BlockMeta = serde_json::from_str("{}").unwrap();

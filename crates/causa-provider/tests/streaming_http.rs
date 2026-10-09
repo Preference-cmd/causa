@@ -47,7 +47,12 @@ fn request() -> ModelRequest {
         },
         model: ModelRef::new("test-model"),
         tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
+        // Anthropic requires `max_tokens`; the OpenAI wires render it as their
+        // own limit key, which no case here asserts on.
+        generation: GenerationOptions {
+            max_tokens: Some(1024),
+            ..GenerationOptions::default()
+        },
         cache: CacheDirective::None,
     }
 }
@@ -269,7 +274,7 @@ async fn all_protocols_yield_before_server_releases_terminal_and_close_without_e
                     assert_eq!(delta, "你🙂");
                     break;
                 }
-                StreamDelta::Error { kind, message } => panic!("{kind:?}: {message}"),
+                StreamDelta::Error { error } => panic!("{error:?}"),
                 StreamDelta::Done { .. } => panic!("terminal reached before release"),
                 _ => {}
             }
@@ -291,7 +296,7 @@ async fn all_protocols_yield_before_server_releases_terminal_and_close_without_e
                     assert!(!final_output.response.text().is_empty());
                     break;
                 }
-                StreamDelta::Error { kind, message } => panic!("{kind:?}: {message}"),
+                StreamDelta::Error { error } => panic!("{error:?}"),
                 _ => {}
             }
         }
@@ -340,7 +345,7 @@ async fn standalone_control_covers_waiting_headers_and_silent_body_with_timeout_
                     Ok(mut stream) => {
                         assert!(!wait_headers);
                         let kind = match stream.next().await.unwrap() {
-                            StreamDelta::Error { kind, .. } => kind,
+                            StreamDelta::Error { error, .. } => error.kind,
                             other => panic!("unexpected delta: {other:?}"),
                         };
                         assert!(stream.next().await.is_none());
@@ -461,7 +466,7 @@ async fn http_and_content_type_errors_are_pre_stream_failures_and_read_errors_en
         let mut stream = gateway.stream(&request(), &control()).await.unwrap();
         let actual = loop {
             match stream.next().await.unwrap() {
-                StreamDelta::Error { kind, .. } => break kind,
+                StreamDelta::Error { error, .. } => break error.kind,
                 StreamDelta::Done { .. } => panic!("invalid stream completed"),
                 _ => {}
             }
@@ -494,10 +499,7 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
     });
     assert!(matches!(
         tokio::time::timeout(WAIT, stream.next()).await.unwrap(),
-        Some(StreamDelta::Error {
-            kind: ModelInvokeErrorKind::Cancelled,
-            ..
-        })
+        Some(StreamDelta::Error { error }) if error.kind == ModelInvokeErrorKind::Cancelled
     ));
     assert!(stream.next().await.is_none());
     assert!(stream.next().await.is_none());
@@ -523,10 +525,7 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
     let mut stream = gateway.stream(&request(), &control()).await.unwrap();
     assert!(matches!(
         stream.next().await,
-        Some(StreamDelta::Error {
-            kind: ModelInvokeErrorKind::Permanent,
-            ..
-        })
+        Some(StreamDelta::Error { error }) if error.kind == ModelInvokeErrorKind::Permanent
     ));
     assert!(stream.next().await.is_none());
     assert!(stream.next().await.is_none());
@@ -675,8 +674,8 @@ async fn ready_deltas_yield_to_cancellation_and_slow_consumption_defers_parsing(
             .unwrap()
         {
             StreamDelta::TextDelta { .. } => observed += 1,
-            StreamDelta::Error { kind, .. } => {
-                assert_eq!(kind, ModelInvokeErrorKind::Cancelled);
+            StreamDelta::Error { error, .. } => {
+                assert_eq!(error.kind, ModelInvokeErrorKind::Cancelled);
                 break;
             }
             delta => panic!("unexpected delta: {delta:?}"),
@@ -709,10 +708,7 @@ async fn ready_deltas_yield_to_cancellation_and_slow_consumption_defers_parsing(
     call.cancellation_token().cancel();
     assert!(matches!(
         stream.next().await,
-        Some(StreamDelta::Error {
-            kind: ModelInvokeErrorKind::Cancelled,
-            ..
-        })
+        Some(StreamDelta::Error { error }) if error.kind == ModelInvokeErrorKind::Cancelled
     ));
     assert!(stream.next().await.is_none());
     fixture.advance();
@@ -837,10 +833,7 @@ async fn truncated_chunked_http_body_is_transient_and_emits_one_error() {
     fixture.task.abort();
     assert!(matches!(
         tokio::time::timeout(WAIT, stream.next()).await.unwrap(),
-        Some(StreamDelta::Error {
-            kind: ModelInvokeErrorKind::Transient,
-            ..
-        })
+        Some(StreamDelta::Error { error }) if error.kind == ModelInvokeErrorKind::Transient
     ));
     assert!(stream.next().await.is_none());
     assert!(stream.next().await.is_none());

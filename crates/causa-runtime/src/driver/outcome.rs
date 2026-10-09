@@ -94,6 +94,22 @@ pub enum TurnInterruption {
         /// The complete uncommitted model output, including usage and reasoning.
         output: ModelOutput,
     },
+    /// The provider stopped on the context window; the complete output was not
+    /// committed.
+    ModelContextWindowExceeded {
+        /// The logical invocation associated with this stage.
+        invocation_id: InvocationId,
+        /// The complete uncommitted model output, including usage and reasoning.
+        output: ModelOutput,
+    },
+    /// The provider reported a stop value the kernel has no meaning for; the
+    /// complete output was not committed and the wire value is on the output.
+    ModelStopUnrecognized {
+        /// The logical invocation associated with this stage.
+        invocation_id: InvocationId,
+        /// The complete uncommitted model output, including usage and reasoning.
+        output: ModelOutput,
+    },
     /// Pure conversion failed before commit, retaining output and supplied IDs.
     ModelConversionFailed {
         /// The logical invocation associated with this stage.

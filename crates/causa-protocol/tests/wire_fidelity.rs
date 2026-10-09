@@ -22,6 +22,9 @@ use causa_protocol::translation::openai_chat::{
 use causa_protocol::translation::openai_responses::{
     parse_openai_responses_output, render_openai_responses_input,
 };
+use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 use causa_protocol::translation::streaming::{StreamDecoder, StreamLimits};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,7 +69,10 @@ fn render(
 ) -> Result<Value, causa_kernel::ModelInvokeError> {
     let media = MediaSet::new();
     let surface = ToolSurface::empty();
-    let generation = GenerationOptions::default();
+    let generation = GenerationOptions {
+        max_tokens: Some(1024),
+        ..GenerationOptions::default()
+    };
     let model = ModelRef::new("m");
     match protocol {
         Protocol::AnthropicMessages => render_anthropic_messages(
@@ -76,6 +82,7 @@ fn render(
             &generation,
             &model,
             CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         ),
         Protocol::OpenAiChatCompletions => render_openai_chat_messages(
             frame,
@@ -84,6 +91,7 @@ fn render(
             &generation,
             &model,
             CacheDirective::None,
+            &ChatRenderOptions::default(),
         ),
         Protocol::OpenAiResponses => render_openai_responses_input(
             frame,
@@ -92,6 +100,7 @@ fn render(
             &generation,
             &model,
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         ),
     }
 }
@@ -375,8 +384,9 @@ fn chat_events(message: &Value) -> Vec<Value> {
     events
 }
 
-/// An Anthropic turn: thinking (not stored), two text blocks (one with a
-/// citation and an unknown field) and a `tool_use` with extra fields.
+/// An Anthropic turn: thinking (sealed material, replayed verbatim), two text
+/// blocks (one with a citation and an unknown field) and a `tool_use` with
+/// extra fields.
 fn anthropic_turn() -> Value {
     json!({
         "id": "msg_1",
@@ -403,14 +413,10 @@ fn anthropic_turn() -> Value {
     })
 }
 
+/// Every assistant content block round-trips now, `thinking` included: it is
+/// sealed material written back verbatim, not an observation to drop.
 fn anthropic_assistant(body: &Value) -> Vec<Value> {
-    body["content"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|block| block["type"] != "thinking")
-        .cloned()
-        .collect()
+    body["content"].as_array().unwrap().clone()
 }
 
 fn anthropic_events(response: &Value) -> Vec<Value> {
@@ -779,7 +785,19 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
         .into_iter()
         .find(|(source, _)| *source == Protocol::OpenAiResponses)
         .unwrap();
-    let message = &blocks[0];
+    // The reasoning item is now its own sealed block and comes first; find the
+    // message block by shape, not by position.
+    let message = blocks
+        .iter()
+        .find(|b| {
+            matches!(
+                b.content(),
+                BlockContent::Parts(parts)
+                    if parts.len() == 2
+                        && parts.iter().all(|p| matches!(p, ContentPart::Text(_)))
+            )
+        })
+        .expect("the fixture holds one two-part message block");
     let BlockContent::Parts(parts) = message.content() else {
         panic!("message block");
     };

@@ -4,6 +4,9 @@ use causa_kernel::{
     ContextFrame, GenerationOptions, MediaRef, ModelInvokeErrorKind, ModelRef, TextPayload,
     ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface,
 };
+use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 use causa_protocol::translation::{anthropic, media::MediaSet, openai_chat, openai_responses};
 use serde_json::{Value, json};
 
@@ -51,19 +54,43 @@ fn text(value: u128, source: &str) -> ContextBlock {
     )
 }
 fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::ModelInvokeError> {
-    let renderer = match protocol {
-        0 => anthropic::render_anthropic_messages,
-        1 => openai_chat::render_openai_chat_messages,
-        _ => openai_responses::render_openai_responses_input,
+    let media = MediaSet::new();
+    let surface = ToolSurface::empty();
+    // Anthropic requires `max_tokens`; the renderer tests always supply one.
+    let generation = GenerationOptions {
+        max_tokens: Some(1024),
+        ..GenerationOptions::default()
     };
-    renderer(
-        frame,
-        &MediaSet::new(),
-        &ToolSurface::empty(),
-        &GenerationOptions::default(),
-        &ModelRef::new("test"),
-        CacheDirective::None,
-    )
+    let model = ModelRef::new("test");
+    match protocol {
+        0 => anthropic::render_anthropic_messages(
+            frame,
+            &media,
+            &surface,
+            &generation,
+            &model,
+            CacheDirective::None,
+            &AnthropicRenderOptions::default(),
+        ),
+        1 => openai_chat::render_openai_chat_messages(
+            frame,
+            &media,
+            &surface,
+            &generation,
+            &model,
+            CacheDirective::None,
+            &ChatRenderOptions::default(),
+        ),
+        _ => openai_responses::render_openai_responses_input(
+            frame,
+            &media,
+            &surface,
+            &generation,
+            &model,
+            CacheDirective::None,
+            &ResponsesRenderOptions::default(),
+        ),
+    }
 }
 
 #[test]
@@ -127,10 +154,14 @@ fn adjacency_is_checked_on_each_protocols_wire_shape() {
     assert!(render(1, &frame).is_err());
     render(2, &frame)
         .expect("Responses has flat item references rather than adjacent message roles");
+    // A system block after conversation content renders at its position on
+    // every protocol (nothing is hoisted), so one that lands between a
+    // tool_use and its tool_result breaks the adjacency rule and the render
+    // fails before HTTP. Chat renders system inline for the same reason.
     let with_system = ContextFrame {
         blocks: vec![call(1, "a"), text(2, "system"), result(3, 1, false)],
     };
-    render(0, &with_system).expect("system is a top-level parameter");
+    assert!(render(0, &with_system).is_err());
     assert!(render(1, &with_system).is_err());
     render(2, &with_system).unwrap();
 }

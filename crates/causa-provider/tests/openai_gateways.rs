@@ -66,6 +66,47 @@ fn delayed_post_mock(status: u16, path_suffix: &str, body: Value, delay: Duratio
         )
 }
 
+#[tokio::test]
+async fn unset_max_tokens_still_sends_on_the_openai_wires() {
+    // Only Anthropic requires the output limit; on the OpenAI wires an unset
+    // `max_tokens` stays absent and the request is sent.
+    let server = MockServer::start().await;
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}),
+        ),
+        (
+            "/v1/responses",
+            json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}),
+        ),
+    ];
+    for (endpoint, response) in cases {
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let gateway: Box<dyn ModelGateway> = if endpoint.ends_with("chat/completions") {
+            Box::new(
+                OpenAiChatCompletionsGateway::new(KEY)
+                    .with_base_url(format!("{}/v1", server.uri())),
+            )
+        } else {
+            Box::new(OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri())))
+        };
+        let request = request(user_frame());
+        assert!(request.generation.max_tokens.is_none());
+        gateway.invoke(&request, &ctrl(None)).await.unwrap();
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1, "{endpoint}");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert!(body.get("max_completion_tokens").is_none(), "{endpoint}");
+        assert!(body.get("max_output_tokens").is_none(), "{endpoint}");
+    }
+}
 // === Chat Completions ========================================================
 
 #[tokio::test]
@@ -125,6 +166,7 @@ async fn chat_error_rows_map_to_their_kinds() {
     let body = json!({"error": {"message": "boom", "type": "server_error"}});
     for (status, expected) in [
         (408, ModelInvokeErrorKind::Transient),
+        (409, ModelInvokeErrorKind::Transient),
         (429, ModelInvokeErrorKind::Transient),
         (500, ModelInvokeErrorKind::Transient),
         (400, ModelInvokeErrorKind::InvalidRequest),
@@ -132,7 +174,6 @@ async fn chat_error_rows_map_to_their_kinds() {
         (401, ModelInvokeErrorKind::Permanent),
         (403, ModelInvokeErrorKind::Permanent),
         (404, ModelInvokeErrorKind::Permanent),
-        (409, ModelInvokeErrorKind::Permanent),
     ] {
         let server = MockServer::start().await;
         post_mock(status, "/v1/chat/completions", body.clone())
@@ -222,6 +263,7 @@ async fn responses_error_rows_map_to_their_kinds() {
     let body = json!({"error": {"message": "boom", "type": "server_error"}});
     for (status, expected) in [
         (408, ModelInvokeErrorKind::Transient),
+        (409, ModelInvokeErrorKind::Transient),
         (429, ModelInvokeErrorKind::Transient),
         (500, ModelInvokeErrorKind::Transient),
         (400, ModelInvokeErrorKind::InvalidRequest),
@@ -229,7 +271,6 @@ async fn responses_error_rows_map_to_their_kinds() {
         (401, ModelInvokeErrorKind::Permanent),
         (403, ModelInvokeErrorKind::Permanent),
         (404, ModelInvokeErrorKind::Permanent),
-        (409, ModelInvokeErrorKind::Permanent),
     ] {
         let server = MockServer::start().await;
         post_mock(status, "/v1/responses", body.clone())

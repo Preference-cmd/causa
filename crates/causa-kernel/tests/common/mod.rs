@@ -43,6 +43,7 @@ pub fn endturn_output(text: &str) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 

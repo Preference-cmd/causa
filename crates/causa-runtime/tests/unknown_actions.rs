@@ -81,6 +81,7 @@ impl ModelGateway for Gateway {
             },
             usage: None,
             reasoning: None,
+            raw_stop_reason: None,
             stop_reason: if first {
                 ModelStopReason::ToolUse
             } else {

@@ -20,10 +20,17 @@ pub(super) async fn establish_stream(
 ) -> Result<reqwest::Response, ModelInvokeError> {
     let response = send_response(request, control).await?;
     if !response.status().is_success() {
+        let headers = response.headers().clone();
         let status = read_error_response(response, control).await?;
         // Error bodies may echo prompts, tool arguments or credentials. HTTP
-        // classification requires the status only; keep diagnostics generic.
-        return Err(map_status_error(status, "response body omitted", provider));
+        // classification reads the status and the retry headers only; keep
+        // diagnostics generic.
+        return Err(map_status_error(
+            status,
+            &headers,
+            "response body omitted",
+            provider,
+        ));
     }
     let is_sse = response
         .headers()
@@ -148,8 +155,5 @@ pub(super) fn model_stream(
 }
 
 fn error_delta(error: ModelInvokeError) -> StreamDelta {
-    StreamDelta::Error {
-        kind: error.kind,
-        message: error.message,
-    }
+    StreamDelta::Error { error }
 }

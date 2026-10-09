@@ -23,7 +23,6 @@ pub(super) fn index(v: &Value, key: &str) -> Result<usize, ModelInvokeError> {
 
 pub(super) fn done(output: ModelOutput) -> StreamDelta {
     StreamDelta::Done {
-        stop_reason: output.stop_reason,
         final_output: output,
     }
 }

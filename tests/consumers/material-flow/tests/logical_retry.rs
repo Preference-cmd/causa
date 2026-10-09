@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use causa::kernel::{
     CacheDirective, CallControl, CancellationToken, Context, ControlError, GenerationOptions,
-    InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef,
-    ModelItem, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage,
+    InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput,
+    ModelRef, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage,
     ReasoningEffort, RoundId, StreamDelta, ToolSurface, TurnId,
 };
 use futures_util::{StreamExt, stream};
@@ -15,10 +15,13 @@ use tokio::sync::Notify;
 
 fn output() -> ModelOutput {
     ModelOutput {
-        response: ModelResponse { items: vec![ModelItem::text("complete")] },
+        response: ModelResponse {
+            items: vec![ModelItem::text("complete")],
+        },
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 fn request() -> ModelRequest {
@@ -178,7 +181,7 @@ impl ModelGateway for FiniteRetry {
                     let mut source = self.inner.stream(request, &attempt_control).await?;
                     let first = source.next().await;
                     match first {
-                        Some(StreamDelta::Error { kind, message }) => Err(ModelInvokeError::new(kind, message)),
+                        Some(StreamDelta::Error { error }) => Err(error),
                         None => Err(error(ModelInvokeErrorKind::UnknownOutcome)),
                         Some(first) => {
                             // Returning this stream marks the irrevocable visibility boundary.
@@ -243,14 +246,12 @@ async fn invoke_retries_real_failures_with_every_request_field_unchanged() {
 #[tokio::test]
 async fn stream_can_retry_before_yield_after_establishment_error_delta_or_empty_stream() {
     let done = StreamDelta::Done {
-        stop_reason: ModelStopReason::EndTurn,
         final_output: output(),
     };
     for failed in [
         Err(error(ModelInvokeErrorKind::Transient)),
         Ok(vec![StreamDelta::Error {
-            kind: ModelInvokeErrorKind::Transient,
-            message: "before yield".into(),
+            error: error(ModelInvokeErrorKind::Transient),
         }]),
         Ok(vec![]),
     ] {
@@ -299,12 +300,10 @@ async fn any_visible_delta_prevents_transparent_retry_even_without_an_observer()
                 Ok(vec![
                     delta,
                     StreamDelta::Error {
-                        kind: ModelInvokeErrorKind::Transient,
-                        message: "after visibility".into(),
+                        error: error(ModelInvokeErrorKind::Transient),
                     },
                 ]),
                 Ok(vec![StreamDelta::Done {
-                    stop_reason: ModelStopReason::EndTurn,
                     final_output: output(),
                 }]),
             ],

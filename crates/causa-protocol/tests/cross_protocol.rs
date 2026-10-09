@@ -19,6 +19,9 @@ use causa_kernel::{
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::openai_chat::render_openai_chat_messages;
 use causa_protocol::translation::openai_responses::render_openai_responses_input;
+use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -176,7 +179,10 @@ fn scenario_frame() -> ContextFrame {
 fn render(frame: &ContextFrame) -> (Value, Value, Value) {
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
-    let generation = GenerationOptions::default();
+    let generation = GenerationOptions {
+        max_tokens: Some(1024),
+        ..GenerationOptions::default()
+    };
     let media = causa_protocol::translation::media::MediaSet::new();
     (
         render_anthropic_messages(
@@ -186,6 +192,7 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
             &generation,
             &model,
             causa_kernel::CacheDirective::None,
+            &AnthropicRenderOptions::default(),
         )
         .unwrap(),
         render_openai_chat_messages(
@@ -195,6 +202,7 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
             &generation,
             &model,
             causa_kernel::CacheDirective::None,
+            &ChatRenderOptions::default(),
         )
         .unwrap(),
         render_openai_responses_input(
@@ -204,6 +212,7 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
             &generation,
             &model,
             causa_kernel::CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap(),
     )
@@ -250,7 +259,10 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
-    let generation = GenerationOptions::default();
+    let generation = GenerationOptions {
+        max_tokens: Some(1024),
+        ..GenerationOptions::default()
+    };
     let anthropic = render_anthropic_messages(
         &frame,
         &media,
@@ -258,6 +270,7 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         &generation,
         &model,
         causa_kernel::CacheDirective::None,
+        &AnthropicRenderOptions::default(),
     )
     .unwrap();
     let chat = render_openai_chat_messages(
@@ -267,6 +280,7 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         &generation,
         &model,
         causa_kernel::CacheDirective::None,
+        &ChatRenderOptions::default(),
     )
     .unwrap();
     let responses = render_openai_responses_input(
@@ -276,6 +290,7 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         &generation,
         &model,
         causa_kernel::CacheDirective::None,
+        &ResponsesRenderOptions::default(),
     )
     .unwrap();
 
@@ -399,8 +414,14 @@ fn expected_timeline() -> Vec<Step> {
 
 fn anthropic_steps(body: &Value) -> Vec<Step> {
     let mut steps = Vec::new();
-    if let Some(system) = body.get("system").and_then(Value::as_str) {
-        steps.push(Step::System(system.to_string()));
+    // The top-level system parameter is always the block-array form: one text
+    // block per leading system part, no join.
+    if let Some(system) = body.get("system").and_then(Value::as_array) {
+        for block in system {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                steps.push(Step::System(text.to_string()));
+            }
+        }
     }
     for message in body["messages"].as_array().unwrap() {
         let role = message["role"].as_str().unwrap();
@@ -515,7 +536,10 @@ fn all_three_protocols_produce_the_same_semantic_timeline() {
 #[test]
 fn system_instruction_leads_every_protocol_body() {
     let (anthropic, chat, responses) = render(&scenario_frame());
-    assert!(anthropic["system"].as_str().unwrap().contains("be terse"));
+    assert_eq!(
+        anthropic["system"],
+        json!([{"type": "text", "text": "be terse"}])
+    );
     assert_eq!(chat["messages"][0]["role"], json!("system"));
     assert_eq!(chat["messages"][0]["content"], json!("be terse"));
     assert_eq!(responses["instructions"], json!("be terse"));

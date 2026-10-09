@@ -70,30 +70,53 @@ impl TurnRunner {
                     Ok(output) => output,
                     Err(cause) => return interrupted(cause, None),
                 };
-            // These terminal reasons are selected before invoking the observer.
-            match output.stop_reason {
-                ModelStopReason::MaxTokens | ModelStopReason::Refusal => {
-                    notify(
-                        options,
-                        RunEvent::ModelOutput {
-                            invocation_id: &invocation_id,
-                            output: &output,
-                        },
-                    );
-                    let cause = if output.stop_reason == ModelStopReason::MaxTokens {
-                        TurnInterruption::ModelMaxTokens {
+            // Only EndTurn and ToolUse are committed and continued. Every
+            // other reason is selected before invoking the observer and returns
+            // the complete uncommitted output, so no wildcard arm is needed.
+            // One classification, two construction sites: the reason selects
+            // the interruption variant, and the value is moved into it.
+            enum Terminal {
+                MaxTokens,
+                Refusal,
+                ContextWindowExceeded,
+                Unrecognized,
+            }
+            let terminal = match output.stop_reason {
+                ModelStopReason::EndTurn | ModelStopReason::ToolUse => None,
+                ModelStopReason::MaxTokens => Some(Terminal::MaxTokens),
+                ModelStopReason::Refusal => Some(Terminal::Refusal),
+                ModelStopReason::ContextWindowExceeded => Some(Terminal::ContextWindowExceeded),
+                ModelStopReason::Unrecognized => Some(Terminal::Unrecognized),
+            };
+            if let Some(terminal) = terminal {
+                notify(
+                    options,
+                    RunEvent::ModelOutput {
+                        invocation_id: &invocation_id,
+                        output: &output,
+                    },
+                );
+                let cause = match terminal {
+                    Terminal::MaxTokens => TurnInterruption::ModelMaxTokens {
+                        invocation_id,
+                        output,
+                    },
+                    Terminal::Refusal => TurnInterruption::ModelRefusal {
+                        invocation_id,
+                        output,
+                    },
+                    Terminal::ContextWindowExceeded => {
+                        TurnInterruption::ModelContextWindowExceeded {
                             invocation_id,
                             output,
                         }
-                    } else {
-                        TurnInterruption::ModelRefusal {
-                            invocation_id,
-                            output,
-                        }
-                    };
-                    return interrupted(cause, None);
-                }
-                _ => {}
+                    }
+                    Terminal::Unrecognized => TurnInterruption::ModelStopUnrecognized {
+                        invocation_id,
+                        output,
+                    },
+                };
+                return interrupted(cause, None);
             }
             notify(
                 options,

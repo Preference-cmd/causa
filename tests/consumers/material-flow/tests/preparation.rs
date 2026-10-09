@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use causa::kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, Context,
     ContextBlock, ContextFrame, ContextPreparer, GenerationOptions, MediaRef, ModelGateway,
-    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ModelItem, ModelResponse,
-    ModelStopReason, PrepareError, RoundInfo, TextPayload, Tool, ToolCallContext, ToolCallDraft,
-    ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest,
+    ModelResponse, ModelStopReason, PrepareError, RoundInfo, TextPayload, Tool, ToolCallContext,
+    ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa::runtime::{
     RunControl, ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions,
@@ -51,6 +51,7 @@ fn output(tool_use: bool) -> ModelOutput {
             ModelStopReason::EndTurn
         },
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 struct CapturingGateway {

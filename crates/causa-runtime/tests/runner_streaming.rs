@@ -42,7 +42,6 @@ fn gateway(scripts: Vec<Result<Vec<StreamDelta>, ModelInvokeErrorKind>>) -> Arc<
 }
 fn done(output: ModelOutput) -> StreamDelta {
     StreamDelta::Done {
-        stop_reason: output.stop_reason,
         final_output: output,
     }
 }
@@ -118,8 +117,7 @@ async fn stream_setup_error_error_delta_and_missing_done_never_commit_partial_ou
                     delta: "partial".into(),
                 },
                 StreamDelta::Error {
-                    kind: ModelInvokeErrorKind::Transient,
-                    message: "failure".into(),
+                    error: ModelInvokeError::new(ModelInvokeErrorKind::Transient, "failure"),
                 },
             ]),
             ModelInvokeErrorKind::Transient,

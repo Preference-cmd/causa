@@ -1,4 +1,6 @@
-use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, StreamDelta};
+use causa_kernel::{
+    ModelInvokeError, ModelInvokeErrorKind, ModelOutput, ModelStopReason, StreamDelta,
+};
 use serde_json::{Value, json};
 
 use super::{StreamDecoder, StreamLimits, configure_stream_request};
@@ -162,25 +164,34 @@ fn fail(protocol: Protocol, events: &[Value]) -> ModelInvokeErrorKind {
 
 #[test]
 fn explicit_responses_terminal_classifications_are_shared_with_full_parser() {
-    for (status, reason, kind) in [
-        ("failed", None, ModelInvokeErrorKind::Permanent),
-        (
-            "incomplete",
-            Some("new_reason"),
-            ModelInvokeErrorKind::UnknownOutcome,
-        ),
-    ] {
-        let response = json!({"status":status,"output":[],"error":{"code":"new_error"},"incomplete_details":{"reason":reason}});
-        assert_eq!(
-            parse_openai_responses_output(&response).unwrap_err().kind,
-            kind
+    {
+        let response = json!({"status":"failed","output":[],"error":{"code":"new_error"}});
+        let batch = parse_openai_responses_output(&response).unwrap_err().kind;
+        let streamed = fail(
+            Protocol::OpenAiResponses,
+            &[json!({"type":"response.failed","response":response})],
         );
+        assert_eq!(batch, streamed);
+        assert_eq!(batch, ModelInvokeErrorKind::Permanent);
+    }
+    // An incomplete response is data even when its reason is unknown: both
+    // entry points report Unrecognized and keep the wire reason.
+    {
+        let response = json!({
+            "status":"incomplete",
+            "output":[],
+            "incomplete_details":{"reason":"new_reason"},
+        });
+        let expected = parse_openai_responses_output(&response).unwrap();
+        assert_eq!(expected.stop_reason, ModelStopReason::Unrecognized);
         assert_eq!(
-            fail(
-                Protocol::OpenAiResponses,
-                &[json!({"type":format!("response.{status}"),"response":response})]
-            ),
-            kind
+            expected.raw_stop_reason.as_deref(),
+            Some("incomplete.new_reason")
+        );
+        paired(
+            Protocol::OpenAiResponses,
+            &wire(&[json!({"type":"response.incomplete","response":response})]),
+            &expected,
         );
     }
     for (reason, expected) in [
@@ -414,7 +425,7 @@ fn usage_partial_nested_snapshots_preserve_counts_and_ignore_extensions() {
 }
 
 #[test]
-fn unknown_anthropic_block_extensions_are_not_retained() {
+fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
     let events = [
         json!({"type":"message_start","message":{"content":[]}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"opaque","data":"secret".repeat(1000)}}),
@@ -424,7 +435,93 @@ fn unknown_anthropic_block_extensions_are_not_retained() {
         json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
         json!({"type":"message_stop"}),
     ];
+    // Unknown assistant blocks are sealed material now: with a sufficient
+    // budget the block survives whole, in place, and the Anthropic renderer
+    // writes it back byte-identically (the stored item is the block itself).
     let deltas = collect(
+        Protocol::AnthropicMessages,
+        &wire(&events),
+        usize::MAX,
+        StreamLimits::default(),
+    )
+    .unwrap();
+    let out = output(&deltas);
+    assert_eq!(out.response.text(), "");
+    let sealed: Vec<Value> = out
+        .response
+        .items
+        .iter()
+        .flat_map(|item| match &item.content {
+            causa_kernel::ModelItemContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    causa_kernel::ContentPart::Sealed(sealed) => Some(sealed.item.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(
+        sealed,
+        vec![
+            json!({"type": "opaque", "data": "secret".repeat(1000)}),
+            json!({"type": "opaque", "data": "secret".repeat(1000)}),
+        ]
+    );
+    let block = causa_kernel::ContextBlock::new(
+        causa_kernel::BlockId::new(uuid::Uuid::from_u128(7)),
+        causa_kernel::BlockContent::Parts(
+            sealed
+                .iter()
+                .map(|item| {
+                    causa_kernel::ContentPart::Sealed(causa_kernel::SealedPart {
+                        format: Protocol::AnthropicMessages.as_str().into(),
+                        item: item.clone(),
+                    })
+                })
+                .collect(),
+        ),
+        causa_kernel::BlockMeta::default(),
+    );
+    let rendered = crate::translation::anthropic::render_anthropic_messages(
+        &causa_kernel::ContextFrame {
+            blocks: vec![
+                causa_kernel::ContextBlock::new(
+                    causa_kernel::BlockId::new(uuid::Uuid::from_u128(1)),
+                    causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                        causa_kernel::TextPayload::new("hi"),
+                    )]),
+                    causa_kernel::BlockMeta {
+                        source: Some("user".into()),
+                        ..causa_kernel::BlockMeta::default()
+                    },
+                ),
+                block,
+            ],
+        },
+        &crate::translation::media::MediaSet::new(),
+        &causa_kernel::ToolSurface::empty(),
+        &causa_kernel::GenerationOptions {
+            max_tokens: Some(64),
+            ..causa_kernel::GenerationOptions::default()
+        },
+        &causa_kernel::ModelRef::new("m"),
+        causa_kernel::CacheDirective::None,
+        &crate::translation::render_options::AnthropicRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        rendered["messages"][1]["content"],
+        json!([
+            {"type": "opaque", "data": "secret".repeat(1000)},
+            {"type": "opaque", "data": "secret".repeat(1000)},
+        ])
+    );
+
+    // Retention is budgeted, not exempt: the same stream under a 20-byte
+    // output budget still fails on the resource boundary.
+    let error = collect(
         Protocol::AnthropicMessages,
         &wire(&events),
         usize::MAX,
@@ -433,8 +530,8 @@ fn unknown_anthropic_block_extensions_are_not_retained() {
             ..StreamLimits::default()
         },
     )
-    .unwrap();
-    assert_eq!(output(&deltas).response.text(), "");
+    .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
 }
 
 #[test]
@@ -570,17 +667,41 @@ fn large_tool_identity_is_not_copied_into_every_argument_fragment() {
 #[test]
 fn unknown_responses_incomplete_reason_and_status_are_safe_diagnostics() {
     let secret = "echoed prompt and tool parameters";
+    // An unknown incomplete reason is reported as data: the raw value reaches
+    // the host through raw_stop_reason, not through a diagnostic message.
     let response =
         json!({"status":"incomplete","incomplete_details":{"reason":secret},"output":[]});
-    let error = parse_openai_responses_output(&response).unwrap_err();
-    assert_eq!(error.kind, ModelInvokeErrorKind::UnknownOutcome);
-    assert!(!error.message.contains(secret));
+    let parsed = parse_openai_responses_output(&response).unwrap();
+    assert_eq!(parsed.stop_reason, ModelStopReason::Unrecognized);
+    assert_eq!(
+        parsed.raw_stop_reason.as_deref(),
+        Some(format!("incomplete.{secret}").as_str())
+    );
+    let streamed = collect(
+        Protocol::OpenAiResponses,
+        &wire(&[json!({"type":"response.incomplete","response":response})]),
+        usize::MAX,
+        StreamLimits::default(),
+    )
+    .unwrap();
+    let streamed = output(&streamed);
+    assert_eq!(streamed.stop_reason, ModelStopReason::Unrecognized);
+    assert_eq!(
+        streamed.raw_stop_reason.as_deref(),
+        Some(format!("incomplete.{secret}").as_str())
+    );
+    // An unknown status is still a safe diagnostic that never echoes the value.
     let error = parse_openai_responses_output(&json!({"status":secret,"output":[]})).unwrap_err();
     assert_eq!(error.kind, ModelInvokeErrorKind::UnknownOutcome);
     assert!(!error.message.contains(secret));
+    // The terminal event kind must match the status, so the probe carries the
+    // same value in both slots.
     let error = collect(
         Protocol::OpenAiResponses,
-        &wire(&[json!({"type":"response.incomplete","response":response})]),
+        &wire(&[json!({
+            "type": format!("response.{secret}"),
+            "response": {"status": secret, "output": []},
+        })]),
         usize::MAX,
         StreamLimits::default(),
     )

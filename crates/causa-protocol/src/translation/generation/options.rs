@@ -41,9 +41,27 @@ pub(in crate::translation) fn validate_anthropic(
     generation: &GenerationOptions,
 ) -> Result<(), ModelInvokeError> {
     validate_bounds(generation, 1.0)?;
-    if generation.reasoning_effort.is_some() {
+    // Anthropic requires `max_tokens`; thinking counts toward it and is on by
+    // default on current models, so the adapter invents no ceiling on the
+    // host's spend.
+    if generation.max_tokens.is_none() {
         return Err(invalid(
-            "reasoning_effort is unsupported by the Anthropic adapter: complete thinking-block replay is unavailable",
+            "max_tokens is required by the Anthropic Messages API; the adapter sends no default",
+        ));
+    }
+    // The effort table maps every other value; `minimal` has no wire level.
+    if generation.reasoning_effort == Some(ReasoningEffort::Minimal) {
+        return Err(invalid(
+            "reasoning_effort minimal has no Anthropic Messages equivalent",
+        ));
+    }
+    if generation.temperature.is_some()
+        && generation
+            .reasoning_effort
+            .is_some_and(|effort| effort != ReasoningEffort::None)
+    {
+        return Err(invalid(
+            "temperature cannot be combined with active reasoning_effort",
         ));
     }
     if generation.output_schema.is_some() {

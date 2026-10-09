@@ -100,7 +100,11 @@ gateways now implement real HTTP SSE through `ModelGateway::stream()`.
 Use `TurnRunner::run_streaming()` with `TurnRunOptions::observer` to observe
 increments during a run. Deltas are provisional; only the complete terminal
 output supplies context material. Cancellation, deadlines and dropping the
-stream stop local consumption without an automatic retry.
+stream stop local consumption without an automatic retry: the runner makes one
+logical gateway call per round and the first failure ends it. Retries are an
+explicit host choice — wrap the gateway in `causa::runtime::RetryingGateway`
+with a `RetryPolicy` — and the wrapper never retries once any stream delta has
+been yielded.
 
 This provider implementation is not in the published `0.0.2` crates, whose
 built-in gateways return a single completed output from the stream entry.
@@ -110,14 +114,28 @@ for supported events, resource limits and direct consumption.
 ### Generation options on main (unreleased)
 
 On unreleased `main`, `GenerationOptions::reasoning_effort` selects a
-serializable `ReasoningEffort`. OpenAI Chat renders `reasoning_effort` and
-`max_completion_tokens`; Responses renders `reasoning.effort` and
-`max_output_tokens`. Limits include reasoning tokens where counted by the
-provider. Omitted effort leaves the provider default in force; explicit `none`
-requests no reasoning. Active effort with temperature is rejected locally.
-Hosts validate per-model support and default/sampling compatibility. This adds
-no reasoning-history replay; Anthropic effort and output schemas are rejected
-by the built-in adapter.
+serializable `ReasoningEffort` and renders on all three wires. OpenAI Chat
+renders `reasoning_effort` and `max_completion_tokens`; Responses renders
+`reasoning.effort` and `max_output_tokens`; Anthropic renders
+`thinking: {"type": "adaptive"}` plus `output_config.effort` for every level
+above `none`, `thinking: {"type": "disabled"}` for explicit `none`, and no
+`thinking` field when effort is unset. `minimal` has no Anthropic level and
+fails with `InvalidRequest` before HTTP, as does `output_schema`. Anthropic
+also requires `max_tokens`: a request without one is rejected before HTTP
+rather than defaulted. Limits include reasoning tokens where counted by the
+provider. Active effort with temperature is rejected locally; hosts validate
+per-model support and default/sampling compatibility.
+
+Reasoning state replays as sealed context material: the Anthropic and
+Responses parsers keep provider reasoning items whole, and the Chat renderer
+sends sealed `reasoning_content` back, so a thinking-enabled tool loop can run
+on any of the three wires. Responses sends
+`include: ["reasoning.encrypted_content"]` and `store: false` by default.
+Renderer-specific choices live in `causa_protocol::translation::render_options`
+and are set on the matching gateway (`with_prefix_mismatch_behavior`,
+`with_beta`, `with_encrypted_reasoning`, `with_store`,
+`with_reasoning_content_replay`); each applies to the gateway value, not to
+one request.
 
 ### Choose your features
 

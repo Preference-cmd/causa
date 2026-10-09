@@ -45,10 +45,10 @@ async fn consume(
     while let Some(delta) = stream.next().await {
         match delta {
             StreamDelta::TextDelta { delta } => print!("{delta}"),
-            StreamDelta::Done { final_output, .. } => return Ok(final_output),
-            StreamDelta::Error { kind, message } => {
-                return Err(ModelInvokeError::new(kind, message));
-            }
+            StreamDelta::Done { final_output } => return Ok(final_output),
+            // The in-band failure carries the gateway's own error, so a retry
+            // wrapper can see its classification and any server-requested delay.
+            StreamDelta::Error { error } => return Err(error),
             _ => {}
         }
     }
@@ -82,10 +82,16 @@ checks as `invoke()`, plus protocol-specific streaming options. Successful HTTP
 responses must use `Content-Type: text/event-stream`. There is no fallback
 request for endpoints that return a complete JSON body instead.
 
-This does not add audio/image generation streams, provider-hosted tools,
-multi-choice Chat output, proprietary reasoning fields or cross-turn thinking
-replay. Reasoning is exposed only when the provider actually sends a supported
-event; the adapter does not add a new option to request thinking.
+This does not add audio/image generation streams, provider-hosted tools or
+multi-choice Chat output. Reasoning is exposed when the provider sends a
+supported event, and cross-turn replay works: Anthropic `thinking` and
+`redacted_thinking`, Responses `reasoning` items and Chat
+`reasoning_content` are kept as sealed parts and replayed verbatim by their
+own renderer, so a thinking-enabled tool loop can echo back what it received.
+On Anthropic, `GenerationOptions::reasoning_effort` is what requests thinking
+(unset sends no `thinking` field, `none` disables it, the other levels send an
+adaptive shape); the streaming decoder keeps whole blocks so streaming and
+batch agree on what is replayed.
 
 ## Cancellation and resources
 
@@ -98,12 +104,15 @@ individual parse midway.
 The implementation reads on demand, with no detached reader task or unlimited
 background queue. Dropping the stream releases local HTTP and parsing state;
 accepting a terminal stops reading without waiting for connection EOF. This
-does not prove that remote model computation has stopped. No automatic retry,
-reconnect or continuation request occurs after a partial result or failure.
-The default HTTP client disables protocol retries and redirects. If you inject
-a client with `with_http_client`, its transport policies remain yours; disable
-retries and redirects on that client when you require the same single-request
-behavior.
+does not prove that remote model computation has stopped. The runner makes one
+logical gateway call and never retries it: no reconnect or continuation request
+occurs after a partial result or failure, so an application that wants retries
+wraps its gateway in `causa::runtime::RetryingGateway` (or an equivalent of
+its own) — optional, off unless you build it, and never retried once any delta
+has been yielded. The default HTTP client disables protocol retries and
+redirects. If you inject a client with `with_http_client`, its transport
+policies remain yours; disable retries and redirects on that client when you
+require the same single-request behavior.
 
 Use `causa::providers::StreamLimits` with `gateway.with_stream_limits(limits)`
 to choose explicit positive limits:

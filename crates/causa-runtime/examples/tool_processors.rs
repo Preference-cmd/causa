@@ -124,6 +124,7 @@ impl ModelGateway for ResearchGateway {
                 ModelStopReason::ToolUse
             },
             reasoning: None,
+            raw_stop_reason: None,
         })
     }
 }

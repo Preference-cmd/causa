@@ -4,14 +4,17 @@ use causa_kernel::{
     GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelRef, ReasoningEffort,
     TextPayload, ToolSurface,
 };
+use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 use causa_protocol::translation::{
     anthropic::render_anthropic_messages, media::MediaSet,
     openai_chat::render_openai_chat_messages, openai_responses::render_openai_responses_input,
 };
 use serde_json::{Value, json};
 
-fn render(protocol: usize, generation: &GenerationOptions) -> Result<Value, ModelInvokeError> {
-    let frame = ContextFrame {
+fn frame() -> ContextFrame {
+    ContextFrame {
         blocks: vec![ContextBlock::new(
             BlockId::new(uuid::Uuid::from_u128(1)),
             BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
@@ -20,21 +23,65 @@ fn render(protocol: usize, generation: &GenerationOptions) -> Result<Value, Mode
                 ..Default::default()
             },
         )],
-    };
-    let renderer = match protocol {
-        0 => render_openai_chat_messages,
-        1 => render_openai_responses_input,
-        _ => render_anthropic_messages,
-    };
-    renderer(
-        &frame,
+    }
+}
+
+fn render_chat(
+    generation: &GenerationOptions,
+    options: &ChatRenderOptions,
+) -> Result<Value, ModelInvokeError> {
+    render_openai_chat_messages(
+        &frame(),
         &MediaSet::new(),
         &ToolSurface::empty(),
         generation,
         &ModelRef::new("configured-model"),
         CacheDirective::None,
+        options,
     )
 }
+
+fn render_responses(
+    generation: &GenerationOptions,
+    options: &ResponsesRenderOptions,
+) -> Result<Value, ModelInvokeError> {
+    render_openai_responses_input(
+        &frame(),
+        &MediaSet::new(),
+        &ToolSurface::empty(),
+        generation,
+        &ModelRef::new("configured-model"),
+        CacheDirective::None,
+        options,
+    )
+}
+
+fn render_anthropic(
+    generation: &GenerationOptions,
+    options: &AnthropicRenderOptions,
+) -> Result<Value, ModelInvokeError> {
+    render_anthropic_messages(
+        &frame(),
+        &MediaSet::new(),
+        &ToolSurface::empty(),
+        generation,
+        &ModelRef::new("configured-model"),
+        CacheDirective::None,
+        options,
+    )
+}
+
+fn render(protocol: usize, generation: &GenerationOptions) -> Result<Value, ModelInvokeError> {
+    match protocol {
+        0 => render_chat(generation, &ChatRenderOptions::default()),
+        1 => render_responses(generation, &ResponsesRenderOptions::default()),
+        _ => render_anthropic(generation, &AnthropicRenderOptions::default()),
+    }
+}
+
+/// `max_tokens` every case supplies unless the case is about the limit itself:
+/// the Anthropic wire requires one.
+const LIMIT: u32 = 8192;
 
 #[test]
 fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
@@ -49,21 +96,23 @@ fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
     ] {
         let generation = GenerationOptions {
             reasoning_effort: Some(effort),
-            max_tokens: Some(8192),
+            max_tokens: Some(LIMIT),
             ..Default::default()
         };
         let chat = render(0, &generation).unwrap();
         assert_eq!(chat["reasoning_effort"], wire);
-        assert_eq!(chat["max_completion_tokens"], 8192);
+        assert_eq!(chat["max_completion_tokens"], LIMIT);
         assert!(chat.get("max_tokens").is_none());
         assert!(chat.get("reasoning").is_none());
         let responses = render(1, &generation).unwrap();
         assert_eq!(responses["reasoning"], json!({"effort": wire}));
-        assert_eq!(responses["max_output_tokens"], 8192);
+        assert_eq!(responses["max_output_tokens"], LIMIT);
         assert!(responses.get("reasoning_effort").is_none());
         assert_eq!(responses, render(1, &generation).unwrap());
     }
     for protocol in [0, 1] {
+        // Unset generation options render nothing on the OpenAI wires
+        // (`include`/`store` are separate, covered below).
         let body = render(protocol, &GenerationOptions::default()).unwrap();
         for key in [
             "reasoning",
@@ -88,6 +137,155 @@ fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
 }
 
 #[test]
+fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
+    // Unset effort: no thinking field and no output_config.
+    let body = render_anthropic(
+        &GenerationOptions {
+            max_tokens: Some(LIMIT),
+            ..Default::default()
+        },
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(body["max_tokens"], LIMIT);
+    assert!(body.get("thinking").is_none());
+    assert!(body.get("output_config").is_none());
+
+    // `None`: thinking explicitly disabled, no effort level.
+    let body = render_anthropic(
+        &GenerationOptions {
+            reasoning_effort: Some(ReasoningEffort::None),
+            max_tokens: Some(LIMIT),
+            ..Default::default()
+        },
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    assert!(body.get("output_config").is_none());
+
+    // Low..Max: adaptive thinking plus the effort level.
+    for (effort, wire) in [
+        (ReasoningEffort::Low, "low"),
+        (ReasoningEffort::Medium, "medium"),
+        (ReasoningEffort::High, "high"),
+        (ReasoningEffort::XHigh, "xhigh"),
+        (ReasoningEffort::Max, "max"),
+    ] {
+        let body = render_anthropic(
+            &GenerationOptions {
+                reasoning_effort: Some(effort),
+                max_tokens: Some(LIMIT),
+                ..Default::default()
+            },
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{wire}");
+        assert_eq!(body["output_config"], json!({"effort": wire}), "{wire}");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    // `Minimal` has no wire level.
+    let error = render_anthropic(
+        &GenerationOptions {
+            reasoning_effort: Some(ReasoningEffort::Minimal),
+            max_tokens: Some(LIMIT),
+            ..Default::default()
+        },
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
+    assert!(error.message.contains("minimal"), "{error}");
+
+    // No default ceiling: the limit is the host's to set.
+    let error = render_anthropic(
+        &GenerationOptions::default(),
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
+    assert!(error.message.contains("max_tokens"), "{error}");
+
+    // The prefix-mismatch option renders only alongside a thinking object.
+    let options = AnthropicRenderOptions {
+        prefix_mismatch_behavior: Some(
+            causa_protocol::translation::render_options::PrefixMismatchBehavior::DropBlock,
+        ),
+    };
+    let body = render_anthropic(
+        &GenerationOptions {
+            max_tokens: Some(LIMIT),
+            ..Default::default()
+        },
+        &options,
+    )
+    .unwrap();
+    assert!(body.get("thinking").is_none());
+    let body = render_anthropic(
+        &GenerationOptions {
+            reasoning_effort: Some(ReasoningEffort::High),
+            max_tokens: Some(LIMIT),
+            ..Default::default()
+        },
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        body["thinking"],
+        json!({
+            "type": "adaptive",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        })
+    );
+}
+
+#[test]
+fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
+    let generation = GenerationOptions {
+        reasoning_effort: Some(ReasoningEffort::High),
+        max_tokens: Some(LIMIT),
+        ..Default::default()
+    };
+    let body = render_responses(&generation, &ResponsesRenderOptions::default()).unwrap();
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(body["reasoning"], json!({"effort": "high"}));
+
+    // Each option changes exactly its own field.
+    let body = render_responses(
+        &generation,
+        &ResponsesRenderOptions {
+            include_encrypted_reasoning: false,
+            ..ResponsesRenderOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(body.get("include").is_none());
+    assert_eq!(body["store"], json!(false));
+    let body = render_responses(
+        &generation,
+        &ResponsesRenderOptions {
+            store: None,
+            ..ResponsesRenderOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert!(body.get("store").is_none());
+    let body = render_responses(
+        &generation,
+        &ResponsesRenderOptions {
+            store: Some(true),
+            ..ResponsesRenderOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(body["store"], json!(true));
+}
+
+#[test]
 fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
     for protocol in [0, 1, 2] {
         for generation in [
@@ -96,22 +294,27 @@ fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(LIMIT),
                 temperature: Some(f32::NAN),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(LIMIT),
                 temperature: Some(f32::INFINITY),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(LIMIT),
                 temperature: Some(-0.1),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(LIMIT),
                 temperature: Some(2.1),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(LIMIT),
                 reasoning_effort: Some(ReasoningEffort::High),
                 temperature: Some(1.0),
                 ..Default::default()
@@ -123,30 +326,11 @@ fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
             );
         }
     }
-    for effort in [
-        ReasoningEffort::None,
-        ReasoningEffort::Minimal,
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-        ReasoningEffort::XHigh,
-        ReasoningEffort::Max,
-    ] {
-        let error = render(
-            2,
-            &GenerationOptions {
-                reasoning_effort: Some(effort),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
-        assert!(error.message.contains("thinking-block replay"));
-    }
     assert!(
         render(
             2,
             &GenerationOptions {
+                max_tokens: Some(LIMIT),
                 output_schema: Some(json!({"type": "object"})),
                 ..Default::default()
             }
@@ -157,14 +341,11 @@ fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
         render(
             2,
             &GenerationOptions {
+                max_tokens: Some(LIMIT),
                 temperature: Some(1.1),
                 ..Default::default()
             }
         )
         .is_err()
-    );
-    assert_eq!(
-        render(2, &GenerationOptions::default()).unwrap()["max_tokens"],
-        4096
     );
 }

@@ -43,10 +43,19 @@ serializable `ReasoningEffort` values `none`, `minimal`, `low`, `medium`, `high`
 limits to `max_completion_tokens`; Responses uses `reasoning.effort` and
 `max_output_tokens`. Limits include reasoning tokens where counted. Omission
 keeps provider defaults; explicit `none` requests no reasoning. Active effort
-with temperature fails locally. Hosts must validate the selected model's
-supported values, default/sampling compatibility and tool support. Causa adds
-no reasoning-history replay, and its Anthropic adapter rejects effort and
-output schema requests.
+with temperature fails locally. Anthropic renders effort too: unset sends no
+`thinking` field, `none` sends it disabled, and the other levels send adaptive
+thinking with `output_config.effort`; `minimal` fails locally because the
+format has no such level. Anthropic requests must set `max_tokens` — that
+adapter no longer supplies a default.
+
+Reasoning items that have to be echoed back are stored as sealed parts:
+Anthropic `thinking` (with its signature) and `redacted_thinking`, Responses
+`reasoning` items, and Chat `reasoning_content` are carried uninterpreted and
+replayed verbatim by their own renderer. Responses requests send
+`include: ["reasoning.encrypted_content"]` and `store: false` by default, and
+each behaviour has a gateway option. Anthropic output schema requests are still
+rejected.
 
 Full API docs for every crate: [docs.rs/crate/causa](https://docs.rs/causa)
 (built with `all-features`).

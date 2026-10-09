@@ -27,7 +27,11 @@
 //!
 //! Shared structural policy (applied once in `context_frame`, so the
 //! three renderers cannot drift): zero-length text is skipped
-//! (mirroring the kernel model door; whitespace-only text is content);
+//! (mirroring the kernel model door; whitespace-only text is content, and
+//! the walk keeps it); one listed exception at emission — the Anthropic and
+//! Chat renderers omit a whitespace-only assistant text part from the
+//! request while the Responses renderer keeps it, and the fact stays in the
+//! `Context` in every case;
 //! no text is joined across block seams, for any role, and no renderer
 //! inserts a character the model did not produce; tool ids come from
 //! `meta.provider_call_id` with the declaration `BlockId` UUID as fallback,
@@ -53,9 +57,17 @@
 //! skipped, and one outside assistant position is an `InvalidRequest`.
 //! OpenAI-family tool calls keep the provider's `arguments` string in
 //! `fields`; it is sent unchanged only while it parses to the fact's value.
-//! Reasoning replay is a separate change: `thinking` (Anthropic) and
-//! `reasoning` (Responses) items feed the reasoning observation and are not
-//! stored.
+//! Reasoning replay is material, not an observation: an Anthropic `thinking`
+//! (signature included), `redacted_thinking` or unknown content block, a
+//! Responses `reasoning` item and any other unknown output item, and a Chat
+//! message-level residue such as `reasoning_content` are each kept as one
+//! sealed item in place, so the turn is echoed back as returned. The readable
+//! thinking text additionally feeds the reasoning observation, which is
+//! display-only.
+//!
+//! Each renderer takes one renderer-specific argument, defined in
+//! [`render_options`]: Anthropic prefix-mismatch binding, Responses
+//! `include`/`store`, and the Chat `reasoning_content` replay opt-out.
 
 /// The schema name rendered into OpenAI-family structured-output envelopes
 /// (Chat `response_format.json_schema.name`, Responses `text.format.name`).
@@ -69,7 +81,9 @@ mod generation;
 pub mod media;
 pub mod openai_chat;
 pub mod openai_responses;
+pub mod render_options;
 pub mod sse_parser;
+mod stop_reason;
 pub mod streaming;
 mod tool_history;
 pub mod usage;

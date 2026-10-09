@@ -102,7 +102,7 @@ impl Anthropic {
                         "Anthropic block index must follow declaration order",
                     ));
                 }
-                let mut wire = value
+                let wire = value
                     .get("content_block")
                     .cloned()
                     .ok_or_else(|| permanent("Anthropic missing content_block"))?;
@@ -159,35 +159,28 @@ impl Anthropic {
                     }
                     _ => {}
                 }
-                // Thinking and unknown blocks keep only what the complete
-                // parser consumes: opaque provider data must not accumulate.
-                // `text` and `tool_use` blocks keep every field the stream
-                // delivers, because the parser stores them as the block's
-                // wire residue; that residue is budgeted like any output.
+                // Every block is kept as the complete parser stores it:
+                // `text` and `tool_use` residue, `thinking` with its
+                // signature, `redacted_thinking` and unknown block types as
+                // sealed material. Nothing is stripped; every field the
+                // stream delivers is budgeted like any output.
                 let object = wire
-                    .as_object_mut()
+                    .as_object()
                     .ok_or_else(|| permanent("Anthropic block must be an object"))?;
-                match block_type.as_str() {
-                    "text" | "tool_use" => {
-                        let known: &[&str] = if block_type == "text" {
-                            &["type", "text"]
-                        } else {
-                            &["type", "id", "name", "input"]
-                        };
-                        for (key, value) in object.iter() {
-                            if !known.contains(&key.as_str()) {
-                                self.budget.add(
-                                    key.len()
-                                        + serde_json::to_vec(value)
-                                            .map_err(|_| permanent("Anthropic invalid field"))?
-                                            .len(),
-                                )?;
-                            }
-                        }
+                let known: &[&str] = match block_type.as_str() {
+                    "text" => &["type", "text"],
+                    "tool_use" => &["type", "id", "name", "input"],
+                    _ => &[],
+                };
+                for (key, value) in object.iter() {
+                    if !known.contains(&key.as_str()) {
+                        self.budget.add(
+                            key.len()
+                                + serde_json::to_vec(value)
+                                    .map_err(|_| permanent("Anthropic invalid field"))?
+                                    .len(),
+                        )?;
                     }
-                    "thinking" => object
-                        .retain(|key, _| ["type", "thinking", "signature"].contains(&key.as_str())),
-                    _ => object.retain(|key, _| key == "type"),
                 }
                 if block_type == "tool_use" {
                     self.budget.add(
@@ -330,17 +323,9 @@ impl Anthropic {
                     let reason = reason
                         .as_str()
                         .ok_or_else(|| permanent("Anthropic invalid stop_reason"))?;
-                    if !matches!(
-                        reason,
-                        "end_turn"
-                            | "tool_use"
-                            | "max_tokens"
-                            | "stop_sequence"
-                            | "refusal"
-                            | "pause_turn"
-                    ) {
-                        return Err(permanent("Anthropic unsupported stop_reason"));
-                    }
+                    // The value is recorded verbatim and classified by the same
+                    // mapping table the batch parser uses. An unknown value is
+                    // not an error here: it becomes Unrecognized downstream.
                     if self.stop_reason.as_deref().is_some_and(|old| old != reason) {
                         return Err(permanent("Anthropic stop_reason changed"));
                     }

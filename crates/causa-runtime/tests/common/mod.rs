@@ -14,6 +14,7 @@ pub fn endturn_output(text: &str) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 
@@ -31,6 +32,7 @@ pub fn tooluse_calls_output(text: &str, calls: Vec<ToolCallDraft>) -> ModelOutpu
         usage: None,
         stop_reason: ModelStopReason::ToolUse,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 

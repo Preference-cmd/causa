@@ -256,6 +256,52 @@ fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
 }
 
 #[test]
+fn sealed_parts_are_edited_and_removed_through_the_existing_context_api() {
+    let original = ContextBlock::new(
+        common::block_id(),
+        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
+            format: "anthropic_messages".into(),
+            item: json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
+        })]),
+        BlockMeta {
+            source: Some("assistant".into()),
+            ..BlockMeta::default()
+        },
+    );
+    let mut context = Context::from_blocks(vec![original]).unwrap();
+
+    // Replace it with a new identity carrying a different sealed item: the
+    // kernel validates ranges and block identity, never the provider item, so
+    // no new API and no sealed-specific rule is involved.
+    let edited = ContextBlock::new(
+        common::block_id(),
+        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
+            format: "anthropic_messages".into(),
+            item: json!({"type": "thinking", "thinking": "edited", "signature": "sig"}),
+        })]),
+        BlockMeta {
+            source: Some("assistant".into()),
+            ..BlockMeta::default()
+        },
+    );
+    context
+        .edit()
+        .replace(0..1, [edited.clone()])
+        .commit()
+        .unwrap();
+    assert_eq!(context.blocks().len(), 1);
+    assert_eq!(context.blocks()[0].id(), edited.id());
+    assert!(matches!(
+        context.blocks()[0].content(),
+        BlockContent::Parts(parts) if matches!(parts.as_slice(), [ContentPart::Sealed(_)])
+    ));
+
+    // Remove the sealed material entirely; nothing else changes.
+    context.edit().replace(0..1, []).commit().unwrap();
+    assert!(context.blocks().is_empty());
+}
+
+#[test]
 fn model_response_round_trips_through_serde() {
     let response = ModelResponse {
         items: vec![

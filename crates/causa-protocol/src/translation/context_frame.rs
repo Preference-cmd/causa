@@ -52,7 +52,7 @@ use serde_json::Value;
 
 use causa_kernel::{
     BlockContent, ContentPart, ContextFrame, MediaRef, ModelInvokeError, ModelInvokeErrorKind,
-    ToolResultStatus, ToolSurface, WireMeta,
+    ModelItem, ModelItemContent, SealedPart, ToolResultStatus, ToolSurface, WireMeta,
 };
 
 use super::media::MediaSet;
@@ -137,6 +137,41 @@ pub(crate) struct Origin {
     pub wire: Option<Value>,
 }
 
+/// The number of leading segments that render into the top-level system
+/// parameter.
+///
+/// A system block that precedes all conversation content renders there — that
+/// is its position, and the API rejects a `system` message as the first entry
+/// of `messages`. A system block appended after conversation content is an
+/// append like any other and renders at its position as an inline system
+/// message; a renderer never hoists it. Only text and degraded system media
+/// can serve as leading system content, and any non-system segment ends the
+/// run.
+pub(crate) fn leading_system_len(segments: &[Segment]) -> usize {
+    segments
+        .iter()
+        .take_while(|segment| {
+            matches!(
+                segment,
+                Segment::Text {
+                    role: Role::System,
+                    ..
+                } | Segment::Media {
+                    role: Role::System,
+                    media: ResolvedMedia::Placeholder(_),
+                }
+            )
+        })
+        .count()
+}
+
+/// Whether a text segment is blank for rendering purposes: it carries no
+/// visible character, so a renderer may omit it from the request. The fact
+/// stays in the `Context`; only the rendered request differs.
+pub(crate) fn is_blank_text(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
 /// Length of the run of assistant text segments from `from` that came from
 /// the same block as `segments[from]`.
 pub(crate) fn same_block_run(segments: &[Segment], from: usize) -> usize {
@@ -172,6 +207,19 @@ pub(crate) fn wire_meta(protocol: Protocol, fields: Value) -> WireMeta {
     WireMeta {
         format: protocol.as_str().to_owned(),
         fields,
+    }
+}
+
+/// One `ModelItem` holding a single sealed part of `protocol`'s format. The
+/// value is carried uninterpreted; the matching emitter writes it back
+/// verbatim, and every other emitter skips it.
+pub(crate) fn sealed_item(protocol: Protocol, item: Value) -> ModelItem {
+    ModelItem {
+        content: ModelItemContent::Parts(vec![ContentPart::Sealed(SealedPart {
+            format: protocol.as_str().to_owned(),
+            item,
+        })]),
+        wire: None,
     }
 }
 

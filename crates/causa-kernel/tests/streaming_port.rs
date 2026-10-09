@@ -34,6 +34,7 @@ fn output(text: &str) -> ModelOutput {
         usage: None,
         stop_reason: ModelStopReason::EndTurn,
         reasoning: None,
+        raw_stop_reason: None,
     }
 }
 
@@ -75,11 +76,8 @@ async fn default_stream_degenerates_to_single_done() {
     }
     assert_eq!(items.len(), 1, "degenerate stream is exactly one Done");
     match &items[0] {
-        StreamDelta::Done {
-            stop_reason,
-            final_output,
-        } => {
-            assert_eq!(*stop_reason, ModelStopReason::EndTurn);
+        StreamDelta::Done { final_output } => {
+            assert_eq!(final_output.stop_reason, ModelStopReason::EndTurn);
             assert_eq!(final_output.response.text(), "hello");
         }
         other => panic!("expected Done, got {other:?}"),

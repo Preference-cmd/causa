@@ -75,7 +75,14 @@ impl ModelResponse {
             ModelStopReason::ToolUse if tool_count == 0 => {
                 return Err(ModelBlockError::ToolUseWithoutToolCalls);
             }
-            _ => {}
+            // The runner commits only for EndTurn and ToolUse; the other four
+            // reasons are interruptions, so conversion applies no policy.
+            ModelStopReason::EndTurn
+            | ModelStopReason::ToolUse
+            | ModelStopReason::MaxTokens
+            | ModelStopReason::Refusal
+            | ModelStopReason::ContextWindowExceeded
+            | ModelStopReason::Unrecognized => {}
         }
         let expected = self.block_count();
         if expected != block_ids.len() {

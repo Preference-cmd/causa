@@ -70,7 +70,12 @@ async fn invalid_tool_material_never_reaches_http_for_any_gateway() {
             frame: context.frame(),
             model: ModelRef::new("test"),
             tool_surface: ToolSurface::empty(),
-            generation: GenerationOptions::default(),
+            // A limit, so every rejection below is the frame's, not the
+            // Anthropic wire's required `max_tokens`.
+            generation: GenerationOptions {
+                max_tokens: Some(64),
+                ..GenerationOptions::default()
+            },
             cache: CacheDirective::None,
         };
         for gateway in &gateways {

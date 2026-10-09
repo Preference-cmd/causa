@@ -112,6 +112,7 @@ impl ModelGateway for Recorder {
                 usage: None,
                 stop_reason: ModelStopReason::ToolUse,
                 reasoning: None,
+                raw_stop_reason: None,
             }
         } else {
             ModelOutput {
@@ -121,6 +122,7 @@ impl ModelGateway for Recorder {
                 usage: None,
                 stop_reason: ModelStopReason::EndTurn,
                 reasoning: None,
+                raw_stop_reason: None,
             }
         })
     }

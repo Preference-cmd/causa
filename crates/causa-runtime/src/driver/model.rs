@@ -70,8 +70,8 @@ pub(super) async fn invoke(
             call_control.check().map_err(stream_control_error)?;
             match delta {
                 StreamDelta::Done { final_output, .. } => return Ok(final_output),
-                StreamDelta::Error { kind, message } => {
-                    return Err(ModelInvokeError::new(kind, message));
+                StreamDelta::Error { error } => {
+                    return Err(error);
                 }
                 delta => notify(
                     options,

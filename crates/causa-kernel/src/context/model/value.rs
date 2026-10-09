@@ -37,6 +37,13 @@ pub enum ModelStopReason {
     MaxTokens,
     /// The model (or a provider content filter) refused to produce output.
     Refusal,
+    /// The provider stopped because the context window was exhausted. The
+    /// output was not committed; the runner reports it as an interruption.
+    ContextWindowExceeded,
+    /// The provider reported a stop value this kernel has no meaning for. The
+    /// output was not committed and the wire value is preserved on
+    /// `ModelOutput::raw_stop_reason`.
+    Unrecognized,
 }
 
 /// The model door's fact shape: what the model produced, as an ordered list

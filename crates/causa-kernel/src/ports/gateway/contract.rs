@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::context::ids::InvocationId;
 use crate::context::material::ContextFrame;
@@ -48,8 +49,9 @@ pub enum ReasoningEffort {
 }
 
 /// Generation knobs a caller may pin for the invocation. `None` leaves the
-/// provider default in force, except Anthropic's required output-token limit
-/// (the built-in renderer supplies its documented default).
+/// provider default in force, except Anthropic's required output-token limit:
+/// that adapter rejects a missing `max_tokens` before HTTP rather than
+/// inventing a ceiling on the host's spend.
 /// Protocol adapters reject options they cannot faithfully render. Hosts own
 /// model-specific capability validation, defaults, and aggregate budgets.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -59,14 +61,18 @@ pub struct GenerationOptions {
     /// Upper bound on generated tokens, including reasoning tokens where the
     /// provider counts them. OpenAI Chat renders `max_completion_tokens`,
     /// Responses renders `max_output_tokens`, and Anthropic renders `max_tokens`.
-    /// `None` omits the limit except for Anthropic's required default.
+    /// `None` omits the limit on the OpenAI wires; Anthropic requires the
+    /// field and rejects a missing value before HTTP.
     pub max_tokens: Option<u32>,
     /// Requested reasoning effort. `None` leaves the provider default in force;
     /// `Some(ReasoningEffort::None)` explicitly requests no reasoning.
-    /// OpenAI Chat and Responses render this natively. The built-in Anthropic
-    /// adapter rejects it because complete thinking replay is unsupported.
-    /// Active effort and temperature cannot be combined in built-in OpenAI
-    /// adapters. Model-specific support remains the host's responsibility.
+    /// All three adapters render it natively: OpenAI Chat as
+    /// `reasoning_effort`, Responses as `reasoning.effort`, and Anthropic as
+    /// its `thinking` shape plus `output_config.effort`, where
+    /// `ReasoningEffort::Minimal` has no wire level and fails with
+    /// `InvalidRequest`. Active effort and temperature cannot be combined in
+    /// any built-in adapter. Model-specific support remains the host's
+    /// responsibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// JSON Schema the final response should satisfy, rendered natively
@@ -115,17 +121,18 @@ pub struct ModelUsage {
     pub reasoning_tokens: Option<usize>,
 }
 
-/// Structured reasoning content: the model's thinking text plus the optional
-/// provider signature some APIs attach so it can be replayed on later turns.
+/// Structured reasoning content: the model's readable thinking text.
 /// Recorded as-is by callers; the kernel does not interpret or persist it.
+///
+/// The provider item that must be echoed back on later turns — Anthropic's
+/// `thinking` block with its signature, a Responses `reasoning` item — is not
+/// here: it is context material, carried as a [`crate::ContentPart::Sealed`]
+/// part whose stored value holds the signature. This observation is
+/// display-only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReasoningPayload {
     /// The model's thinking text.
     pub text: String,
-    /// Provider signature that lets the reasoning be replayed on later turns,
-    /// when the provider issues one.
-    #[serde(default)]
-    pub signature: Option<String>,
 }
 
 /// The gateway result envelope. Pure response conversion consumes neither
@@ -138,6 +145,14 @@ pub struct ModelOutput {
     pub usage: Option<ModelUsage>,
     /// Why generation ended: the [`ModelStopReason`] fact.
     pub stop_reason: ModelStopReason,
+    /// The stop value exactly as the provider sent it, so a host can read what
+    /// [`ModelStopReason::Unrecognized`] was. Anthropic: `stop_reason`;
+    /// Chat: `finish_reason`; Responses: `status`, or `status.reason` when
+    /// the status is `incomplete` and carries a reason (for example
+    /// `incomplete.max_output_tokens`). `None` only for gateways with no wire
+    /// value, such as test doubles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_stop_reason: Option<String>,
     /// Structured reasoning payload, when the provider emitted one.
     pub reasoning: Option<ReasoningPayload>,
 }
@@ -164,20 +179,34 @@ pub enum ModelInvokeErrorKind {
 
 /// A model-invocation failure: a [`ModelInvokeErrorKind`] plus human-readable
 /// detail (provider text included where available).
-#[derive(Debug)]
+///
+/// `retry_delay` carries a server-requested wait (an HTTP `retry-after` or
+/// `retry-after-ms` header) when the transport filled one. The kernel does
+/// not act on it; a caller-side retry policy decides whether to honor it.
+#[derive(Debug, Clone)]
 pub struct ModelInvokeError {
     /// The failure classification.
     pub kind: ModelInvokeErrorKind,
     /// Human-readable failure detail.
     pub message: String,
+    /// Server-requested delay before another attempt, when the provider sent
+    /// one. `None` when no usable delay was disclosed.
+    pub retry_delay: Option<Duration>,
 }
 impl ModelInvokeError {
-    /// Assembles an error from its kind and message.
+    /// Assembles an error from its kind and message, with no retry delay.
     pub fn new(kind: ModelInvokeErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
+            retry_delay: None,
         }
+    }
+    /// Sets the server-requested retry delay. A retry policy may wait this
+    /// long instead of using its own backoff.
+    pub fn with_retry_delay(mut self, delay: Duration) -> Self {
+        self.retry_delay = Some(delay);
+        self
     }
     /// The failure classification.
     pub fn kind(&self) -> &ModelInvokeErrorKind {
@@ -266,10 +295,8 @@ pub type ModelStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = StreamD
 /// Wrap an already-complete output as a single-`Done` stream — the
 /// degenerate form the default `stream` implementation and tests use.
 pub fn completed_model_stream(output: ModelOutput) -> ModelStream {
-    let stop_reason = output.stop_reason;
     Box::pin(futures_util::stream::once(async move {
         StreamDelta::Done {
-            stop_reason,
             final_output: output,
         }
     }))
@@ -310,18 +337,17 @@ pub enum StreamDelta {
     /// A mid-stream token-usage observation.
     Usage(ModelUsage),
     /// Terminal delta: generation ended. Carries the fully-assembled output —
-    /// the source of truth per this enum's contract.
+    /// the source of truth per this enum's contract, including its
+    /// [`ModelStopReason`].
     Done {
-        /// The terminal [`ModelStopReason`].
-        stop_reason: ModelStopReason,
         /// The fully-assembled [`ModelOutput`] — the authoritative result.
         final_output: ModelOutput,
     },
-    /// In-stream failure observation, shaped like [`ModelInvokeError`].
+    /// In-stream failure observation carrying the gateway's own
+    /// [`ModelInvokeError`], so an error before any delta keeps its
+    /// classification and any server-requested retry delay.
     Error {
-        /// The failure classification.
-        kind: ModelInvokeErrorKind,
-        /// Human-readable failure detail.
-        message: String,
+        /// The failure the gateway produced.
+        error: ModelInvokeError,
     },
 }

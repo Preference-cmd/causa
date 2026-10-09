@@ -52,9 +52,9 @@ async fn external_single_shot_driver_uses_independent_execution_identity_and_dir
                 reasoning_tokens: Some(1),
             }),
             stop_reason: ModelStopReason::EndTurn,
+            raw_stop_reason: None,
             reasoning: Some(ReasoningPayload {
                 text: "thinking".into(),
-                signature: Some("sig".into()),
             }),
         },
     };
@@ -79,7 +79,7 @@ async fn external_single_shot_driver_uses_independent_execution_identity_and_dir
         )
         .unwrap();
     assert_eq!(output.usage.unwrap().cache_read_tokens, Some(4));
-    assert_eq!(output.reasoning.unwrap().signature.as_deref(), Some("sig"));
+    assert_eq!(output.reasoning.unwrap().text, "thinking");
     let restored: Context =
         serde_json::from_str(&serde_json::to_string(&context).unwrap()).unwrap();
     assert_eq!(restored.blocks(), context.blocks());

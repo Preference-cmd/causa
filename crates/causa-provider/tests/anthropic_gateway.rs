@@ -48,7 +48,12 @@ fn request(frame: ContextFrame) -> ModelRequest {
         frame,
         model: ModelRef::new("claude-test"),
         tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
+        // Anthropic requires `max_tokens`; every case here supplies one so the
+        // request under test is the transport behavior, not the validation.
+        generation: GenerationOptions {
+            max_tokens: Some(4096),
+            ..GenerationOptions::default()
+        },
         cache: causa_kernel::CacheDirective::None,
     }
 }
@@ -118,6 +123,24 @@ async fn invoke_round_trips_complete_model_output() {
     assert_eq!((usage.input_tokens, usage.output_tokens), (3, 2));
 }
 
+#[tokio::test]
+async fn missing_max_tokens_never_reaches_the_wire() {
+    let server = MockServer::start().await;
+    let mut request = request(user_frame());
+    request.generation.max_tokens = None;
+    let error = gateway(&server)
+        .invoke(&request, &ctrl(None))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
+    assert!(error.message.contains("max_tokens"), "{error}");
+    assert!(matches!(
+        gateway(&server).stream(&request, &ctrl(None)).await,
+        Err(e) if e.kind == ModelInvokeErrorKind::InvalidRequest
+    ));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
 // --- error mapping table, every row -----------------------------------------
 
 async fn status_case(status: u16, expected: ModelInvokeErrorKind, error_body: Value) {
@@ -142,6 +165,7 @@ async fn http_error_rows_map_to_their_kinds() {
     let auth_body =
         json!({"type": "error", "error": {"type": "authentication_error", "message": "bad key"}});
     status_case(408, ModelInvokeErrorKind::Transient, transient_body.clone()).await;
+    status_case(409, ModelInvokeErrorKind::Transient, transient_body.clone()).await;
     status_case(429, ModelInvokeErrorKind::Transient, transient_body.clone()).await;
     status_case(500, ModelInvokeErrorKind::Transient, transient_body.clone()).await;
     status_case(503, ModelInvokeErrorKind::Transient, transient_body.clone()).await;
@@ -157,9 +181,9 @@ async fn http_error_rows_map_to_their_kinds() {
     status_case(404, ModelInvokeErrorKind::Permanent, auth_body).await;
     // fallback row: any undocumented status is Permanent
     status_case(
-        409,
+        418,
         ModelInvokeErrorKind::Permanent,
-        json!({"type": "error", "error": {"type": "conflict", "message": "conflict"}}),
+        json!({"type": "error", "error": {"type": "unsupported", "message": "teapot"}}),
     )
     .await;
     // error messages surface the provider's own text

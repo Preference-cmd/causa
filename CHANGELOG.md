@@ -14,6 +14,73 @@ adapters or data converters.
 
 ### Breaking
 
+- `ReasoningPayload` no longer has a `signature` field. A provider signature
+  now lives only inside the sealed item it belongs to
+  (`ContentPart::Sealed`): Anthropic `thinking`, Responses `reasoning`, Chat
+  `reasoning_content`. Payloads serialized before this change still
+  deserialize; the field is ignored.
+- `causa_protocol::translation::anthropic::DEFAULT_MAX_TOKENS` is removed, and
+  the Anthropic renderer rejects a missing `GenerationOptions::max_tokens`
+  with `InvalidRequest` before HTTP instead of sending 4096. Set an explicit
+  limit for Anthropic requests.
+- The three renderers take a new renderer-options argument
+  (`AnthropicRenderOptions`, `ResponsesRenderOptions`, `ChatRenderOptions`
+  in `causa_protocol::translation::render_options`), and the provider gateway
+  configs host them; `OpenAiChatGatewayConfig` and
+  `OpenAiResponsesGatewayConfig` are no longer unit structs.
+- The Anthropic and Responses renderers no longer hoist a `system` block that
+  sits after the conversation content: only the leading system run renders into
+  the top-level `system` parameter (Anthropic) or `instructions` (Responses),
+  and an appended system block renders at its position as a `role: "system"`
+  message or input item. A system block appended mid-conversation therefore no
+  longer rewrites the top-level parameter, and one that lands between a
+  `tool_use` and its `tool_result` now fails `InvalidRequest` before HTTP
+  instead of being hoisted out of the way. The Anthropic top-level `system` is
+  always the block-array form — one `{"type": "text", "text": ...}` block per
+  leading system part, no `"\n"` join — where it used to be a joined string
+  without a cache directive and a one-element array with one. With
+  `CacheDirective::StablePrefix` the system marker lands on the last block of
+  that array, and the message marker lands on the last content block that is
+  not a sealed item, searching backward to an earlier message when the anchor
+  holds only sealed items; a sealed item is never modified.
+- The Anthropic and Chat renderers omit a whitespace-only assistant text part
+  from the request (as `pi-ai` does); the part stays in the `Context` and the
+  Responses renderer keeps it. This is a listed exception to the round-trip
+  property, and with thinking enabled it is a framework-made prefix change for
+  a turn that contains such a part.
+- `StreamDelta::Error` now carries the gateway's own `ModelInvokeError` as
+  `Error { error }` instead of the `{ kind, message }` pair, so an in-stream
+  failure keeps its classification and any server-requested retry delay.
+  `ModelInvokeError` gained `Clone` and a public
+  `retry_delay: Option<Duration>` filled from the HTTP `retry-after-ms` /
+  `retry-after` headers; `ModelInvokeError::new` leaves it `None` and
+  `with_retry_delay` sets it. The type still has no serde derive. Match sites
+  and constructions that name the old fields must update.
+- HTTP 409 now classifies as `Transient` in the built-in provider gateways,
+  where it was `Permanent`. An `x-should-retry: false` response header makes
+  any other status `Permanent` (400/422 stay `InvalidRequest`), and
+  `x-should-retry: true` makes any status `Transient`.
+- Stop-reason classification is explicit and shared by batch and streaming.
+  `ModelStopReason` gained `ContextWindowExceeded` and `Unrecognized`; a
+  value the kernel has no meaning for is no longer degraded to `EndTurn` by
+  `parse_anthropic_response` or `parse_openai_chat_response` (the streaming
+  decoders used to reject it as a permanent error instead — the two entry
+  points now agree). Chat additionally accepts `end` as `EndTurn` and
+  `function_call` as `ToolUse`. `ModelOutput` gained
+  `raw_stop_reason: Option<String>` (`stop_reason`, `finish_reason`, or the
+  Responses `status` / `status.reason` form such as
+  `incomplete.max_output_tokens`), and an unknown Responses
+  incomplete reason is reported as `Unrecognized` with the output intact
+  instead of failing as `UnknownOutcome`. The runner commits and continues
+  only for `EndTurn` and `ToolUse`; `MaxTokens`, `Refusal`,
+  `ContextWindowExceeded` and `Unrecognized` return an interruption carrying
+  the complete uncommitted output — the new
+  `TurnInterruption::ModelContextWindowExceeded` and
+  `TurnInterruption::ModelStopUnrecognized` join `ModelMaxTokens` and
+  `ModelRefusal`. `StreamDelta::Done` no longer carries `stop_reason`; the
+  authoritative value is on its `final_output`. Hosts that list every
+  `ModelStopReason` variant, match it exhaustively, or construct
+  `ModelOutput` must update.
 - `ModelResponse` is now an ordered list of items:
   `ModelResponse { items: Vec<ModelItem> }`, where a `ModelItem` holds
   `ModelItemContent::Parts(Vec<ContentPart>)` or
@@ -50,9 +117,9 @@ adapters or data converters.
   texts with no separator where it used to insert `\n`.
 - A `ContentPart::Sealed` part in a user- or system-position block is rejected
   with `InvalidRequest` before any HTTP; one of another protocol's format in
-  assistant position is skipped. Reasoning replay (Anthropic `thinking`,
-  Responses `reasoning` items) is not part of this change; those items still
-  feed only the reasoning observation.
+  assistant position is skipped. At that change reasoning replay was not
+  included and those items fed only the reasoning observation; replay landed
+  later in the same unreleased series — see the entries above.
 - Streaming assembles the same material as batch parsing: Chat streaming
   carries `reasoning_content` into the assembled message, and Anthropic
   streaming keeps the extra fields of `text` and `tool_use` blocks, including
@@ -89,12 +156,41 @@ adapters or data converters.
 
 ### Added
 
+- Reasoning replay: the Anthropic parser keeps `thinking`,
+  `redacted_thinking` and unknown content blocks as sealed items and the
+  renderer replays them verbatim; the Responses parser keeps a `reasoning`
+  item whole (and any unknown output item) and the renderer replays it; the
+  Chat renderer replays sealed `reasoning_content` by default.
+- `ReasoningEffort` now renders on Anthropic: unset sends no `thinking`
+  field, `None` sends `thinking: {"type": "disabled"}`, and `Low`..`Max` send
+  `thinking: {"type": "adaptive"}` with `output_config.effort`; `Minimal`
+  fails with `InvalidRequest` before HTTP.
+- Responses requests send `include: ["reasoning.encrypted_content"]` and
+  `store: false` by default.
+- Render options and their gateway setters: `with_beta` (extra
+  `anthropic-beta` values, one comma-separated header, empty by default),
+  `with_prefix_mismatch_behavior`, `with_encrypted_reasoning`,
+  `with_store`, `with_reasoning_content_replay`.
+- Optional `causa_runtime::RetryingGateway<G>` and `RetryPolicy`: an
+  ordinary `ModelGateway` wrapper that retries `Transient` and `TimedOut`
+  failures with exponential backoff and fixed 25% jitter, honors a
+  server-requested `retry_delay` up to the policy's ceiling, and never retries
+  once any stream delta has been yielded. It is off by default — the runner
+  still makes one logical call per invocation — and the policy has no
+  `Default`. The pre-0.1 runtime `RetryPolicy` removed in the
+  execution-stack rewrite was a different type.
+- `causa-runtime` depends on `fastrand` for that jitter and
+  `causa-provider` on `httpdate` for the HTTP-date form of
+  `retry-after`; both versions were already resolved in `Cargo.lock`, so
+  no new package version, source or checksum is introduced.
 - Serializable `ReasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
   `xhigh`, `max`) and optional `GenerationOptions::reasoning_effort`. OpenAI
   Chat maps `reasoning_effort`; Responses maps `reasoning.effort` in batch and
   streaming requests. Omission preserves the provider default. Hosts validate
   model-specific supported values, sampling defaults and tool compatibility.
-  This adds no reasoning-state replay; Anthropic effort remains unsupported.
+  *(At that change no reasoning-state replay existed and the Anthropic adapter
+  rejected effort; both landed later in this same unreleased series — see the
+  replay and effort entries above.)*
 - Real HTTP SSE for all built-in Anthropic Messages, OpenAI Chat Completions
   and OpenAI Responses gateways. `stream()` yields incremental observations
   and one authoritative complete output, with cancellation/deadline control,

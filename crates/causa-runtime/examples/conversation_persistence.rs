@@ -34,6 +34,7 @@ impl ModelGateway for AckGateway {
             usage: None,
             stop_reason: ModelStopReason::EndTurn,
             reasoning: None,
+            raw_stop_reason: None,
         })
     }
 }

@@ -73,7 +73,12 @@ fn fixture(protocol: usize) -> (&'static str, Value, String) {
 async fn configured_options_survive_batch_and_stream_request_preparation() {
     for protocol in [0, 1, 2] {
         let choices = if protocol == 2 {
-            vec![None]
+            // Anthropic renders the effort table: unset, disabled, adaptive.
+            vec![
+                None,
+                Some(ReasoningEffort::None),
+                Some(ReasoningEffort::High),
+            ]
         } else {
             vec![
                 Some(ReasoningEffort::High),
@@ -97,10 +102,18 @@ async fn configured_options_survive_batch_and_stream_request_preparation() {
                 _ => "max_tokens",
             }] = json!(8192);
             if let Some(effort) = effort {
-                if protocol == 0 {
-                    expected["reasoning_effort"] = json!(effort);
-                } else {
-                    expected["reasoning"] = json!({"effort": effort});
+                match protocol {
+                    0 => expected["reasoning_effort"] = json!(effort),
+                    1 => expected["reasoning"] = json!({"effort": effort}),
+                    // Anthropic: `None` disables thinking; every other level
+                    // renders adaptive thinking plus its effort level.
+                    _ if effort == ReasoningEffort::None => {
+                        expected["thinking"] = json!({"type": "disabled"});
+                    }
+                    _ => {
+                        expected["thinking"] = json!({"type": "adaptive"});
+                        expected["output_config"] = json!({"effort": effort});
+                    }
                 }
             }
             if let Some(temperature) = generation.temperature {
@@ -164,49 +177,54 @@ async fn invalid_generation_options_never_send_batch_or_stream_http() {
     let server = MockServer::start().await;
     for protocol in [0, 1, 2] {
         let gateway = gateway(protocol, &server);
+        // A limit is supplied wherever the case is not about the limit: on
+        // Anthropic a missing `max_tokens` is its own InvalidRequest.
         let mut cases = vec![
             GenerationOptions {
                 max_tokens: Some(0),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(64),
                 temperature: Some(f32::NAN),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(64),
                 temperature: Some(-0.1),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(64),
                 temperature: Some(2.1),
                 ..Default::default()
             },
             GenerationOptions {
+                max_tokens: Some(64),
                 reasoning_effort: Some(ReasoningEffort::High),
                 temperature: Some(1.0),
                 ..Default::default()
             },
         ];
         if protocol == 2 {
-            for effort in [
-                ReasoningEffort::None,
-                ReasoningEffort::Minimal,
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-                ReasoningEffort::XHigh,
-                ReasoningEffort::Max,
-            ] {
-                cases.push(GenerationOptions {
-                    reasoning_effort: Some(effort),
-                    ..Default::default()
-                });
-            }
+            // `Minimal` has no Anthropic wire level; the others render.
             cases.push(GenerationOptions {
+                max_tokens: Some(64),
+                reasoning_effort: Some(ReasoningEffort::Minimal),
+                ..Default::default()
+            });
+            // The required output limit is never defaulted.
+            cases.push(GenerationOptions {
+                max_tokens: None,
+                ..Default::default()
+            });
+            cases.push(GenerationOptions {
+                max_tokens: Some(64),
                 output_schema: Some(json!({"type":"object"})),
                 ..Default::default()
             });
             cases.push(GenerationOptions {
+                max_tokens: Some(64),
                 temperature: Some(1.1),
                 ..Default::default()
             });

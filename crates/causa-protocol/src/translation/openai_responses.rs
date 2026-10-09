@@ -10,8 +10,10 @@
 //!
 //! # Responses-specific structural rules
 //!
-//! - `system` text segments move to the top-level `instructions`
-//!   parameter (joined with `\n`).
+//! - The leading run of `system` text segments moves to the top-level
+//!   `instructions` parameter (joined with `\n`); a `system` block after
+//!   conversation content renders at its position as an input item, an
+//!   append like any other.
 //! - User/assistant text segments become input messages with typed
 //!   content items (`input_text` / `output_text`); each tool call
 //!   renders as a flat `function_call` item and each tool result as a
@@ -32,8 +34,10 @@
 //! - Stop-reason derivation: the Responses wire has no `finish_reason`.
 //!   A refusal output item wins, then `incomplete` + `max_output_tokens`
 //!   → MaxTokens, then any `function_call` output → ToolUse, else
-//!   EndTurn. `incomplete/content_filter` maps to Refusal; unknown incomplete
-//!   reasons are UnknownOutcome. Failed responses return a classified error.
+//!   EndTurn. `incomplete/content_filter` maps to Refusal; an unknown
+//!   incomplete reason is Unrecognized with the output intact, while
+//!   UnknownOutcome is reserved for a non-terminal or unknown status. Failed
+//!   responses return a classified error.
 //! - Wire fidelity. Each `message` output item parses to one `Parts` item (one
 //!   text part per `output_text` part) whose `wire.fields` is the item with
 //!   the `text` of each `output_text` part removed; each `function_call` item
@@ -44,13 +48,19 @@
 //!   to facts when the counts differ; call: `call_id`, `name` and, unless the
 //!   raw string still parses to the fact's value, `arguments` are written
 //!   over it). Own-format sealed parts are emitted verbatim as input items.
-//! - Reasoning output items contribute their summary texts (signature
-//!   stays `None`; `encrypted_content` is not represented in the kernel
-//!   envelope).
+//! - Reasoning output items are kept whole as sealed items in place — `id`,
+//!   `summary`, `encrypted_content` and every other field exactly as returned
+//!   — and additionally contribute their summary texts to the reasoning
+//!   observation, which is display-only. Every other output item type this
+//!   adapter has no vocabulary for is kept the same way, so the turn can be
+//!   echoed back as returned.
+//! - The request sends `include: ["reasoning.encrypted_content"]` and
+//!   `store: false` by default (as Codex and `pi-ai` do: encrypted reasoning
+//!   is what makes a sealed reasoning item replayable under `store: false` or
+//!   zero data retention). [`ResponsesRenderOptions`] changes either.
 //! - `reasoning_effort` renders as `reasoning.effort`; output limits use
 //!   `max_output_tokens`, including reasoning tokens. Active effort combined
 //!   with temperature is rejected. Hosts validate model-specific support.
-//!   Effort selection does not add provider reasoning-state replay.
 
 use serde_json::{Value, json};
 
@@ -62,7 +72,12 @@ use causa_kernel::{
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use super::render_options::ResponsesRenderOptions;
 use crate::Protocol;
+
+/// The `include` value this adapter sends for encrypted reasoning, the one
+/// that makes a reasoning item replayable under `store: false`.
+const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_content";
 
 /// Render a [`ContextFrame`] into an OpenAI Responses API request body.
 /// Deterministic: identical inputs produce byte-identical JSON.
@@ -71,7 +86,8 @@ use crate::Protocol;
 /// providers cache server-side, so the directive has no wire
 /// representation on this protocol. `GenerationOptions::output_schema`
 /// renders as `text.format` (structured output); schema validation and
-/// corrective retry stay host-side.
+/// corrective retry stay host-side. `options` carries the Responses-only
+/// `include`/`store` choices; see [`ResponsesRenderOptions`].
 pub fn render_openai_responses_input(
     frame: &ContextFrame,
     media: &MediaSet,
@@ -79,6 +95,7 @@ pub fn render_openai_responses_input(
     generation: &GenerationOptions,
     model: &ModelRef,
     _cache: CacheDirective,
+    options: &ResponsesRenderOptions,
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_openai(generation)?;
     super::tool_history::validate_frame(frame)?;
@@ -87,16 +104,28 @@ pub fn render_openai_responses_input(
     let mut instructions: Vec<String> = Vec::new();
     let mut items: Vec<Value> = Vec::new();
     let segments = &normalized.segments;
+    let leading = context_frame::leading_system_len(segments);
     let mut next = 0;
     while next < segments.len() {
         let segment = &segments[next];
         next += 1;
         match segment {
+            // Only the leading system run belongs in `instructions`; a system
+            // block appended after conversation content renders at its position
+            // as an input item, exactly where the fact sits.
             Segment::Text {
                 role: Role::System,
                 text,
                 ..
-            } => instructions.push(text.clone()),
+            } if next - 1 < leading => instructions.push(text.clone()),
+            Segment::Text {
+                role: Role::System,
+                text,
+                ..
+            } => items.push(json!({
+                "role": "system",
+                "content": [{"type": "input_text", "text": text}],
+            })),
             Segment::Text {
                 role: Role::User,
                 text,
@@ -130,9 +159,13 @@ pub fn render_openai_responses_input(
             }
             Segment::Sealed(item) => items.push(item.clone()),
             Segment::Media { role, media } => match (role, media) {
-                (Role::System, ResolvedMedia::Placeholder(text)) => {
+                (Role::System, ResolvedMedia::Placeholder(text)) if next - 1 < leading => {
                     instructions.push(text.clone());
                 }
+                (Role::System, ResolvedMedia::Placeholder(text)) => items.push(json!({
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": text}],
+                })),
                 (Role::Assistant, ResolvedMedia::Placeholder(text)) => items.push(json!({
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": text}],
@@ -213,6 +246,12 @@ pub fn render_openai_responses_input(
         "model": model.0,
         "input": items,
     });
+    if options.include_encrypted_reasoning {
+        body["include"] = json!([ENCRYPTED_REASONING_INCLUDE]);
+    }
+    if let Some(store) = options.store {
+        body["store"] = json!(store);
+    }
     if !instructions.is_empty() {
         body["instructions"] = json!(instructions.join("\n"));
     }
@@ -297,20 +336,15 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                 value.get("error").unwrap_or(&Value::Null),
             ));
         }
-        "incomplete" => {
-            let reason = value
-                .get("incomplete_details")
-                .and_then(|d| d.get("reason"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            if !matches!(reason, "max_output_tokens" | "content_filter") {
-                return Err(ModelInvokeError::new(
-                    ModelInvokeErrorKind::UnknownOutcome,
-                    "Responses incomplete: unrecognized reason",
-                ));
-            }
-            Some(reason)
-        }
+        // An incomplete response carries valid content; a reason the kernel
+        // has no meaning for is reported as `Unrecognized` with the wire value
+        // preserved, not turned into a parse failure. An absent or non-string
+        // reason stays `None`: the wire carried no reason, and the raw stop
+        // value must not invent one.
+        "incomplete" => value
+            .get("incomplete_details")
+            .and_then(|d| d.get("reason"))
+            .and_then(Value::as_str),
         _ => {
             return Err(ModelInvokeError::new(
                 ModelInvokeErrorKind::UnknownOutcome,
@@ -408,6 +442,13 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                         }
                     }
                 }
+                // The whole item — `id`, `summary`, `encrypted_content` and
+                // any unknown field — is sealed material in place; the
+                // summary texts above are the display-only observation.
+                items.push(context_frame::sealed_item(
+                    Protocol::OpenAiResponses,
+                    item.clone(),
+                ));
             }
             // A top-level refusal output item.
             Some("refusal") => {
@@ -416,24 +457,32 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                     items.push(ModelItem::text(text));
                 }
             }
-            // Unknown output item types are skipped (forward
-            // compatibility with provider extensions).
-            _ => {}
+            // Every other output item type is kept as a sealed item in
+            // place, so the turn can be echoed back as returned.
+            _ => items.push(context_frame::sealed_item(
+                Protocol::OpenAiResponses,
+                item.clone(),
+            )),
         }
     }
 
     let has_tool_call = items
         .iter()
         .any(|item| matches!(item.content, ModelItemContent::ToolCall(_)));
-    let stop_reason = if refusal || incomplete_reason == Some("content_filter") {
+    // The shared table classifies every terminal status. A top-level refusal
+    // item is a refusal whatever the status said, and Responses has no
+    // tool-call stop value, so a terminal response carrying a \`function_call\`
+    // item is a tool use (as \`pi-ai\`).
+    let mapped = crate::translation::stop_reason::responses(status, incomplete_reason);
+    let stop_reason = if refusal {
         ModelStopReason::Refusal
-    } else if incomplete_reason == Some("max_output_tokens") {
-        ModelStopReason::MaxTokens
-    } else if has_tool_call {
+    } else if mapped == ModelStopReason::EndTurn && has_tool_call {
         ModelStopReason::ToolUse
     } else {
-        ModelStopReason::EndTurn
+        mapped
     };
+    let raw_stop_reason =
+        crate::translation::stop_reason::responses_raw(value, status, incomplete_reason);
 
     let usage = value
         .get("usage")
@@ -444,12 +493,12 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         response: ModelResponse { items },
         usage,
         stop_reason,
+        raw_stop_reason: Some(raw_stop_reason),
         reasoning: if reasoning_parts.is_empty() {
             None
         } else {
             Some(ReasoningPayload {
                 text: reasoning_parts.join("\n"),
-                signature: None,
             })
         },
     })
@@ -458,7 +507,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
 #[cfg(test)]
 mod tests {
     use super::*;
-    use causa_kernel::{ModelUsage, ToolDefinition, ToolResultStatus};
+    use causa_kernel::{ModelStopReason, ModelUsage, ToolDefinition, ToolResultStatus};
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
@@ -473,6 +522,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap()
     }
@@ -584,6 +634,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v["model"], json!("gpt-test"));
@@ -606,6 +657,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -628,6 +680,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -649,6 +702,7 @@ mod tests {
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::StablePrefix,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(v, cached);
@@ -663,6 +717,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("m"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
@@ -692,6 +747,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         // part boundaries preserved: text message, then the image item
@@ -722,6 +778,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         assert_eq!(
@@ -757,6 +814,7 @@ mod tests {
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
+            &ResponsesRenderOptions::default(),
         )
         .unwrap();
         let items = v["input"].as_array().unwrap();
@@ -772,6 +830,24 @@ mod tests {
     }
 
     // --- parsing -----------------------------------------------------------
+
+    /// The stored value of every sealed part of a response, in item order.
+    fn sealed_items(out: &ModelOutput) -> Vec<Value> {
+        out.response
+            .items
+            .iter()
+            .flat_map(|item| match &item.content {
+                ModelItemContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Sealed(sealed) => Some(sealed.item.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
 
     #[test]
     fn parse_output_items_with_provider_id_passthrough() {
@@ -798,9 +874,16 @@ mod tests {
         assert_eq!(tc.arguments, json!({"path": "a"}));
         assert_eq!(tc.provider_call_id.as_deref(), Some("call_9"));
         assert!(matches!(out.stop_reason, ModelStopReason::ToolUse));
+        // The whole reasoning item is sealed in place, not just its summary.
+        assert_eq!(
+            sealed_items(&out),
+            vec![json!({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "hmm"}],
+            })]
+        );
         let reasoning = out.reasoning.unwrap();
         assert_eq!(reasoning.text, "hmm");
-        assert_eq!(reasoning.signature, None);
         let u: ModelUsage = out.usage.unwrap();
         assert_eq!((u.input_tokens, u.output_tokens), (100, 20));
         assert_eq!(u.cache_read_tokens, Some(11));

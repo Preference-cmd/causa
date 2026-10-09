@@ -65,6 +65,7 @@ version = "0.0.2"
 dependencies = [
  "async-trait",
  "causa-kernel",
+ "fastrand",
  "futures-util",
  "serde_json",
  "thiserror",
@@ -79,6 +80,12 @@ name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
+
+[[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "futures-core"

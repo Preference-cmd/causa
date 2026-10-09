@@ -15,7 +15,7 @@
 //! | Choice | Default and owner |
 //! |---|---|
 //! | Model rounds / tool declarations | [`TurnLimits`]: 10 / 64 |
-//! | Model retries | Gateway implementation or caller wrapper |
+//! | Model retries | None; optional [`RetryingGateway`] around the chosen gateway |
 //! | Material preparation | None; use the current context frame |
 //! | Observation | None; an optional synchronous borrowed callback |
 //! | Tool processing | Executor-owned ordered before/after processors |
@@ -23,6 +23,17 @@
 //! | Tool timeout | None; local timeout becomes unknown outcome |
 //! | Unknown outcomes | Commit the successful batch, then stop |
 //! | Output retention and persistence | Caller-owned policies and storage |
+//!
+//! # Optional retries
+//!
+//! Retries are off by default: the runner makes one logical gateway call per
+//! round and the first error ends it. A host that wants bounded retries wraps
+//! its gateway in [`RetryingGateway`] with a [`RetryPolicy`]. The wrapper
+//! is an ordinary [`causa_kernel::ModelGateway`]: every attempt sends the
+//! same request, only `Transient` and `TimedOut` failures are retried, waits
+//! stay inside the caller's cancellation and deadline, and the call is never
+//! retried once any stream delta has been yielded. Only the final error
+//! reaches the runner.
 //!
 //! The runner does not interpret imported tool declarations as work to resume.
 //! It creates work only from the current model output. Session admission,
@@ -41,6 +52,7 @@ pub mod event;
 pub mod executor;
 pub mod ids;
 mod processors;
+mod retry;
 
 pub use composition::ToolBridge;
 pub use config::{TurnLimits, TurnRunOptions};
@@ -52,3 +64,4 @@ pub use executor::{
     ToolProcessorPhase, ToolRegistryError,
 };
 pub use ids::new_block_id;
+pub use retry::{RetryPolicy, RetryingGateway};
