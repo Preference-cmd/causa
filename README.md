@@ -55,10 +55,10 @@ Put this in `src/main.rs` to run one model turn through the facade:
 
 ```rust
 use causa::{
-    kernel::{BlockContent, BlockMeta, CancellationToken, ContentPart, Context, ContextBlock,
+    kernel::{BlockContent, BlockMeta, CallControl, CancellationToken, ContentPart, Context, ContextBlock,
              ModelRef, TextPayload, TurnId},
     providers::AnthropicMessagesGateway,
-    runtime::{new_block_id, RunControl, ToolExecutor, ToolExecutorOptions,
+    runtime::{new_block_id, ToolExecutor, ToolExecutorOptions,
               TurnResult, TurnRunOptions, TurnRunner},
 };
 use std::sync::Arc;
@@ -78,8 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?));
     let outcome = runner
         .run(TurnId::new("hello"), context, options,
-             RunControl::new(CancellationToken::new(), None))
+             CallControl::new(CancellationToken::new(), None))
         .await;
+
     match outcome.result {
         TurnResult::Completed { final_output } => println!("{}", final_output.response.text()),
         result => return Err(format!("turn did not complete: {result:?}").into()),

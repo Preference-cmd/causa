@@ -9,10 +9,11 @@ use causa_kernel::{
     ProcessorError, Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft,
     ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
+
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions,
-    TurnRunner,
+    ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
 };
+
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -300,7 +301,7 @@ async fn model_queries_long_task_handle_until_complete_without_framework_polling
             causa_kernel::TurnId::new("long-job"),
             causa_kernel::Context::new(),
             TurnRunOptions::new(causa_kernel::ModelRef::new("fixture-model")),
-            causa_runtime::RunControl::new(tokio_util::sync::CancellationToken::new(), None),
+            causa_kernel::CallControl::new(tokio_util::sync::CancellationToken::new(), None),
         ),
     )
     .await
@@ -373,7 +374,7 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
                 causa_kernel::TurnId::new("cancel-query"),
                 causa_kernel::Context::new(),
                 TurnRunOptions::new(causa_kernel::ModelRef::new("fixture-model")),
-                RunControl::new(run_token, None),
+                CallControl::new(run_token, None),
             )
             .await
     });

@@ -15,9 +15,9 @@ license.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 tokio-util = { workspace = true }
 thiserror = "2"
+
 uuid.workspace = true
 # ModelStream: Pin<Box<dyn Stream<Item = StreamDelta> + Send>>
 futures-core = { workspace = true }

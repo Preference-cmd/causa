@@ -273,7 +273,7 @@ async fn cancellation_and_deadline_return_existing_materials_without_cancelling_
 {
     for deadline in [false, true] {
         let token = CancellationToken::new();
-        let control = RunControl::new(
+        let control = CallControl::new(
             token.clone(),
             deadline.then(|| Instant::now() + Duration::from_millis(5)),
         );
@@ -375,7 +375,7 @@ async fn tool_commit_failure_returns_complete_batch_and_actual_edit_input() {
             TurnId::new("collision"),
             context,
             opts,
-            RunControl::new(token.clone(), None),
+            CallControl::new(token.clone(), None),
         )
         .await;
     let TurnInterruption::ToolCommitFailed { error, .. } = cause(&out) else {
@@ -438,7 +438,7 @@ async fn processor_error_is_selected_before_returned_callback_cancels() {
             TurnId::new("processor"),
             Context::new(),
             opts,
-            RunControl::new(token, None),
+            CallControl::new(token, None),
         )
         .await;
     assert!(matches!(
@@ -520,7 +520,7 @@ async fn observer_cancellation_respects_each_commit_boundary() {
                 TurnId::new(stage),
                 Context::new(),
                 opts,
-                RunControl::new(token, None),
+                CallControl::new(token, None),
             )
             .await;
         assert!(matches!(cause(&out), TurnInterruption::Cancelled { .. }));
@@ -592,7 +592,7 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
                 TurnId::new("terminal"),
                 Context::new(),
                 opts,
-                RunControl::new(token, None),
+                CallControl::new(token, None),
             )
             .await;
         match stop {
@@ -656,7 +656,7 @@ async fn tool_limit_is_selected_before_declaration_commit_callback_cancels() {
             TurnId::new("limit-cancel"),
             Context::new(),
             opts,
-            RunControl::new(token, None),
+            CallControl::new(token, None),
         )
         .await;
     assert!(matches!(

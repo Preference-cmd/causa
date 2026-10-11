@@ -11,9 +11,8 @@ use causa_kernel::{
     ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
     ModelStopReason, TextPayload, TurnId,
 };
-use causa_runtime::{
-    RunControl, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
-};
+use causa_runtime::{ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id};
+
 use std::sync::Arc;
 
 struct AckGateway;
@@ -60,7 +59,7 @@ async fn run(
             TurnId::new(id),
             context,
             TurnRunOptions::new(ModelRef::new("offline-ack")),
-            RunControl::new(Default::default(), None),
+            CallControl::new(Default::default(), None),
         )
         .await;
     match outcome.result {

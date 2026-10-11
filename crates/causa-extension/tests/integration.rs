@@ -13,9 +13,10 @@ use causa_kernel::{
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolCatalogError, ToolExecutor, ToolExecutorOptions, TurnLimits, TurnResult,
-    TurnRunOptions, TurnRunner, new_block_id,
+    ToolCatalogError, ToolExecutor, ToolExecutorOptions, TurnLimits, TurnResult, TurnRunOptions,
+    TurnRunner, new_block_id,
 };
+
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
@@ -589,7 +590,7 @@ async fn kernel_turn_completes_through_the_mcp_source() {
             TurnId::new("t-mcp"),
             ctx,
             options,
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     assert!(

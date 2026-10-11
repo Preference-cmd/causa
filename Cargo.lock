@@ -224,12 +224,10 @@ dependencies = [
 name = "causa-protocol"
 version = "0.0.2"
 dependencies = [
- "async-trait",
  "causa-kernel",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -1909,7 +1907,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
- "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

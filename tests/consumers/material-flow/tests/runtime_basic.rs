@@ -45,7 +45,7 @@ async fn host_reuses_saved_material_and_explicitly_admits_next_input() {
             TurnId::new(id),
             context,
             TurnRunOptions::new(ModelRef::new("host-model")),
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
     };
     let first = run(
@@ -180,7 +180,7 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
             TurnId::new("T1"),
             initial,
             options,
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     assert!(matches!(first.result, TurnResult::Completed { .. }));
@@ -208,7 +208,7 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
             TurnId::new("T2"),
             second_context,
             TurnRunOptions::new(ModelRef::new("host-model")),
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     assert!(matches!(second.result, TurnResult::Completed { .. }));

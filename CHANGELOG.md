@@ -221,6 +221,16 @@ adapters or data converters.
 
 ### Changed
 
+- `RunControl` is removed from `causa-runtime` and the facade (`causa`); `TurnRunner::run`
+  and `run_streaming` accept `CallControl` from `causa-kernel` directly. Hosts pass
+  `CallControl` where `RunControl` was expected.
+- `causa-kernel` direct normal dependency on `tokio` is removed, and `tokio-util` is
+  configured with `default-features = false`. The kernel now has zero runtime/I/O dependencies.
+- `causa-protocol` unused normal dependencies on `async-trait` and `tracing` are removed.
+- `causa-runtime` internal stop-wait logic is deduplicated into a shared helper; `causa-provider`
+  documents why its transport stop-wait remains separate.
+- Tool result payload cloning on the non-colliding path in `causa-runtime`'s `resolve` is
+  eliminated while preserving rejection error reporting.
 - Gateway contract purity (`causa-kernel`): doc comments no longer reference
   specific provider names, wire field names, or adapter behaviors; wire translation
   details are documented in `causa-protocol`.

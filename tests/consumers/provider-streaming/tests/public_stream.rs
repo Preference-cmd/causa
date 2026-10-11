@@ -31,8 +31,7 @@ fn input() -> Context {
 #[tokio::test]
 async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() {
     use causa::runtime::{
-        RunControl, RunEvent, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions,
-        TurnRunner,
+        RunEvent, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
     };
     let (round, release) = Round::gated(responses_prefix("preview"), responses_terminal("saved"));
     let mut server = Server::start(vec![round]);
@@ -59,9 +58,10 @@ async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() 
             TurnId::new("facade-runtime"),
             input(),
             options,
-            RunControl::new(Default::default(), None),
+            CallControl::new(Default::default(), None),
         ),
     )
+
     .await
     .unwrap();
     assert!(matches!(outcome.result, TurnResult::Completed { .. }));

@@ -2,9 +2,7 @@
 #![allow(dead_code)]
 use async_trait::async_trait;
 use causa_kernel::*;
-use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnRunOptions, TurnRunner, new_block_id,
-};
+use causa_runtime::{ToolExecutor, ToolExecutorOptions, TurnRunOptions, TurnRunner, new_block_id};
 use std::sync::{Arc, Mutex};
 pub fn endturn_output(text: &str) -> ModelOutput {
     ModelOutput {
@@ -44,9 +42,10 @@ pub fn draft(tool_name: &str, args: serde_json::Value) -> ToolCallDraft {
     }
 }
 
-pub fn ctrl() -> RunControl {
-    RunControl::new(Default::default(), None)
+pub fn ctrl() -> CallControl {
+    CallControl::new(Default::default(), None)
 }
+
 pub fn options() -> TurnRunOptions {
     TurnRunOptions::new(ModelRef::new("fixture-model"))
 }

@@ -3,8 +3,9 @@ mod tool_fixtures;
 use async_trait::async_trait;
 use causa_kernel::*;
 use causa_runtime::{
-    RunControl, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
+    ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
 };
+
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -135,7 +136,7 @@ async fn unknown_success_and_failure_complete_after_and_commit_once_before_fixed
             TurnId::new("unknown"),
             Context::new(),
             TurnRunOptions::new(ModelRef("model".into())),
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     let call_block_id = match outcome.result {
@@ -197,7 +198,7 @@ async fn ordinary_failed_and_rejected_results_allow_the_next_model_round() {
             TurnId::new("ordinary"),
             Context::new(),
             TurnRunOptions::new(ModelRef("model".into())),
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     assert!(matches!(outcome.result, TurnResult::Completed { .. }));

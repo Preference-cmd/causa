@@ -1,8 +1,8 @@
 //! Public run entry points and ownership of the supplied context.
 
 use super::TurnOutcome;
-use crate::{RunControl, ToolExecutor, TurnRunOptions};
-use causa_kernel::{Context, ModelGateway, TurnId};
+use crate::{ToolExecutor, TurnRunOptions};
+use causa_kernel::{CallControl, Context, ModelGateway, TurnId};
 use std::sync::Arc;
 
 /// Drives logical model rounds over caller-owned materials.
@@ -27,7 +27,7 @@ impl TurnRunner {
         turn_id: TurnId,
         context: Context,
         options: TurnRunOptions,
-        control: RunControl,
+        control: CallControl,
     ) -> TurnOutcome {
         self.execute(turn_id, context, options, control, false)
             .await
@@ -38,7 +38,7 @@ impl TurnRunner {
         turn_id: TurnId,
         context: Context,
         options: TurnRunOptions,
-        control: RunControl,
+        control: CallControl,
     ) -> TurnOutcome {
         self.execute(turn_id, context, options, control, true).await
     }
@@ -48,7 +48,7 @@ impl TurnRunner {
         turn_id: TurnId,
         mut context: Context,
         options: TurnRunOptions,
-        control: RunControl,
+        control: CallControl,
         streaming: bool,
     ) -> TurnOutcome {
         let (result, uncommitted_tool_batch) = self

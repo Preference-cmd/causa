@@ -13,14 +13,13 @@ use output_budget::{TokenCounter, ToolOutputBudgetProcessor};
 
 use async_trait::async_trait;
 use causa_kernel::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, MediaRef, ModelGateway,
-    ModelInvokeError, ModelItem, ModelOutput, ModelRequest, ModelResponse, ModelStopReason,
-    StoreError, TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload,
-    ToolResultStatus,
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, CallControl, MediaRef,
+    ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest, ModelResponse,
+    ModelStopReason, StoreError, TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus,
 };
-use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnRunOptions, TurnRunner, new_block_id,
-};
+use causa_runtime::{ToolExecutor, ToolExecutorOptions, TurnRunOptions, TurnRunner, new_block_id};
+
 use std::sync::{Arc, Mutex};
 
 /// The host's in-memory asset table: bytes keyed by content hash. Facts
@@ -184,7 +183,7 @@ async fn main() {
             causa_kernel::TurnId::new("media_feedback"),
             ctx,
             TurnRunOptions::new(causa_kernel::ModelRef::new("offline-demo")),
-            RunControl::new(Default::default(), None),
+            CallControl::new(Default::default(), None),
         )
         .await;
     assert!(matches!(

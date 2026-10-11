@@ -1,23 +1,10 @@
 use causa_kernel::{
-    ArtifactStore, CallControl, ControlError, Tool, ToolCallContext, ToolOutput, ToolOutputMeta,
+    ArtifactStore, CallControl, Tool, ToolCallContext, ToolOutput, ToolOutputMeta,
     ToolResultPayload, ToolResultStatus, Truncation,
 };
 use futures_util::FutureExt;
 use std::sync::Arc;
 use tracing::Instrument;
-
-pub(crate) async fn wait_for_stop(control: &CallControl) -> ControlError {
-    tokio::select! {
-        biased;
-        _ = control.cancellation_token().cancelled() => ControlError::Cancelled,
-        _ = async {
-            match control.deadline() {
-                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-                None => std::future::pending::<()>().await,
-            }
-        } => ControlError::TimedOut,
-    }
-}
 
 pub(super) async fn execute(
     tool: Arc<dyn Tool>,

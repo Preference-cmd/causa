@@ -8,15 +8,15 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest, ModelResponse,
-    ModelStopReason, ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch,
+    CallControl, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest,
+    ModelResponse, ModelStopReason, ProcessorContext, ProcessorError, TextPayload, Tool, ToolBatch,
     ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput,
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
-    new_block_id,
+    ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
+
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TurnId::new("approval_processor"),
             context,
             TurnRunOptions::new(causa_kernel::ModelRef::new("offline-demo")),
-            RunControl::new(Default::default(), None),
+            CallControl::new(Default::default(), None),
         )
         .await;
     match outcome.result {

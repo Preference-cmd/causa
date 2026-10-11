@@ -1,11 +1,9 @@
 //! Concurrent batch dispatch and settlement of accepted or unknown results.
 
-use super::{
-    ToolProcessingError,
-    catalog::BoundTools,
-    dispatch::{execute, wait_for_stop},
-};
+use super::{ToolProcessingError, catalog::BoundTools, dispatch::execute};
+use crate::control::wait_for_stop;
 use crate::new_block_id;
+
 use causa_kernel::{
     BatchError, BlockId, ToolBatch, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
@@ -98,6 +96,13 @@ pub(super) fn resolve(
     call_block_id: BlockId,
     result: ToolResultPayload,
 ) -> Result<(), ToolProcessingError> {
+    if let Err(error) = batch.validate() {
+        return Err(ToolProcessingError::ResultRejected {
+            call_block_id,
+            error,
+            result,
+        });
+    }
     let pending = batch
         .calls()
         .iter()
@@ -111,18 +116,29 @@ pub(super) fn resolve(
             result,
         });
     };
-    let index = batch.completed_len() + pending;
-    loop {
-        match batch.resolve_at(index, new_block_id(), result.clone()) {
-            Ok(()) => return Ok(()),
-            Err(BatchError::DuplicateResultBlockId(_)) => continue,
-            Err(error) => {
-                return Err(ToolProcessingError::ResultRejected {
-                    call_block_id,
-                    error,
-                    result,
-                });
-            }
-        }
+    let expected = batch.calls()[pending].call().call_block_id;
+    if result.call_block_id != expected {
+        return Err(ToolProcessingError::ResultRejected {
+            call_block_id,
+            error: BatchError::MismatchedCall {
+                expected,
+                actual: result.call_block_id,
+            },
+            result,
+        });
     }
+    let index = batch.completed_len() + pending;
+    let mut block_id = new_block_id();
+    while batch.declaration_ids().contains(&block_id)
+        || batch
+            .results()
+            .iter()
+            .any(|e| e.result().is_some_and(|(id, _)| *id == block_id))
+    {
+        block_id = new_block_id();
+    }
+    batch
+        .resolve_at(index, block_id, result)
+        .expect("pre-validated resolve_at succeeds");
+    Ok(())
 }

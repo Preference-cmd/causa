@@ -15,9 +15,8 @@ use causa_kernel::{
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
-use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
-};
+use causa_runtime::{ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner};
+
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -114,7 +113,7 @@ async fn direct_runner_completes_two_tool_round_trips_over_http() {
             TurnId::new("t1"),
             context,
             options,
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
 

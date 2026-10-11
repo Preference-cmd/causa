@@ -1,6 +1,8 @@
 //! Cache acquisition and publication owned by one source registration.
 
-use super::{ToolCatalogError, dispatch::wait_for_stop};
+use super::ToolCatalogError;
+use crate::control::wait_for_stop;
+
 use causa_kernel::{CallControl, DynamicToolSource, ToolDefinition};
 use std::sync::{Arc, Mutex};
 

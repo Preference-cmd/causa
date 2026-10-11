@@ -39,8 +39,8 @@ fn invocation(round: u32) -> InvocationId {
     }
 }
 
-fn control() -> RunControl {
-    RunControl::new(CancellationToken::new(), None)
+fn control() -> CallControl {
+    CallControl::new(CancellationToken::new(), None)
 }
 
 #[tokio::test]
@@ -333,7 +333,7 @@ async fn observer_cancelled_partial_second_round_preserves_completed_first_round
         TurnId::new("http-stream"),
         input(),
         options,
-        RunControl::new(token, None),
+        CallControl::new(token, None),
     )
     .await;
     assert!(
@@ -381,7 +381,7 @@ async fn cancellation_after_declaration_commit_returns_complete_pending_tool_bat
         TurnId::new("http-stream"),
         input(),
         options,
-        RunControl::new(token, None),
+        CallControl::new(token, None),
     )
     .await;
     assert!(matches!(

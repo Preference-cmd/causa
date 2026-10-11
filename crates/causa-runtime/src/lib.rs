@@ -77,7 +77,7 @@
 
 pub mod composition;
 pub mod config;
-pub mod control;
+mod control;
 pub mod driver;
 pub mod event;
 pub mod executor;
@@ -87,7 +87,7 @@ mod retry;
 
 pub use composition::ToolBridge;
 pub use config::{TurnLimits, TurnRunOptions};
-pub use control::RunControl;
+
 pub use driver::{TurnInterruption, TurnOutcome, TurnResult, TurnRunner};
 pub use event::{RunEvent, RunObserver};
 pub use executor::{

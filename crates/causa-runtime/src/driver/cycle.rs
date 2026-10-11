@@ -2,8 +2,10 @@
 
 use super::model::{control_cause, invoke, notify, stopped};
 use super::{TurnInterruption, TurnResult, TurnRunner, commit, request};
-use crate::{RunControl, RunEvent, ToolCatalogError, ToolProcessingError, TurnRunOptions};
-use causa_kernel::{Context, InvocationId, ModelStopReason, RoundId, ToolBatch, TurnId};
+use crate::{RunEvent, ToolCatalogError, ToolProcessingError, TurnRunOptions};
+use causa_kernel::{
+    CallControl, Context, InvocationId, ModelStopReason, RoundId, ToolBatch, TurnId,
+};
 
 impl TurnRunner {
     pub(super) async fn run_loop(
@@ -11,7 +13,7 @@ impl TurnRunner {
         turn_id: &TurnId,
         context: &mut Context,
         options: &TurnRunOptions,
-        control: &RunControl,
+        control: &CallControl,
         streaming: bool,
     ) -> (TurnResult, Option<ToolBatch>) {
         let mut round = 0;
@@ -34,7 +36,7 @@ impl TurnRunner {
             };
             let bound = match self
                 .executor
-                .bind(invocation_id.clone(), control.call_control())
+                .bind(invocation_id.clone(), control.clone())
                 .await
             {
                 Ok(bound) => bound,

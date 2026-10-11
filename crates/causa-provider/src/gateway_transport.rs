@@ -331,6 +331,10 @@ pub(crate) fn check_control(control: &CallControl) -> Result<(), ModelInvokeErro
 
 /// Race a transport operation against the absolute control deadline. This
 /// remains effective with host clients that have no reqwest timeout.
+///
+/// Note: This stop-wait race is kept separate from `causa-runtime` because edge crates
+/// (like `causa-provider`) cannot depend on the runtime per repo layering rules,
+/// and `causa-kernel` holds contracts only without timers or async runtime dependencies.
 pub(crate) async fn controlled<T>(
     control: &CallControl,
     work: impl Future<Output = T>,

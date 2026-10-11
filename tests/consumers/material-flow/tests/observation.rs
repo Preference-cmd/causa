@@ -59,8 +59,9 @@ async fn host_can_copy_selected_observations_and_recover_output_without_them() {
                 TurnId::new("refusal"),
                 Context::new(),
                 options,
-                RunControl::new(token, None),
+                CallControl::new(token, None),
             )
+
             .await;
         let TurnResult::Interrupted {
             cause: TurnInterruption::ModelRefusal { output, .. },

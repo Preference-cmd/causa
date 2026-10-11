@@ -1,8 +1,9 @@
 use super::TurnInterruption;
-use crate::{RunControl, RunEvent, TurnRunOptions};
+use crate::control::wait_for_stop;
+use crate::{RunEvent, TurnRunOptions};
 use causa_kernel::{
-    ControlError, InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
-    ModelRequest, StreamDelta,
+    CallControl, ControlError, InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
+    ModelOutput, ModelRequest, StreamDelta,
 };
 use futures_util::StreamExt;
 
@@ -22,26 +23,13 @@ pub(super) fn control_cause(
     }
 }
 pub(super) fn stopped(
-    control: &RunControl,
+    control: &CallControl,
     invocation: Option<&InvocationId>,
 ) -> Option<TurnInterruption> {
     control
-        .call_control()
         .check()
         .err()
         .map(|e| control_cause(e, invocation.cloned()))
-}
-pub(super) async fn wait_for_stop(control: &RunControl) -> ControlError {
-    tokio::select! {
-        biased;
-        _ = control.cancellation_token().cancelled() => ControlError::Cancelled,
-        _ = async {
-            match control.deadline() {
-                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-                None => std::future::pending::<()>().await,
-            }
-        } => ControlError::TimedOut,
-    }
 }
 
 // TurnInterruption intentionally owns failed inputs for caller recovery.
@@ -51,10 +39,10 @@ pub(super) async fn invoke(
     gateway: &dyn ModelGateway,
     request: &ModelRequest,
     options: &TurnRunOptions,
-    control: &RunControl,
+    control: &CallControl,
     streaming: bool,
 ) -> Result<ModelOutput, TurnInterruption> {
-    let call_control = control.call_control();
+    let call_control = control.clone();
     let call = async {
         if !streaming {
             return gateway.invoke(request, &call_control).await;
@@ -69,7 +57,7 @@ pub(super) async fn invoke(
             };
             call_control.check().map_err(stream_control_error)?;
             match delta {
-                StreamDelta::Done { final_output, .. } => return Ok(final_output),
+                StreamDelta::Done { final_output } => return Ok(final_output),
                 StreamDelta::Error { error } => {
                     return Err(error);
                 }

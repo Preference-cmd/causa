@@ -1,4 +1,5 @@
-use crate::executor::dispatch::wait_for_stop;
+use crate::control::wait_for_stop;
+
 use crate::executor::{ToolProcessingError, ToolProcessorPhase};
 use causa_kernel::{
     BlockId, ProcessorContext, ToolBatch, ToolBatchProcessor, ToolCallPayload, ToolResultStatus,

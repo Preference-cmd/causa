@@ -24,9 +24,9 @@ use causa_kernel::{
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
-    new_block_id,
+    ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
+
 use std::sync::Arc;
 
 /// A local Rust tool the model may call — one `ToolDefinition` for the
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TurnId::new("quickstart"),
             context,
             options,
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     match outcome.result {

@@ -20,9 +20,8 @@ use causa_kernel::{
     CallControl, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest,
     ModelResponse, ModelStopReason, StreamDelta, TextPayload, TurnId,
 };
-use causa_runtime::{
-    RunControl, RunEvent, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
-};
+use causa_runtime::{RunEvent, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id};
+
 use std::io::Write as _;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -139,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TurnId::new("streaming-demo"),
             context,
             options,
-            RunControl::new(Default::default(), None),
+            CallControl::new(Default::default(), None),
         )
         .await;
     match outcome.result {

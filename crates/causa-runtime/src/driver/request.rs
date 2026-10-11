@@ -1,9 +1,10 @@
 //! Prepare request material using the invocation's already-bound tool surface.
 
 use super::TurnInterruption;
-use super::model::{control_cause, stopped, wait_for_stop};
-use crate::{RunControl, TurnRunOptions};
-use causa_kernel::{Context, InvocationId, ModelRequest, RoundInfo, ToolSurface};
+use super::model::{control_cause, stopped};
+use crate::TurnRunOptions;
+use crate::control::wait_for_stop;
+use causa_kernel::{CallControl, Context, InvocationId, ModelRequest, RoundInfo, ToolSurface};
 
 // TurnInterruption intentionally owns failed inputs for caller recovery.
 #[allow(clippy::result_large_err)]
@@ -12,7 +13,7 @@ pub(super) async fn prepare(
     invocation_id: &InvocationId,
     tool_surface: &ToolSurface,
     options: &TurnRunOptions,
-    control: &RunControl,
+    control: &CallControl,
 ) -> Result<ModelRequest, TurnInterruption> {
     let frame = if let Some(preparer) = &options.preparer {
         let round_info = RoundInfo {
@@ -21,7 +22,8 @@ pub(super) async fn prepare(
             tool_surface,
             generation: &options.generation,
         };
-        let call_control = control.call_control();
+        let call_control = control.clone();
+
         let prepared = tokio::select! {
             biased;
             error = wait_for_stop(control) => return Err(control_cause(error, Some(invocation_id.clone()))),

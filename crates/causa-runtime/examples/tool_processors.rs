@@ -17,9 +17,9 @@ use causa_kernel::{
     ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner,
-    new_block_id,
+    ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
 };
+
 use std::sync::Arc;
 
 struct LimitResults;
@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TurnId::new("tool_processors"),
             context,
             TurnRunOptions::new(causa_kernel::ModelRef::new("offline-demo")),
-            RunControl::new(Default::default(), None),
+            CallControl::new(Default::default(), None),
         )
         .await;
     if !matches!(outcome.result, TurnResult::Completed { .. }) {

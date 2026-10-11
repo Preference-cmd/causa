@@ -176,7 +176,7 @@ async fn a_three_attempt_wrapper_completes_a_rate_limited_second_round() {
             TurnId::new("retry-loop"),
             Context::from_blocks(vec![input()]).unwrap(),
             options,
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
@@ -243,7 +243,7 @@ async fn without_a_wrapper_one_failure_is_one_gateway_call() {
             TurnId::new("unwrapped"),
             Context::from_blocks(vec![input()]).unwrap(),
             TurnRunOptions::new(ModelRef::new("host-model")),
-            RunControl::new(CancellationToken::new(), None),
+            CallControl::new(CancellationToken::new(), None),
         )
         .await;
     assert!(matches!(

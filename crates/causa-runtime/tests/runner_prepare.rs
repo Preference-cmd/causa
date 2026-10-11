@@ -117,7 +117,7 @@ async fn prepare_failure_and_control_stop_preserve_committed_edits_without_sendi
             cancel: (mode == 1).then(|| token.clone()),
             park: mode == 2,
         }));
-        let control = RunControl::new(
+        let control = CallControl::new(
             token,
             (mode == 2).then(|| Instant::now() + Duration::from_millis(5)),
         );
@@ -161,7 +161,7 @@ async fn pre_cancelled_run_never_binds_prepares_or_calls_model() {
             TurnId::new("cancelled"),
             input("unchanged"),
             opts,
-            RunControl::new(token, None),
+            CallControl::new(token, None),
         )
         .await;
     assert_eq!(out.context.blocks().len(), 1);

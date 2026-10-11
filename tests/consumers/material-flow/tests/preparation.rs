@@ -10,9 +10,10 @@ use causa::kernel::{
     ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa::runtime::{
-    RunControl, ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions,
+    ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions,
     TurnRunner,
 };
+
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -204,9 +205,10 @@ fn includes_text(request: &ModelRequest, wanted: &str) -> usize {
         })
         .count()
 }
-fn control() -> RunControl {
-    RunControl::new(CancellationToken::new(), None)
+fn control() -> CallControl {
+    CallControl::new(CancellationToken::new(), None)
 }
+
 
 #[tokio::test]
 async fn source_commits_and_confirms_each_input_once_and_observation_refreshes_per_invocation() {

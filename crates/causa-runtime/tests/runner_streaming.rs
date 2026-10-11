@@ -169,7 +169,7 @@ async fn streaming_observer_cancellation_prevents_done_and_half_tool_execution()
             TurnId::new("cancel"),
             Context::new(),
             opts,
-            RunControl::new(token, None),
+            CallControl::new(token, None),
         )
         .await;
     assert!(matches!(
@@ -227,7 +227,7 @@ async fn callback_cancellation_stops_before_polling_the_stream_again() {
             TurnId::new("stop-polling"),
             Context::new(),
             opts,
-            RunControl::new(token, None),
+            CallControl::new(token, None),
         )
         .await;
     assert!(matches!(
