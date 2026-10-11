@@ -87,7 +87,12 @@ impl Responses {
                     {
                         return Err(permanent("Responses duplicate call id"));
                     }
-                    let arguments = string(wire, "arguments")?;
+                    // A call opens with no arguments yet; some servers omit
+                    // the empty string instead of sending it.
+                    let arguments = match wire.get("arguments") {
+                        None | Some(Value::Null) => "",
+                        Some(_) => string(wire, "arguments")?,
+                    };
                     self.budget
                         .add(call_id.len() + name.len() + arguments.len())?;
                     item.call_id = Some(call_id.into());

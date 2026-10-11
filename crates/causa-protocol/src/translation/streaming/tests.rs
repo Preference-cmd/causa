@@ -156,6 +156,42 @@ fn responses_authoritative_snapshots_and_tool_ordinals_match_full_response() {
     assert!(deltas.iter().any(|d| matches!(d,StreamDelta::ToolCallDelta{call_index:1,provider_call_id:Some(id),..} if id=="c1")));
 }
 
+#[test]
+fn responses_parts_and_calls_that_open_without_their_empty_string_decode_the_same() {
+    // Observed on a compatible server: an opening part carries no `text` and
+    // an opening function call no `arguments`, where the reference wire
+    // sends an empty string. Both mean "nothing yet".
+    let (mut events, response) = responses_fixture();
+    for event in &mut events {
+        match event["type"].as_str() {
+            Some("response.content_part.added" | "response.reasoning_summary_part.added") => {
+                event["part"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("text")
+                    .unwrap();
+            }
+            Some("response.output_item.added") if event["item"]["type"] == "function_call" => {
+                event["item"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("arguments")
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+    let expected = parse_openai_responses_output(&response).unwrap();
+    paired(Protocol::OpenAiResponses, &wire(&events), &expected);
+
+    // A value that is present must still be a string.
+    events[2]["part"]["text"] = json!(7);
+    assert_eq!(
+        fail(Protocol::OpenAiResponses, &events),
+        ModelInvokeErrorKind::Permanent
+    );
+}
+
 fn fail(protocol: Protocol, events: &[Value]) -> ModelInvokeErrorKind {
     collect(protocol, &wire(events), usize::MAX, StreamLimits::default())
         .unwrap_err()

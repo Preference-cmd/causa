@@ -19,14 +19,16 @@ impl Responses {
                     .ok_or_else(|| permanent("Responses missing part"))?;
                 let part_type = string(part, "type")?;
                 if matches!(part_type, "output_text" | "summary_text" | "refusal") {
-                    let initial = string(
-                        part,
-                        if part_type == "refusal" {
-                            "refusal"
-                        } else {
-                            "text"
-                        },
-                    )?;
+                    // A part opens empty; some servers omit the empty string.
+                    let field = if part_type == "refusal" {
+                        "refusal"
+                    } else {
+                        "text"
+                    };
+                    let initial = match part.get(field) {
+                        None | Some(Value::Null) => "",
+                        Some(_) => string(part, field)?,
+                    };
                     self.budget.add(initial.len())?;
                     if !initial.is_empty() && part_type == "output_text" {
                         deltas.push(StreamDelta::TextDelta {

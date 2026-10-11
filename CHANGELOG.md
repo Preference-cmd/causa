@@ -238,6 +238,10 @@ adapters or data converters.
 
 ### Changed
 
+- The Responses stream decoder accepts an opening part without `text` and
+  an opening function call without `arguments`, reading both as empty. A
+  compatible server was observed to omit the empty string, which failed the
+  whole stream as `Permanent`. A present value must still be a string.
 - Gateway contract purity (`causa-kernel`): doc comments no longer reference
   specific provider names, wire field names, or adapter behaviors; wire translation
   details are documented in `causa-protocol`.
