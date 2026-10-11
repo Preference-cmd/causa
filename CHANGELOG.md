@@ -219,7 +219,21 @@ adapters or data converters.
   increment is visible before the server sends its terminal response. Runtime
   integration checks prevent partial model output or tool execution on failure.
 
+### Changed
+
+- Gateway contract purity (`causa-kernel`): doc comments no longer reference
+  specific provider names, wire field names, or adapter behaviors; wire translation
+  details are documented in `causa-protocol`.
+- `ToolSurface` moved from `causa_kernel::ports::gateway` to `causa_kernel::ports::tool`.
+  Re-exports are preserved at `causa_kernel::ports::gateway::ToolSurface` and `causa_kernel::ToolSurface`.
+- Gateway non-2xx error bodies unified across `invoke` and `stream`: responses with
+  the documented JSON envelope produce `"{provider} error {status}: {error.message}"`
+  (truncated to 200 chars); responses without the envelope produce `"{provider} error {status}"`
+  without body fallback. Streaming errors buffer boundedly with `read_bounded`.
+- `causa-kernel` direct normal dependencies trimmed to `futures-core` instead of `futures-util`.
+
 ## [0.0.2] - 2026-10-02
+
 
 An experimental release separating editable context material from execution
 across all six crates. Update dependencies explicitly from `0.0.1` to `0.0.2`;

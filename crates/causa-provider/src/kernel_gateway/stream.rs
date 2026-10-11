@@ -1,8 +1,7 @@
 //! Demand-driven HTTP streaming, with no background read task.
 
 use crate::gateway_transport::{
-    check_control, controlled, map_status_error, map_transport_error, read_error_response,
-    send_response,
+    check_control, controlled, map_status_error, map_transport_error, read_bounded, send_response,
 };
 use causa_kernel::{CallControl, ModelInvokeError, ModelInvokeErrorKind, ModelStream, StreamDelta};
 use causa_protocol::translation::streaming::StreamDecoder;
@@ -20,15 +19,11 @@ pub(super) async fn establish_stream(
 ) -> Result<reqwest::Response, ModelInvokeError> {
     let response = send_response(request, control).await?;
     if !response.status().is_success() {
-        let headers = response.headers().clone();
-        let status = read_error_response(response, control).await?;
-        // Error bodies may echo prompts, tool arguments or credentials. HTTP
-        // classification reads the status and the retry headers only; keep
-        // diagnostics generic.
+        let buffered = read_bounded(response, control).await?;
         return Err(map_status_error(
-            status,
-            &headers,
-            "response body omitted",
+            buffered.status,
+            &buffered.headers,
+            &buffered.body,
             provider,
         ));
     }

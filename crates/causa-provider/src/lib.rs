@@ -69,6 +69,15 @@
 //! themselves — default clients disable transport retries — so bounded
 //! retries stay a caller-side choice, such as the runtime's
 //! `RetryingGateway`. See the shared transport module for the full table.
+//!
+//! # Error bodies
+//!
+//! Non-2xx responses from both `invoke` and `stream` follow one rule: when the
+//! response body contains the documented error envelope (`{"error": {"message": "..."}}`),
+//! the error message is formatted as `"{provider} error {status}: {error.message}"`,
+//! with `error.message` truncated to 200 characters (appended with `…` if longer).
+//! When the body is not that envelope, there is no fallback to raw body text and
+//! the message contains the provider label and status only: `"{provider} error {status}"`.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

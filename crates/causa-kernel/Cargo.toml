@@ -20,7 +20,8 @@ tokio-util = { workspace = true }
 thiserror = "2"
 uuid.workspace = true
 # ModelStream: Pin<Box<dyn Stream<Item = StreamDelta> + Send>>
-futures-util = { workspace = true }
+futures-core = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures-util = { workspace = true }

@@ -27,6 +27,28 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
+/// The tool definitions offered to the model for one invocation; renderers
+/// turn this into the protocol's `tools` array.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolSurface {
+    /// Model-facing [`ToolDefinition`]s, in offer order.
+    pub definitions: Vec<ToolDefinition>,
+}
+
+impl ToolSurface {
+    /// A surface offering no tools.
+    pub fn empty() -> Self {
+        Self {
+            definitions: Vec::new(),
+        }
+    }
+
+    /// Builds a surface from the given definitions.
+    pub fn from_definitions(definitions: Vec<ToolDefinition>) -> Self {
+        Self { definitions }
+    }
+}
+
 /// Identity of one tool dispatch, handed to [`Tool::execute`].
 #[derive(Debug, Clone)]
 pub struct ToolCallContext {

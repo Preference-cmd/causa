@@ -40,6 +40,37 @@
 //! history, input queues, retries, budget strategies and observation storage
 //! belong to callers. Dropping a run future or panicking bypasses the normal
 //! material-return guarantee; stopping local waits cannot undo remote effects.
+//!
+//! # Target path of one model call
+//!
+//! ```text
+//! host
+//!   TurnRunner (causa-runtime), per round:
+//!     ToolExecutor::bind            -> ToolSurface
+//!     ContextPreparer (host, opt.)  -> ContextFrame
+//!     build ModelRequest { invocation_id, frame, model, tool_surface, generation, cache }
+//!     ModelGateway::invoke | stream                      <- contract, causa-kernel
+//!       [optional] retry wrapper (causa-runtime)         same request each attempt; waits
+//!                                                        retry_delay or backs off; never
+//!                                                        retries after a delta was yielded
+//!         HTTP gateway (causa-provider)
+//!           MediaResolver                 -> MediaSet
+//!           render (causa-protocol)       frame -> wire JSON; rejects unsupported
+//!                                         generation options before any HTTP
+//!           send (reqwest), raced against CallControl
+//!           status / headers              -> ModelInvokeErrorKind, retry_delay
+//!           parse | StreamDecoder (causa-protocol)   wire -> ModelOutput, one stop
+//!                                         mapping per protocol for both entry points
+//!     <- ModelOutput { response, usage, stop_reason, raw_stop_reason, reasoning }
+//!     stop policy: continue on EndTurn / ToolUse; any other reason returns an
+//!                  interruption that carries the uncommitted output
+//!     commit: ModelResponse::to_blocks -> Context
+//! ```
+//!
+//! Ownership by layer: the kernel defines the shapes and the trait; the
+//! protocol crate owns every wire rule; the provider crate owns HTTP and the
+//! classification of HTTP outcomes; the runtime owns ordering, stop policy and
+//! the optional retry; the host owns preparation, limits and persistence.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

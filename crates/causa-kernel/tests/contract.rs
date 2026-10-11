@@ -462,3 +462,15 @@ fn tool_result_media_is_serde_additive_both_ways() {
     assert!(from_old.media.is_empty());
     assert!(from_old.notes.is_empty());
 }
+
+#[test]
+fn tool_surface_import_paths_are_stable() {
+    use causa_kernel::ToolSurface as RootSurface;
+    use causa_kernel::ports::gateway::ToolSurface as GatewaySurface;
+    use causa_kernel::ports::tool::ToolSurface as ToolPortSurface;
+
+    let s1 = RootSurface::empty();
+    let s2: GatewaySurface = s1;
+    let s3: ToolPortSurface = s2;
+    assert_eq!(s3, RootSurface::empty());
+}

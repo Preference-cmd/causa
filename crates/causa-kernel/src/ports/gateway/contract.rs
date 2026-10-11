@@ -12,10 +12,10 @@ use crate::context::ids::InvocationId;
 use crate::context::material::ContextFrame;
 use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::ports::control::CallControl;
-use crate::ports::tool::ToolDefinition;
+use crate::ports::tool::ToolSurface;
 
-/// Opaque model identifier, rendered verbatim into the provider request's
-/// `model` field. The kernel never parses it; resolution is the gateway's job.
+/// Opaque model identifier handed to the gateway. The kernel never parses
+/// it; resolution is the gateway's job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRef(pub String);
 impl ModelRef {
@@ -49,9 +49,7 @@ pub enum ReasoningEffort {
 }
 
 /// Generation knobs a caller may pin for the invocation. `None` leaves the
-/// provider default in force, except Anthropic's required output-token limit:
-/// that adapter rejects a missing `max_tokens` before HTTP rather than
-/// inventing a ceiling on the host's spend.
+/// provider default in force.
 /// Protocol adapters reject options they cannot faithfully render. Hosts own
 /// model-specific capability validation, defaults, and aggregate budgets.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -59,48 +57,20 @@ pub struct GenerationOptions {
     /// Sampling temperature; `None` leaves the provider default in force.
     pub temperature: Option<f32>,
     /// Upper bound on generated tokens, including reasoning tokens where the
-    /// provider counts them. OpenAI Chat renders `max_completion_tokens`,
-    /// Responses renders `max_output_tokens`, and Anthropic renders `max_tokens`.
-    /// `None` omits the limit on the OpenAI wires; Anthropic requires the
-    /// field and rejects a missing value before HTTP.
+    /// provider counts them. `None` leaves the limit unconstrained by the caller.
     pub max_tokens: Option<u32>,
     /// Requested reasoning effort. `None` leaves the provider default in force;
     /// `Some(ReasoningEffort::None)` explicitly requests no reasoning.
-    /// All three adapters render it natively: OpenAI Chat as
-    /// `reasoning_effort`, Responses as `reasoning.effort`, and Anthropic as
-    /// its `thinking` shape plus `output_config.effort`, where
-    /// `ReasoningEffort::Minimal` has no wire level and fails with
-    /// `InvalidRequest`. Active effort and temperature cannot be combined in
-    /// any built-in adapter. Model-specific support remains the host's
+    /// Active effort and temperature cannot be combined in adapters that treat
+    /// them as mutually exclusive. Model-specific support remains the host's
     /// responsibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// JSON Schema the final response should satisfy, rendered natively
-    /// where the provider supports it (Chat `response_format`, Responses
-    /// `text.format`; the built-in Anthropic adapter rejects this option).
-    /// Schema validation and corrective retry stay host-side. `None` omits it.
+    /// where the underlying protocol supports it. Schema validation and
+    /// corrective retry stay host-side. `None` omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
-}
-
-/// The tool definitions offered to the model for one invocation; renderers
-/// turn this into the protocol's `tools` array.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ToolSurface {
-    /// Model-facing [`ToolDefinition`]s, in offer order.
-    pub definitions: Vec<ToolDefinition>,
-}
-impl ToolSurface {
-    /// A surface offering no tools.
-    pub fn empty() -> Self {
-        Self {
-            definitions: Vec::new(),
-        }
-    }
-    /// Builds a surface from the given definitions.
-    pub fn from_definitions(definitions: Vec<ToolDefinition>) -> Self {
-        Self { definitions }
-    }
 }
 
 /// Provider-reported token accounting for one model response.
@@ -124,11 +94,9 @@ pub struct ModelUsage {
 /// Structured reasoning content: the model's readable thinking text.
 /// Recorded as-is by callers; the kernel does not interpret or persist it.
 ///
-/// The provider item that must be echoed back on later turns — Anthropic's
-/// `thinking` block with its signature, a Responses `reasoning` item — is not
-/// here: it is context material, carried as a [`crate::ContentPart::Sealed`]
-/// part whose stored value holds the signature. This observation is
-/// display-only.
+/// Opaque provider items that must be echoed back on later turns are carried
+/// as context material (such as [`crate::ContentPart::Sealed`] parts). This
+/// observation is display-only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReasoningPayload {
     /// The model's thinking text.
@@ -145,12 +113,9 @@ pub struct ModelOutput {
     pub usage: Option<ModelUsage>,
     /// Why generation ended: the [`ModelStopReason`] fact.
     pub stop_reason: ModelStopReason,
-    /// The stop value exactly as the provider sent it, so a host can read what
-    /// [`ModelStopReason::Unrecognized`] was. Anthropic: `stop_reason`;
-    /// Chat: `finish_reason`; Responses: `status`, or `status.reason` when
-    /// the status is `incomplete` and carries a reason (for example
-    /// `incomplete.max_output_tokens`). `None` only for gateways with no wire
-    /// value, such as test doubles.
+    /// The stop value exactly as the upstream provider or model sent it,
+    /// so a host can inspect what an unrecognized stop condition was. `None`
+    /// only for gateways with no wire value, such as test doubles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_stop_reason: Option<String>,
     /// Structured reasoning payload, when the provider emitted one.
@@ -220,15 +185,13 @@ impl std::fmt::Display for ModelInvokeError {
 }
 impl std::error::Error for ModelInvokeError {}
 
-/// Prompt-cache instruction carried on a [`ModelRequest`]. The Anthropic
-/// translation face renders explicit `cache_control` breakpoints at the
-/// stable-prefix anchors; OpenAI-family providers cache server-side and
-/// accept the directive as a documented no-op.
+/// Prompt-cache instruction carried on a [`ModelRequest`]. Adapters map this
+/// directive to protocol-specific cache mechanisms or treat it as a no-op where
+/// caching is automatic or unsupported.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheDirective {
-    /// Mark no cache breakpoints (the default; OpenAI server-side caching
-    /// applies regardless).
+    /// Mark no explicit cache breakpoints (the default).
     #[default]
     None,
     /// Mark the stable-prefix anchors so provider caches cover the tool
@@ -244,7 +207,7 @@ pub struct ModelRequest {
     /// Identifies the turn + round this logical invocation belongs to; the same id
     /// recurs on every retry.
     pub invocation_id: InvocationId,
-    /// The [`ContextFrame`] the gateway renders into provider messages.
+    /// The [`ContextFrame`] the gateway renders for the invocation.
     pub frame: ContextFrame,
     /// Which model to invoke.
     pub model: ModelRef,
@@ -290,16 +253,31 @@ pub trait ModelGateway: Send + Sync {
 /// Bounded stream of provider deltas. Cancellation is observable through
 /// the same `CallControl` the `invoke` path uses — drivers race
 /// `next()` against the cancellation token, never poll.
-pub type ModelStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = StreamDelta> + Send>>;
+pub type ModelStream = std::pin::Pin<Box<dyn futures_core::Stream<Item = StreamDelta> + Send>>;
+
+struct OnceModelStream {
+    item: Option<ModelOutput>,
+}
+
+impl futures_core::Stream for OnceModelStream {
+    type Item = StreamDelta;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let delta = self
+            .item
+            .take()
+            .map(|final_output| StreamDelta::Done { final_output });
+        std::task::Poll::Ready(delta)
+    }
+}
 
 /// Wrap an already-complete output as a single-`Done` stream — the
 /// degenerate form the default `stream` implementation and tests use.
 pub fn completed_model_stream(output: ModelOutput) -> ModelStream {
-    Box::pin(futures_util::stream::once(async move {
-        StreamDelta::Done {
-            final_output: output,
-        }
-    }))
+    Box::pin(OnceModelStream { item: Some(output) })
 }
 
 /// One incremental observation from a streaming provider.

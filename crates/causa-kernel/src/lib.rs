@@ -12,7 +12,7 @@
 #![deny(missing_docs)]
 
 mod context;
-mod ports;
+pub mod ports;
 
 // --- context: the external rule interface ------------------------------------
 pub use context::block::{
@@ -40,12 +40,12 @@ pub use ports::control::{CallControl, ControlError};
 pub use ports::gateway::{
     CacheDirective, GenerationOptions, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
     ModelOutput, ModelRef, ModelRequest, ModelStream, ModelUsage, ReasoningEffort,
-    ReasoningPayload, StreamDelta, ToolSurface, completed_model_stream,
+    ReasoningPayload, StreamDelta, completed_model_stream,
 };
 pub use ports::prepare::{ContextPreparer, PrepareError, RoundInfo};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
-    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDefinition,
+    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDefinition, ToolSurface,
 };
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.

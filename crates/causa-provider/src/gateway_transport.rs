@@ -121,7 +121,7 @@ pub(crate) struct BufferedResponse {
 /// failures surface through the transport table (body error →
 /// `Transient`); an over-cap body or non-UTF-8 payload is `Permanent`
 /// (the provider produced an unusable response).
-async fn read_bounded(
+pub(crate) async fn read_bounded(
     mut response: reqwest::Response,
     control: &CallControl,
 ) -> Result<BufferedResponse, ModelInvokeError> {
@@ -150,12 +150,16 @@ async fn read_bounded(
         }
         body.extend_from_slice(&chunk);
     }
-    let text = String::from_utf8(body).map_err(|_| {
-        ModelInvokeError::new(
-            ModelInvokeErrorKind::Permanent,
-            "provider response body is not valid UTF-8",
-        )
-    })?;
+    let text = match String::from_utf8(body) {
+        Ok(t) => t,
+        Err(_) if !status.is_success() => String::new(),
+        Err(_) => {
+            return Err(ModelInvokeError::new(
+                ModelInvokeErrorKind::Permanent,
+                "provider response body is not valid UTF-8",
+            ));
+        }
+    };
     Ok(BufferedResponse {
         status,
         headers,
@@ -233,14 +237,11 @@ pub(crate) fn map_status_error(
         },
         None => status_kind(status),
     };
-    let error = ModelInvokeError::new(
-        kind,
-        format!(
-            "{provider} error {}: {}",
-            status.as_u16(),
-            error_snippet(body)
-        ),
-    );
+    let message = match error_message_snippet(body) {
+        Some(msg) => format!("{provider} error {}: {msg}", status.as_u16()),
+        None => format!("{provider} error {}", status.as_u16()),
+    };
+    let error = ModelInvokeError::new(kind, message);
     match retry_after(headers) {
         Some(delay) => error.with_retry_delay(delay),
         None => error,
@@ -299,22 +300,19 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
 }
 
-/// Prefer the provider's own error message; fall back to a truncated raw
-/// body when the payload is not the documented error envelope. Single
-/// bounded pass — the body is already capped by [`read_bounded`], but the
-/// snippet never scans more than the first 201 chars.
-fn error_snippet(body: &str) -> String {
-    let envelope = serde_json::from_str::<Value>(body).ok();
-    let message = envelope
-        .as_ref()
-        .and_then(|v| v.get("error")?.get("message")?.as_str())
-        .unwrap_or(body);
+/// Extract the provider's `error.message` from the documented error envelope
+/// (`{"error": {"message": "..."}}`). Truncated to 200 characters with an
+/// ellipsis if longer. If the payload is not that envelope, returns `None`
+/// (there is no fallback to raw body text).
+fn error_message_snippet(body: &str) -> Option<String> {
+    let envelope = serde_json::from_str::<Value>(body).ok()?;
+    let message = envelope.get("error")?.get("message")?.as_str()?;
     let mut chars = message.chars();
     let mut snippet: String = chars.by_ref().take(200).collect();
     if chars.next().is_some() {
         snippet.push('…');
     }
-    snippet
+    Some(snippet)
 }
 
 /// Check local progress as well as socket waits.
@@ -363,39 +361,6 @@ pub(crate) async fn send_response(
     controlled(control, req.send())
         .await?
         .map_err(map_transport_error)
-}
-
-/// Consume an unsuccessful response with a byte bound and control checks.
-/// Streaming diagnostics deliberately discard its untrusted contents, so
-/// neither full-body storage nor UTF-8/JSON decoding is necessary.
-pub(crate) async fn read_error_response(
-    mut response: reqwest::Response,
-    control: &CallControl,
-) -> Result<StatusCode, ModelInvokeError> {
-    let status = response.status();
-    if let Some(len) = response.content_length()
-        && len > MAX_RESPONSE_BYTES as u64
-    {
-        return Err(oversize_error(MAX_RESPONSE_BYTES + 1));
-    }
-    let mut bytes = 0usize;
-    let mut chunks = 0usize;
-    while let Some(chunk) = controlled(control, response.chunk())
-        .await?
-        .map_err(map_transport_error)?
-    {
-        bytes = bytes.saturating_add(chunk.len());
-        if bytes > MAX_RESPONSE_BYTES {
-            return Err(oversize_error(bytes));
-        }
-        chunks += 1;
-        if chunks >= 32 {
-            chunks = 0;
-            tokio::task::yield_now().await;
-            check_control(control)?;
-        }
-    }
-    Ok(status)
 }
 
 #[cfg(test)]
@@ -573,5 +538,24 @@ mod tests {
             "anthropic",
         );
         assert_eq!(error.message, "anthropic error 429: slow down");
+    }
+
+    #[test]
+    fn non_envelope_error_omits_body_text() {
+        let error = map_status_error(
+            StatusCode::BAD_GATEWAY,
+            &HeaderMap::new(),
+            "<html>502 Bad Gateway</html>",
+            "anthropic",
+        );
+        assert_eq!(error.message, "anthropic error 502");
+
+        let error2 = map_status_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &HeaderMap::new(),
+            "{\"status\": \"fail\"}",
+            "chat",
+        );
+        assert_eq!(error2.message, "chat error 500");
     }
 }

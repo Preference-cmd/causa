@@ -718,10 +718,11 @@ async fn ready_deltas_yield_to_cancellation_and_slow_consumption_defers_parsing(
 #[tokio::test]
 async fn bounded_error_bodies_honor_control_and_never_echo_request_material() {
     let secret = "DO_NOT_ECHO_PRIVATE_PROMPT_OR_TOOL_ARGUMENTS";
+    // Raw body (not the documented envelope) must never be echoed in error.message
     let mut fixture = Fixture::new(
         400,
-        "application/json",
-        json!({"error":{"message":secret}}).to_string(),
+        "text/plain",
+        format!("raw server error echoing: {secret}"),
         String::new(),
         false,
         true,
@@ -735,6 +736,7 @@ async fn bounded_error_bodies_honor_control_and_never_echo_request_material() {
         Ok(_) => panic!("HTTP error accepted"),
     };
     assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
+    assert_eq!(error.message, "openai error 400");
     assert!(!error.message.contains(secret));
 
     let mut fixture = Fixture::new(
