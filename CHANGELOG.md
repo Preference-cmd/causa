@@ -14,6 +14,23 @@ adapters or data converters.
 
 ### Breaking
 
+- `RunControl` and the `causa_runtime::control` module are removed.
+  `TurnRunner::run` and `run_streaming` take a kernel `CallControl` by value.
+  Migration: replace `RunControl::new(token, deadline)` with
+  `CallControl::new(token, deadline)`, and `control.call_control()` with
+  `control.clone()`. `should_stop` and `remaining_turn_time` have no
+  replacement; use `CallControl::check` and `CallControl::deadline`.
+- `ToolBatch::resolve_at` returns `Result<(), Box<RejectedToolResult>>`. A
+  refused result is handed back with its `BatchError`, so callers no longer
+  clone a payload to keep it. Migration: read `rejected.error` where the code
+  matched on `BatchError`, and `rejected.result` to recover the payload.
+- Gateway errors for non-2xx responses follow one rule on `invoke` and
+  `stream`: `"{provider} error {status}: {error.message}"` when the body is
+  the documented JSON error envelope (message truncated to 200 characters),
+  and `"{provider} error {status}"` otherwise. `invoke` no longer falls back
+  to the raw body, and `stream` now includes the envelope message.
+- `ToolSurface` is defined in the kernel's tool port. The public path
+  `causa_kernel::ToolSurface` is unchanged.
 - `ReasoningPayload` no longer has a `signature` field. A provider signature
   now lives only inside the sealed item it belongs to
   (`ContentPart::Sealed`): Anthropic `thinking`, Responses `reasoning`, Chat
@@ -221,29 +238,19 @@ adapters or data converters.
 
 ### Changed
 
-- `RunControl` is removed from `causa-runtime` and the facade (`causa`); `TurnRunner::run`
-  and `run_streaming` accept `CallControl` from `causa-kernel` directly. Hosts pass
-  `CallControl` where `RunControl` was expected.
-- `causa-kernel` direct normal dependency on `tokio` is removed, and `tokio-util` is
-  configured with `default-features = false`. The kernel now has zero runtime/I/O dependencies.
-- `causa-protocol` unused normal dependencies on `async-trait` and `tracing` are removed.
-- `causa-runtime` internal stop-wait logic is deduplicated into a shared helper; `causa-provider`
-  documents why its transport stop-wait remains separate.
-- Tool result payload cloning on the non-colliding path in `causa-runtime`'s `resolve` is
-  eliminated while preserving rejection error reporting.
 - Gateway contract purity (`causa-kernel`): doc comments no longer reference
   specific provider names, wire field names, or adapter behaviors; wire translation
   details are documented in `causa-protocol`.
-- `ToolSurface` moved from `causa_kernel::ports::gateway` to `causa_kernel::ports::tool`.
-  Re-exports are preserved at `causa_kernel::ports::gateway::ToolSurface` and `causa_kernel::ToolSurface`.
-- Gateway non-2xx error bodies unified across `invoke` and `stream`: responses with
-  the documented JSON envelope produce `"{provider} error {status}: {error.message}"`
-  (truncated to 200 chars); responses without the envelope produce `"{provider} error {status}"`
-  without body fallback. Streaming errors buffer boundedly with `read_bounded`.
-- `causa-kernel` direct normal dependencies trimmed to `futures-core` instead of `futures-util`.
+- `causa-kernel` no longer depends directly on `tokio` or `futures-util`; its
+  direct normal dependencies are `async-trait`, `futures-core`, `serde`,
+  `serde_json`, `thiserror`, `tokio-util` and `uuid`. `tokio` remains in the
+  transitive graph through `tokio-util`'s cancellation token.
+- `causa-protocol` no longer declares the unused `async-trait` and `tracing`
+  dependencies.
+- `causa-runtime` has one stop-wait helper shared by the driver and the
+  executor; `causa-provider` keeps its own because it cannot depend on the runtime.
 
 ## [0.0.2] - 2026-10-02
-
 
 An experimental release separating editable context material from execution
 across all six crates. Update dependencies explicitly from `0.0.1` to `0.0.2`;

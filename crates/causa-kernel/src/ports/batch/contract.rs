@@ -159,12 +159,31 @@ impl ToolBatch {
     }
 
     /// Installs a result at an absolute entry index and advances the prefix.
-    /// Validation failure leaves the batch unchanged.
+    /// A refused result leaves the batch unchanged and is handed back with
+    /// the reason, so a caller can retry or report it without a copy.
     pub fn resolve_at(
         &mut self,
         index: usize,
         result_block_id: BlockId,
         mut result: ToolResultPayload,
+    ) -> Result<(), Box<RejectedToolResult>> {
+        if let Err(error) = self.check_resolve(index, result_block_id, &result) {
+            return Err(Box::new(RejectedToolResult { error, result }));
+        }
+        let mut notes = std::mem::take(&mut self.entries[index].call.result_notes);
+        notes.append(&mut result.notes);
+        result.notes = notes;
+        self.entries[index].result = Some((result_block_id, result));
+        self.entries.swap(index, self.completed);
+        self.completed += 1;
+        Ok(())
+    }
+
+    fn check_resolve(
+        &self,
+        index: usize,
+        result_block_id: BlockId,
+        result: &ToolResultPayload,
     ) -> Result<(), BatchError> {
         self.validate()?;
         if index < self.completed || index >= self.entries.len() {
@@ -195,12 +214,6 @@ impl ToolBatch {
         }) {
             return Err(BatchError::DuplicateResultBlockId(result_block_id));
         }
-        let mut notes = std::mem::take(&mut self.entries[index].call.result_notes);
-        notes.append(&mut result.notes);
-        result.notes = notes;
-        self.entries[index].result = Some((result_block_id, result));
-        self.entries.swap(index, self.completed);
-        self.completed += 1;
         Ok(())
     }
 
@@ -295,4 +308,14 @@ pub enum BatchError {
         /// Total number of entries.
         total: usize,
     },
+}
+
+/// A result [`ToolBatch::resolve_at`] refused, returned with the reason.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct RejectedToolResult {
+    /// Why the batch refused the result.
+    pub error: BatchError,
+    /// The refused result, unchanged.
+    pub result: ToolResultPayload,
 }

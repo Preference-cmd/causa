@@ -61,9 +61,8 @@ pub struct GenerationOptions {
     pub max_tokens: Option<u32>,
     /// Requested reasoning effort. `None` leaves the provider default in force;
     /// `Some(ReasoningEffort::None)` explicitly requests no reasoning.
-    /// Active effort and temperature cannot be combined in adapters that treat
-    /// them as mutually exclusive. Model-specific support remains the host's
-    /// responsibility.
+    /// An adapter may reject an active effort combined with a temperature.
+    /// Model-specific support remains the host's responsibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// JSON Schema the final response should satisfy, rendered natively

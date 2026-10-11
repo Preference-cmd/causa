@@ -1,6 +1,6 @@
 //! Prefix stability: the framework must not change an Anthropic request
 //! prefix between two rounds of one run. Covers the two framework-made
-//! changes this proposal fixes (system hoisting, whitespace-only assistant
+//! changes it guards against (system hoisting, whitespace-only assistant
 //! text) and the cache anchor rules that go with them.
 //!
 //! The media half of the same property is asserted here too: every request

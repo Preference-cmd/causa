@@ -117,10 +117,12 @@ fn resolve_validation_is_atomic_and_results_keep_supplied_commit_order() {
     .unwrap();
     let before = batch.completed_len();
     let bad_id = common::block_id();
-    assert!(matches!(
-        batch.resolve_at(0, bad_id, result(wrong_call, "bad")),
-        Err(BatchError::MismatchedCall { .. })
-    ));
+    let rejected = batch
+        .resolve_at(0, bad_id, result(wrong_call, "bad"))
+        .unwrap_err();
+    assert!(matches!(rejected.error, BatchError::MismatchedCall { .. }));
+    // The refused result comes back as it was offered.
+    assert_eq!(rejected.result.call_block_id, wrong_call);
     assert_eq!(batch.completed_len(), before);
     assert!(batch.calls()[0].result().is_none());
 
@@ -173,7 +175,7 @@ fn validate_detects_result_id_collision_introduced_by_cross_batch_swap() {
         Err(BatchError::DuplicateResultBlockId(id)) if id == declaration_x
     ));
     assert!(matches!(
-        batch_b.resolve_at(0, common::block_id(), result(declaration_x, "retry")),
+        batch_b.resolve_at(0, common::block_id(), result(declaration_x, "retry")).map_err(|rejected| rejected.error),
         Err(BatchError::DuplicateResultBlockId(id)) if id == declaration_x
     ));
     assert_eq!(batch_b.completed_len(), 3);
@@ -207,13 +209,17 @@ fn empty_batch_and_middle_completion_use_native_slice_order() {
     let before = format!("{batch:?}");
     for index in [0, 4, usize::MAX] {
         assert!(matches!(
-            batch.resolve_at(index, common::block_id(), result(ids[0], "invalid")),
+            batch
+                .resolve_at(index, common::block_id(), result(ids[0], "invalid"))
+                .map_err(|rejected| rejected.error),
             Err(BatchError::InvalidIndex { .. })
         ));
         assert_eq!(format!("{batch:?}"), before);
     }
     assert!(matches!(
-        batch.resolve_at(1, ids[0], result(ids[3], "collision")),
+        batch
+            .resolve_at(1, ids[0], result(ids[3], "collision"))
+            .map_err(|rejected| rejected.error),
         Err(BatchError::DuplicateResultBlockId(_))
     ));
     assert_eq!(format!("{batch:?}"), before);
@@ -243,7 +249,9 @@ fn malformed_partition_does_not_panic_or_consume_notes() {
     std::mem::swap(&mut pending.calls_mut()[0], &mut completed.results_mut()[0]);
     let before = format!("{pending:?}");
     assert!(matches!(
-        pending.resolve_at(1, common::block_id(), result(b, "new")),
+        pending
+            .resolve_at(1, common::block_id(), result(b, "new"))
+            .map_err(|rejected| rejected.error),
         Err(BatchError::InvalidPartition(_))
     ));
     assert_eq!(format!("{pending:?}"), before);

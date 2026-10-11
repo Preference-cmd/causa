@@ -16,7 +16,6 @@ causa-kernel = { path = "../causa-kernel", version = "0.0.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 uuid.workspace = true

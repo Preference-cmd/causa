@@ -3,5 +3,6 @@
 mod contract;
 
 pub use contract::{
-    BatchError, ProcessorContext, ProcessorError, ToolBatch, ToolBatchProcessor, ToolCallEntry,
+    BatchError, ProcessorContext, ProcessorError, RejectedToolResult, ToolBatch,
+    ToolBatchProcessor, ToolCallEntry,
 };

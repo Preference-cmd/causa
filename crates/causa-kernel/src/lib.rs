@@ -12,7 +12,7 @@
 #![deny(missing_docs)]
 
 mod context;
-pub mod ports;
+mod ports;
 
 // --- context: the external rule interface ------------------------------------
 pub use context::block::{
@@ -34,7 +34,8 @@ pub use context::tool_data::{
 
 // --- ports: behavior seams for external implementors ------------------------
 pub use ports::batch::{
-    BatchError, ProcessorContext, ProcessorError, ToolBatch, ToolBatchProcessor, ToolCallEntry,
+    BatchError, ProcessorContext, ProcessorError, RejectedToolResult, ToolBatch,
+    ToolBatchProcessor, ToolCallEntry,
 };
 pub use ports::control::{CallControl, ControlError};
 pub use ports::gateway::{

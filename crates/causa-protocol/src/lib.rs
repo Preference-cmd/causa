@@ -27,8 +27,10 @@
 //!
 //! - **Generation options**: OpenAI Chat renders `max_tokens` as
 //!   `max_completion_tokens`, Responses renders it as `max_output_tokens`,
-//!   and Anthropic renders it as `max_tokens` (Anthropic requires `max_tokens`
-//!   and rejects requests missing it).
+//!   and Anthropic renders it as `max_tokens`. `None` omits the limit on the
+//!   two OpenAI wires; Anthropic requires the field, so that renderer rejects
+//!   a missing value before any HTTP. An active reasoning effort combined
+//!   with a temperature is rejected by all three renderers.
 //! - **Reasoning effort**: OpenAI Chat renders `reasoning_effort`, Responses
 //!   renders `reasoning.effort`, and Anthropic renders its `thinking` block plus
 //!   `output_config.effort` (where [`causa_kernel::ReasoningEffort::Minimal`]

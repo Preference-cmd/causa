@@ -1,6 +1,6 @@
 //! Behavior of the optional [`RetryingGateway`] wrapper.
 //!
-//! Coverage is the proposal's acceptance list: the policy surface, the
+//! Coverage: the policy surface, the
 //! retryable kinds, the same request on every attempt, stream visibility,
 //! server delays, backoff jitter and the caller's cancellation/deadline.
 

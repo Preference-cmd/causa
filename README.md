@@ -80,7 +80,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(TurnId::new("hello"), context, options,
              CallControl::new(CancellationToken::new(), None))
         .await;
-
     match outcome.result {
         TurnResult::Completed { final_output } => println!("{}", final_output.response.text()),
         result => return Err(format!("turn did not complete: {result:?}").into()),
