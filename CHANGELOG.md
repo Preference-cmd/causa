@@ -53,6 +53,15 @@ adapters or data converters.
   `store: false` by default, which changes the body of every existing
   Responses request. `with_encrypted_reasoning(false)` and `with_store(None)`
   restore the previous body.
+- Anthropic streaming fails as `Permanent` on a content-block delta of a type
+  the decoder has no rule for, where it used to drop the delta. A block is
+  rebuilt from its start event and its deltas, and a block missing part of its
+  content must not be committed and replayed as sealed material; the turn
+  commits nothing and the batch entry point is unaffected. `input_json_delta`
+  is now applied to every block that declares an object `input`, so a
+  non-client tool block streams to the same sealed item the batch parser
+  keeps instead of failing with a type conflict. Unknown SSE event types are
+  still ignored.
 - `StreamDelta::Error` now carries the gateway's own `ModelInvokeError` as
   `Error { error }` instead of the `{ kind, message }` pair, so an in-stream
   failure keeps its classification and any server-requested retry delay.

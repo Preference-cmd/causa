@@ -257,10 +257,30 @@ impl Anthropic {
                             .push(citation.clone());
                         return Ok(deltas);
                     }
-                    "text_delta" | "thinking_delta" | "signature_delta" | "input_json_delta" => {
+                    // Any other block that declared an object `input` (a
+                    // server-side tool call, kept as sealed material) receives
+                    // it the same way. The fragments rebuild the block so it
+                    // matches the batch form; they are not client tool-call
+                    // observations.
+                    "input_json_delta"
+                        if !matches!(block_type, "text" | "thinking")
+                            && block.wire.get("input").is_some_and(Value::is_object) =>
+                    {
+                        let text = string(delta, "partial_json")?;
+                        self.budget.add(text.len())?;
+                        block.arguments.push_str(text);
+                        block.saw_arguments = true;
+                        return Ok(deltas);
+                    }
+                    "text_delta" | "thinking_delta" | "signature_delta" | "input_json_delta"
+                    | "citations_delta" => {
                         return Err(permanent("Anthropic delta/block type conflict"));
                     }
-                    _ => return Ok(deltas),
+                    // A delta this decoder has no rule for cannot be applied,
+                    // and a block missing part of its content must not become
+                    // material that is replayed verbatim. The diagnostic is
+                    // static: the wire value is provider-controlled.
+                    _ => return Err(permanent("Anthropic unsupported content block delta type")),
                 };
                 let text = string(delta, delta_field)?;
                 self.budget.add(text.len())?;

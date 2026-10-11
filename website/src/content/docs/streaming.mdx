@@ -91,7 +91,10 @@ own renderer, so a thinking-enabled tool loop can echo back what it received.
 On Anthropic, `GenerationOptions::reasoning_effort` is what requests thinking
 (unset sends no `thinking` field, `none` disables it, the other levels send an
 adaptive shape); the streaming decoder keeps whole blocks so streaming and
-batch agree on what is replayed.
+batch agree on what is replayed. Because of that, an Anthropic content-block
+delta of a type the decoder has no rule for fails the stream as `Permanent`
+rather than being dropped: a block missing part of its content would otherwise
+be committed and replayed. Unknown SSE event types are still ignored.
 
 ## Cancellation and resources
 

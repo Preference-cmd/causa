@@ -709,3 +709,83 @@ fn unknown_responses_incomplete_reason_and_status_are_safe_diagnostics() {
     assert_eq!(error.kind, ModelInvokeErrorKind::UnknownOutcome);
     assert!(!error.message.contains(secret));
 }
+
+fn anthropic_block_stream(start: Value, block_deltas: &[Value]) -> Vec<Value> {
+    let mut events = vec![
+        json!({"type":"message_start","message":{"content":[]}}),
+        json!({"type":"content_block_start","index":0,"content_block":start}),
+    ];
+    events.extend(
+        block_deltas
+            .iter()
+            .map(|delta| json!({"type":"content_block_delta","index":0,"delta":delta})),
+    );
+    events.extend([
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
+        json!({"type":"message_stop"}),
+    ]);
+    events
+}
+
+#[test]
+fn anthropic_non_client_tool_input_is_assembled_like_the_batch_form() {
+    let whole = json!({
+        "type": "server_tool_use",
+        "id": "srvtoolu_1",
+        "name": "web_search",
+        "input": {"query": "causa"},
+    });
+    let batch =
+        parse_anthropic_response(&json!({"content": [whole], "stop_reason": "end_turn"})).unwrap();
+    let events = anthropic_block_stream(
+        json!({"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}),
+        &[
+            json!({"type":"input_json_delta","partial_json":"{\"query\":"}),
+            json!({"type":"input_json_delta","partial_json":"\"causa\"}"}),
+        ],
+    );
+    let deltas = paired(Protocol::AnthropicMessages, &wire(&events), &batch);
+    // The block is sealed material, not a client tool call.
+    assert!(
+        !deltas
+            .iter()
+            .any(|delta| matches!(delta, StreamDelta::ToolCallDelta { .. }))
+    );
+    assert_eq!(output(&deltas).response.tool_calls().count(), 0);
+}
+
+#[test]
+fn anthropic_delta_without_a_rule_fails_instead_of_truncating_the_block() {
+    let secret = "wire-controlled-value";
+    let unknown_delta = json!({"type": secret, "data": "abc"});
+    for start in [
+        // An unknown block type and a known one: neither may lose content.
+        json!({"type":"future_block","data":""}),
+        json!({"type":"text","text":""}),
+    ] {
+        let events = anthropic_block_stream(start, std::slice::from_ref(&unknown_delta));
+        let error = collect(
+            Protocol::AnthropicMessages,
+            &wire(&events),
+            usize::MAX,
+            StreamLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+        assert!(!error.message.contains(secret), "{}", error.message);
+    }
+    // `input_json_delta` still conflicts with a block that declared no input.
+    let events = anthropic_block_stream(
+        json!({"type":"future_block","data":""}),
+        &[json!({"type":"input_json_delta","partial_json":"{}"})],
+    );
+    let error = collect(
+        Protocol::AnthropicMessages,
+        &wire(&events),
+        usize::MAX,
+        StreamLimits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+}
