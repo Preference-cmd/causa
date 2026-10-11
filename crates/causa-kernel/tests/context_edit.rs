@@ -1,4 +1,4 @@
-//! Independent external integration tests for the Slice 8 Context edit API.
+//! Independent external integration tests for the Context edit API.
 //!
 
 use causa_kernel::{

@@ -69,8 +69,8 @@ jobs:
       - run: cargo check --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked
 
   dependency-directions:
-    # First-principles item 7.1: the layering is machine-enforced, not
-    # enforced by review.
+    # Architectural layering is machine-enforced, not
+    # left to review.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +79,8 @@ jobs:
       - run: bash .github/scripts/check-dependency-directions.sh
       - run: python3 .github/scripts/check-module-layout.py
       - run: python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
+      - name: Check unused dependencies
+        uses: bnjbvr/cargo-machete@v0.6.2
 
   release-checks:
     runs-on: ubuntu-latest

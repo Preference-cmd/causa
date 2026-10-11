@@ -1,6 +1,5 @@
-//! Direct consumer tests for Slice 8 Context editing (Q4/Q5).
+//! Direct consumer tests for Context editing.
 //!
-//! Copy into `crates/causa-kernel/tests/` once the edit API is implemented.
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, Replacement, TextPayload,

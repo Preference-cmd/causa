@@ -42,7 +42,7 @@ class GuardTests(unittest.TestCase):
     def test_wrong_working_directory_is_rejected(self):
         self.assertNotEqual(self.layout().returncode, 0)
 
-    def dependencies(self, forbidden="", cargo_error=False):
+    def dependencies(self, forbidden="", cargo_error=False, kernel_extra=""):
         # These fixtures model cargo's normal tree. A forbidden optional edge
         # appears only with --all-features, so omitting the flag loses detection.
         cargo = self.root / "cargo"
@@ -53,13 +53,19 @@ class GuardTests(unittest.TestCase):
             "package = sys.argv[sys.argv.index('-p') + 1]\n"
             "print(package + ' v0.0.1')\n"
             "if package != 'causa-kernel': print('`-- causa-kernel v0.0.1')\n"
+            "if package == 'causa-kernel':\n"
+            "    for dep in ['async-trait', 'futures-core', 'serde', 'serde_json', 'thiserror', 'tokio-util', 'uuid']:\n"
+            "        print('|-- ' + dep + ' v0.0.1')\n"
+            "    if os.environ.get('CARGO_PROBE_KERNEL_EXTRA'):\n"
+            "        print('`-- ' + os.environ['CARGO_PROBE_KERNEL_EXTRA'] + ' v0.0.1')\n"
             "if package == 'causa-runtime' and '--all-features' in sys.argv:\n"
             "    if os.environ['CARGO_PROBE_EDGE']:\n"
             "        print('`-- ' + os.environ['CARGO_PROBE_EDGE'] + ' v0.0.1')\n"
         )
         cargo.chmod(0o755)
         env = dict(os.environ, PATH=f"{self.root}{os.pathsep}{os.environ['PATH']}",
-                   CARGO_PROBE_EDGE=forbidden, CARGO_PROBE_ERROR=str(int(cargo_error)))
+                   CARGO_PROBE_EDGE=forbidden, CARGO_PROBE_ERROR=str(int(cargo_error)),
+                   CARGO_PROBE_KERNEL_EXTRA=kernel_extra)
         return subprocess.run(
             ["bash", str(SCRIPTS / "check-dependency-directions.sh")],
             cwd=self.root, env=env, capture_output=True, text=True,
@@ -67,6 +73,11 @@ class GuardTests(unittest.TestCase):
 
     def test_kernel_only_runtime_passes(self):
         self.assertEqual(self.dependencies().returncode, 0)
+
+    def test_kernel_direct_tokio_dependency_is_rejected(self):
+        result = self.dependencies(kernel_extra="tokio")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("causa-kernel has disallowed direct dependency: tokio", result.stderr)
 
     def test_optional_runtime_protocol_dependency_is_rejected(self):
         result = self.dependencies("causa-protocol")

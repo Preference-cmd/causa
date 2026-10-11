@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dependency-direction guard (slice 11, first-principles item 7.1).
+# Dependency-direction guard: enforce architectural layering machine-side.
 #
 # Asserts the publish set's layering on the *normal* dependency graph:
 #   causa-kernel  <- causa-protocol <- causa-provider
@@ -28,11 +28,29 @@ check() {
   echo "ok: $root"
 }
 
+check_kernel_allowlist() {
+  local tree
+  tree=$(cargo tree -p causa-kernel --edges normal --all-features --depth 1 --locked --charset ascii)
+  local deps
+  deps=$(awk '$1 ~ /^(\||`)--/ { print $2 }' <<<"$tree")
+  for dep in $deps; do
+    case "$dep" in
+      async-trait|futures-core|serde|serde_json|thiserror|tokio-util|uuid) ;;
+      *)
+        echo "FAIL: causa-kernel has disallowed direct dependency: $dep" >&2
+        exit 1
+        ;;
+    esac
+  done
+  echo "ok: causa-kernel allowlist"
+}
+
 # The kernel is facts + contracts only — no transport, no MCP, no
 # subscriber, no sibling crates. ("causa v" is the facade's cargo-tree
 # rendering; a bare "causa" would false-positive on the crate's own name.)
 check causa-kernel reqwest rmcp axum tracing-subscriber \
   causa-protocol causa-runtime causa-provider causa-extension "causa v"
+check_kernel_allowlist
 
 # Protocol translation stays pure: no transport, no driver.
 check causa-protocol reqwest rmcp axum tracing-subscriber \

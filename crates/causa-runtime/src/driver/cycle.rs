@@ -225,7 +225,7 @@ impl TurnRunner {
                     Ok(committed) => committed,
                     Err(cause) => return interrupted(cause, Some(batch)),
                 };
-            // The successful commit consumes the logical U even when an observer
+            // The successful commit consumes the uncommitted tool batch even when an observer
             // requests cancellation. Unknown is already a fixed terminal cause.
             if let Some(call_block_id) = unknown {
                 let cause = TurnInterruption::UnknownToolOutcome {

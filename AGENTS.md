@@ -100,7 +100,9 @@ require review; a dependency check cannot enforce their semantics.
 
 1. `causa-kernel` never depends on transport, policy, or any sibling
    (`reqwest`, `rmcp`, `axum`, `tracing-subscriber` banned, plus all
-   family crates). It is facts (`context`) + contracts (`ports`) only.
+   family crates). Its direct normal dependencies are strictly allowlisted:
+   `async-trait`, `futures-core`, `serde`, `serde_json`, `thiserror`,
+   `tokio-util`, `uuid`. It is facts (`context`) + contracts (`ports`) only.
    A type belongs in `ports` iff third parties implement or call
    against it.
 2. `causa-protocol` stays pure translation: no transport, no driver.
@@ -128,6 +130,9 @@ rendering) — bare `causa` false-positives on `causa-*` names.
 - `#![deny(unsafe_code)]` everywhere; `#![deny(missing_docs)]` on
   library targets. The `Publish` workflow's dry-run fails on public API
   without docs — write docs first, not after.
+- Shipped comments and docstrings must be self-contained and must not cite
+  local-only documents, tickets, or internal shorthands (e.g., from `.agents/`).
+  State the invariant or design rationale directly in the comment.
 - Crate docs (`src/lib.rs`) state the layer contract and the policy
   surface; keep the README's crates table and facade feature table in sync
   when crates or features change (see Fact sources).
