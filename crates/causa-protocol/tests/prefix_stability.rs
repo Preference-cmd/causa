@@ -188,6 +188,53 @@ fn whitespace_only_assistant_text_is_omitted_by_anthropic_and_chat_only() {
 }
 
 #[test]
+fn a_chat_turn_left_with_only_sealed_residue_renders_no_assistant_message() {
+    // The message-level keys an endpoint returns beside whitespace-only
+    // content are kept as a sealed item. With the text omitted, that residue
+    // alone would render an assistant message with neither `content` nor
+    // `tool_calls`, so the message is omitted as well.
+    let f = frame(vec![
+        text("u0", "hello", Some("user")),
+        block(
+            "a-residue",
+            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
+                format: "openai_chat_completions".into(),
+                item: json!({"refusal": null, "annotations": []}),
+            })]),
+            None,
+        ),
+        text("a-blank", "  \n", None),
+        text("u1", "again", Some("user")),
+    ]);
+    let c = chat(&f);
+    assert_eq!(
+        c["messages"],
+        json!([
+            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ])
+    );
+
+    // A sealed `content` the endpoint sent itself still renders its message.
+    let kept = frame(vec![
+        text("u0", "hello", Some("user")),
+        block(
+            "a-residue",
+            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
+                format: "openai_chat_completions".into(),
+                item: json!({"content": null, "reasoning_content": "thought"}),
+            })]),
+            None,
+        ),
+        text("u1", "again", Some("user")),
+    ]);
+    assert_eq!(
+        chat(&kept)["messages"][1],
+        json!({"role": "assistant", "content": null, "reasoning_content": "thought"})
+    );
+}
+
+#[test]
 fn top_level_system_is_the_array_form_with_and_without_a_cache_directive() {
     let f = prefix_frame();
     let plain = anthropic(&f, CacheDirective::None);

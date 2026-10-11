@@ -95,3 +95,26 @@ async fn every_stop_reason_is_committed_or_reported_whole() {
         }
     }
 }
+
+/// A normal-end stop value with tool calls present is not reclassified: the
+/// runner reports the conversion failure and hands the output back whole.
+#[tokio::test]
+async fn end_turn_with_tool_calls_is_a_conversion_failure_carrying_the_output() {
+    let mut output = tooluse_output("text", "echo", serde_json::json!({}));
+    output.stop_reason = ModelStopReason::EndTurn;
+    output.raw_stop_reason = Some("end_turn".into());
+    let gateway = RecordingGateway::scripted(vec![Ok(output)]);
+    let out = runner_with(gateway, vec![])
+        .run(TurnId::new("mismatch"), Context::new(), options(), ctrl())
+        .await;
+    let TurnInterruption::ModelConversionFailed { error, output, .. } = cause(&out) else {
+        panic!("typed conversion failure expected, got {:?}", out.result)
+    };
+    assert!(matches!(
+        error,
+        ModelBlockError::EndTurnWithToolCalls { count: 1 }
+    ));
+    assert_eq!(output.response.tool_calls().count(), 1);
+    assert_eq!(output.raw_stop_reason.as_deref(), Some("end_turn"));
+    assert_eq!(out.context.blocks().len(), 0);
+}

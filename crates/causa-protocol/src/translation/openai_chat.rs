@@ -131,7 +131,7 @@ pub fn render_openai_chat_messages(
                 | Segment::Sealed(_)
         );
         if closes_run && let Some(finished) = run.take() {
-            messages.push(assistant_message(finished));
+            messages.extend(assistant_message(finished));
         }
         match segment {
             Segment::Text {
@@ -155,7 +155,7 @@ pub fn render_openai_chat_messages(
                 (Role::Assistant, ResolvedMedia::Placeholder(text)) => {
                     // closes the open run, then a degraded assistant text
                     if let Some(finished) = run.take() {
-                        messages.push(assistant_message(finished));
+                        messages.extend(assistant_message(finished));
                     }
                     messages.push(json!({"role": "assistant", "content": text}));
                 }
@@ -256,7 +256,7 @@ pub fn render_openai_chat_messages(
         }
     }
     if let Some(finished) = run.take() {
-        messages.push(assistant_message(finished));
+        messages.extend(assistant_message(finished));
     }
 
     messages.append(&mut result_media);
@@ -307,7 +307,12 @@ pub fn render_openai_chat_messages(
 /// (only when non-empty) are written over it. Without a sealed object, empty
 /// text is omitted (a calls-only message carries no `content`) and a
 /// text-only message carries no `tool_calls` key.
-fn assistant_message(run: AssistantRun) -> Value {
+///
+/// `None` when the result would carry neither a `content` key nor
+/// `tool_calls`: a run whose only text was whitespace (omitted above) leaves
+/// just the sealed residue, and an assistant message with neither is not a
+/// valid Chat message, so the whole message is omitted like the text was.
+fn assistant_message(run: AssistantRun) -> Option<Value> {
     let mut message = context_frame::residue_object(run.sealed.as_ref());
     message.insert("role".into(), json!("assistant"));
     if !run.text.is_empty() {
@@ -316,7 +321,8 @@ fn assistant_message(run: AssistantRun) -> Value {
     if !run.calls.is_empty() {
         message.insert("tool_calls".into(), json!(run.calls));
     }
-    Value::Object(message)
+    (message.contains_key("content") || message.contains_key("tool_calls"))
+        .then_some(Value::Object(message))
 }
 
 /// The sealed Chat object without its `reasoning_content` key; `None` when
@@ -423,7 +429,7 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
 
     let raw_stop_reason = match crate::translation::stop_reason::chat_raw(choice) {
         Some(raw) => raw.to_owned(),
-        None if matches!(choice.get("finish_reason"), Some(Value::String(_))) => {
+        None if choice.get("finish_reason").is_some_and(|v| !v.is_null()) => {
             return Err(permanent("choices[0].finish_reason: expected a string"));
         }
         None => return Err(permanent("missing choices[0].finish_reason")),
@@ -986,6 +992,12 @@ mod tests {
         let e = parse_openai_chat_response(&json!({"choices": [{"message": {}}]})).unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
         assert!(e.message.contains("finish_reason"));
+        // Present but not a string is reported as such, not as missing.
+        let e =
+            parse_openai_chat_response(&json!({"choices": [{"message": {}, "finish_reason": 7}]}))
+                .unwrap_err();
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(e.message.contains("expected a string"));
     }
 
     #[test]

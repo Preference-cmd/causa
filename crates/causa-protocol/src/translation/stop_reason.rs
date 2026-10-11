@@ -28,9 +28,10 @@
 //! `incomplete` status that carries a reason (for example
 //! `incomplete.max_output_tokens`).
 //!
-//! A malformed field is still a `Permanent` parse failure: a missing or
-//! non-string stop field, and a Responses `status` outside
-//! `completed` / `failed` / `incomplete`. Stop reason and tool calls that
+//! A malformed field is still an error. A missing or non-string stop field is
+//! a `Permanent` parse failure; a Responses `status` outside
+//! `completed` / `failed` / `incomplete` is `UnknownOutcome`, because the
+//! response reports no outcome this adapter can act on. Stop reason and tool calls that
 //! disagree are reclassified only on Responses, whose protocol has no
 //! tool-call stop value.
 
@@ -77,8 +78,8 @@ pub(crate) fn responses(status: &str, incomplete_reason: Option<&str>) -> ModelS
 }
 
 /// The `stop_reason` a batch Anthropic body carries, if it is a string.
-/// `None`/absent is a missing field and is reported by the caller as
-/// `Permanent`; a present non-string is not a stop value and yields `None`.
+/// An absent, null or non-string field yields `None`, and the caller reports
+/// it as `Permanent`.
 pub(crate) fn anthropic_raw(value: &Value) -> Option<&str> {
     value.get("stop_reason").and_then(Value::as_str)
 }

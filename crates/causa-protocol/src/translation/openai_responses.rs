@@ -351,7 +351,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                 match status {
                     "queued" => "Responses non-terminal status: queued",
                     "in_progress" => "Responses non-terminal status: in_progress",
-                    "cancelled" => "Responses non-terminal status: cancelled",
+                    "cancelled" => "Responses status without an outcome: cancelled",
                     _ => "Responses unrecognized status",
                 },
             ));

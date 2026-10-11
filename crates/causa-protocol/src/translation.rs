@@ -31,7 +31,8 @@
 //! the walk keeps it); one listed exception at emission — the Anthropic and
 //! Chat renderers omit a whitespace-only assistant text part from the
 //! request while the Responses renderer keeps it, and the fact stays in the
-//! `Context` in every case;
+//! `Context` in every case (a Chat assistant message left with neither
+//! `content` nor `tool_calls` is omitted with it);
 //! no text is joined across block seams, for any role, and no renderer
 //! inserts a character the model did not produce; tool ids come from
 //! `meta.provider_call_id` with the declaration `BlockId` UUID as fallback,

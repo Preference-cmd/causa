@@ -47,7 +47,12 @@ adapters or data converters.
   from the request (as `pi-ai` does); the part stays in the `Context` and the
   Responses renderer keeps it. This is a listed exception to the round-trip
   property, and with thinking enabled it is a framework-made prefix change for
-  a turn that contains such a part.
+  a turn that contains such a part. A Chat assistant message left with
+  neither `content` nor `tool_calls` by that omission is not rendered.
+- Responses requests now send `include: ["reasoning.encrypted_content"]` and
+  `store: false` by default, which changes the body of every existing
+  Responses request. `with_encrypted_reasoning(false)` and `with_store(None)`
+  restore the previous body.
 - `StreamDelta::Error` now carries the gateway's own `ModelInvokeError` as
   `Error { error }` instead of the `{ kind, message }` pair, so an in-stream
   failure keeps its classification and any server-requested retry delay.
@@ -150,9 +155,10 @@ adapters or data converters.
   EOF through `finish`. Replace `feed`/`flush`/`overflowed`; errors are returned
   explicitly, oversized events fail closed, and EOF no longer invents a final
   event delimiter. Split UTF-8 characters and LF/CRLF/CR line endings are supported.
-- OpenAI Responses parsing rejects failed responses and unknown incomplete
-  reasons instead of accepting them as `EndTurn`. The known incomplete reasons
-  `max_output_tokens` and `content_filter` map to `MaxTokens` and `Refusal`.
+- OpenAI Responses parsing rejects failed responses instead of accepting them
+  as `EndTurn`. The known incomplete reasons `max_output_tokens` and
+  `content_filter` map to `MaxTokens` and `Refusal`; an unknown incomplete
+  reason is `Unrecognized` (see the stop-reason entry above).
 
 ### Added
 
@@ -165,8 +171,6 @@ adapters or data converters.
   field, `None` sends `thinking: {"type": "disabled"}`, and `Low`..`Max` send
   `thinking: {"type": "adaptive"}` with `output_config.effort`; `Minimal`
   fails with `InvalidRequest` before HTTP.
-- Responses requests send `include: ["reasoning.encrypted_content"]` and
-  `store: false` by default.
 - Render options and their gateway setters: `with_beta` (extra
   `anthropic-beta` values, one comma-separated header, empty by default),
   `with_prefix_mismatch_behavior`, `with_encrypted_reasoning`,

@@ -468,7 +468,7 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
 
     let raw_stop_reason = match crate::translation::stop_reason::anthropic_raw(value) {
         Some(raw) => raw.to_owned(),
-        None if matches!(value.get("stop_reason"), Some(Value::String(_))) => {
+        None if value.get("stop_reason").is_some_and(|v| !v.is_null()) => {
             return Err(permanent("stop_reason: expected a string"));
         }
         None => return Err(permanent("missing stop_reason")),
@@ -1300,6 +1300,10 @@ mod tests {
         let e = parse_anthropic_response(&v).unwrap_err();
         assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
         assert!(e.message.contains("stop_reason"));
+        // Present but not a string is reported as such, not as missing.
+        let e = parse_anthropic_response(&json!({"content": [], "stop_reason": 7})).unwrap_err();
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(e.message.contains("expected a string"));
     }
 
     #[test]
