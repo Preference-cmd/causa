@@ -3,7 +3,12 @@ use std::collections::VecDeque;
 use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, StreamDelta};
 use serde_json::Value;
 
-use super::{anthropic::Anthropic, chat::Chat, common::permanent, responses::Responses};
+use super::{
+    anthropic::Anthropic,
+    chat::Chat,
+    common::{located, permanent},
+    responses::Responses,
+};
 use crate::{Protocol, translation::sse_parser::SseParser};
 
 /// Limits for retained protocol state and all consumed wire bytes.
@@ -54,6 +59,7 @@ pub struct StreamDecoder {
     pending: VecDeque<StreamDelta>,
     limits: StreamLimits,
     total: usize,
+    events: usize,
     terminal: bool,
     failed: bool,
 }
@@ -84,6 +90,7 @@ impl StreamDecoder {
             pending: VecDeque::new(),
             limits,
             total: 0,
+            events: 0,
             terminal: false,
             failed: false,
         })
@@ -130,11 +137,13 @@ impl StreamDecoder {
                 }
                 return Ok(None);
             };
+            self.events += 1;
             let deltas = match &mut self.assembly {
-                Assembly::Chat(state) => state.event(&event)?,
-                Assembly::Responses(state) => state.event(&event)?,
-                Assembly::Anthropic(state) => state.event(&event)?,
-            };
+                Assembly::Chat(state) => state.event(&event),
+                Assembly::Responses(state) => state.event(&event),
+                Assembly::Anthropic(state) => state.event(&event),
+            }
+            .map_err(|error| located(error, self.events, &event))?;
             if deltas.len() > self.limits.max_pending_deltas {
                 return Err(permanent("stream exceeds max_pending_deltas"));
             }

@@ -238,6 +238,13 @@ adapters or data converters.
 
 ### Changed
 
+- A stream decode failure now ends its message with where it happened: the
+  1-based position of the event and, when the event names one, its type, as
+  in `stream: missing or invalid text (event 7:
+  response.reasoning_summary_part.added)`. The type is provider text and is
+  echoed only when it is at most 64 characters of ASCII letters, digits,
+  `.`, `_` and `-`. Code matching on the exact message of a stream error
+  must allow for the suffix.
 - The Responses stream decoder accepts an opening part without `text` and
   an opening function call without `arguments`, reading both as empty. A
   compatible server was observed to omit the empty string, which failed the

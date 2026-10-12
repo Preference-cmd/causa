@@ -825,3 +825,40 @@ fn anthropic_delta_without_a_rule_fails_instead_of_truncating_the_block() {
     .unwrap_err();
     assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
 }
+
+#[test]
+fn decode_failures_name_the_event_position_and_a_plain_event_type() {
+    let message = |protocol, events: &[Value]| {
+        collect(protocol, &wire(events), usize::MAX, StreamLimits::default())
+            .unwrap_err()
+            .message
+    };
+    assert_eq!(
+        message(
+            Protocol::OpenAiResponses,
+            &[
+                json!({"type":"response.created","response":{"id":"r","status":"in_progress"}}),
+                json!({"type":"response.output_item.added","item":{"id":"i","type":"message","content":[]}}),
+            ],
+        ),
+        "stream: missing or invalid output_index (event 2: response.output_item.added)"
+    );
+    // Chat chunks carry no type, so only the position is reported.
+    assert_eq!(
+        message(Protocol::OpenAiChatCompletions, &[json!({"id":"c"})]),
+        "Chat missing choices array (event 1)"
+    );
+    // A type that is not a short identifier is provider text and is not echoed.
+    for kind in ["echoed prompt text".to_owned(), "x".repeat(65)] {
+        let bytes = format!("event: ping\ndata: {}\n\n", json!({"type": kind}));
+        let text = collect(
+            Protocol::AnthropicMessages,
+            bytes.as_bytes(),
+            usize::MAX,
+            StreamLimits::default(),
+        )
+        .unwrap_err()
+        .message;
+        assert_eq!(text, "Anthropic SSE event/type mismatch (event 1)");
+    }
+}

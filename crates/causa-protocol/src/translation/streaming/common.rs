@@ -2,6 +2,7 @@ use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, StreamDe
 use serde_json::Value;
 
 use super::StreamLimits;
+use crate::translation::sse_parser::SseEvent;
 
 pub(super) fn permanent(message: impl Into<String>) -> ModelInvokeError {
     ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
@@ -19,6 +20,31 @@ pub(super) fn index(v: &Value, key: &str) -> Result<usize, ModelInvokeError> {
         .and_then(Value::as_u64)
         .ok_or_else(|| permanent(format!("stream: missing or invalid {key}")))?;
     usize::try_from(n).map_err(|_| permanent("stream index exceeds platform range"))
+}
+
+/// Appends where a failure happened: the 1-based position of the event in the
+/// stream and, when the event names one, its type. The type is provider text,
+/// so it is echoed only when it is a short identifier.
+pub(super) fn located(
+    mut error: ModelInvokeError,
+    position: usize,
+    event: &SseEvent,
+) -> ModelInvokeError {
+    let kind = serde_json::from_str::<Value>(&event.data)
+        .ok()
+        .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| event.event.clone())
+        .filter(|kind| {
+            (1..=64).contains(&kind.len())
+                && kind
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        });
+    error.message = match kind {
+        Some(kind) => format!("{} (event {position}: {kind})", error.message),
+        None => format!("{} (event {position})", error.message),
+    };
+    error
 }
 
 pub(super) fn done(output: ModelOutput) -> StreamDelta {
