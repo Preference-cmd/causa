@@ -17,11 +17,7 @@ fn call(value: u128, wire: &str) -> ContextBlock {
     ContextBlock::new(
         id(value),
         BlockContent::ToolCall(ToolCallPayload::new("read", json!({}))),
-        {
-            let mut meta = BlockMeta::default();
-            meta.provider_call_id = Some(wire.into());
-            meta
-        },
+        BlockMeta::default().with_provider_call_id(wire),
     )
 }
 fn result(value: u128, target: u128) -> ContextBlock {
@@ -68,11 +64,7 @@ async fn invalid_tool_material_never_reaches_http_for_any_gateway() {
             );
             // A limit, so every rejection below is the frame's, not the
             // Anthropic wire's required `max_tokens`.
-            request.generation = {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation
-            };
+            request.generation = GenerationOptions::default().with_max_tokens(64);
             request
         };
         for gateway in &gateways {

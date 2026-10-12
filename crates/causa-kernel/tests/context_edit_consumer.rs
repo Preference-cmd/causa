@@ -27,12 +27,9 @@ fn call(id_value: u128, name: &str) -> ContextBlock {
             name.to_owned(),
             json!({"round": id_value}),
         )),
-        {
-            let mut meta = BlockMeta::default();
-            meta.source = Some("model".to_owned());
-            meta.provider_call_id = Some(format!("provider-call-{id_value}"));
-            meta
-        },
+        BlockMeta::default()
+            .with_source("model".to_owned())
+            .with_provider_call_id(format!("provider-call-{id_value}")),
     )
 }
 

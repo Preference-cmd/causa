@@ -85,10 +85,9 @@ const LIMIT: u32 = 8192;
 const EFFORTS: [&str; 6] = ["none", "minimal", "high", "off", "level-of-tomorrow", ""];
 
 fn with_effort(effort: &str) -> GenerationOptions {
-    let mut generation = GenerationOptions::default();
-    generation.reasoning_effort = Some(effort.into());
-    generation.max_tokens = Some(LIMIT);
-    generation
+    GenerationOptions::default()
+        .with_reasoning_effort(effort)
+        .with_max_tokens(LIMIT)
 }
 
 #[test]
@@ -127,12 +126,7 @@ fn every_protocol_writes_any_effort_string_to_its_own_key() {
             assert!(body.get(key).is_none());
         }
     }
-    let body = render(2, &{
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(LIMIT);
-        generation
-    })
-    .unwrap();
+    let body = render(2, &GenerationOptions::default().with_max_tokens(LIMIT)).unwrap();
     assert!(body.get("thinking").is_none());
     assert!(body.get("output_config").is_none());
 }
@@ -395,12 +389,9 @@ fn no_renderer_judges_the_effort_or_its_combination_with_a_temperature() {
 
 #[test]
 fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.reasoning_effort = Some("high".into());
-        generation.max_tokens = Some(LIMIT);
-        generation
-    };
+    let generation = GenerationOptions::default()
+        .with_reasoning_effort("high")
+        .with_max_tokens(LIMIT);
     let body = render_responses(&generation, &ResponsesRenderOptions::default()).unwrap();
     assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     assert_eq!(body["store"], json!(false));
@@ -436,35 +427,19 @@ fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
 fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
     for protocol in [0, 1, 2] {
         for generation in [
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(0);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(LIMIT);
-                generation.temperature = Some(f32::NAN);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(LIMIT);
-                generation.temperature = Some(f32::INFINITY);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(LIMIT);
-                generation.temperature = Some(-0.1);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(LIMIT);
-                generation.temperature = Some(2.1);
-                generation
-            },
+            GenerationOptions::default().with_max_tokens(0),
+            GenerationOptions::default()
+                .with_max_tokens(LIMIT)
+                .with_temperature(f32::NAN),
+            GenerationOptions::default()
+                .with_max_tokens(LIMIT)
+                .with_temperature(f32::INFINITY),
+            GenerationOptions::default()
+                .with_max_tokens(LIMIT)
+                .with_temperature(-0.1),
+            GenerationOptions::default()
+                .with_max_tokens(LIMIT)
+                .with_temperature(2.1),
         ] {
             assert_eq!(
                 render(protocol, &generation).unwrap_err().kind,
@@ -473,21 +448,21 @@ fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
         }
     }
     assert!(
-        render(2, &{
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(LIMIT);
-            generation.output_schema = Some(json!({"type": "object"}));
-            generation
-        })
+        render(
+            2,
+            &GenerationOptions::default()
+                .with_max_tokens(LIMIT)
+                .with_output_schema(json!({"type": "object"}))
+        )
         .is_err()
     );
     assert!(
-        render(2, &{
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(LIMIT);
-            generation.temperature = Some(1.1);
-            generation
-        })
+        render(
+            2,
+            &GenerationOptions::default()
+                .with_max_tokens(LIMIT)
+                .with_temperature(1.1)
+        )
         .is_err()
     );
 }

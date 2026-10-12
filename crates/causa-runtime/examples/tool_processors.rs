@@ -125,12 +125,12 @@ impl ModelGateway for ResearchGateway {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let executor = ToolExecutor::new(vec![Arc::new(Search)], {
-        let mut options = ToolExecutorOptions::default();
-        options.before = vec![Arc::new(LimitResults), Arc::new(DeduplicateProcessor)];
-        options.after = vec![Arc::new(DeclarationOrder)];
-        options
-    })?;
+    let executor = ToolExecutor::new(
+        vec![Arc::new(Search)],
+        ToolExecutorOptions::default()
+            .with_before(vec![Arc::new(LimitResults), Arc::new(DeduplicateProcessor)])
+            .with_after(vec![Arc::new(DeclarationOrder)]),
+    )?;
     let runner = TurnRunner::new(Arc::new(ResearchGateway), Arc::new(executor));
     let mut context = causa_kernel::Context::new();
     context

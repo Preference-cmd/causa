@@ -17,30 +17,25 @@ fn call(value: u128, wire: &str) -> ContextBlock {
     ContextBlock::new(
         id(value),
         BlockContent::ToolCall(ToolCallPayload::new("lookup", json!({}))),
-        {
-            let mut meta = BlockMeta::default();
-            meta.provider_call_id = Some(wire.into());
-            meta
-        },
+        BlockMeta::default().with_provider_call_id(wire),
     )
 }
 fn result(value: u128, declaration: u128, media: bool) -> ContextBlock {
     ContextBlock::new(
         id(value),
-        BlockContent::ToolResult({
-            let mut result = ToolResultPayload::new(
+        BlockContent::ToolResult(
+            ToolResultPayload::new(
                 id(declaration),
                 ToolResultStatus::Succeeded,
                 ToolOutput::new(json!("found")),
-            );
-            result.notes = vec![TextPayload::new("note")];
-            result.media = if media {
+            )
+            .with_notes(vec![TextPayload::new("note")])
+            .with_media(if media {
                 vec![MediaRef::new("image/png", format!("asset-{value}"))]
             } else {
                 vec![]
-            };
-            result
-        }),
+            }),
+        ),
         BlockMeta::default(),
     )
 }
@@ -55,11 +50,7 @@ fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::
     let media = MediaSet::new();
     let surface = ToolSurface::empty();
     // Anthropic requires `max_tokens`; the renderer tests always supply one.
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(1024);
-        generation
-    };
+    let generation = GenerationOptions::default().with_max_tokens(1024);
     let model = ModelRef::new("test");
     match protocol {
         0 => anthropic::render_anthropic_messages(

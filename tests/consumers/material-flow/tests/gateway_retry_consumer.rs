@@ -38,11 +38,7 @@ fn output(items: Vec<ModelItem>, stop_reason: ModelStopReason) -> ModelOutput {
 
 fn tool_round() -> ModelOutput {
     output(
-        vec![ModelItem::tool_call({
-            let mut built = ToolCallDraft::new("local", json!({}));
-            built.provider_call_id = Some("call-1".into());
-            built
-        })],
+        vec![ModelItem::tool_call(ToolCallDraft::new("local", json!({})).with_provider_call_id("call-1"))],
         ModelStopReason::ToolUse,
     )
 }
@@ -152,9 +148,9 @@ async fn a_three_attempt_wrapper_completes_a_rate_limited_second_round() {
     let runner = TurnRunner::new(Arc::new(gateway), Arc::new(executor));
     let committed = Arc::new(Mutex::new(Vec::new()));
     let sink = committed.clone();
-    let mut options = TurnRunOptions::new(ModelRef::new("host-model"));
-    options.preparer = Some(Arc::new(CountingPreparer(preparations.clone())));
-    options.observer = Some(Arc::new(move |event| {
+    let options = TurnRunOptions::new(ModelRef::new("host-model"))
+        .with_preparer(Arc::new(CountingPreparer(preparations.clone())))
+        .with_observer(Arc::new(move |event| {
         if let RunEvent::BlocksCommitted { blocks, .. } = event {
             sink.lock().unwrap().extend_from_slice(blocks);
         }

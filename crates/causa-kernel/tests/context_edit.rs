@@ -624,12 +624,9 @@ fn tagged_block(n: u128, text: &str, source: &str) -> ContextBlock {
     ContextBlock::new(
         id(n),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.source = Some(source.to_owned());
-            meta.provider_call_id = Some(format!("provider-{n}"));
-            meta
-        },
+        BlockMeta::default()
+            .with_source(source.to_owned())
+            .with_provider_call_id(format!("provider-{n}")),
     )
 }
 

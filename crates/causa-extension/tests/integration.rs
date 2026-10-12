@@ -550,8 +550,7 @@ async fn kernel_turn_completes_through_the_mcp_source() {
         ]),
     });
     let runner = TurnRunner::new(gateway, executor);
-    let mut options = TurnRunOptions::new(ModelRef::new("fake"));
-    options.limits = TurnLimits::new(5, 8);
+    let options = TurnRunOptions::new(ModelRef::new("fake")).with_limits(TurnLimits::new(5, 8));
     let ctx = Context::from_blocks(vec![ContextBlock::new(
         new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),

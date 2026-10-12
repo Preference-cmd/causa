@@ -76,18 +76,15 @@ impl Tool for RenderChart {
             )
             .await
             .expect("ingest");
-        {
-            let mut result = ToolResultPayload::new(
-                ctx.call_block_id,
-                ToolResultStatus::Succeeded,
-                ToolOutput::new(serde_json::json!(
-                    "chart ready with explanatory details. ".repeat(100)
-                )),
-            );
-            result.media = vec![causa_kernel::MediaRef::new("image/png", artifact.id)];
-            result.notes = vec![TextPayload::new("Image reference preserved.")];
-            result
-        }
+        ToolResultPayload::new(
+            ctx.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(serde_json::json!(
+                "chart ready with explanatory details. ".repeat(100)
+            )),
+        )
+        .with_media(vec![causa_kernel::MediaRef::new("image/png", artifact.id)])
+        .with_notes(vec![TextPayload::new("Image reference preserved.")])
     }
 }
 
@@ -146,11 +143,10 @@ async fn main() {
         .with_token_counter(Arc::new(DemoCounter))
         .with_artifact_store(outputs.clone());
     let executor = Arc::new(
-        ToolExecutor::new(vec![Arc::new(RenderChart(assets.clone()))], {
-            let mut options = ToolExecutorOptions::default();
-            options.after = vec![Arc::new(budget)];
-            options
-        })
+        ToolExecutor::new(
+            vec![Arc::new(RenderChart(assets.clone()))],
+            ToolExecutorOptions::default().with_after(vec![Arc::new(budget)]),
+        )
         .expect("unique tools"),
     );
 

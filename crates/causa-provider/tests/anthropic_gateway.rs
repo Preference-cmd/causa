@@ -47,11 +47,7 @@ fn request(frame: ContextFrame) -> ModelRequest {
         );
         // Anthropic requires `max_tokens`; every case here supplies one so the
         // request under test is the transport behavior, not the validation.
-        built.generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(4096);
-            generation
-        };
+        built.generation = GenerationOptions::default().with_max_tokens(4096);
         built
     }
 }

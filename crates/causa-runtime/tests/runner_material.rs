@@ -312,16 +312,17 @@ impl ToolBatchProcessor for ResolveWithId {
         _: &ProcessorContext<'_>,
     ) -> Result<(), ProcessorError> {
         let call = b.calls()[0].call().clone();
-        b.resolve_at(0, self.0, {
-            let mut result = ToolResultPayload::new(
+        b.resolve_at(
+            0,
+            self.0,
+            ToolResultPayload::new(
                 call.call_block_id,
                 ToolResultStatus::Rejected,
                 ToolOutput::new(json!({"kept":true})),
-            );
-            result.media = vec![MediaRef::new("image/png", "asset")];
-            result.notes = vec![TextPayload::new("kept note")];
-            result
-        })
+            )
+            .with_media(vec![MediaRef::new("image/png", "asset")])
+            .with_notes(vec![TextPayload::new("kept note")]),
+        )
         .unwrap();
         Ok(())
     }
@@ -330,11 +331,10 @@ impl ToolBatchProcessor for ResolveWithId {
 async fn tool_commit_failure_returns_complete_batch_and_actual_edit_input() {
     let context = input("existing");
     let collision = context.blocks()[0].id();
-    let executor = ToolExecutor::new(vec![Arc::new(EchoTool)], {
-        let mut options = ToolExecutorOptions::default();
-        options.before = vec![Arc::new(ResolveWithId(collision))];
-        options
-    })
+    let executor = ToolExecutor::new(
+        vec![Arc::new(EchoTool)],
+        ToolExecutorOptions::default().with_before(vec![Arc::new(ResolveWithId(collision))]),
+    )
     .unwrap();
     let runner = TurnRunner::new(
         RecordingGateway::scripted(vec![Ok(tooluse_output(
@@ -403,11 +403,10 @@ impl ToolBatchProcessor for FailedProcessor {
 }
 #[tokio::test]
 async fn processor_error_is_selected_before_returned_callback_cancels() {
-    let executor = ToolExecutor::new(vec![Arc::new(EchoTool)], {
-        let mut options = ToolExecutorOptions::default();
-        options.before = vec![Arc::new(FailedProcessor)];
-        options
-    })
+    let executor = ToolExecutor::new(
+        vec![Arc::new(EchoTool)],
+        ToolExecutorOptions::default().with_before(vec![Arc::new(FailedProcessor)]),
+    )
     .unwrap();
     let runner = TurnRunner::new(
         RecordingGateway::scripted(vec![Ok(tooluse_output("", "echo", json!({})))]),

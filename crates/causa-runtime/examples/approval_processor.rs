@@ -116,17 +116,18 @@ impl ToolBatchProcessor for ApprovalProcessor {
                 offset += 1;
             } else {
                 batch
-                    .resolve_at(batch.completed_len() + offset, new_block_id(), {
-                        let mut result = ToolResultPayload::new(
+                    .resolve_at(
+                        batch.completed_len() + offset,
+                        new_block_id(),
+                        ToolResultPayload::new(
                             id,
                             ToolResultStatus::Rejected,
                             ToolOutput::new(serde_json::json!({"error": "file access denied"})),
-                        );
-                        result.notes = vec![TextPayload::new(
+                        )
+                        .with_notes(vec![TextPayload::new(
                             "Only notes.txt is allowed in this session.",
-                        )];
-                        result
-                    })
+                        )]),
+                    )
                     .map_err(|error| ProcessorError::Failed(error.to_string()))?;
                 // Completion swaps the entry to the prefix; inspect the new
                 // element at this suffix offset before advancing.
@@ -166,11 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = request.reply.send(request.path == "notes.txt");
         }
     });
-    let executor = ToolExecutor::new(vec![Arc::new(ReadFile)], {
-        let mut options = ToolExecutorOptions::default();
-        options.before = vec![Arc::new(ApprovalProcessor(requests))];
-        options
-    })?;
+    let executor = ToolExecutor::new(
+        vec![Arc::new(ReadFile)],
+        ToolExecutorOptions::default().with_before(vec![Arc::new(ApprovalProcessor(requests))]),
+    )?;
     let runner = TurnRunner::new(gateway, Arc::new(executor));
     let mut context = causa_kernel::Context::new();
     context

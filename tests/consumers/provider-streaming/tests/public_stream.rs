@@ -38,8 +38,8 @@ async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() 
         ),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
-    let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
-    options.observer = Some(Arc::new(move |event| {
+    let options = TurnRunOptions::new(ModelRef::new("fixture"))
+        .with_observer(Arc::new(move |event| {
         if let RunEvent::ModelDelta {
             delta: StreamDelta::TextDelta { delta },
             ..
@@ -105,11 +105,7 @@ async fn facade_direct_stream_observes_all_three_gateways_before_terminal() {
                 ModelRef::new("fixture"),
             );
             // The Anthropic wire requires an explicit output limit.
-            request.generation = {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(1024);
-                generation
-            };
+            request.generation = GenerationOptions::default().with_max_tokens(1024);
             request
         };
         let mut stream = gateway

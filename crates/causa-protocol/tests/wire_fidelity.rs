@@ -66,11 +66,7 @@ fn render(
 ) -> Result<Value, causa_kernel::ModelInvokeError> {
     let media = MediaSet::new();
     let surface = ToolSurface::empty();
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(1024);
-        generation
-    };
+    let generation = GenerationOptions::default().with_max_tokens(1024);
     let model = ModelRef::new("m");
     match protocol {
         Protocol::AnthropicMessages => render_anthropic_messages(
@@ -819,14 +815,10 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
             ContentPart::Text(TextPayload::new("a")),
             ContentPart::Text(TextPayload::new("b")),
         ]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.wire = Some(WireMeta::new(
-                "anthropic_messages",
-                json!({"type": "text", "x_unknown": 1}),
-            ));
-            meta
-        },
+        BlockMeta::default().with_wire(WireMeta::new(
+            "anthropic_messages",
+            json!({"type": "text", "x_unknown": 1}),
+        )),
     );
     let rendered = assistant_items(
         Protocol::AnthropicMessages,
@@ -845,10 +837,9 @@ fn sealed_block(source: Option<&str>, format: &str, item: Value) -> ContextBlock
     ContextBlock::new(
         next_id(),
         BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(format, item))]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.source = source.map(String::from);
-            meta
+        match source {
+            Some(s) => BlockMeta::default().with_source(s),
+            None => BlockMeta::default(),
         },
     )
 }
@@ -902,10 +893,9 @@ fn text_block(source: Option<&str>, text: &str) -> ContextBlock {
     ContextBlock::new(
         next_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.source = source.map(String::from);
-            meta
+        match source {
+            Some(s) => BlockMeta::default().with_source(s),
+            None => BlockMeta::default(),
         },
     )
 }

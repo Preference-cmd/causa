@@ -594,11 +594,7 @@ fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
         },
         &crate::translation::media::MediaSet::new(),
         &causa_kernel::ToolSurface::empty(),
-        &{
-            let mut generation = causa_kernel::GenerationOptions::default();
-            generation.max_tokens = Some(64);
-            generation
-        },
+        &causa_kernel::GenerationOptions::default().with_max_tokens(64),
         &causa_kernel::ModelRef::new("m"),
         causa_kernel::CacheDirective::None,
         &crate::translation::render_options::AnthropicRenderOptions::default(),

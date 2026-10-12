@@ -30,8 +30,12 @@ pub(crate) fn block(
         content,
         {
             let mut meta = BlockMeta::default();
-            meta.provider_call_id = provider_call_id.map(String::from);
-            meta.source = source.map(String::from);
+            if let Some(id) = provider_call_id {
+                meta = meta.with_provider_call_id(id);
+            }
+            if let Some(src) = source {
+                meta = meta.with_source(src);
+            }
             meta
         },
     )
@@ -66,10 +70,9 @@ pub(crate) fn call(
     ContextBlock::new(
         label_id(call_id),
         BlockContent::ToolCall(ToolCallPayload::new(name, arguments)),
-        {
-            let mut meta = BlockMeta::default();
-            meta.provider_call_id = provider.map(String::from);
-            meta
+        match provider {
+            Some(p) => BlockMeta::default().with_provider_call_id(p),
+            None => BlockMeta::default(),
         },
     )
 }
@@ -93,12 +96,10 @@ pub(crate) fn result_with_media(
 ) -> ContextBlock {
     block(
         seq,
-        BlockContent::ToolResult({
-            let mut result =
-                ToolResultPayload::new(label_id(call_id), status, ToolOutput::new(content));
-            result.media = media;
-            result
-        }),
+        BlockContent::ToolResult(
+            ToolResultPayload::new(label_id(call_id), status, ToolOutput::new(content))
+                .with_media(media),
+        ),
         None,
         None,
     )

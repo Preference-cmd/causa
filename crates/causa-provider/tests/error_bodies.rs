@@ -40,11 +40,7 @@ fn request() -> ModelRequest {
             },
             ModelRef::new("test-model"),
         );
-        request.generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(1024);
-            generation
-        };
+        request.generation = GenerationOptions::default().with_max_tokens(1024);
         request
     }
 }

@@ -12,15 +12,12 @@ fn call(id: BlockId, name: &str, arguments: Value) -> ToolCallContext {
 }
 
 fn result(call_block_id: BlockId, note: &str) -> ToolResultPayload {
-    {
-        let mut result = ToolResultPayload::new(
-            call_block_id,
-            ToolResultStatus::Succeeded,
-            ToolOutput::new(json!({"ok": true})),
-        );
-        result.notes = vec![TextPayload::new(note)];
-        result
-    }
+    ToolResultPayload::new(
+        call_block_id,
+        ToolResultStatus::Succeeded,
+        ToolOutput::new(json!({"ok": true})),
+    )
+    .with_notes(vec![TextPayload::new(note)])
 }
 
 #[test]

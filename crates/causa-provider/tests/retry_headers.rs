@@ -39,11 +39,7 @@ fn request() -> ModelRequest {
         );
         // The Anthropic leg requires `max_tokens`; the transport behavior
         // under test is reached only when the request renders.
-        built.generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(1024);
-            generation
-        };
+        built.generation = GenerationOptions::default().with_max_tokens(1024);
         built
     }
 }

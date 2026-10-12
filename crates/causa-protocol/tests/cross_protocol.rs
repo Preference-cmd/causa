@@ -130,11 +130,10 @@ fn scenario_frame() -> ContextFrame {
                 &ModelResponse {
                     items: vec![
                         ModelItem::text("reading"),
-                        ModelItem::tool_call({
-                            let mut call = ToolCallDraft::new("read", json!({"path": "a"}));
-                            call.provider_call_id = Some("toolu_1".into());
-                            call
-                        }),
+                        ModelItem::tool_call(
+                            ToolCallDraft::new("read", json!({"path": "a"}))
+                                .with_provider_call_id("toolu_1"),
+                        ),
                     ],
                 },
                 ModelStopReason::ToolUse,
@@ -174,11 +173,7 @@ fn scenario_frame() -> ContextFrame {
 fn render(frame: &ContextFrame) -> (Value, Value, Value) {
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(1024);
-        generation
-    };
+    let generation = GenerationOptions::default().with_max_tokens(1024);
     let media = causa_protocol::translation::media::MediaSet::new();
     (
         render_anthropic_messages(
@@ -224,30 +219,29 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let applied = turn
         .push_response(
             &ModelResponse {
-                items: vec![ModelItem::tool_call({
-                    let mut built = ToolCallDraft::new("search", json!({"limit": 20}));
-                    built.provider_call_id = Some("external-call-7".into());
-                    built
-                })],
+                items: vec![ModelItem::tool_call(
+                    ToolCallDraft::new("search", json!({"limit": 20}))
+                        .with_provider_call_id("external-call-7"),
+                )],
             },
             ModelStopReason::ToolUse,
             vec![block_id()],
         )
         .unwrap();
     let media_ref = MediaRef::new("image/png", "search-image");
-    turn.push_results(vec![(block_id(), {
-        let mut built = ToolResultPayload::new(
+    turn.push_results(vec![(
+        block_id(),
+        ToolResultPayload::new(
             applied[0],
             ToolResultStatus::Succeeded,
             ToolOutput::new(json!({"found": 1})),
-        );
-        built.media = vec![media_ref.clone()];
-        built.notes = vec![
+        )
+        .with_media(vec![media_ref.clone()])
+        .with_notes(vec![
             TextPayload::new("The limit was reduced to 5."),
             TextPayload::new("The result includes one image."),
-        ];
-        built
-    })])
+        ]),
+    )])
     .unwrap();
 
     let frame = joined_frame(vec![], turn);
@@ -255,11 +249,7 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(1024);
-        generation
-    };
+    let generation = GenerationOptions::default().with_max_tokens(1024);
     let anthropic = render_anthropic_messages(
         &frame,
         &media,
@@ -647,11 +637,10 @@ fn tool_results_keep_their_declaration_identity_across_selected_materials() {
             let applied = turn
                 .push_response(
                     &ModelResponse {
-                        items: vec![ModelItem::tool_call({
-                            let mut call = ToolCallDraft::new("read", json!({"path": "same"}));
-                            call.provider_call_id = Some(wire_id.into());
-                            call
-                        })],
+                        items: vec![ModelItem::tool_call(
+                            ToolCallDraft::new("read", json!({"path": "same"}))
+                                .with_provider_call_id(wire_id),
+                        )],
                     },
                     ModelStopReason::ToolUse,
                     vec![block_id()],

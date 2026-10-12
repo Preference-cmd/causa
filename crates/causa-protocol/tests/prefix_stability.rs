@@ -30,11 +30,14 @@ fn id(label: &str) -> BlockId {
 }
 
 fn block(label: &str, content: BlockContent, source: Option<&str>) -> ContextBlock {
-    ContextBlock::new(id(label), content, {
-        let mut meta = BlockMeta::default();
-        meta.source = source.map(String::from);
-        meta
-    })
+    ContextBlock::new(
+        id(label),
+        content,
+        match source {
+            Some(s) => BlockMeta::default().with_source(s),
+            None => BlockMeta::default(),
+        },
+    )
 }
 
 fn text(label: &str, text: &str, source: Option<&str>) -> ContextBlock {
@@ -49,11 +52,7 @@ fn call(label: &str, call_id: &str, name: &str) -> ContextBlock {
     ContextBlock::new(
         id(label),
         BlockContent::ToolCall(ToolCallPayload::new(name, json!({"path": "a"}))),
-        {
-            let mut meta = BlockMeta::default();
-            meta.provider_call_id = Some(call_id.into());
-            meta
-        },
+        BlockMeta::default().with_provider_call_id(call_id),
     )
 }
 
@@ -63,11 +62,7 @@ fn frame(blocks: Vec<ContextBlock>) -> ContextFrame {
 
 /// Anthropic requires `max_tokens`; the renderer tests always supply one.
 fn anthropic_generation() -> GenerationOptions {
-    {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(4096);
-        generation
-    }
+    GenerationOptions::default().with_max_tokens(4096)
 }
 
 fn anthropic(frame: &ContextFrame, cache: CacheDirective) -> Value {

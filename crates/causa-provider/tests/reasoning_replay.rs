@@ -57,11 +57,7 @@ fn request(frame: ContextFrame, model: &str) -> ModelRequest {
             ModelRef::new(model),
         );
         // The Anthropic wire requires a limit; the other two ignore it.
-        request.generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(1024);
-            generation
-        };
+        request.generation = GenerationOptions::default().with_max_tokens(1024);
         request
     }
 }

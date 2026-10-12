@@ -69,11 +69,10 @@ impl ModelGateway for Gateway {
                     self.names
                         .iter()
                         .map(|name| {
-                            ModelItem::tool_call({
-                                let mut call = ToolCallDraft::new(*name, json!({}));
-                                call.provider_call_id = Some(format!("provider-{name}"));
-                                call
-                            })
+                            ModelItem::tool_call(
+                                ToolCallDraft::new(*name, json!({}))
+                                    .with_provider_call_id(format!("provider-{name}")),
+                            )
                         })
                         .collect()
                 } else {
@@ -116,11 +115,7 @@ async fn unknown_success_and_failure_complete_after_and_commit_once_before_fixed
                 count: calls.clone(),
             }),
         ],
-        {
-            let mut options = ToolExecutorOptions::default();
-            options.after = vec![Arc::new(Post(after.clone()))];
-            options
-        },
+        ToolExecutorOptions::default().with_after(vec![Arc::new(Post(after.clone()))]),
     ));
     let runner = TurnRunner::new(
         Arc::new(Gateway {
@@ -251,12 +246,12 @@ async fn local_timeout_is_unknown_without_cancelling_parent_siblings_or_after() 
     let parent = control();
     let after = Arc::new(AtomicUsize::new(0));
     let sibling = NamedTool::new("fast");
-    let executor = executor(vec![Arc::new(Slow), sibling.clone()], {
-        let mut options = ToolExecutorOptions::default();
-        options.call_timeout = Some(Duration::from_millis(10));
-        options.after = vec![Arc::new(Post(after.clone()))];
-        options
-    });
+    let executor = executor(
+        vec![Arc::new(Slow), sibling.clone()],
+        ToolExecutorOptions::default()
+            .with_call_timeout(Duration::from_millis(10))
+            .with_after(vec![Arc::new(Post(after.clone()))]),
+    );
     let mut batch = batch(&["slow", "fast"]);
     executor
         .bind(invocation(), parent.clone())
@@ -291,12 +286,12 @@ impl ToolBatchProcessor for Delay {
 #[tokio::test]
 async fn tool_timeout_starts_after_before_stage_instead_of_bind_time() {
     let tool = NamedTool::new("fast");
-    let executor = executor(vec![tool.clone()], {
-        let mut options = ToolExecutorOptions::default();
-        options.call_timeout = Some(Duration::from_millis(10));
-        options.before = vec![Arc::new(Delay)];
-        options
-    });
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions::default()
+            .with_call_timeout(Duration::from_millis(10))
+            .with_before(vec![Arc::new(Delay)]),
+    );
     let binding = executor.bind(invocation(), control()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut batch = batch(&["fast"]);
@@ -366,11 +361,7 @@ async fn after_cannot_turn_unknown_into_success_to_allow_continuation() {
             status: ToolResultStatus::UnknownOutcome,
             count: count.clone(),
         })],
-        {
-            let mut options = ToolExecutorOptions::default();
-            options.after = vec![Arc::new(ChangeUnknown)];
-            options
-        },
+        ToolExecutorOptions::default().with_after(vec![Arc::new(ChangeUnknown)]),
     );
     let mut batch = batch(&["unknown"]);
     assert!(matches!(
@@ -394,11 +385,10 @@ async fn after_cannot_turn_unknown_into_success_to_allow_continuation() {
 async fn zero_local_timeout_does_not_poll_an_immediately_ready_uncooperative_tool() {
     let tool = NamedTool::new("instant");
     let parent = control();
-    let executor = executor(vec![tool.clone()], {
-        let mut options = ToolExecutorOptions::default();
-        options.call_timeout = Some(Duration::ZERO);
-        options
-    });
+    let executor = executor(
+        vec![tool.clone()],
+        ToolExecutorOptions::default().with_call_timeout(Duration::ZERO),
+    );
     let mut batch = batch(&["instant"]);
     executor
         .bind(invocation(), parent.clone())

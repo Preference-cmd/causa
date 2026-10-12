@@ -443,11 +443,10 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
                 function.remove("name");
             }
             items.push({
-                let mut item = ModelItem::tool_call({
-                    let mut call = ToolCallDraft::new(name.to_string(), arguments);
-                    call.provider_call_id = Some(id.to_string());
-                    call
-                });
+                let mut item = ModelItem::tool_call(
+                    ToolCallDraft::new(name.to_string(), arguments)
+                        .with_provider_call_id(id.to_string()),
+                );
                 item.wire = Some(context_frame::wire_meta(
                     Protocol::OpenAiChatCompletions,
                     fields,
@@ -647,11 +646,7 @@ mod tests {
         )]);
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.temperature = Some(0.5);
-            generation
-        };
+        let generation = GenerationOptions::default().with_temperature(0.5);
         let v = render_openai_chat_messages(
             &f,
             &MediaSet::new(),
@@ -674,12 +669,9 @@ mod tests {
             }])
         );
 
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.temperature = Some(0.5);
-            generation.max_tokens = Some(100);
-            generation
-        };
+        let generation = GenerationOptions::default()
+            .with_temperature(0.5)
+            .with_max_tokens(100);
         let v2 = render_openai_chat_messages(
             &f,
             &MediaSet::new(),
@@ -710,11 +702,7 @@ mod tests {
     #[test]
     fn output_schema_maps_and_cache_directive_is_a_noop() {
         let f = frame(vec![text(0, "hi", Some("user"))]);
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.output_schema = Some(json!({"type": "object"}));
-            generation
-        };
+        let generation = GenerationOptions::default().with_output_schema(json!({"type": "object"}));
         let v = render_openai_chat_messages(
             &f,
             &MediaSet::new(),

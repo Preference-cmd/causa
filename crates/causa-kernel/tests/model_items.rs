@@ -27,11 +27,7 @@ fn text_part(text: &str) -> ContentPart {
 }
 
 fn call(name: &str, id: &str) -> ToolCallDraft {
-    {
-        let mut call = ToolCallDraft::new(name, json!({"n": name}));
-        call.provider_call_id = Some(id.into());
-        call
-    }
+    ToolCallDraft::new(name, json!({"n": name})).with_provider_call_id(id)
 }
 
 #[test]
@@ -223,21 +219,20 @@ fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
     let block = ContextBlock::new(
         common::block_id(),
         BlockContent::Parts(vec![sealed, text_part("hi")]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.wire = wire("anthropic_messages", json!({"type": "text", "x": {"a": 1}}));
-            meta
-        },
+        BlockMeta::default().with_wire(WireMeta::new(
+            "anthropic_messages",
+            json!({"type": "text", "x": {"a": 1}}),
+        )),
     );
     let call_block = ContextBlock::new(
         common::block_id(),
         BlockContent::ToolCall(causa_kernel::ToolCallPayload::new("t", json!({}))),
-        {
-            let mut meta = BlockMeta::default();
-            meta.provider_call_id = Some("c1".into());
-            meta.wire = wire("openai_responses", json!({"id": "fc", "arguments": "{ }"}));
-            meta
-        },
+        BlockMeta::default()
+            .with_provider_call_id("c1")
+            .with_wire(WireMeta::new(
+                "openai_responses",
+                json!({"id": "fc", "arguments": "{ }"}),
+            )),
     );
     let context = Context::from_blocks(vec![block, call_block]).unwrap();
     let stored = serde_json::to_string(&context).unwrap();

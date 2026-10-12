@@ -413,12 +413,10 @@ impl McpToolSource {
         } else {
             ToolResultStatus::Succeeded
         };
-        Ok({
-            let mut result =
-                ToolResultPayload::new(call.call_block_id, status, ToolOutput::new(content));
-            result.media = media;
-            result
-        })
+        Ok(
+            ToolResultPayload::new(call.call_block_id, status, ToolOutput::new(content))
+                .with_media(media),
+        )
     }
 
     /// Decode one MCP image and persist its raw bytes in the host's

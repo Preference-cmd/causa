@@ -38,16 +38,17 @@ fn batch() -> ToolBatch {
     let id = call.call_block_id;
     let mut batch = ToolBatch::new(vec![call]).unwrap();
     batch
-        .resolve_at(0, new_block_id(), {
-            let mut result = ToolResultPayload::new(
+        .resolve_at(
+            0,
+            new_block_id(),
+            ToolResultPayload::new(
                 id,
                 ToolResultStatus::Succeeded,
                 ToolOutput::new(json!("前缀 Unicode 🦀 tail ".repeat(100))),
-            );
-            result.media = vec![MediaRef::new("image/png", "image")];
-            result.notes = vec![TextPayload::new("retain this note")];
-            result
-        })
+            )
+            .with_media(vec![MediaRef::new("image/png", "image")])
+            .with_notes(vec![TextPayload::new("retain this note")]),
+        )
         .unwrap();
     batch
 }

@@ -275,11 +275,11 @@ async fn model_queries_long_task_handle_until_complete_without_framework_polling
     let runner = TurnRunner::new(
         gateway.clone(),
         Arc::new(
-            ToolExecutor::new(vec![Arc::new(JobTool(job.clone()))], {
-                let mut options = ToolExecutorOptions::default();
-                options.after = vec![Arc::new(CountPost(post_calls.clone()))];
-                options
-            })
+            ToolExecutor::new(
+                vec![Arc::new(JobTool(job.clone()))],
+                ToolExecutorOptions::default()
+                    .with_after(vec![Arc::new(CountPost(post_calls.clone()))]),
+            )
             .unwrap(),
         ),
     );
@@ -344,11 +344,11 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
     let runner = TurnRunner::new(
         gateway.clone(),
         Arc::new(
-            ToolExecutor::new(vec![Arc::new(JobTool(job.clone()))], {
-                let mut options = ToolExecutorOptions::default();
-                options.after = vec![Arc::new(CountPost(post_calls.clone()))];
-                options
-            })
+            ToolExecutor::new(
+                vec![Arc::new(JobTool(job.clone()))],
+                ToolExecutorOptions::default()
+                    .with_after(vec![Arc::new(CountPost(post_calls.clone()))]),
+            )
             .unwrap(),
         ),
     );

@@ -245,45 +245,30 @@ async fn invalid_generation_options_never_send_batch_or_stream_http() {
         // A limit is supplied wherever the case is not about the limit: on
         // Anthropic a missing `max_tokens` is its own InvalidRequest.
         let mut cases = vec![
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(0);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.temperature = Some(f32::NAN);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.temperature = Some(-0.1);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.temperature = Some(2.1);
-                generation
-            },
+            GenerationOptions::default().with_max_tokens(0),
+            GenerationOptions::default()
+                .with_max_tokens(64)
+                .with_temperature(f32::NAN),
+            GenerationOptions::default()
+                .with_max_tokens(64)
+                .with_temperature(-0.1),
+            GenerationOptions::default()
+                .with_max_tokens(64)
+                .with_temperature(2.1),
         ];
         if protocol == 2 {
             // The required output limit is never defaulted.
             cases.push(GenerationOptions::default());
-            cases.push({
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.output_schema = Some(json!({"type":"object"}));
-                generation
-            });
-            cases.push({
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.temperature = Some(1.1);
-                generation
-            });
+            cases.push(
+                GenerationOptions::default()
+                    .with_max_tokens(64)
+                    .with_output_schema(json!({"type":"object"})),
+            );
+            cases.push(
+                GenerationOptions::default()
+                    .with_max_tokens(64)
+                    .with_temperature(1.1),
+            );
         }
         for generation in cases {
             let request = request(generation);

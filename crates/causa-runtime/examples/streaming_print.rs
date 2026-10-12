@@ -124,8 +124,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )])
         .commit()?;
 
-    let mut options = TurnRunOptions::new(causa_kernel::ModelRef::new("offline-stream"));
-    options.observer = Some(Arc::new(print_observation));
+    let options = TurnRunOptions::new(causa_kernel::ModelRef::new("offline-stream"))
+        .with_observer(Arc::new(print_observation));
 
     let outcome = runner
         .run_streaming(

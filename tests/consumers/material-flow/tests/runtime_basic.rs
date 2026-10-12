@@ -103,11 +103,7 @@ impl ModelGateway for Scripted {
         Ok(ModelOutput::new(
             ModelResponse {
                 items: if first {
-                    vec![ModelItem::tool_call({
-                        let mut built = ToolCallDraft::new("fetch", serde_json::json!({}));
-                        built.provider_call_id = Some("call-fetch".into());
-                        built
-                    })]
+                    vec![ModelItem::tool_call(ToolCallDraft::new("fetch", serde_json::json!({})).with_provider_call_id("call-fetch"))]
                 } else {
                     vec![ModelItem::text("final answer")]
                 },
@@ -157,12 +153,12 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
         gateway.clone(),
         Arc::new(ToolExecutor::new(vec![tool.clone()], ToolExecutorOptions::default()).unwrap()),
     );
-    let mut options = TurnRunOptions::new(ModelRef::new("host-model"));
-    options.preparer = Some(Arc::new(Summarize {
-        summary: summary.clone(),
-        request: input.clone(),
-    }));
-    options.observer = Some(Arc::new(move |event| {
+    let options = TurnRunOptions::new(ModelRef::new("host-model"))
+        .with_preparer(Arc::new(Summarize {
+            summary: summary.clone(),
+            request: input.clone(),
+        }))
+        .with_observer(Arc::new(move |event| {
         if let RunEvent::BlocksCommitted { blocks, .. } = event {
             saved.lock().unwrap().extend_from_slice(blocks);
         }

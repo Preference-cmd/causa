@@ -38,7 +38,7 @@ async fn host_can_copy_selected_observations_and_recover_output_without_them() {
         if observe {
             let copies = records.clone();
             let cancel = token.clone();
-            options.observer = Some(Arc::new(move |event| {
+            options = options.with_observer(Arc::new(move |event| {
                 if let RunEvent::ModelOutput {
                     invocation_id,
                     output,

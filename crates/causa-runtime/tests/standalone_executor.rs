@@ -233,12 +233,12 @@ async fn artifact_store_passes_through_dynamic_bridge_and_output_edits_keep_medi
                 definition("image"),
             ))]
         };
-        let executor = executor(tools, {
-            let mut options = ToolExecutorOptions::default();
-            options.artifact_store = Some(store.clone());
-            options.after = vec![Arc::new(Shorten)];
-            options
-        });
+        let executor = executor(
+            tools,
+            ToolExecutorOptions::default()
+                .with_artifact_store(store.clone())
+                .with_after(vec![Arc::new(Shorten)]),
+        );
         if dynamic {
             executor.register_dynamic(source).unwrap();
         }

@@ -47,11 +47,7 @@ fn frame_of(output: &ModelOutput) -> ContextFrame {
 }
 
 fn generation() -> GenerationOptions {
-    {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(1024);
-        generation
-    }
+    GenerationOptions::default().with_max_tokens(1024)
 }
 
 fn anthropic(frame: &ContextFrame) -> Value {

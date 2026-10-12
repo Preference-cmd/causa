@@ -31,12 +31,7 @@ fn request() -> ModelRequest {
             Context::new().frame(),
             ModelRef::new("fixed-model"),
         );
-        request.generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(16);
-            generation.reasoning_effort = Some("high".into());
-            generation
-        };
+        request.generation = GenerationOptions::default().with_max_tokens(16).with_reasoning_effort("high");
         request.cache = CacheDirective::StablePrefix;
         request
     }

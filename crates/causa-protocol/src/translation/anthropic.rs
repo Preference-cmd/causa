@@ -421,14 +421,13 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                     .and_then(Value::as_str)
                     .ok_or_else(|| undecodable("tool_use block: missing `name` string"))?;
                 items.push({
-                    let mut item = ModelItem::tool_call({
-                        let mut call = ToolCallDraft::new(
+                    let mut item = ModelItem::tool_call(
+                        ToolCallDraft::new(
                             name.to_string(),
                             block.get("input").cloned().unwrap_or_else(|| json!({})),
-                        );
-                        call.provider_call_id = Some(id.to_string());
-                        call
-                    });
+                        )
+                        .with_provider_call_id(id.to_string()),
+                    );
                     item.wire = Some(context_frame::wire_meta(
                         Protocol::AnthropicMessages,
                         context_frame::without_keys(block, &["id", "name", "input"]),
@@ -527,11 +526,7 @@ mod tests {
 
     /// Anthropic requires `max_tokens`; the renderer tests always supply one.
     fn test_generation() -> GenerationOptions {
-        {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(4096);
-            generation
-        }
+        GenerationOptions::default().with_max_tokens(4096)
     }
 
     fn render(frame: &ContextFrame) -> Value {
@@ -684,12 +679,9 @@ mod tests {
         )]);
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.temperature = Some(0.5);
-            generation.max_tokens = Some(4096);
-            generation
-        };
+        let generation = GenerationOptions::default()
+            .with_temperature(0.5)
+            .with_max_tokens(4096);
         let v = render_anthropic_messages(
             &f,
             &MediaSet::new(),
@@ -712,12 +704,9 @@ mod tests {
             }])
         );
 
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.temperature = Some(0.5);
-            generation.max_tokens = Some(100);
-            generation
-        };
+        let generation = GenerationOptions::default()
+            .with_temperature(0.5)
+            .with_max_tokens(100);
         let v2 = render_anthropic_messages(
             &f,
             &MediaSet::new(),

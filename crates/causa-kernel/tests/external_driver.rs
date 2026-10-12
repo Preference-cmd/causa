@@ -184,11 +184,7 @@ async fn external_preparer_sees_actual_round_and_selects_temporary_material() {
     };
     let model = ModelRef::new("actual-model");
     let tool_surface = ToolSurface::empty();
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(32);
-        generation
-    };
+    let generation = GenerationOptions::default().with_max_tokens(32);
     let round = RoundInfo::new(&invocation_id, &model, &tool_surface, &generation);
     let mut context = Context::new();
     let preparer: &dyn ContextPreparer = &Preparing;

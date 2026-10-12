@@ -34,11 +34,7 @@ fn output(tool_use: bool) -> ModelOutput {
             items: if tool_use {
                 vec![
                     ModelItem::text("checking"),
-                    ModelItem::tool_call({
-                        let mut call = ToolCallDraft::new("echo", json!({}));
-                        call.provider_call_id = Some("provider-echo".into());
-                        call
-                    }),
+                    ModelItem::tool_call(ToolCallDraft::new("echo", json!({})).with_provider_call_id("provider-echo")),
                 ]
             } else {
                 vec![ModelItem::text("done")]
@@ -218,8 +214,8 @@ async fn source_commits_and_confirms_each_input_once_and_observation_refreshes_p
         Arc::new(Retry(inner.clone())),
         echo(definition(), calls.clone()),
     );
-    let mut options = TurnRunOptions::new(ModelRef::new("input-model"));
-    options.preparer = Some(source.clone());
+    let options = TurnRunOptions::new(ModelRef::new("input-model"))
+        .with_preparer(source.clone());
     let outcome = runner
         .run(
             causa::kernel::TurnId::new("input"),
@@ -293,8 +289,8 @@ async fn failed_material_commit_keeps_source_pending_and_does_not_confirm_or_inv
         gateway.clone(),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
-    let mut options = TurnRunOptions::new(ModelRef::new("input-model"));
-    options.preparer = Some(source.clone());
+    let options = TurnRunOptions::new(ModelRef::new("input-model"))
+        .with_preparer(source.clone());
     let outcome = runner
         .run(
             causa::kernel::TurnId::new("failure"),
@@ -325,8 +321,8 @@ async fn preparation_failure_after_input_commit_returns_that_material_and_source
         gateway.clone(),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
-    let mut options = TurnRunOptions::new(ModelRef::new("input-model"));
-    options.preparer = Some(source.clone());
+    let options = TurnRunOptions::new(ModelRef::new("input-model"))
+        .with_preparer(source.clone());
     let outcome = runner
         .run(
             causa::kernel::TurnId::new("post-commit-failure"),
@@ -423,11 +419,7 @@ async fn schema_only_threshold_crossing_changes_request_admission_with_identical
     .unwrap();
     let baseline_blocks = context.blocks().to_vec();
     let model = ModelRef::new("budget-model");
-    let generation = {
-        let mut generation = GenerationOptions::default();
-        generation.max_tokens = Some(32);
-        generation
-    };
+    let generation = GenerationOptions::default().with_max_tokens(32);
     let small = definition();
     let mut large = small.clone();
     large.parameters = json!({"type":"object","properties":{"detail":{"type":"string","description":"schema explanation ".repeat(200)}}});
@@ -461,9 +453,9 @@ async fn schema_only_threshold_crossing_changes_request_admission_with_identical
         (large, rejected_gateway.clone(), false),
     ] {
         let runner = TurnRunner::new(gateway, echo(definition, Arc::new(AtomicUsize::new(0))));
-        let mut options = TurnRunOptions::new(model.clone());
-        options.generation = generation.clone();
-        options.preparer = Some(budget.clone());
+        let options = TurnRunOptions::new(model.clone())
+            .with_generation(generation.clone())
+            .with_preparer(budget.clone());
         let outcome = runner
             .run(
                 causa::kernel::TurnId::new("budget"),

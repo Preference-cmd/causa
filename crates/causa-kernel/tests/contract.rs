@@ -21,16 +21,13 @@ fn response(text: &str, calls: Vec<ToolCallDraft>) -> ModelResponse {
 }
 
 fn result(call_block_id: BlockId) -> ToolResultPayload {
-    {
-        let mut built = ToolResultPayload::new(
-            call_block_id,
-            ToolResultStatus::Succeeded,
-            ToolOutput::new(json!({"ok": true})),
-        );
-        built.media = vec![MediaRef::new("image/png", "result-asset")];
-        built.notes = vec![TextPayload::new("parameters adjusted")];
-        built
-    }
+    ToolResultPayload::new(
+        call_block_id,
+        ToolResultStatus::Succeeded,
+        ToolOutput::new(json!({"ok": true})),
+    )
+    .with_media(vec![MediaRef::new("image/png", "result-asset")])
+    .with_notes(vec![TextPayload::new("parameters adjusted")])
 }
 
 #[test]
@@ -107,11 +104,7 @@ fn conversion_binds_text_then_calls_preserving_provider_ids_names_and_arguments(
     let value = response(
         "  unchanged text\n",
         vec![
-            {
-                let mut call = ToolCallDraft::new(" echo ", json!({"a":1}));
-                call.provider_call_id = Some("provider-1".into());
-                call
-            },
+            ToolCallDraft::new(" echo ", json!({"a":1})).with_provider_call_id("provider-1"),
             common::draft("echo", json!({"a":1})),
         ],
     );
@@ -384,12 +377,9 @@ fn fidelity_fields_are_serde_additive() {
     let legacy_meta: BlockMeta = serde_json::from_str("{}").unwrap();
     assert_eq!(legacy_meta.provider_call_id, None);
     assert_eq!(legacy_meta.source, None);
-    let full_meta = {
-        let mut meta = BlockMeta::default();
-        meta.provider_call_id = Some("abc".into());
-        meta.source = Some("kernel".into());
-        meta
-    };
+    let full_meta = BlockMeta::default()
+        .with_provider_call_id("abc")
+        .with_source("kernel");
     let back: BlockMeta =
         serde_json::from_str(&serde_json::to_string(&full_meta).unwrap()).unwrap();
     assert_eq!(back.provider_call_id.as_deref(), Some("abc"));
@@ -428,16 +418,13 @@ fn content_is_first_class_with_three_shapes() {
 
 #[test]
 fn tool_result_media_is_serde_additive_both_ways() {
-    let payload = {
-        let mut result = ToolResultPayload::new(
-            common::block_id(),
-            ToolResultStatus::Succeeded,
-            ToolOutput::new(json!("ok")),
-        );
-        result.media = vec![MediaRef::new("image/png", "a1")];
-        result.notes = vec![TextPayload::new("note")];
-        result
-    };
+    let payload = ToolResultPayload::new(
+        common::block_id(),
+        ToolResultStatus::Succeeded,
+        ToolOutput::new(json!("ok")),
+    )
+    .with_media(vec![MediaRef::new("image/png", "a1")])
+    .with_notes(vec![TextPayload::new("note")]);
     let json = serde_json::to_string(&payload).unwrap();
     assert!(json.contains(r#""media":[{"media_type":"image/png","reference":"a1"}]"#));
     let restored: ToolResultPayload = serde_json::from_str(&json).unwrap();

@@ -12,11 +12,7 @@ fn effort_is_any_string_and_round_trips_without_inventing_a_default() {
     assert!(encoded.get("extra_body").is_none());
     // Values written by any version read back, known to this one or not.
     for effort in ["none", "minimal", "xhigh", "off", "ultra", "HIGH", ""] {
-        let value = {
-            let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(effort.into());
-            generation
-        };
+        let value = GenerationOptions::default().with_reasoning_effort(effort);
         let encoded = serde_json::to_value(&value).unwrap();
         assert_eq!(encoded["reasoning_effort"], effort);
         assert_eq!(

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use causa_kernel::{
     BlockContent, BlockMeta, CallControl, CancellationToken, ContentPart, Context, ContextBlock,
-    ModelGateway, ModelRef, TextPayload, Tool, ToolCallContext, ToolDefinition, ToolOutput,
-    ToolResultPayload, ToolResultStatus, TurnId,
+    GenerationOptions, ModelGateway, ModelRef, TextPayload, Tool, ToolCallContext, ToolDefinition,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner};
@@ -95,10 +95,10 @@ async fn direct_runner_completes_two_tool_round_trips_over_http() {
         BlockMeta::from_source("user"),
     )])
     .unwrap();
-    let mut options = TurnRunOptions::new(ModelRef::new("claude-test"));
     // The Anthropic wire requires `max_tokens`; the runner supplies what the
     // host sets, and the adapter never invents a ceiling.
-    options.generation.max_tokens = Some(1024);
+    let options = TurnRunOptions::new(ModelRef::new("claude-test"))
+        .with_generation(GenerationOptions::default().with_max_tokens(1024));
     let outcome = runner
         .run(
             TurnId::new("t1"),
