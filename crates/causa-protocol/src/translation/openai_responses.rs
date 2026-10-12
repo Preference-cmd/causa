@@ -369,7 +369,8 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
     let mut items: Vec<ModelItem> = Vec::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut refusal = false;
-    for item in output {
+    let mapped = crate::translation::stop_reason::responses(status, incomplete_reason);
+    for (position, item) in output.iter().enumerate() {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
                 let content = match item.get("content") {
@@ -424,7 +425,13 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| undecodable("function_call: missing `name` string"))?;
-                let arguments = context_frame::decode_wire_arguments(item.get("arguments"))?;
+                // The token limit can stop the response inside the last item.
+                let cut_off = mapped == ModelStopReason::MaxTokens && position + 1 == output.len();
+                let Some(arguments) =
+                    context_frame::decode_wire_arguments(item.get("arguments"), cut_off)?
+                else {
+                    continue;
+                };
                 items.push({
                     let mut call_item = ModelItem::tool_call({
                         let mut call = ToolCallDraft::new(name.to_string(), arguments);
@@ -477,7 +484,6 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
     // item is a refusal whatever the status said, and Responses has no
     // tool-call stop value, so a terminal response carrying a \`function_call\`
     // item is a tool use (as \`pi-ai\`).
-    let mapped = crate::translation::stop_reason::responses(status, incomplete_reason);
     let stop_reason = if refusal {
         ModelStopReason::Refusal
     } else if mapped == ModelStopReason::EndTurn && has_tool_call {

@@ -275,7 +275,7 @@ async fn a_stream_error_event_reads_like_the_same_envelope_over_http() {
         assert_eq!(event.status, None);
         assert_eq!(
             event.message,
-            format!("provider stream error (rate_limit_error): {text}")
+            format!("provider error (rate_limit_error): {text}")
         );
     }
 }
@@ -300,9 +300,177 @@ async fn provider_text_never_keeps_a_control_character() {
     let event = in_stream_error(&chat, &server.uri()).await;
     assert_eq!(
         event.message,
-        "provider stream error (invalid_request_error): first line second [2J line tab"
+        "provider error (invalid_request_error): first line second [2J line tab"
     );
     for message in [&http.message, &event.message] {
         assert!(!message.chars().any(char::is_control), "{message:?}");
     }
+}
+
+#[tokio::test]
+async fn the_same_envelope_has_the_same_kind_in_a_stream_and_over_http() {
+    use ModelInvokeErrorKind::{InvalidRequest, Permanent, Transient};
+    // Each envelope is paired with the status a server sends it under.
+    for (status, error, kind) in [
+        (
+            429,
+            serde_json::json!({"type": "rate_limit_error"}),
+            Transient,
+        ),
+        (
+            400,
+            serde_json::json!({"type": "invalid_request_error", "code": "context_length_exceeded"}),
+            InvalidRequest,
+        ),
+        (
+            400,
+            serde_json::json!({"type": "invalid_request_error", "code": ""}),
+            InvalidRequest,
+        ),
+        (
+            500,
+            serde_json::json!({"type": "server_error", "code": "model_overloaded"}),
+            Transient,
+        ),
+        (
+            529,
+            serde_json::json!({"type": "overloaded_error"}),
+            Transient,
+        ),
+        (504, serde_json::json!({"type": "timeout_error"}), Transient),
+        (
+            401,
+            serde_json::json!({"type": "authentication_error", "code": "invalid_api_key"}),
+            Permanent,
+        ),
+        (
+            404,
+            serde_json::json!({"type": "not_found_error"}),
+            Permanent,
+        ),
+    ] {
+        let envelope = serde_json::json!({"type": "error", "error": error});
+        let http = invoke_error(status, envelope.clone()).await;
+        assert_eq!(http.kind, kind, "{status} {envelope}");
+
+        let server = respond(200, "text/event-stream", format!("data: {envelope}\n\n")).await;
+        let chat =
+            OpenAiChatCompletionsGateway::new("k").with_base_url(format!("{}/v1", server.uri()));
+        let event = in_stream_error(&chat, &server.uri()).await;
+        assert_eq!(event.kind, http.kind, "{envelope}");
+        assert_eq!(event.code, http.code, "{envelope}");
+    }
+}
+
+#[tokio::test]
+async fn a_success_status_with_an_error_envelope_reports_the_providers_error() {
+    let envelope = serde_json::json!({
+        "type": "error",
+        "error": {"type": "overloaded_error", "message": "try again shortly"}
+    });
+    for content_type in ["application/json", "text/plain"] {
+        let server = respond(200, content_type, envelope.to_string()).await;
+        let base = format!("{}/v1", server.uri());
+        let chat = OpenAiChatCompletionsGateway::new("k").with_base_url(&base);
+        let anthropic = AnthropicMessagesGateway::new("k").with_base_url(&base);
+        let responses = OpenAiResponsesGateway::new("k").with_base_url(&base);
+        for gateway in [
+            &chat as &dyn ModelGateway,
+            &anthropic as &dyn ModelGateway,
+            &responses as &dyn ModelGateway,
+        ] {
+            let batch = gateway
+                .invoke(&request(), &control())
+                .await
+                .expect_err("expected error");
+            // The stream call is refused before a stream exists.
+            let stream = unwrap_stream_err(gateway.stream(&request(), &control()).await);
+            for error in [batch, stream] {
+                assert_eq!(error.kind, ModelInvokeErrorKind::Transient);
+                assert_eq!(error.code.as_deref(), Some("overloaded_error"));
+                assert_eq!(error.status, None);
+                assert_eq!(
+                    error.message,
+                    "provider error (overloaded_error): try again shortly"
+                );
+            }
+        }
+    }
+
+    // A success body without an error is still judged by the parser.
+    let unreadable = invoke_error(200, serde_json::json!({"error": null})).await;
+    assert_eq!(unreadable.kind, ModelInvokeErrorKind::Undecodable);
+}
+
+#[tokio::test]
+async fn provider_text_never_keeps_a_control_character_on_any_protocol() {
+    let error = serde_json::json!({
+        "type": "invalid_request_error",
+        "message": "first line\r\nsecond\u{1b}[2J line\u{2028}next\u{202e}tab"
+    });
+    let nested = serde_json::json!({"type": "error", "error": error});
+    let mut flat = error.clone();
+    flat["type"] = "error".into();
+    flat["code"] = "invalid_request_error".into();
+
+    let nested_server = respond(200, "text/event-stream", format!("data: {nested}\n\n")).await;
+    let flat_server = respond(200, "text/event-stream", format!("data: {flat}\n\n")).await;
+    let anthropic =
+        AnthropicMessagesGateway::new("k").with_base_url(format!("{}/v1", nested_server.uri()));
+    let responses =
+        OpenAiResponsesGateway::new("k").with_base_url(format!("{}/v1", flat_server.uri()));
+    for gateway in [
+        &anthropic as &dyn ModelGateway,
+        &responses as &dyn ModelGateway,
+    ] {
+        let event = in_stream_error(gateway, "mock").await;
+        assert_eq!(
+            event.message,
+            "provider error (invalid_request_error): first line second [2J line next tab"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_connection_closed_before_any_response_is_retried() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = accepted.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            // Read the request head, then close without answering.
+            let mut buffer = [0u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+        }
+    });
+
+    let gateway =
+        OpenAiChatCompletionsGateway::new("k").with_base_url(format!("http://{address}/v1"));
+    let error = gateway
+        .invoke(&request(), &control())
+        .await
+        .expect_err("expected error");
+    assert_eq!(error.kind, ModelInvokeErrorKind::Transient, "{error}");
+    assert_eq!(error.status, None);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+
+    let retrying = causa_runtime::RetryingGateway::new(
+        gateway,
+        causa_runtime::RetryPolicy::new(3).with_base_delay(std::time::Duration::ZERO),
+    );
+    let error = retrying
+        .invoke(&request(), &control())
+        .await
+        .expect_err("expected error");
+    assert_eq!(error.kind, ModelInvokeErrorKind::Transient);
+    assert_eq!(accepted.load(Ordering::SeqCst), 4);
 }

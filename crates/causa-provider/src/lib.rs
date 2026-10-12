@@ -66,9 +66,12 @@
 //!
 //! Every non-2xx response is classified: 408, 409, 429 and 5xx are
 //! `Transient`, 400 and 422 are `InvalidRequest`, and the rest
-//! `Permanent`. A 2xx response the adapter cannot read is `Undecodable`,
-//! which is not retried either. An `x-should-retry` response header overrides that rule
-//! when it is `true` or `false`. A `retry-after-ms` or `retry-after`
+//! `Permanent`. A response the adapter cannot read is `Undecodable`, which
+//! is not retried either: a 2xx body or stream it cannot parse, or a body of
+//! any status over the size cap. A failure before any response arrived,
+//! including a connection the peer closed, is `Transient`; the request may
+//! have reached the server. An `x-should-retry` response header overrides
+//! the status rule when it is `true` or `false`. A `retry-after-ms` or `retry-after`
 //! value (seconds or an HTTP date) fills
 //! [`causa_kernel::ModelInvokeError::retry_delay`]. The adapters never retry
 //! themselves — default clients disable transport retries — so bounded
@@ -89,9 +92,10 @@
 //! when it is a short identifier, so a host can tell a rejected credential
 //! from an unknown model without parsing the message.
 //!
-//! An error event inside a successful stream is read by the same rule and
-//! formatted as `"provider stream error ({code}): {error.message}"`; it has a
-//! code and no status. Provider text is always one line: control characters
+//! An error inside a successful response (a stream event, or a 2xx body
+//! that is an error envelope) is read by the same rule and formatted as
+//! `"provider error ({code}): {error.message}"`; it has a code and no
+//! status, and its kind comes from the envelope's `code` and `type`. Provider text is always one line: control characters
 //! are replaced by spaces.
 
 #![deny(unsafe_code)]

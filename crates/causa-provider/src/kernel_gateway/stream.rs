@@ -4,6 +4,7 @@ use crate::gateway_transport::{
     check_control, controlled, map_status_error, map_transport_error, read_bounded, send_response,
 };
 use causa_kernel::{CallControl, ModelInvokeError, ModelInvokeErrorKind, ModelStream, StreamDelta};
+use causa_protocol::translation::error_envelope::reported_error;
 use causa_protocol::translation::streaming::StreamDecoder;
 use futures_util::StreamExt;
 
@@ -34,6 +35,16 @@ pub(super) async fn establish_stream(
         .and_then(|value| value.split(';').next())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"));
     if !is_sse {
+        // A server that fails before it starts streaming may answer with a
+        // JSON error envelope under a success status.
+        let buffered = read_bounded(response, control).await?;
+        if let Some(error) = serde_json::from_str::<serde_json::Value>(&buffered.body)
+            .ok()
+            .as_ref()
+            .and_then(reported_error)
+        {
+            return Err(error);
+        }
         return Err(ModelInvokeError::new(
             ModelInvokeErrorKind::Undecodable,
             "successful streaming response requires Content-Type text/event-stream",

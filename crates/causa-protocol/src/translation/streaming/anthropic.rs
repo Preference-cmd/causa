@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use causa_kernel::{ModelInvokeError, StreamDelta};
+use causa_kernel::{ModelInvokeError, ModelStopReason, StreamDelta};
 use serde_json::{Value, json};
 
 use super::{
@@ -8,13 +8,16 @@ use super::{
     common::{Budget, done, index, merge_usage, provider_error, string, undecodable},
 };
 use crate::translation::{
-    anthropic::parse_anthropic_response, sse_parser::SseEvent, usage::model_usage_from_anthropic,
+    anthropic::parse_anthropic_response, sse_parser::SseEvent, stop_reason,
+    usage::model_usage_from_anthropic,
 };
 
 struct Block {
     wire: Value,
     arguments: String,
     saw_arguments: bool,
+    /// The block closed with arguments that are not complete JSON.
+    incomplete: bool,
     closed: bool,
     call_index: Option<usize>,
 }
@@ -197,6 +200,7 @@ impl Anthropic {
                         wire,
                         arguments: String::new(),
                         saw_arguments: false,
+                        incomplete: false,
                         closed: false,
                         call_index,
                     },
@@ -327,12 +331,15 @@ impl Anthropic {
                     return Err(undecodable("Anthropic duplicate block stop"));
                 }
                 if block.saw_arguments {
-                    let input: Value = serde_json::from_str(&block.arguments)
-                        .map_err(|_| undecodable("Anthropic malformed tool arguments"))?;
-                    if !input.is_object() {
-                        return Err(undecodable("Anthropic tool arguments must be an object"));
+                    // Arguments that do not parse are judged at the message
+                    // end, which knows why the response stopped.
+                    match serde_json::from_str::<Value>(&block.arguments) {
+                        Ok(input) if input.is_object() => block.wire["input"] = input,
+                        Ok(_) => {
+                            return Err(undecodable("Anthropic tool arguments must be an object"));
+                        }
+                        Err(_) => block.incomplete = true,
                     }
-                    block.wire["input"] = input;
                     block.arguments.clear();
                 }
                 block.closed = true;
@@ -373,10 +380,19 @@ impl Anthropic {
                     .stop_reason
                     .as_ref()
                     .ok_or_else(|| undecodable("Anthropic message_stop without stop_reason"))?;
-                let content: Vec<Value> = std::mem::take(&mut self.blocks)
-                    .into_values()
-                    .map(|b| b.wire)
-                    .collect();
+                // The token limit can stop the response inside its last
+                // block. That block is left out: nothing could execute the
+                // call, and the stop reason says what happened. Incomplete
+                // arguments anywhere else are a broken stream.
+                let cut_off = stop_reason::anthropic(reason) == ModelStopReason::MaxTokens;
+                let mut blocks = std::mem::take(&mut self.blocks);
+                if cut_off && blocks.last_key_value().is_some_and(|(_, b)| b.incomplete) {
+                    blocks.pop_last();
+                }
+                if blocks.values().any(|b| b.incomplete) {
+                    return Err(undecodable("Anthropic malformed tool arguments"));
+                }
+                let content: Vec<Value> = blocks.into_values().map(|b| b.wire).collect();
                 let mut wire = json!({"content":content,"stop_reason":reason});
                 if self.has_usage {
                     wire["usage"] = std::mem::take(&mut self.usage);

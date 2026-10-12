@@ -1,10 +1,10 @@
 use super::state::{Item, Responses};
 use crate::translation::streaming::common::{done, index, provider_error, string, undecodable};
 use crate::translation::{
-    openai_responses::parse_openai_responses_output, sse_parser::SseEvent,
+    openai_responses::parse_openai_responses_output, sse_parser::SseEvent, stop_reason,
     usage::model_usage_from_openai_responses,
 };
-use causa_kernel::{ModelInvokeError, StreamDelta};
+use causa_kernel::{ModelInvokeError, ModelStopReason, StreamDelta};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +28,8 @@ impl Responses {
                     "code": value.get("code"),
                     "message": value.get("message"),
                 });
-                return Err(provider_error(value.get("error").unwrap_or(&flat)));
+                let nested = value.get("error").filter(|error| !error.is_null());
+                return Err(provider_error(nested.unwrap_or(&flat)));
             }
             "response.created" | "response.in_progress" => {
                 let response = value
@@ -149,7 +150,9 @@ impl Responses {
                     .ok_or_else(|| undecodable("Responses missing completed item"))?;
                 Self::identity(item, wire)?;
                 if item.kind == "function_call" {
-                    Self::arguments(string(wire, "arguments")?)?;
+                    // Whether the arguments are complete is decided at the
+                    // terminal, which knows why the response stopped.
+                    string(wire, "arguments")?;
                     item.arguments.clear();
                     item.arguments_done = true;
                 }
@@ -183,6 +186,14 @@ impl Responses {
                 if output.len() != self.items.len() {
                     return Err(undecodable("Responses terminal output declarations differ"));
                 }
+                // The token limit can stop the response inside its last
+                // item; the batch parser leaves that call out.
+                let reason = response
+                    .get("incomplete_details")
+                    .and_then(|details| details.get("reason"))
+                    .and_then(Value::as_str);
+                let cut_off =
+                    stop_reason::responses(expected, reason) == ModelStopReason::MaxTokens;
                 let mut tool_index = 0;
                 for (i, wire) in output.iter().enumerate() {
                     let item = self.items.get(&i).ok_or_else(|| {
@@ -193,7 +204,10 @@ impl Responses {
                         if item.call_index != Some(tool_index) {
                             return Err(undecodable("Responses terminal tool order changed"));
                         }
-                        Self::arguments(string(wire, "arguments")?)?;
+                        let arguments = string(wire, "arguments")?;
+                        if !(cut_off && i + 1 == output.len()) {
+                            Self::arguments(arguments)?;
+                        }
                         tool_index += 1;
                     }
                     if let Some(parts) = wire

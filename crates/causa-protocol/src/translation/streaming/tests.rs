@@ -184,6 +184,40 @@ fn responses_parts_and_calls_that_open_without_their_empty_string_decode_the_sam
     let expected = parse_openai_responses_output(&response).unwrap();
     paired(Protocol::OpenAiResponses, &wire(&events), &expected);
 
+    // An explicit null opens the same way as a missing key.
+    let mut nulled = events.clone();
+    for event in &mut nulled {
+        match event["type"].as_str() {
+            Some("response.content_part.added" | "response.reasoning_summary_part.added") => {
+                event["part"]["text"] = Value::Null;
+            }
+            Some("response.output_item.added") if event["item"]["type"] == "function_call" => {
+                event["item"]["arguments"] = Value::Null;
+            }
+            _ => {}
+        }
+    }
+    paired(Protocol::OpenAiResponses, &wire(&nulled), &expected);
+
+    // A refusal part opens without its `refusal` string, or with a null.
+    for part in [
+        json!({"type":"refusal"}),
+        json!({"type":"refusal","refusal":null}),
+    ] {
+        let refused = json!({"status":"completed","output":[
+            {"type":"message","id":"m","content":[{"type":"refusal","refusal":"no"}]},
+        ]});
+        let stream = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m","content":[]}}),
+            json!({"type":"response.content_part.added","output_index":0,"item_id":"m","content_index":0,"part":part}),
+            json!({"type":"response.refusal.delta","output_index":0,"item_id":"m","content_index":0,"delta":"no"}),
+            json!({"type":"response.completed","response":refused}),
+        ];
+        let expected = parse_openai_responses_output(&refused).unwrap();
+        assert_eq!(expected.stop_reason, ModelStopReason::Refusal);
+        paired(Protocol::OpenAiResponses, &wire(&stream), &expected);
+    }
+
     // A value that is present must still be a string.
     events[2]["part"]["text"] = json!(7);
     assert_eq!(
@@ -642,7 +676,7 @@ fn provider_errors_carry_the_envelope_message_and_code_and_nothing_else() {
         assert_eq!(error.status, None);
         assert_eq!(
             error.message,
-            "provider stream error (rate_limit_exceeded): slow down"
+            "provider error (rate_limit_exceeded): slow down"
         );
     }
     let error = decode(
@@ -670,21 +704,21 @@ fn provider_errors_carry_the_envelope_message_and_code_and_nothing_else() {
     assert!(
         error
             .message
-            .starts_with("provider stream error (unknown): line one line two echoed prompt"),
+            .starts_with("provider error (unknown): line one line two echoed prompt"),
         "{}",
         error.message
     );
     assert!(error.message.ends_with('…'));
     assert_eq!(
         error.message.chars().count(),
-        "provider stream error (unknown): ".chars().count() + 201
+        "provider error (unknown): ".chars().count() + 201
     );
     assert!(!error.message.chars().any(char::is_control));
     assert!(!error.message.contains("hidden_param"));
 
     // An event with no message keeps the label alone.
     let error = decode(Protocol::OpenAiResponses, json!({"type":"error"}));
-    assert_eq!(error.message, "provider stream error (unknown)");
+    assert_eq!(error.message, "provider error (unknown)");
 }
 
 #[test]
@@ -924,4 +958,203 @@ fn decode_failures_name_the_event_position_and_a_plain_event_type() {
         .message;
         assert_eq!(text, "Anthropic SSE event/type mismatch (event 1)");
     }
+}
+
+/// A response in which a complete call `c0` is followed by a call `c1` whose
+/// arguments stop at `{"b":`, ending with the given stop value. Returns the
+/// stream and the batch body that carries the same content.
+fn cut_off_call(protocol: Protocol, stop: &str) -> (Vec<u8>, Option<Value>) {
+    match protocol {
+        Protocol::OpenAiChatCompletions => {
+            let mut bytes = wire(&[
+                json!({"choices":[{"index":0,"delta":{"content":"hi","tool_calls":[{"index":0,"id":"c0","function":{"name":"first","arguments":"{\"a\":1}"}}]}}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"c1","function":{"name":"second","arguments":"{\"b\":"}}]}}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":stop}]}),
+            ]);
+            bytes.extend_from_slice(b"data: [DONE]\n\n");
+            let batch = json!({"choices":[{"message":{"role":"assistant","content":"hi","tool_calls":[
+                {"id":"c0","type":"function","function":{"name":"first","arguments":"{\"a\":1}"}},
+                {"id":"c1","type":"function","function":{"name":"second","arguments":"{\"b\":"}},
+            ]},"finish_reason":stop}]});
+            (bytes, Some(batch))
+        }
+        Protocol::AnthropicMessages => {
+            let bytes = wire(&[
+                json!({"type":"message_start","message":{"content":[]}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"c0","name":"first","input":{}}}),
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"a\":1}"}}),
+                json!({"type":"content_block_stop","index":1}),
+                json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"c1","name":"second","input":{}}}),
+                json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"b\":"}}),
+                json!({"type":"content_block_stop","index":2}),
+                json!({"type":"message_delta","delta":{"stop_reason":stop}}),
+                json!({"type":"message_stop"}),
+            ]);
+            // A batch body carries `input` as a value, so it cannot be cut.
+            (bytes, None)
+        }
+        Protocol::OpenAiResponses => {
+            let (status, details) = match stop {
+                "completed" => ("completed", Value::Null),
+                reason => ("incomplete", json!({"reason": reason})),
+            };
+            let response = json!({"status":status,"incomplete_details":details,"output":[
+                {"type":"message","id":"m","content":[{"type":"output_text","text":"hi"}]},
+                {"type":"function_call","id":"f0","call_id":"c0","name":"first","arguments":"{\"a\":1}"},
+                {"type":"function_call","id":"f1","call_id":"c1","name":"second","arguments":"{\"b\":"},
+            ]});
+            let bytes = wire(&[
+                json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m","content":[]}}),
+                json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"f0","call_id":"c0","name":"first","arguments":"{\"a\":1}"}}),
+                json!({"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"f1","call_id":"c1","name":"second"}}),
+                json!({"type":"response.function_call_arguments.delta","output_index":2,"item_id":"f1","delta":"{\"b\":"}),
+                json!({"type":"response.function_call_arguments.done","output_index":2,"item_id":"f1","arguments":"{\"b\":"}),
+                json!({"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"f1","call_id":"c1","name":"second","arguments":"{\"b\":"}}),
+                json!({"type":format!("response.{status}"),"response":response}),
+            ]);
+            (bytes, Some(response))
+        }
+    }
+}
+
+fn parse_batch(protocol: Protocol, body: &Value) -> Result<ModelOutput, ModelInvokeError> {
+    match protocol {
+        Protocol::OpenAiChatCompletions => parse_openai_chat_response(body),
+        Protocol::AnthropicMessages => parse_anthropic_response(body),
+        Protocol::OpenAiResponses => parse_openai_responses_output(body),
+    }
+}
+
+fn call_names(output: &ModelOutput) -> Vec<&str> {
+    output
+        .response
+        .items
+        .iter()
+        .filter_map(|item| match &item.content {
+            causa_kernel::ModelItemContent::ToolCall(call) => Some(call.tool_name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_tool_call_cut_off_by_the_token_limit_is_left_out_and_the_stop_is_max_tokens() {
+    for (protocol, stop) in [
+        (Protocol::OpenAiChatCompletions, "length"),
+        (Protocol::AnthropicMessages, "max_tokens"),
+        (Protocol::OpenAiResponses, "max_output_tokens"),
+    ] {
+        let (bytes, batch) = cut_off_call(protocol, stop);
+        let deltas = collect(protocol, &bytes, usize::MAX, StreamLimits::default())
+            .unwrap_or_else(|error| panic!("{protocol:?} stream: {error}"));
+        let streamed = output(&deltas);
+        assert_eq!(
+            streamed.stop_reason,
+            ModelStopReason::MaxTokens,
+            "{protocol:?}"
+        );
+        assert_eq!(call_names(streamed), ["first"], "{protocol:?}");
+        if let Some(batch) = batch {
+            let parsed = parse_batch(protocol, &batch)
+                .unwrap_or_else(|error| panic!("{protocol:?} batch: {error}"));
+            assert_eq!(
+                serde_json::to_value(&parsed).unwrap(),
+                serde_json::to_value(streamed).unwrap(),
+                "{protocol:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_call_the_server_claims_complete_with_bad_arguments_is_still_undecodable() {
+    for (protocol, stop) in [
+        (Protocol::OpenAiChatCompletions, "tool_calls"),
+        (Protocol::AnthropicMessages, "tool_use"),
+        (Protocol::OpenAiResponses, "completed"),
+    ] {
+        let (bytes, batch) = cut_off_call(protocol, stop);
+        let error = collect(protocol, &bytes, usize::MAX, StreamLimits::default()).unwrap_err();
+        assert_eq!(
+            error.kind,
+            ModelInvokeErrorKind::Undecodable,
+            "{protocol:?}"
+        );
+        if let Some(batch) = batch {
+            let error = parse_batch(protocol, &batch).unwrap_err();
+            assert_eq!(
+                error.kind,
+                ModelInvokeErrorKind::Undecodable,
+                "{protocol:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn only_the_last_call_may_be_cut_off() {
+    // The incomplete call is first; a complete one follows it.
+    let batch = json!({"choices":[{"message":{"role":"assistant","tool_calls":[
+        {"id":"c0","type":"function","function":{"name":"first","arguments":"{\"a\":"}},
+        {"id":"c1","type":"function","function":{"name":"second","arguments":"{}"}},
+    ]},"finish_reason":"length"}]});
+    let error = parse_openai_chat_response(&batch).unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
+
+    let bytes = wire(&[
+        json!({"type":"message_start","message":{"content":[]}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c0","name":"first","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":"after"}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"}}),
+        json!({"type":"message_stop"}),
+    ]);
+    let error = collect(
+        Protocol::AnthropicMessages,
+        &bytes,
+        usize::MAX,
+        StreamLimits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
+}
+
+#[test]
+fn a_chat_batch_response_with_two_choices_is_an_error() {
+    let choice = json!({"message":{"role":"assistant","content":"a"},"finish_reason":"stop"});
+    let error = parse_openai_chat_response(&json!({"choices":[choice, choice]})).unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
+    assert_eq!(error.message, "more than one choice; one is supported");
+}
+
+#[test]
+fn a_null_error_field_is_not_an_error() {
+    let mut bytes = wire(&[
+        json!({"error":null,"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}),
+    ]);
+    bytes.extend_from_slice(b"data: [DONE]\n\n");
+    let deltas = collect(
+        Protocol::OpenAiChatCompletions,
+        &bytes,
+        usize::MAX,
+        StreamLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(output(&deltas).stop_reason, ModelStopReason::EndTurn);
+
+    // Beside a flat Responses error event, a null `error` does not hide the
+    // event's own code and message.
+    let error = collect(
+        Protocol::OpenAiResponses,
+        &wire(&[json!({"type":"error","error":null,"code":"server_error","message":"down"})]),
+        usize::MAX,
+        StreamLimits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ModelInvokeErrorKind::Transient);
+    assert_eq!(error.message, "provider error (server_error): down");
 }

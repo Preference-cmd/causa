@@ -232,5 +232,5 @@ fn undecodable(message: &str) -> ModelInvokeError {
 
 /// The caller broke the parser's contract; nothing the provider sent is at fault.
 fn misused(message: &str) -> ModelInvokeError {
-    ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
+    ModelInvokeError::new(ModelInvokeErrorKind::InvalidRequest, message)
 }

@@ -408,19 +408,30 @@ pub(crate) fn normalize(
 /// OpenAI-family function-arguments wire codec. A completed call must carry
 /// a JSON string containing a complete value; zero-parameter calls carry
 /// `"{}"`. Missing, empty and inline values are unusable provider responses.
-pub(crate) fn decode_wire_arguments(raw: Option<&Value>) -> Result<Value, ModelInvokeError> {
-    let raw = raw.and_then(Value::as_str).ok_or_else(|| {
-        ModelInvokeError::new(
+///
+/// `cut_off` marks the one call that may be incomplete: the last one in a
+/// response the token limit stopped. Its arguments end wherever the limit
+/// fell, so when they do not parse the result is `Ok(None)` and the caller
+/// leaves the call out; nothing could execute it, and the stop reason says
+/// what happened. A call anywhere else must be complete.
+pub(crate) fn decode_wire_arguments(
+    raw: Option<&Value>,
+    cut_off: bool,
+) -> Result<Option<Value>, ModelInvokeError> {
+    let parsed = raw
+        .and_then(Value::as_str)
+        .ok_or("function arguments: expected a JSON string")
+        .and_then(|raw| {
+            serde_json::from_str(raw).map_err(|_| "function arguments: invalid or incomplete JSON")
+        });
+    match parsed {
+        Ok(arguments) => Ok(Some(arguments)),
+        Err(_) if cut_off => Ok(None),
+        Err(message) => Err(ModelInvokeError::new(
             ModelInvokeErrorKind::Undecodable,
-            "function arguments: expected a JSON string",
-        )
-    })?;
-    serde_json::from_str(raw).map_err(|_| {
-        ModelInvokeError::new(
-            ModelInvokeErrorKind::Undecodable,
-            "function arguments: invalid or incomplete JSON",
-        )
-    })
+            message,
+        )),
+    }
 }
 
 /// The per-wire envelope for a tool definition. The field mapping is

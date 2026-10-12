@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use causa_kernel::{ModelInvokeError, StreamDelta};
+use causa_kernel::{ModelInvokeError, ModelStopReason, StreamDelta};
 use serde_json::{Value, json};
 
 use super::{
@@ -8,7 +8,7 @@ use super::{
     common::{Budget, done, index, merge_usage, provider_error, string, undecodable},
 };
 use crate::translation::{
-    openai_chat::parse_openai_chat_response, sse_parser::SseEvent,
+    openai_chat::parse_openai_chat_response, sse_parser::SseEvent, stop_reason,
     usage::model_usage_from_openai_chat,
 };
 
@@ -49,8 +49,15 @@ impl Chat {
                 .finish
                 .as_ref()
                 .ok_or_else(|| undecodable("Chat [DONE] without finish_reason"))?;
+            // The token limit can stop the stream inside the last call; that
+            // call is left out, as the batch parser leaves it out.
+            let cut_off = stop_reason::chat(finish) == ModelStopReason::MaxTokens;
             let mut calls = Vec::with_capacity(self.tools.len());
-            for tool in self.tools.values() {
+            for (position, tool) in self.tools.values().enumerate() {
+                let complete = serde_json::from_str::<Value>(&tool.arguments).is_ok();
+                if !complete && cut_off && position + 1 == self.tools.len() {
+                    continue;
+                }
                 let id = tool
                     .id
                     .as_ref()
@@ -58,8 +65,9 @@ impl Chat {
                 if tool.name.is_empty() {
                     return Err(undecodable("Chat tool missing name"));
                 }
-                serde_json::from_str::<Value>(&tool.arguments)
-                    .map_err(|_| undecodable("Chat malformed or missing tool arguments"))?;
+                if !complete {
+                    return Err(undecodable("Chat malformed or missing tool arguments"));
+                }
                 calls.push(json!({"id":id,"type":"function","function":{"name":tool.name,"arguments":tool.arguments}}));
             }
             // The assembled message mirrors what a batch response carries, so
@@ -82,7 +90,7 @@ impl Chat {
         }
         let value: Value = serde_json::from_str(&event.data)
             .map_err(|_| undecodable("Chat event contains invalid JSON"))?;
-        if let Some(error) = value.get("error") {
+        if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
             return Err(provider_error(error));
         }
         if let Some(id) = value.get("id") {

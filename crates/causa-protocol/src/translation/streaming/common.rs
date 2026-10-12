@@ -2,7 +2,8 @@ use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, StreamDe
 use serde_json::Value;
 
 use super::StreamLimits;
-use crate::translation::error_envelope::{ErrorDetail, is_identifier};
+use crate::translation::error_envelope::is_identifier;
+pub(crate) use crate::translation::error_envelope::provider_error;
 use crate::translation::sse_parser::SseEvent;
 
 /// A failure of the adapter to use what the provider sent.
@@ -10,9 +11,10 @@ pub(super) fn undecodable(message: impl Into<String>) -> ModelInvokeError {
     ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
 }
 
-/// The caller broke the decoder's contract; nothing the provider sent is at fault.
+/// The caller broke the decoder's contract; nothing the provider sent is at
+/// fault and no request left the process.
 pub(super) fn misused(message: impl Into<String>) -> ModelInvokeError {
-    ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
+    ModelInvokeError::new(ModelInvokeErrorKind::InvalidRequest, message)
 }
 
 pub(super) fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str, ModelInvokeError> {
@@ -57,35 +59,6 @@ pub(super) fn located(
 pub(super) fn done(output: ModelOutput) -> StreamDelta {
     StreamDelta::Done {
         final_output: output,
-    }
-}
-
-/// An error the provider reported inside a successful response. The kind
-/// comes from the provider's code; the text is the envelope's code and
-/// message, read by the rule an HTTP error body goes through.
-pub(crate) fn provider_error(error: &Value) -> ModelInvokeError {
-    let detail = ErrorDetail::read(error);
-    let kind = match detail.code.as_deref() {
-        Some(
-            "rate_limit_exceeded"
-            | "rate_limit_error"
-            | "overloaded_error"
-            | "server_error"
-            | "api_error"
-            | "internal_server_error",
-        ) => ModelInvokeErrorKind::Transient,
-        Some("invalid_request_error" | "invalid_request") => ModelInvokeErrorKind::InvalidRequest,
-        _ => ModelInvokeErrorKind::Permanent,
-    };
-    let label = detail.code.as_deref().unwrap_or("unknown");
-    let message = match &detail.message {
-        Some(message) => format!("provider stream error ({label}): {message}"),
-        None => format!("provider stream error ({label})"),
-    };
-    let error = ModelInvokeError::new(kind, message);
-    match detail.code {
-        Some(code) => error.with_code(code),
-        None => error,
     }
 }
 

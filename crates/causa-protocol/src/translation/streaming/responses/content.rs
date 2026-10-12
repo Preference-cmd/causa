@@ -130,8 +130,8 @@ impl Responses {
                 {
                     return Err(undecodable("Responses tool name changed"));
                 }
+                // Checked at the terminal, which knows why the response stopped.
                 let args = string(value, "arguments")?;
-                Self::arguments(args)?;
                 self.budget.add(args.len())?;
                 item.arguments.clear();
                 item.arguments_done = true;

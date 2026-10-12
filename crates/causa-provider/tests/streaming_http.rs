@@ -873,6 +873,6 @@ async fn invalid_stream_limits_fail_before_http() {
         Err(error) => error,
         Ok(_) => panic!("zero limit accepted"),
     };
-    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+    assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
     assert!(server.received_requests().await.unwrap().is_empty());
 }

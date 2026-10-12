@@ -161,9 +161,11 @@ pub enum ModelInvokeErrorKind {
     /// The invocation was cancelled through its [`CallControl`], before send
     /// or while in flight.
     Cancelled,
-    /// The provider refused and another attempt will not help: a rejected
-    /// credential, an unknown model or path, or any other refusal not
-    /// classified below.
+    /// Another attempt will not help. Usually the provider refused: a
+    /// rejected credential, an unknown model or path, or any other refusal
+    /// not classified below; such an error carries a status, or a code when
+    /// it arrived inside a successful response. Without either, the fault is
+    /// local: the transport could not build the request.
     Permanent,
     /// The provider answered and the adapter could not use the answer: a
     /// success body or stream that is malformed or breaks the protocol's own
@@ -172,7 +174,10 @@ pub enum ModelInvokeErrorKind {
     /// setting is not the remedy; the adapter and the server disagree about
     /// the wire.
     Undecodable,
-    /// The provider rejected the request itself as malformed.
+    /// The request itself is malformed. Either the provider rejected it, or
+    /// the adapter refused it before anything was sent: options outside the
+    /// protocol's range, a body that is not an object, or a decoder used
+    /// against its contract.
     InvalidRequest,
     /// No observable outcome — e.g. a stream that ended without `Done`.
     UnknownOutcome,
@@ -369,7 +374,9 @@ pub enum StreamDelta {
         delta: String,
     },
     /// An increment of one streamed tool call, identified by its position
-    /// among the model's tool calls.
+    /// among the model's tool calls. A call seen here is an observation: the
+    /// calls to act on are the ones in `Done`, which leaves out a call the
+    /// response stopped in the middle of.
     ToolCallDelta {
         /// Position of this call among the model's tool-call drafts — how
         /// deltas are matched to calls.

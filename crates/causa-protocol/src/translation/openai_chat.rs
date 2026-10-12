@@ -358,10 +358,17 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
     }
 
-    let choice = value
+    let choices = value
         .get("choices")
         .and_then(Value::as_array)
-        .and_then(|c| c.first())
+        .ok_or_else(|| undecodable("missing choices[0]"))?;
+    // One output holds one answer. Returning the first of several would
+    // drop the rest while the usage still counts them.
+    if choices.len() > 1 {
+        return Err(undecodable("more than one choice; one is supported"));
+    }
+    let choice = choices
+        .first()
         .ok_or_else(|| undecodable("missing choices[0]"))?;
     let message = choice
         .get("message")
@@ -393,8 +400,17 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
         items.push(ModelItem::text(text));
     }
 
+    let raw_stop_reason = match crate::translation::stop_reason::chat_raw(choice) {
+        Some(raw) => raw.to_owned(),
+        None if choice.get("finish_reason").is_some_and(|v| !v.is_null()) => {
+            return Err(undecodable("choices[0].finish_reason: expected a string"));
+        }
+        None => return Err(undecodable("missing choices[0].finish_reason")),
+    };
+    let stop_reason = crate::translation::stop_reason::chat(&raw_stop_reason);
+
     if let Some(wire_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for call in wire_calls {
+        for (position, call) in wire_calls.iter().enumerate() {
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
@@ -407,7 +423,14 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
                 .and_then(Value::as_str)
                 .ok_or_else(|| undecodable("tool_calls[].function: missing `name` string"))?;
             // Completed calls require a complete JSON-encoded argument value.
-            let arguments = context_frame::decode_wire_arguments(function.get("arguments"))?;
+            // The token limit can stop the response inside the last call.
+            let cut_off = stop_reason == causa_kernel::ModelStopReason::MaxTokens
+                && position + 1 == wire_calls.len();
+            let Some(arguments) =
+                context_frame::decode_wire_arguments(function.get("arguments"), cut_off)?
+            else {
+                continue;
+            };
             // The entry minus `id` and `function.name`: `type`, `index` and
             // the raw `function.arguments` string stay.
             let mut fields = context_frame::without_keys(call, &["id"]);
@@ -428,15 +451,6 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
             });
         }
     }
-
-    let raw_stop_reason = match crate::translation::stop_reason::chat_raw(choice) {
-        Some(raw) => raw.to_owned(),
-        None if choice.get("finish_reason").is_some_and(|v| !v.is_null()) => {
-            return Err(undecodable("choices[0].finish_reason: expected a string"));
-        }
-        None => return Err(undecodable("missing choices[0].finish_reason")),
-    };
-    let stop_reason = crate::translation::stop_reason::chat(&raw_stop_reason);
 
     let reasoning = message
         .get("reasoning_content")

@@ -86,8 +86,10 @@ adapters or data converters.
 - `ModelInvokeErrorKind` gains `Undecodable`: the provider answered and the
   adapter could not use the answer (a malformed 2xx body or stream, a stream
   that breaks the protocol's rules, a response over a size limit). These
-  failures were `Permanent`, which now means only that the provider refused
-  and another attempt will not help. Neither kind is retried. Migration: add
+  failures were `Permanent`, which now means that another attempt will not
+  help: the provider refused (the error carries a status, or a code when it
+  arrived inside a successful response), or the transport could not build
+  the request (neither is set). Neither kind is retried. Migration: add
   an `Undecodable` arm to exhaustive matches on `ModelInvokeErrorKind`; code
   that treated `Permanent` as "check the credential, model or endpoint"
   should give `Undecodable` a different message, since those settings are not
@@ -100,12 +102,50 @@ adapters or data converters.
   host can now tell 401 from 404 without parsing the message.
 - An error event inside a successful stream now carries the provider's
   message, read by the rule for an HTTP error body: `error.message`, at most
-  200 characters. The text is `"provider stream error ({code}): {message}"`.
+  200 characters. The text is `"provider error ({code}): {message}"`, also
+  for a failed Responses call that was not streamed.
   Before, the message was dropped and a code outside a fixed list was shown
   as `unknown`; now any code that is a short identifier is shown. Hosts that
   log these errors will see provider text they did not see before.
 - Provider text in an error message is one line: each run of control
   characters becomes a space, on HTTP errors and stream error events alike.
+  The Unicode line and paragraph separators and the bidirectional
+  formatting characters are replaced the same way.
+- A response the token limit stopped inside a tool call is returned, not
+  failed. When the stop maps to `MaxTokens` and the arguments of the last
+  call are not complete JSON, that call is left out of the output and the
+  rest is returned with `MaxTokens`; before, all three protocols failed the
+  call as `Undecodable`, batch and stream. A stream has already delivered
+  `ToolCallDelta` values for the call that is left out, so a host that
+  builds calls from deltas must take the call list from `Done`. Incomplete
+  arguments on any other call, or under any other stop, are still
+  `Undecodable`.
+- A transport failure before any response arrived, such as a connection the
+  peer closed, is `Transient` where it was `Permanent`, so a retry policy
+  now retries it. The request may have reached the server; a host that
+  cannot tolerate a repeated call should not retry `Transient`. Only a
+  request the client could not build is still a transport `Permanent`.
+- An error inside a successful response is classified by its `code` and its
+  `type` together: `code` is looked up first, `type` second. Before, `type`
+  was ignored when a `code` was present, so `invalid_request_error` with
+  `context_length_exceeded` was `Permanent` in a stream and `InvalidRequest`
+  over HTTP 400, and `server_error` with a specific code was not retried. A
+  `code` that is not a short identifier no longer hides the `type`.
+  `timeout_error` is `Transient`.
+- A 2xx response whose body is an error envelope returns the provider's
+  error with its code and message, on `invoke` and on a `stream` call that
+  was answered without an SSE content type. Before, both were `Undecodable`
+  with none of the provider's text. A null `error` in a body or a stream
+  event is not an error.
+- A Chat response with more than one choice is `Undecodable` on `invoke`, as
+  it already was on `stream`. Before, `invoke` returned the first choice and
+  dropped the rest while the usage counted all of them. Sending `n` above 1
+  through `extra_body` is therefore refused when the response arrives.
+- Using a decoder against its contract (a zero stream limit, a stream
+  request body that is not an object, input after the end) is
+  `InvalidRequest`, the kind the renderers already use for a request refused
+  before sending; it was `Permanent`. `InvalidRequest` therefore means the
+  request is malformed, whether the provider or the adapter refused it.
 - `RunControl` and the `causa_runtime::control` module are removed.
   `TurnRunner::run` and `run_streaming` take a kernel `CallControl` by value.
   Migration: replace `RunControl::new(token, deadline)` with
@@ -162,7 +202,7 @@ adapters or data converters.
   `store: false` by default, which changes the body of every existing
   Responses request. `with_encrypted_reasoning(false)` and `with_store(None)`
   restore the previous body.
-- Anthropic streaming fails as `Permanent` on a content-block delta of a type
+- Anthropic streaming fails as `Undecodable` on a content-block delta of a type
   the decoder has no rule for, where it used to drop the delta. A block is
   rebuilt from its start event and its deltas, and a block missing part of its
   content must not be committed and replayed as sealed material; the turn

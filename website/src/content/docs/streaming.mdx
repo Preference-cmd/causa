@@ -80,7 +80,13 @@ Earlier successfully committed rounds remain available when a later round stops.
 The stream uses the same request rendering, media resolution and tool-history
 checks as `invoke()`, plus protocol-specific streaming options. Successful HTTP
 responses must use `Content-Type: text/event-stream`. There is no fallback
-request for endpoints that return a complete JSON body instead.
+request for endpoints that return a complete JSON body instead; when that
+body is an error envelope, the call fails with the provider's error and its
+code, otherwise it is `Undecodable`.
+
+On unreleased `main`, a response the token limit stopped inside a tool call
+ends with `MaxTokens` and without that call. Its `ToolCallDelta` values have
+already been delivered, so take the calls to act on from `Done`.
 
 This does not add audio/image generation streams, provider-hosted tools or
 multi-choice Chat output. Reasoning is exposed when the provider sends a

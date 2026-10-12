@@ -7,16 +7,23 @@
 //!
 //! | Source                                  | Kind            |
 //! |-----------------------------------------|-----------------|
-//! | reqwest connect / network / body error  | `Transient`     |
+//! | reqwest connect / request / body error  | `Transient`     |
 //! | request timeout (incl. attempt deadline)| `TimedOut`      |
 //! | cancellation token fired                | `Cancelled`     |
 //! | HTTP 408 / 409 / 429 / 5xx              | `Transient`     |
 //! | HTTP 400 / 422                          | `InvalidRequest`|
 //! | HTTP 401 / 403 / 404                    | `Permanent`     |
 //! | any other non-2xx status                | `Permanent`     |
-//! | 2xx body not parseable / over cap       | `Undecodable`   |
+//! | 2xx body that is an error envelope      | by code or type |
+//! | 2xx body not parseable                  | `Undecodable`   |
+//! | any body over the size cap              | `Undecodable`   |
 //! | 2xx stream without an SSE content type  | `Undecodable`   |
-//! | any other transport error               | `Permanent`     |
+//! | a request the client could not build    | `Permanent`     |
+//!
+//! A request error covers a connection the peer closed before answering.
+//! The request may have reached the server, so a host that cannot tolerate
+//! a repeated call must not retry `Transient`. An over-cap body is
+//! `Undecodable` whatever its status, and carries no status.
 //!
 //! A non-2xx error carries its status in [`ModelInvokeError::status`] and
 //! the provider's error code or type in [`ModelInvokeError::code`], so a
@@ -39,7 +46,7 @@ use std::{future::Future, time::Duration};
 use causa_kernel::{
     CallControl, ControlError, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
 };
-use causa_protocol::translation::error_envelope::ErrorDetail;
+use causa_protocol::translation::error_envelope::{ErrorDetail, reported_error};
 use reqwest::header::HeaderMap;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
@@ -186,9 +193,9 @@ fn oversize_error(len: usize) -> ModelInvokeError {
 }
 
 /// Turn a raw response into a [`ModelOutput`]: non-2xx through the error
-/// table, 2xx JSON-syntax failures as `Undecodable`, then the
-/// protocol-specific body parser (whose own schema failures also surface
-/// as `Undecodable`).
+/// table, 2xx JSON-syntax failures as `Undecodable`, a 2xx error envelope as
+/// the error it reports, then the protocol-specific body parser (whose own
+/// schema failures also surface as `Undecodable`).
 pub(crate) fn finish_response<F>(
     response: BufferedResponse,
     provider: &str,
@@ -211,17 +218,25 @@ where
             format!("{provider} 2xx response body is not valid JSON: {e}"),
         )
     })?;
+    // Some servers report a failure under a success status.
+    if let Some(error) = reported_error(&value) {
+        return Err(error);
+    }
     parse(&value)
 }
 
 pub(crate) fn map_transport_error(e: reqwest::Error) -> ModelInvokeError {
     let kind = if e.is_timeout() {
         ModelInvokeErrorKind::TimedOut
-    } else if e.is_connect() || e.is_body() || e.is_decode() {
-        // Response::chunk wraps failed HTTP body frames as decode errors.
-        // Wire JSON/UTF-8 failures are classified by our own pure parsers.
+    } else if e.is_connect() || e.is_request() || e.is_body() || e.is_decode() {
+        // A request error is the exchange failing before a response arrived,
+        // for example the peer closing the connection; a refused connection
+        // is the same failure one step earlier. Response::chunk wraps failed
+        // HTTP body frames as decode errors. Wire JSON/UTF-8 failures are
+        // classified by our own pure parsers.
         ModelInvokeErrorKind::Transient
     } else {
+        // What is left is a request the client could not build.
         ModelInvokeErrorKind::Permanent
     };
     ModelInvokeError::new(kind, format!("provider transport: {}", e.without_url()))
