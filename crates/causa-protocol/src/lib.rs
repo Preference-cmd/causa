@@ -38,8 +38,10 @@
 //!   [`causa_kernel::GenerationOptions::extra_body`] is merged into the
 //!   body. Objects merge key by key with what the renderer wrote, so
 //!   `reasoning.summary` joins `reasoning.effort`; any other value the
-//!   renderer wrote is kept, and arrays are never merged. An Anthropic
-//!   `thinking` object is sent this way.
+//!   renderer wrote is kept, and arrays are never merged. The rule goes by
+//!   key name, and `output_schema` is kept whole: a key beside the schema
+//!   is merged, a key inside it is not. An Anthropic `thinking` object is
+//!   sent this way.
 //! - **Structured outputs**: `output_schema` renders as `response_format` on
 //!   Chat and `text.format` on Responses; the Anthropic adapter rejects it.
 //! - **Prompt cache directives**: [`causa_kernel::CacheDirective::StablePrefix`]

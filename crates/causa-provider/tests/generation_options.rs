@@ -158,6 +158,86 @@ async fn configured_options_survive_batch_and_stream_request_preparation() {
 }
 
 #[tokio::test]
+async fn the_sent_body_keeps_the_adapters_values_over_the_hosts() {
+    for protocol in [0, 1, 2] {
+        let server = MockServer::start().await;
+        let gateway = gateway(protocol, &server);
+        let mut generation = GenerationOptions::default();
+        generation.reasoning_effort = Some("high".into());
+        generation.max_tokens = Some(8192);
+        for (key, value) in [
+            ("model", json!("replaced")),
+            ("stream", json!(false)),
+            (
+                "stream_options",
+                json!({"include_usage": false, "extra": 1}),
+            ),
+            ("reasoning", json!({"effort": "low", "summary": "auto"})),
+            (
+                "output_config",
+                json!({"effort": "low", "format": {"type": "text"}}),
+            ),
+        ] {
+            generation.extra_body.insert(key.into(), value);
+        }
+        let request = request(generation);
+        let (endpoint, batch_response, stream_response) = fixture(protocol);
+        for streaming in [false, true] {
+            server.reset().await;
+            let response = if streaming {
+                ResponseTemplate::new(200)
+                    .set_body_raw(stream_response.as_bytes().to_vec(), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(&batch_response)
+            };
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            if streaming {
+                let mut stream = gateway.stream(&request, &control()).await.unwrap();
+                while let Some(delta) = stream.next().await {
+                    assert!(!matches!(delta, StreamDelta::Error { .. }), "{delta:?}");
+                }
+            } else {
+                // The host's `stream: false` is not a key the adapter wrote
+                // on this entrance, so it is sent as given.
+                gateway.invoke(&request, &control()).await.unwrap();
+            }
+            let requests = server.received_requests().await.unwrap();
+            let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+            let case = format!("protocol {protocol}, streaming {streaming}");
+            // A losing key.
+            assert_eq!(body["model"], "configured-model", "{case}");
+            // An object merge that keeps the adapter's effort.
+            match protocol {
+                0 => assert_eq!(body["reasoning_effort"], "high", "{case}"),
+                1 => assert_eq!(
+                    body["reasoning"],
+                    json!({"effort": "high", "summary": "auto"}),
+                    "{case}"
+                ),
+                _ => assert_eq!(
+                    body["output_config"],
+                    json!({"effort": "high", "format": {"type": "text"}}),
+                    "{case}"
+                ),
+            }
+            // The stream settings belong to the entrance that was called.
+            assert_eq!(body["stream"], json!(streaming), "{case}");
+            let usage = &body["stream_options"]["include_usage"];
+            if protocol == 0 {
+                assert_eq!(usage, &json!(streaming), "{case}");
+            } else {
+                assert_eq!(usage, &json!(false), "{case}");
+            }
+            assert_eq!(body["stream_options"]["extra"], 1, "{case}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn invalid_generation_options_never_send_batch_or_stream_http() {
     let server = MockServer::start().await;
     for protocol in [0, 1, 2] {

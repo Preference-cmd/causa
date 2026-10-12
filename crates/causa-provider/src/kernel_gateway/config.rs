@@ -44,7 +44,7 @@ pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
 }
 
 /// Anthropic Messages gateway config: the `anthropic-version` header, the
-/// Anthropic-only render options, and the extra `anthropic-beta` values.
+/// render options of that protocol, and the extra `anthropic-beta` values.
 /// Stored in `config: C` so the generic struct holds all protocol state
 /// uniformly. The setters live on [`crate::KernelHttpGateway`].
 #[derive(Debug, Clone)]

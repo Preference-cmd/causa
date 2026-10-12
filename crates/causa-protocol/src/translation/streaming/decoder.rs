@@ -184,7 +184,9 @@ impl StreamDecoder {
 }
 
 /// Adds protocol-native streaming options to an already rendered request.
-/// Chat Completions additionally requests the trailing usage snapshot.
+/// Chat Completions additionally requests the trailing usage snapshot. Both
+/// are the adapter's values on a stream call: a `stream` already in the body
+/// is replaced, and so is a `stream_options` that is not an object.
 pub fn configure_stream_request(
     protocol: Protocol,
     body: &mut Value,
@@ -197,9 +199,12 @@ pub fn configure_stream_request(
         let options = object
             .entry("stream_options")
             .or_insert_with(|| serde_json::json!({}));
+        if !options.is_object() {
+            *options = serde_json::json!({});
+        }
         options
             .as_object_mut()
-            .ok_or_else(|| misused("stream_options must be an object"))?
+            .expect("stream_options is an object")
             .insert("include_usage".into(), Value::Bool(true));
     }
     Ok(())

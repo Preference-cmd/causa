@@ -59,8 +59,9 @@
 //!   is what makes a sealed reasoning item replayable under `store: false` or
 //!   zero data retention). [`ResponsesRenderOptions`] changes either.
 //! - `reasoning_effort` renders as `reasoning.effort`; output limits use
-//!   `max_output_tokens`, including reasoning tokens. Active effort combined
-//!   with temperature is rejected. Hosts validate model-specific support.
+//!   `max_output_tokens`, including reasoning tokens. The effort is written
+//!   exactly as given and beside any temperature; which values a model
+//!   supports is the host's knowledge.
 
 use serde_json::{Value, json};
 
@@ -281,6 +282,11 @@ pub fn render_openai_responses_input(
         ));
     }
     super::generation::merge_extra_body(&mut body, generation);
+    // The schema is the host's own value, not an object the adapter wrote:
+    // the merge may add keys beside it and must not reach into it.
+    if let Some(schema) = &generation.output_schema {
+        body["text"]["format"]["schema"] = schema.clone();
+    }
     Ok(body)
 }
 

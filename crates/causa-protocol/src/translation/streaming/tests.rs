@@ -431,6 +431,29 @@ fn streaming_request_options_preserve_existing_fields() {
         body,
         json!({"model":"m","stream":true,"stream_options":{"existing":true,"include_usage":true}})
     );
+    // On a stream call both settings are the adapter's, whatever the body
+    // already says.
+    for given in [
+        json!({"include_usage": false}),
+        json!("usage"),
+        json!(null),
+        json!([]),
+    ] {
+        let mut body = json!({"model":"m","stream":false,"stream_options":given});
+        configure_stream_request(Protocol::OpenAiChatCompletions, &mut body).unwrap();
+        assert_eq!(
+            body,
+            json!({"model":"m","stream":true,"stream_options":{"include_usage":true}})
+        );
+    }
+    for protocol in [Protocol::OpenAiResponses, Protocol::AnthropicMessages] {
+        let mut body = json!({"model":"m","stream":false,"stream_options":"kept"});
+        configure_stream_request(protocol, &mut body).unwrap();
+        assert_eq!(
+            body,
+            json!({"model":"m","stream":true,"stream_options":"kept"})
+        );
+    }
     assert!(
         StreamDecoder::new(
             Protocol::OpenAiResponses,

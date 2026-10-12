@@ -33,7 +33,8 @@
 //!   the content).
 //! - `GenerationOptions::max_tokens` is required by Anthropic; a `None`
 //!   fails with `InvalidRequest` before HTTP. The adapter sends no default
-//!   ceiling. [`AnthropicRenderOptions`] carries the Anthropic-only choices.
+//!   ceiling. [`AnthropicRenderOptions`] is reserved for choices only this
+//!   protocol has; it holds none today.
 //! - [`CacheDirective::StablePrefix`] marks three `cache_control`
 //!   breakpoints: the last tool definition, the `system` parameter
 //!   (rendered as a block array so the anchor can attach — Anthropic
@@ -56,9 +57,9 @@
 //! - `reasoning_effort` is written as `output_config.effort` exactly as
 //!   given. No `thinking` object is derived from it and no value is refused:
 //!   a host that wants `thinking`, with or without `block_binding`, sends the
-//!   object in `GenerationOptions::extra_body`, which is copied to the top
-//!   level of the body. `output_schema` has no mapping in this adapter and is
-//!   rejected before HTTP.
+//!   object in `GenerationOptions::extra_body`, which is merged into the
+//!   body beside what this renderer wrote. `output_schema` has no mapping in
+//!   this adapter and is rejected before HTTP.
 
 use serde_json::{Value, json};
 
@@ -79,7 +80,7 @@ use crate::Protocol;
 /// `temperature`, `tools` and `output_config` when the inputs call for them,
 /// then the host's extra request fields. Media references resolve through `media`;
 /// unresolvable or non-image references degrade to the shared text
-/// placeholder. `options` carries the Anthropic-only choices; see
+/// placeholder. `options` is reserved for choices only this protocol has; see
 /// [`AnthropicRenderOptions`]. Rendering is deterministic — the same frame,
 /// surface, generation, model, media table, cache directive and options
 /// always produce byte-identical JSON.

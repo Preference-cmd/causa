@@ -16,23 +16,30 @@
 //!
 //! [`causa_kernel::GenerationOptions`] carries explicit sampling, output-token
 //! limits, an optional reasoning effort and extra request fields. Both call
-//! entrances render the same options; fields are never silently dropped.
+//! entrances render the same options. The adapter's own options are never
+//! dropped; an `extra_body` value under a key the adapter wrote is dropped
+//! without an error.
 //!
 //! The reasoning effort is a string sent as given: Chat `reasoning_effort`,
 //! Responses `reasoning.effort`, Anthropic `output_config.effort`.
 //! `extra_body` is merged into the request, beside what the adapter wrote
 //! and never in place of it, which is how
 //! a host sends an Anthropic `thinking` object or any setting only one
-//! server knows. Neither is checked here. A value the provider refuses comes
+//! server knows. Neither is checked here. The keys the adapter writes are
+//! the model, the messages or input, the system content, the tools and the
+//! options above under each protocol's own names; Responses also writes
+//! `include` and `store` unless its render options turn them off. `stream`
+//! and Chat `stream_options.include_usage` are written on `stream` only, so
+//! on `invoke` an `extra_body` value for either is sent as given. A value the provider refuses comes
 //! back as its error, with its message, status and code.
 //!
 //! Anthropic requires `max_tokens`: a missing limit is rejected before HTTP,
 //! never defaulted, and `output_schema` remains unsupported by the Anthropic
 //! adapter. Reasoning state replays as sealed context material: the
 //! Anthropic and Responses parsers keep provider reasoning items whole and the
-//! Chat renderer replays sealed `reasoning_content`. Hosts validate
-//! model-specific effort values, sampling/default compatibility and
-//! protocol/tool availability; model identifiers remain opaque to Causa.
+//! Chat renderer replays sealed `reasoning_content`. Which effort values,
+//! sampling settings and tools a model accepts is the host's knowledge;
+//! model identifiers remain opaque to Causa.
 //!
 //! # Render options
 //!

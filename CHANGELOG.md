@@ -20,11 +20,28 @@ adapters or data converters.
     `Option<String>`, written to Chat `reasoning_effort`, Responses
     `reasoning.effort` and Anthropic `output_config.effort`. Migration:
     replace `Some(ReasoningEffort::High)` with `Some("high".into())`; the
-    serialized form of the seven old values is unchanged.
+    serialized form of the seven old values is unchanged. What a stored
+    value sends can still differ: a persisted `"none"` now sends
+    `output_config.effort: "none"` on Anthropic, where it sent
+    `thinking: {"type": "disabled"}` and no effort. A host that stored
+    `"none"` to turn thinking off should clear the effort and put the
+    disabled `thinking` object in `extra_body`.
   - New `GenerationOptions::extra_body`: a JSON object merged into the
     request body. An object joins the object the adapter wrote under the same
     key (`{"reasoning": {"summary": "auto"}}` beside the effort); any other
-    value the adapter wrote is kept and arrays are never merged.
+    value the adapter wrote is kept and arrays are never merged. The rule
+    goes by key name: Chat `max_tokens` is sent beside the adapter's
+    `max_completion_tokens`. `output_schema` is kept whole: a key beside the
+    schema (`description`) is merged, a key inside it is not, and `strict`
+    stays `false`; a host that needs another `strict` leaves `output_schema`
+    unset and sends the whole format object. Responses `include` and `store`
+    are written by the default render options and so win over the same keys
+    here. A `null` is sent as given and does not unset a key the adapter
+    wrote. On a `stream` call the adapter sets `stream: true` and, on Chat,
+    `stream_options.include_usage: true` whatever `extra_body` says; a
+    `stream_options` that is not an object is replaced. On `invoke` neither
+    key is written, so both are sent as given. A serialized
+    `"extra_body": null` reads as empty.
   - Anthropic: an effort no longer adds `thinking: {"type": "adaptive"}`, and
     `none` no longer sends `thinking: {"type": "disabled"}`. Migration: put
     the `thinking` object you want in `extra_body`. A host that relied on the
@@ -298,9 +315,8 @@ adapters or data converters.
 - `GenerationOptions` adds optional `reasoning_effort`; explicit struct literals
   must include it or use `..Default::default()`. OpenAI Chat output limits now
   render as `max_completion_tokens`, including visible and reasoning tokens.
-  Generation rendering rejects invalid temperatures, zero output limits, active
-  OpenAI effort with temperature, and unsupported Anthropic effort/output schema
-  options before HTTP instead of dropping or coercing them.
+  Generation rendering rejects invalid temperatures, zero output limits and an
+  Anthropic output schema before HTTP instead of dropping or coercing them.
 - OpenAI-family function arguments must be an encoded, complete JSON string.
   Missing, null, blank or inline non-string arguments now fail rather than
   becoming `{}` or passing through. Zero-parameter calls must supply `"{}"`.
@@ -325,14 +341,12 @@ adapters or data converters.
   renderer replays them verbatim; the Responses parser keeps a `reasoning`
   item whole (and any unknown output item) and the renderer replays it; the
   Chat renderer replays sealed `reasoning_content` by default.
-- `ReasoningEffort` now renders on Anthropic: unset sends no `thinking`
-  field, `None` sends `thinking: {"type": "disabled"}`, and `Low`..`Max` send
-  `thinking: {"type": "adaptive"}` with `output_config.effort`; `Minimal`
-  fails with `InvalidRequest` before HTTP.
+- `GenerationOptions::reasoning_effort` renders on Anthropic as
+  `output_config.effort`; unset sends no effort.
 - Render options and their gateway setters: `with_beta` (extra
   `anthropic-beta` values, one comma-separated header, empty by default),
-  `with_prefix_mismatch_behavior`, `with_encrypted_reasoning`,
-  `with_store`, `with_reasoning_content_replay`.
+  `with_encrypted_reasoning`, `with_store`,
+  `with_reasoning_content_replay`.
 - Optional `causa_runtime::RetryingGateway<G>` and `RetryPolicy`: an
   ordinary `ModelGateway` wrapper that retries `Transient` and `TimedOut`
   failures with exponential backoff and fixed 25% jitter, honors a
@@ -345,9 +359,8 @@ adapters or data converters.
   `causa-provider` on `httpdate` for the HTTP-date form of
   `retry-after`; both versions were already resolved in `Cargo.lock`, so
   no new package version, source or checksum is introduced.
-- Serializable `ReasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
-  `xhigh`, `max`) and optional `GenerationOptions::reasoning_effort`. OpenAI
-  Chat maps `reasoning_effort`; Responses maps `reasoning.effort` in batch and
+- Optional `GenerationOptions::reasoning_effort`, a string. OpenAI Chat
+  writes `reasoning_effort`; Responses writes `reasoning.effort` in batch and
   streaming requests. Omission preserves the provider default. Hosts validate
   model-specific supported values, sampling defaults and tool compatibility.
   *(At that change no reasoning-state replay existed and the Anthropic adapter

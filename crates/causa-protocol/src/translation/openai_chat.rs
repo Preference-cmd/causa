@@ -52,9 +52,9 @@
 //!   items — skipping an item left empty, like one of another format — and
 //!   changes nothing else. Other sealed message fields always replay.
 //! - Output limits use `max_completion_tokens`, including reasoning tokens;
-//!   no default limit is injected. Effort renders as `reasoning_effort`.
-//!   Active effort combined with temperature is rejected before transport.
-//!   Model-specific effort and tool support must be validated by the host.
+//!   no default limit is injected. Effort renders as `reasoning_effort`,
+//!   exactly as given and beside any temperature. Which effort values and
+//!   tools a model supports is the host's knowledge.
 
 use serde_json::{Value, json};
 
@@ -299,6 +299,11 @@ pub fn render_openai_chat_messages(
         ));
     }
     super::generation::merge_extra_body(&mut body, generation);
+    // The schema is the host's own value, not an object the adapter wrote:
+    // the merge may add keys beside it and must not reach into it.
+    if let Some(schema) = &generation.output_schema {
+        body["response_format"]["json_schema"]["schema"] = schema.clone();
+    }
     Ok(body)
 }
 

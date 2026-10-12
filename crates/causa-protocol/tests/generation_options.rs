@@ -158,12 +158,107 @@ fn extra_request_fields_reach_every_body_unchanged() {
         assert_eq!(body["thinking"], thinking, "{protocol}");
         assert_eq!(body["enable_thinking"], json!(true), "{protocol}");
         assert_eq!(body["top_k"], json!(40), "{protocol}");
-        // The serialized value is the same bytes the host supplied.
-        assert_eq!(
-            serde_json::to_string(&body["thinking"]).unwrap(),
-            serde_json::to_string(&thinking).unwrap()
-        );
     }
+}
+
+#[test]
+fn the_merge_continues_below_the_first_level_and_stops_at_the_schema() {
+    let schema = json!({
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    });
+    // What a host might send hoping to adjust the schema in place.
+    let fragment = json!({
+        "type": "array",
+        "properties": {"answer": {"description": "added"}, "other": {"type": "number"}},
+        "additionalProperties": false,
+    });
+    let mut generation = GenerationOptions::default();
+    generation.output_schema = Some(schema.clone());
+    generation.extra_body.insert(
+        "response_format".into(),
+        json!({"json_schema": {"description": "an answer", "strict": true, "schema": fragment}}),
+    );
+    generation.extra_body.insert(
+        "text".into(),
+        json!({"format": {"description": "an answer", "strict": true, "schema": fragment}}),
+    );
+
+    // Chat: `description` sits two objects below the body.
+    let chat = &render(0, &generation).unwrap()["response_format"];
+    assert_eq!(chat["type"], "json_schema");
+    assert_eq!(chat["json_schema"]["description"], "an answer");
+    assert_eq!(chat["json_schema"]["strict"], false);
+    assert_eq!(chat["json_schema"]["schema"], schema);
+
+    let responses = &render(1, &generation).unwrap()["text"]["format"];
+    assert_eq!(responses["description"], "an answer");
+    assert_eq!(responses["strict"], false);
+    assert_eq!(responses["schema"], schema);
+
+    // Without `output_schema` the host's object is the whole value.
+    generation.output_schema = None;
+    assert_eq!(
+        render(0, &generation).unwrap()["response_format"]["json_schema"]["schema"],
+        fragment
+    );
+    assert_eq!(
+        render(1, &generation).unwrap()["text"]["format"]["schema"],
+        fragment
+    );
+}
+
+#[test]
+fn a_null_extra_field_is_sent_and_a_null_extra_body_reads_as_empty() {
+    let mut generation = with_effort("high");
+    generation.extra_body.insert("user".into(), Value::Null);
+    // A null does not unset a key the adapter wrote.
+    generation
+        .extra_body
+        .insert("reasoning".into(), Value::Null);
+    for protocol in [0, 1, 2] {
+        let body = render(protocol, &generation).unwrap();
+        assert_eq!(body.get("user"), Some(&Value::Null), "{protocol}");
+    }
+    assert_eq!(
+        render(1, &generation).unwrap()["reasoning"],
+        json!({"effort": "high"})
+    );
+
+    let read: GenerationOptions = serde_json::from_value(json!({"extra_body": null})).unwrap();
+    assert!(read.extra_body.is_empty());
+    let read: GenerationOptions =
+        serde_json::from_value(json!({"extra_body": {"top_k": 40}})).unwrap();
+    assert_eq!(read.extra_body["top_k"], 40);
+    assert!(serde_json::from_value::<GenerationOptions>(json!({"extra_body": []})).is_err());
+}
+
+#[test]
+fn kept_goes_by_the_key_the_adapter_wrote() {
+    // Chat writes the limit as `max_completion_tokens`; the older name is a
+    // different key and goes out beside it.
+    let mut generation = with_effort("high");
+    generation.extra_body.insert("max_tokens".into(), json!(1));
+    let chat = render(0, &generation).unwrap();
+    assert_eq!(chat["max_completion_tokens"], LIMIT);
+    assert_eq!(chat["max_tokens"], 1);
+
+    // Responses writes `include` and `store` by default, so the host's lose;
+    // with the render options turned off, the host's are sent.
+    generation
+        .extra_body
+        .insert("include".into(), json!(["message.output_text.logprobs"]));
+    generation.extra_body.insert("store".into(), json!(true));
+    let body = render(1, &generation).unwrap();
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(body["store"], false);
+    let mut options = ResponsesRenderOptions::default();
+    options.include_encrypted_reasoning = false;
+    options.store = None;
+    let body = render_responses(&generation, &options).unwrap();
+    assert_eq!(body["include"], json!(["message.output_text.logprobs"]));
+    assert_eq!(body["store"], true);
 }
 
 #[test]

@@ -51,17 +51,40 @@ pub struct GenerationOptions {
     /// the same key here is an object too, the two are merged key by key, so
     /// `{"reasoning": {"summary": "auto"}}` joins the effort the adapter
     /// wrote. Any other value the adapter writes itself (`model`, the
-    /// messages, `tools`, `stream`, the options above) is kept and the value
-    /// given here is dropped without an error; every other key is sent
-    /// unchecked. A field that changes the shape of the response can make it
-    /// unreadable to the adapter.
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    /// messages, `tools`, the options above) is kept and the value given
+    /// here is dropped without an error. `output_schema` is kept whole: a
+    /// key beside the schema is merged, a key inside it is not. Every other
+    /// key is sent unchecked, a `null` included.
+    ///
+    /// "Kept" goes by the key the adapter wrote, not by meaning: a key the
+    /// protocol also understands under another name is sent beside the
+    /// adapter's own. An adapter may write further keys by default, and on a
+    /// streaming call it sets the keys that turn streaming on whatever is
+    /// given here; the adapter's documentation lists them. A field that
+    /// changes the shape of the response can make it unreadable to the
+    /// adapter.
+    ///
+    /// A serialized `null` reads as empty.
+    #[serde(
+        default,
+        deserialize_with = "null_as_empty",
+        skip_serializing_if = "serde_json::Map::is_empty"
+    )]
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// JSON Schema the final response should satisfy, rendered natively
     /// where the underlying protocol supports it. Schema validation and
     /// corrective retry stay host-side. `None` omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
+}
+
+fn null_as_empty<'de, D>(
+    deserializer: D,
+) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Provider-reported token accounting for one model response.
