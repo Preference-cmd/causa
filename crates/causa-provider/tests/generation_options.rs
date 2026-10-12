@@ -2,7 +2,7 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, ContextBlock,
     ContextFrame, GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef,
-    ModelRequest, ReasoningEffort, RoundId, StreamDelta, TextPayload, TurnId,
+    ModelRequest, RoundId, StreamDelta, TextPayload, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -69,31 +69,31 @@ fn fixture(protocol: usize) -> (&'static str, Value, String) {
 #[tokio::test]
 async fn configured_options_survive_batch_and_stream_request_preparation() {
     for protocol in [0, 1, 2] {
-        let choices = if protocol == 2 {
-            // Anthropic renders the effort table: unset, disabled, adaptive.
-            vec![
-                None,
-                Some(ReasoningEffort::None),
-                Some(ReasoningEffort::High),
-            ]
-        } else {
-            vec![
-                Some(ReasoningEffort::High),
-                Some(ReasoningEffort::None),
-                None,
-            ]
-        };
-        for effort in choices {
+        // Efforts the adapters once mapped or refused, one a server asked
+        // for, and none at all: each is sent as the host wrote it.
+        for effort in [
+            Some("high"),
+            Some("none"),
+            Some("minimal"),
+            Some("off"),
+            None,
+        ] {
             let server = MockServer::start().await;
             let gateway = gateway(protocol, &server);
+            let thinking = json!({"type": "adaptive", "display": "summarized"});
             let generation = {
                 let mut generation = GenerationOptions::default();
-                generation.reasoning_effort = effort;
+                generation.reasoning_effort = effort.map(str::to_owned);
                 generation.max_tokens = Some(8192);
-                generation.temperature = (effort != Some(ReasoningEffort::High)).then_some(0.5);
+                // A temperature beside an effort is the provider's to judge.
+                generation.temperature = Some(0.5);
+                generation
+                    .extra_body
+                    .insert("thinking".into(), thinking.clone());
                 generation
             };
-            let mut expected = json!({"model":"configured-model"});
+            let mut expected =
+                json!({"model":"configured-model", "thinking": thinking, "temperature": 0.5});
             expected[match protocol {
                 0 => "max_completion_tokens",
                 1 => "max_output_tokens",
@@ -103,19 +103,8 @@ async fn configured_options_survive_batch_and_stream_request_preparation() {
                 match protocol {
                     0 => expected["reasoning_effort"] = json!(effort),
                     1 => expected["reasoning"] = json!({"effort": effort}),
-                    // Anthropic: `None` disables thinking; every other level
-                    // renders adaptive thinking plus its effort level.
-                    _ if effort == ReasoningEffort::None => {
-                        expected["thinking"] = json!({"type": "disabled"});
-                    }
-                    _ => {
-                        expected["thinking"] = json!({"type": "adaptive"});
-                        expected["output_config"] = json!({"effort": effort});
-                    }
+                    _ => expected["output_config"] = json!({"effort": effort}),
                 }
-            }
-            if let Some(temperature) = generation.temperature {
-                expected["temperature"] = json!(temperature);
             }
             let request = request(generation);
             let (endpoint, batch_response, stream_response) = fixture(protocol);
@@ -161,9 +150,7 @@ async fn configured_options_survive_batch_and_stream_request_preparation() {
                 if effort.is_none() {
                     assert!(body.get("reasoning").is_none());
                     assert!(body.get("reasoning_effort").is_none());
-                }
-                if effort == Some(ReasoningEffort::High) {
-                    assert!(body.get("temperature").is_none());
+                    assert!(body.get("output_config").is_none());
                 }
             }
         }
@@ -201,22 +188,8 @@ async fn invalid_generation_options_never_send_batch_or_stream_http() {
                 generation.temperature = Some(2.1);
                 generation
             },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.reasoning_effort = Some(ReasoningEffort::High);
-                generation.temperature = Some(1.0);
-                generation
-            },
         ];
         if protocol == 2 {
-            // `Minimal` has no Anthropic wire level; the others render.
-            cases.push({
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.reasoning_effort = Some(ReasoningEffort::Minimal);
-                generation
-            });
             // The required output limit is never defaulted.
             cases.push(GenerationOptions::default());
             cases.push({

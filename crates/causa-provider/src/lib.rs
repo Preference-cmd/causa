@@ -15,16 +15,19 @@
 //! # Generation options
 //!
 //! [`causa_kernel::GenerationOptions`] carries explicit sampling, output-token
-//! limits and optional [`causa_kernel::ReasoningEffort`]. Both call entrances
-//! render the same options. Unsupported protocol combinations return
-//! `InvalidRequest` before HTTP; fields are never silently dropped.
+//! limits, an optional reasoning effort and extra request fields. Both call
+//! entrances render the same options; fields are never silently dropped.
+//!
+//! The reasoning effort is a string sent as given: Chat `reasoning_effort`,
+//! Responses `reasoning.effort`, Anthropic `output_config.effort`. The keys
+//! of `extra_body` are copied to the top level of the request, which is how
+//! a host sends an Anthropic `thinking` object or any setting only one
+//! server knows. Neither is checked here. A value the provider refuses comes
+//! back as its error, with its message, status and code.
 //!
 //! Anthropic requires `max_tokens`: a missing limit is rejected before HTTP,
-//! never defaulted. Effort renders natively on all three wires — Anthropic as
-//! `thinking` plus `output_config.effort`, where `ReasoningEffort::None`
-//! disables thinking and `ReasoningEffort::Minimal` has no wire level and
-//! fails before HTTP — and `output_schema` remains unsupported by the
-//! Anthropic adapter. Reasoning state replays as sealed context material: the
+//! never defaulted, and `output_schema` remains unsupported by the Anthropic
+//! adapter. Reasoning state replays as sealed context material: the
 //! Anthropic and Responses parsers keep provider reasoning items whole and the
 //! Chat renderer replays sealed `reasoning_content`. Hosts validate
 //! model-specific effort values, sampling/default compatibility and
@@ -34,8 +37,8 @@
 //!
 //! The renderer-specific choices live in
 //! [`causa_protocol::translation::render_options`] and are hosted by the
-//! matching gateway configuration: [`KernelHttpGateway::with_beta`] and
-//! [`KernelHttpGateway::with_prefix_mismatch_behavior`] for Anthropic,
+//! matching gateway configuration: [`KernelHttpGateway::with_beta`] for
+//! Anthropic,
 //! [`KernelHttpGateway::with_encrypted_reasoning`] and
 //! [`KernelHttpGateway::with_store`] for Responses, and
 //! [`KernelHttpGateway::with_reasoning_content_replay`] for Chat. They apply

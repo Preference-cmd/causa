@@ -1,4 +1,5 @@
-use causa_kernel::{GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ReasoningEffort};
+use causa_kernel::{GenerationOptions, ModelInvokeError, ModelInvokeErrorKind};
+use serde_json::Value;
 
 fn invalid(message: &str) -> ModelInvokeError {
     ModelInvokeError::new(ModelInvokeErrorKind::InvalidRequest, message)
@@ -24,17 +25,7 @@ fn validate_bounds(
 pub(in crate::translation) fn validate_openai(
     generation: &GenerationOptions,
 ) -> Result<(), ModelInvokeError> {
-    validate_bounds(generation, 2.0)?;
-    if generation.temperature.is_some()
-        && generation
-            .reasoning_effort
-            .is_some_and(|effort| effort != ReasoningEffort::None)
-    {
-        return Err(invalid(
-            "temperature cannot be combined with active reasoning_effort",
-        ));
-    }
-    Ok(())
+    validate_bounds(generation, 2.0)
 }
 
 pub(in crate::translation) fn validate_anthropic(
@@ -49,25 +40,25 @@ pub(in crate::translation) fn validate_anthropic(
             "max_tokens is required by the Anthropic Messages API; the adapter sends no default",
         ));
     }
-    // The effort table maps every other value; `minimal` has no wire level.
-    if generation.reasoning_effort == Some(ReasoningEffort::Minimal) {
-        return Err(invalid(
-            "reasoning_effort minimal has no Anthropic Messages equivalent",
-        ));
-    }
-    if generation.temperature.is_some()
-        && generation
-            .reasoning_effort
-            .is_some_and(|effort| effort != ReasoningEffort::None)
-    {
-        return Err(invalid(
-            "temperature cannot be combined with active reasoning_effort",
-        ));
-    }
     if generation.output_schema.is_some() {
         return Err(invalid(
             "output_schema is unsupported by the Anthropic adapter",
         ));
     }
     Ok(())
+}
+
+/// Writes the host's extra request fields into the top level of a rendered
+/// body. A key the renderer already wrote is left alone, so a host cannot
+/// replace the model, the messages or the tools by accident; every other key
+/// is copied unchanged and unchecked.
+pub(in crate::translation) fn merge_extra_body(body: &mut Value, generation: &GenerationOptions) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    for (key, value) in &generation.extra_body {
+        if !object.contains_key(key) {
+            object.insert(key.clone(), value.clone());
+        }
+    }
 }

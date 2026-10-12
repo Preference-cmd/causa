@@ -25,33 +25,11 @@ impl ModelRef {
     }
 }
 
-/// Requested reasoning effort. Availability and meaning depend on the model;
-/// hosts must validate the selected model's supported values before admission.
-/// This contract does not enable thinking replay or retain provider state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningEffort {
-    /// Explicitly request no reasoning effort, where supported.
-    None,
-    /// Minimal reasoning effort, where supported.
-    Minimal,
-    /// Low reasoning effort.
-    Low,
-    /// Medium reasoning effort.
-    Medium,
-    /// High reasoning effort.
-    High,
-    /// Extra-high reasoning effort, where supported.
-    #[serde(rename = "xhigh")]
-    XHigh,
-    /// Maximum reasoning effort, where supported.
-    Max,
-}
-
 /// Generation knobs a caller may pin for the invocation. `None` leaves the
 /// provider default in force.
 /// Protocol adapters reject options they cannot faithfully render. Hosts own
-/// model-specific capability validation, defaults, and aggregate budgets.
+/// model-specific capability validation, defaults, and aggregate budgets;
+/// `reasoning_effort` and `extra_body` are sent as given for that reason.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct GenerationOptions {
@@ -60,12 +38,22 @@ pub struct GenerationOptions {
     /// Upper bound on generated tokens, including reasoning tokens where the
     /// provider counts them. `None` leaves the limit unconstrained by the caller.
     pub max_tokens: Option<u32>,
-    /// Requested reasoning effort. `None` leaves the provider default in force;
-    /// `Some(ReasoningEffort::None)` explicitly requests no reasoning.
-    /// An adapter may reject an active effort combined with a temperature.
-    /// Model-specific support remains the host's responsibility.
+    /// Reasoning effort, written to the protocol's effort key exactly as
+    /// given: Chat `reasoning_effort`, Responses `reasoning.effort`, Anthropic
+    /// `output_config.effort`. `None` omits the key. The value is not checked
+    /// or mapped; which values a model accepts is the host's knowledge, and a
+    /// value the provider refuses comes back as the provider's error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffort>,
+    pub reasoning_effort: Option<String>,
+    /// Further request fields, written to the top level of the request body
+    /// exactly as given. This is where protocol- or model-specific settings
+    /// go, such as an Anthropic `thinking` object. A key the adapter writes
+    /// itself (`model`, the messages, `tools`, `stream` and the options above)
+    /// is not replaced; every other key is sent unchecked. A field that
+    /// changes the shape of the response can make it unreadable to the
+    /// adapter.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// JSON Schema the final response should satisfy, rendered natively
     /// where the underlying protocol supports it. Schema validation and
     /// corrective retry stay host-side. `None` omits it.

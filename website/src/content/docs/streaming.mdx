@@ -88,11 +88,11 @@ supported event, and cross-turn replay works: Anthropic `thinking` and
 `redacted_thinking`, Responses `reasoning` items and Chat
 `reasoning_content` are kept as sealed parts and replayed verbatim by their
 own renderer, so a thinking-enabled tool loop can echo back what it received.
-On Anthropic, `GenerationOptions::reasoning_effort` is what requests thinking
-(unset sends no `thinking` field, `none` disables it, the other levels send an
-adaptive shape); the streaming decoder keeps whole blocks so streaming and
+On Anthropic, the host requests thinking by sending a `thinking` object in
+`GenerationOptions::extra_body`; `reasoning_effort` only sets
+`output_config.effort`. The streaming decoder keeps whole blocks so streaming and
 batch agree on what is replayed. Because of that, an Anthropic content-block
-delta of a type the decoder has no rule for fails the stream as `Permanent`
+delta of a type the decoder has no rule for fails the stream as `Undecodable`
 rather than being dropped: a block missing part of its content would otherwise
 be committed and replayed. Unknown SSE event types are still ignored.
 
@@ -131,7 +131,7 @@ to choose explicit positive limits:
 Limits bound logical buffers, not total process RSS. JSON values, raw events,
 assembled strings and the final snapshot can coexist; a large Responses
 snapshot needs budget in addition to its earlier deltas. Exceeding a limit is
-a `Permanent` error, not truncated success. Zero limits are rejected before HTTP.
+an `Undecodable` error, not truncated success. Zero limits are rejected before HTTP.
 
 ## Protocol-only decoding and verification
 

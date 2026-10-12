@@ -113,18 +113,19 @@ for supported events, resource limits and direct consumption.
 
 ### Generation options on main (unreleased)
 
-On unreleased `main`, `GenerationOptions::reasoning_effort` selects a
-serializable `ReasoningEffort` and renders on all three wires. OpenAI Chat
-renders `reasoning_effort` and `max_completion_tokens`; Responses renders
-`reasoning.effort` and `max_output_tokens`; Anthropic renders
-`thinking: {"type": "adaptive"}` plus `output_config.effort` for every level
-above `none`, `thinking: {"type": "disabled"}` for explicit `none`, and no
-`thinking` field when effort is unset. `minimal` has no Anthropic level and
-fails with `InvalidRequest` before HTTP, as does `output_schema`. Anthropic
-also requires `max_tokens`: a request without one is rejected before HTTP
-rather than defaulted. Limits include reasoning tokens where counted by the
-provider. Active effort with temperature is rejected locally; hosts validate
-per-model support and default/sampling compatibility.
+On unreleased `main`, `GenerationOptions::reasoning_effort` is a string that
+is sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
+`reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
+map the value, and derives no `thinking` object from it. Settings that only
+one protocol or model has go in `GenerationOptions::extra_body`, whose keys
+are copied to the top level of the request unless the adapter already wrote
+that key; an Anthropic `thinking` object is sent this way. Which values a
+model accepts is the host's knowledge, and a refused value comes back as the
+provider's error. Output limits render as `max_completion_tokens`,
+`max_output_tokens` and `max_tokens`, and include reasoning tokens where the
+provider counts them. Anthropic requires `max_tokens` (a request without one
+is rejected before HTTP rather than defaulted) and has no `output_schema`
+mapping.
 
 Reasoning state replays as sealed context material: the Anthropic and
 Responses parsers keep provider reasoning items whole, and the Chat renderer
@@ -132,8 +133,7 @@ sends sealed `reasoning_content` back, so a thinking-enabled tool loop can run
 on any of the three wires. Responses sends
 `include: ["reasoning.encrypted_content"]` and `store: false` by default.
 Renderer-specific choices live in `causa_protocol::translation::render_options`
-and are set on the matching gateway (`with_prefix_mismatch_behavior`,
-`with_beta`, `with_encrypted_reasoning`, `with_store`,
+and are set on the matching gateway (`with_beta`, `with_encrypted_reasoning`, `with_store`,
 `with_reasoning_content_replay`); each applies to the gateway value, not to
 one request.
 

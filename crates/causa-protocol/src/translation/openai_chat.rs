@@ -279,7 +279,7 @@ pub fn render_openai_chat_messages(
     if let Some(max_tokens) = generation.max_tokens {
         body["max_completion_tokens"] = json!(max_tokens);
     }
-    if let Some(effort) = generation.reasoning_effort {
+    if let Some(effort) = &generation.reasoning_effort {
         body["reasoning_effort"] = json!(effort);
     }
     if let Some(schema) = &generation.output_schema {
@@ -298,6 +298,7 @@ pub fn render_openai_chat_messages(
             context_frame::ToolShape::OpenAiChat
         ));
     }
+    super::generation::merge_extra_body(&mut body, generation);
     Ok(body)
 }
 

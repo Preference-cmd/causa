@@ -52,22 +52,20 @@
 //!   and content block of a type this adapter has no vocabulary for is kept
 //!   as one sealed item in place, with its stored value written back verbatim
 //!   on the next turn; the readable `thinking` text additionally fills the
-//!   reasoning observation, which is display-only. `reasoning_effort` renders
-//!   the effort table: unset leaves the `thinking` field out, `None` renders
-//!   `thinking: {"type": "disabled"}`, and `Low`..`Max` render
-//!   `thinking: {"type": "adaptive"}` plus `output_config.effort`.
-//!   `Minimal` has no wire level and is rejected before HTTP, as is
-//!   `output_schema` (no mapping in this adapter).
-//! - `AnthropicRenderOptions::prefix_mismatch_behavior` renders as
-//!   `thinking.block_binding.prefix_mismatch_behavior` whenever a `thinking`
-//!   object is rendered; with `reasoning_effort` unset it renders nothing.
+//!   reasoning observation, which is display-only.
+//! - `reasoning_effort` is written as `output_config.effort` exactly as
+//!   given. No `thinking` object is derived from it and no value is refused:
+//!   a host that wants `thinking`, with or without `block_binding`, sends the
+//!   object in `GenerationOptions::extra_body`, which is copied to the top
+//!   level of the body. `output_schema` has no mapping in this adapter and is
+//!   rejected before HTTP.
 
 use serde_json::{Value, json};
 
 use causa_kernel::{
     CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningEffort, ReasoningPayload,
-    ToolCallDraft, ToolResultStatus, ToolSurface,
+    ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningPayload, ToolCallDraft,
+    ToolResultStatus, ToolSurface,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
@@ -78,8 +76,8 @@ use crate::Protocol;
 /// Render a [`ContextFrame`] into an Anthropic Messages request body.
 ///
 /// The body is complete: `model`, `max_tokens`, `messages`, plus `system`,
-/// `temperature`, `tools`, the effort `thinking` shape and `output_config`
-/// when the inputs call for them. Media references resolve through `media`;
+/// `temperature`, `tools` and `output_config` when the inputs call for them,
+/// then the host's extra request fields. Media references resolve through `media`;
 /// unresolvable or non-image references degrade to the shared text
 /// placeholder. `options` carries the Anthropic-only choices; see
 /// [`AnthropicRenderOptions`]. Rendering is deterministic — the same frame,
@@ -92,7 +90,7 @@ pub fn render_anthropic_messages(
     generation: &GenerationOptions,
     model: &ModelRef,
     cache: CacheDirective,
-    options: &AnthropicRenderOptions,
+    _options: &AnthropicRenderOptions,
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_anthropic(generation)?;
     super::tool_history::validate_frame(frame)?;
@@ -292,23 +290,12 @@ pub fn render_anthropic_messages(
         }
         body["tools"] = json!(tools);
     }
-    // The effort table. `Minimal` was rejected by validation: the wire has no
-    // such level. `None` disables thinking; every other level renders adaptive
-    // thinking plus its `output_config.effort`.
-    if let Some(effort) = generation.reasoning_effort {
-        let mut thinking = if effort == ReasoningEffort::None {
-            json!({"type": "disabled"})
-        } else {
-            body["output_config"] = json!({"effort": effort});
-            json!({"type": "adaptive"})
-        };
-        // Rendered only alongside a `thinking` object; setting the option does
-        // not add the beta header the field needs (the host's header list).
-        if let Some(behavior) = options.prefix_mismatch_behavior {
-            thinking["block_binding"] = json!({"prefix_mismatch_behavior": behavior.as_str()});
-        }
-        body["thinking"] = thinking;
+    // The effort is written as given. No `thinking` object is derived from
+    // it: a host that wants one sends it among the extra request fields.
+    if let Some(effort) = &generation.reasoning_effort {
+        body["output_config"] = json!({"effort": effort});
     }
+    super::generation::merge_extra_body(&mut body, generation);
     Ok(body)
 }
 
@@ -533,7 +520,6 @@ mod tests {
     use causa_kernel::{MediaRef, ModelStopReason, ModelUsage, ToolDefinition};
 
     use crate::translation::media::{MediaPayload, MediaSet};
-    use crate::translation::render_options::PrefixMismatchBehavior;
     use crate::translation::test_support::{
         call, frame, media_part, parts, result, result_with_media, text, text_part,
     };
@@ -759,7 +745,7 @@ mod tests {
         );
     }
 
-    // --- effort table and render options -----------------------------------
+    // --- effort and extra request fields ----------------------------------
 
     fn render_with(
         generation: &GenerationOptions,
@@ -778,117 +764,60 @@ mod tests {
     }
 
     #[test]
-    fn effort_table_renders_every_level() {
-        // unset: no thinking field at all
+    fn effort_is_written_as_given_and_derives_no_thinking_object() {
+        // unset: neither field
         let body = render_with(&test_generation(), &AnthropicRenderOptions::default()).unwrap();
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
 
-        // None: thinking explicitly disabled, no effort level
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(64);
-            generation.reasoning_effort = Some(ReasoningEffort::None);
-            generation
-        };
-        let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
-        assert_eq!(body["thinking"], json!({"type": "disabled"}));
-        assert!(body.get("output_config").is_none());
-
-        // Low..Max: adaptive thinking plus output_config.effort
-        for (effort, wire) in [
-            (ReasoningEffort::Low, "low"),
-            (ReasoningEffort::Medium, "medium"),
-            (ReasoningEffort::High, "high"),
-            (ReasoningEffort::XHigh, "xhigh"),
-            (ReasoningEffort::Max, "max"),
-        ] {
-            let generation = {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(64);
-                generation.reasoning_effort = Some(effort);
-                generation
-            };
+        // Any string, including ones this adapter once refused or mapped.
+        for effort in ["none", "minimal", "high", "a-level-of-tomorrow", ""] {
+            let mut generation = test_generation();
+            generation.reasoning_effort = Some(effort.into());
             let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
-            assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{wire}");
-            assert_eq!(body["output_config"], json!({"effort": wire}), "{wire}");
+            assert_eq!(body["output_config"], json!({"effort": effort}), "{effort}");
+            assert!(body.get("thinking").is_none(), "{effort}");
         }
     }
 
     #[test]
-    fn minimal_effort_and_missing_max_tokens_fail_before_rendering() {
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(64);
-            generation.reasoning_effort = Some(ReasoningEffort::Minimal);
-            generation
-        };
-        let error = render_with(&generation, &AnthropicRenderOptions::default()).unwrap_err();
-        assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
-        assert!(error.message.contains("minimal"), "{error}");
+    fn extra_request_fields_are_copied_and_never_replace_rendered_keys() {
+        let thinking = json!({
+            "type": "adaptive",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            "unknown_to_this_adapter": [1, {"a": null}],
+        });
+        let mut generation = test_generation();
+        generation.reasoning_effort = Some("high".into());
+        generation.temperature = Some(0.5);
+        generation
+            .extra_body
+            .insert("thinking".into(), thinking.clone());
+        generation.extra_body.insert("model".into(), json!("other"));
+        generation.extra_body.insert("messages".into(), json!([]));
+        generation
+            .extra_body
+            .insert("output_config".into(), json!({"effort": "low"}));
+        let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
+        assert_eq!(body["thinking"], thinking);
+        // An effort beside a temperature is the provider's to judge.
+        assert_eq!(body["temperature"], json!(0.5));
+        assert_eq!(body["model"], "claude-test");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(body["output_config"], json!({"effort": "high"}));
+    }
 
-        // No default ceiling: a missing max_tokens is rejected, never filled.
+    #[test]
+    fn missing_max_tokens_still_fails_before_rendering() {
         let error = render_with(
             &GenerationOptions::default(),
             &AnthropicRenderOptions::default(),
         )
         .unwrap_err();
         assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
-        assert!(error.message.contains("max_tokens"), "{error}");
-
-        // Active effort and temperature stay mutually exclusive; an explicit
-        // `None` effort is not active.
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(64);
-            generation.temperature = Some(1.0);
-            generation.reasoning_effort = Some(ReasoningEffort::High);
-            generation
-        };
-        assert_eq!(
-            render_with(&generation, &AnthropicRenderOptions::default())
-                .unwrap_err()
-                .kind,
-            ModelInvokeErrorKind::InvalidRequest
-        );
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(64);
-            generation.temperature = Some(1.0);
-            generation.reasoning_effort = Some(ReasoningEffort::None);
-            generation
-        };
-        assert!(render_with(&generation, &AnthropicRenderOptions::default()).is_ok());
+        assert!(error.message.contains("max_tokens"), "{}", error.message);
     }
 
-    #[test]
-    fn prefix_mismatch_behavior_renders_only_with_a_thinking_object() {
-        let options = AnthropicRenderOptions {
-            prefix_mismatch_behavior: Some(PrefixMismatchBehavior::DropBlock),
-        };
-        // Effort unset: there is no thinking object to bind, so nothing renders.
-        let body = render_with(&test_generation(), &options).unwrap();
-        assert!(body.get("thinking").is_none());
-        assert!(body.get("output_config").is_none());
-
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(64);
-            generation.reasoning_effort = Some(ReasoningEffort::High);
-            generation
-        };
-        let body = render_with(&generation, &options).unwrap();
-        assert_eq!(
-            body["thinking"],
-            json!({
-                "type": "adaptive",
-                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
-            })
-        );
-        // The default renders no block_binding at all.
-        let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
-        assert_eq!(body["thinking"], json!({"type": "adaptive"}));
-    }
     #[test]
     fn empty_frame_is_invalid_request() {
         let f = frame(vec![]);

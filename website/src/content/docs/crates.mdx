@@ -37,17 +37,17 @@ Real HTTP provider streaming is currently an unreleased change on `main`;
 the published `0.0.2` gateways still use the single-completed-output fallback.
 See [Streaming](/streaming/) for the development API and supported scope.
 
-Unreleased `main` also adds `GenerationOptions::reasoning_effort` with the
-serializable `ReasoningEffort` values `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, and `max`. OpenAI Chat maps effort to `reasoning_effort` and output
-limits to `max_completion_tokens`; Responses uses `reasoning.effort` and
-`max_output_tokens`. Limits include reasoning tokens where counted. Omission
-keeps provider defaults; explicit `none` requests no reasoning. Active effort
-with temperature fails locally. Anthropic renders effort too: unset sends no
-`thinking` field, `none` sends it disabled, and the other levels send adaptive
-thinking with `output_config.effort`; `minimal` fails locally because the
-format has no such level. Anthropic requests must set `max_tokens` — that
-adapter no longer supplies a default.
+Unreleased `main` also adds `GenerationOptions::reasoning_effort`, a string
+sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
+`reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
+map the value and derives no `thinking` object from it; omission keeps the
+provider default. `GenerationOptions::extra_body` carries settings only one
+protocol or model has, such as an Anthropic `thinking` object: its keys are
+copied to the top level of the request unless the adapter already wrote that
+key. A value the provider refuses comes back as the provider's error. Output
+limits render as `max_completion_tokens`, `max_output_tokens` and
+`max_tokens`, and include reasoning tokens where counted. Anthropic requests
+must set `max_tokens`; that adapter supplies no default.
 
 Reasoning items that have to be echoed back are stored as sealed parts:
 Anthropic `thinking` (with its signature) and `redacted_thinking`, Responses

@@ -14,6 +14,28 @@ adapters or data converters.
 
 ### Breaking
 
+- Reasoning settings are sent as the host wrote them; Causa no longer checks,
+  maps or derives them.
+  - `ReasoningEffort` is removed and `GenerationOptions::reasoning_effort` is
+    `Option<String>`, written to Chat `reasoning_effort`, Responses
+    `reasoning.effort` and Anthropic `output_config.effort`. Migration:
+    replace `Some(ReasoningEffort::High)` with `Some("high".into())`; the
+    serialized form of the seven old values is unchanged.
+  - New `GenerationOptions::extra_body`: a JSON object whose keys are copied
+    to the top level of the request body unless the adapter already wrote
+    that key.
+  - Anthropic: an effort no longer adds `thinking: {"type": "adaptive"}`, and
+    `none` no longer sends `thinking: {"type": "disabled"}`. Migration: put
+    the `thinking` object you want in `extra_body`. A host that relied on the
+    derived object and sends none now gets the provider's default.
+  - Removed checks: Anthropic no longer refuses the effort `minimal`, and no
+    adapter refuses a temperature beside an effort. The provider decides,
+    and its refusal arrives as its error.
+  - `PrefixMismatchBehavior`, `AnthropicRenderOptions::prefix_mismatch_behavior`
+    and `KernelHttpGateway::with_prefix_mismatch_behavior` are removed.
+    Migration: add `"block_binding": {"prefix_mismatch_behavior": ...}` to
+    the `thinking` object in `extra_body`; the beta header is still listed
+    with `with_beta`.
 - Structs that may gain a field are `#[non_exhaustive]`. Outside the defining
   crate a struct literal no longer compiles, with or without
   `..Default::default()`, and a pattern needs `..`. Fields stay public.

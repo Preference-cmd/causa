@@ -261,7 +261,7 @@ pub fn render_openai_responses_input(
     if let Some(max_tokens) = generation.max_tokens {
         body["max_output_tokens"] = json!(max_tokens);
     }
-    if let Some(effort) = generation.reasoning_effort {
+    if let Some(effort) = &generation.reasoning_effort {
         body["reasoning"] = json!({"effort": effort});
     }
     if let Some(schema) = &generation.output_schema {
@@ -280,6 +280,7 @@ pub fn render_openai_responses_input(
             context_frame::ToolShape::OpenAiResponses
         ));
     }
+    super::generation::merge_extra_body(&mut body, generation);
     Ok(body)
 }
 

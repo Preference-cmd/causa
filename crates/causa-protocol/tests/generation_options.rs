@@ -1,8 +1,8 @@
-//! Pure generation mappings preserve options and reject unsupported combinations.
+//! Pure generation mappings: the adapter's own options are checked, and the
+//! reasoning effort and extra request fields are written as the host gave them.
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelRef, ReasoningEffort,
-    TextPayload, ToolSurface,
+    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelRef, TextPayload, ToolSurface,
 };
 use causa_protocol::translation::render_options::{
     AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
@@ -80,33 +80,37 @@ fn render(protocol: usize, generation: &GenerationOptions) -> Result<Value, Mode
 /// the Anthropic wire requires one.
 const LIMIT: u32 = 8192;
 
+/// Efforts a host might send: today's common levels, one a server asked for
+/// in place of `none`, one nobody has defined yet, and the empty string.
+const EFFORTS: [&str; 6] = ["none", "minimal", "high", "off", "level-of-tomorrow", ""];
+
+fn with_effort(effort: &str) -> GenerationOptions {
+    let mut generation = GenerationOptions::default();
+    generation.reasoning_effort = Some(effort.into());
+    generation.max_tokens = Some(LIMIT);
+    generation
+}
+
 #[test]
-fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
-    for (effort, wire) in [
-        (ReasoningEffort::None, "none"),
-        (ReasoningEffort::Minimal, "minimal"),
-        (ReasoningEffort::Low, "low"),
-        (ReasoningEffort::Medium, "medium"),
-        (ReasoningEffort::High, "high"),
-        (ReasoningEffort::XHigh, "xhigh"),
-        (ReasoningEffort::Max, "max"),
-    ] {
-        let generation = {
-            let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(effort);
-            generation.max_tokens = Some(LIMIT);
-            generation
-        };
+fn every_protocol_writes_any_effort_string_to_its_own_key() {
+    for effort in EFFORTS {
+        let generation = with_effort(effort);
         let chat = render(0, &generation).unwrap();
-        assert_eq!(chat["reasoning_effort"], wire);
+        assert_eq!(chat["reasoning_effort"], effort);
         assert_eq!(chat["max_completion_tokens"], LIMIT);
         assert!(chat.get("max_tokens").is_none());
         assert!(chat.get("reasoning").is_none());
         let responses = render(1, &generation).unwrap();
-        assert_eq!(responses["reasoning"], json!({"effort": wire}));
+        assert_eq!(responses["reasoning"], json!({"effort": effort}));
         assert_eq!(responses["max_output_tokens"], LIMIT);
         assert!(responses.get("reasoning_effort").is_none());
         assert_eq!(responses, render(1, &generation).unwrap());
+        let anthropic = render(2, &generation).unwrap();
+        assert_eq!(anthropic["output_config"], json!({"effort": effort}));
+        assert_eq!(anthropic["max_tokens"], LIMIT);
+        // No `thinking` object is derived from the effort.
+        assert!(anthropic.get("thinking").is_none());
+        assert!(anthropic.get("reasoning_effort").is_none());
     }
     for protocol in [0, 1] {
         // Unset generation options render nothing on the OpenAI wires
@@ -118,88 +122,110 @@ fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
             "max_completion_tokens",
             "max_output_tokens",
             "temperature",
+            "thinking",
         ] {
             assert!(body.get(key).is_none());
         }
-        let body = render(protocol, &{
-            let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(ReasoningEffort::None);
-            generation.temperature = Some(0.0);
-            generation
-        })
-        .unwrap();
-        assert_eq!(body["temperature"], 0.0);
+    }
+    let body = render(2, &{
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(LIMIT);
+        generation
+    })
+    .unwrap();
+    assert!(body.get("thinking").is_none());
+    assert!(body.get("output_config").is_none());
+}
+
+#[test]
+fn extra_request_fields_reach_every_body_unchanged() {
+    let thinking = json!({
+        "type": "adaptive",
+        "budget_tokens": 1234,
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        "nested": [1, "two", {"three": null}],
+    });
+    let mut generation = with_effort("high");
+    generation
+        .extra_body
+        .insert("thinking".into(), thinking.clone());
+    generation
+        .extra_body
+        .insert("enable_thinking".into(), json!(true));
+    generation.extra_body.insert("top_k".into(), json!(40));
+    for protocol in [0, 1, 2] {
+        let body = render(protocol, &generation).unwrap();
+        assert_eq!(body["thinking"], thinking, "{protocol}");
+        assert_eq!(body["enable_thinking"], json!(true), "{protocol}");
+        assert_eq!(body["top_k"], json!(40), "{protocol}");
+        // The serialized value is the same bytes the host supplied.
+        assert_eq!(
+            serde_json::to_string(&body["thinking"]).unwrap(),
+            serde_json::to_string(&thinking).unwrap()
+        );
     }
 }
 
 #[test]
-fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
-    // Unset effort: no thinking field and no output_config.
-    let body = render_anthropic(
-        &{
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(LIMIT);
-            generation
-        },
-        &AnthropicRenderOptions::default(),
-    )
-    .unwrap();
-    assert_eq!(body["max_tokens"], LIMIT);
-    assert!(body.get("thinking").is_none());
-    assert!(body.get("output_config").is_none());
-
-    // `None`: thinking explicitly disabled, no effort level.
-    let body = render_anthropic(
-        &{
-            let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(ReasoningEffort::None);
-            generation.max_tokens = Some(LIMIT);
-            generation
-        },
-        &AnthropicRenderOptions::default(),
-    )
-    .unwrap();
-    assert_eq!(body["thinking"], json!({"type": "disabled"}));
-    assert!(body.get("output_config").is_none());
-
-    // Low..Max: adaptive thinking plus the effort level.
-    for (effort, wire) in [
-        (ReasoningEffort::Low, "low"),
-        (ReasoningEffort::Medium, "medium"),
-        (ReasoningEffort::High, "high"),
-        (ReasoningEffort::XHigh, "xhigh"),
-        (ReasoningEffort::Max, "max"),
+fn an_extra_field_never_replaces_a_key_the_adapter_wrote() {
+    let mut generation = with_effort("high");
+    generation.temperature = Some(0.5);
+    for (key, value) in [
+        ("model", json!("replaced")),
+        ("messages", json!([])),
+        ("input", json!([])),
+        ("temperature", json!(2)),
+        ("max_tokens", json!(1)),
+        ("max_completion_tokens", json!(1)),
+        ("max_output_tokens", json!(1)),
+        ("reasoning_effort", json!("low")),
+        ("reasoning", json!({"effort": "low", "summary": "auto"})),
+        ("output_config", json!({"effort": "low"})),
     ] {
-        let body = render_anthropic(
-            &{
-                let mut generation = GenerationOptions::default();
-                generation.reasoning_effort = Some(effort);
-                generation.max_tokens = Some(LIMIT);
-                generation
-            },
-            &AnthropicRenderOptions::default(),
-        )
-        .unwrap();
-        assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{wire}");
-        assert_eq!(body["output_config"], json!({"effort": wire}), "{wire}");
-        assert!(body.get("reasoning_effort").is_none());
+        generation.extra_body.insert(key.into(), value);
     }
+    let chat = render(0, &generation).unwrap();
+    assert_eq!(chat["model"], "configured-model");
+    assert_eq!(chat["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(chat["temperature"], 0.5);
+    assert_eq!(chat["max_completion_tokens"], LIMIT);
+    assert_eq!(chat["reasoning_effort"], "high");
+    let responses = render(1, &generation).unwrap();
+    assert_eq!(responses["model"], "configured-model");
+    assert_eq!(responses["input"].as_array().unwrap().len(), 1);
+    assert_eq!(responses["max_output_tokens"], LIMIT);
+    assert_eq!(responses["reasoning"], json!({"effort": "high"}));
+    let anthropic = render(2, &generation).unwrap();
+    assert_eq!(anthropic["model"], "configured-model");
+    assert_eq!(anthropic["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(anthropic["max_tokens"], LIMIT);
+    assert_eq!(anthropic["output_config"], json!({"effort": "high"}));
 
-    // `Minimal` has no wire level.
-    let error = render_anthropic(
-        &{
-            let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(ReasoningEffort::Minimal);
-            generation.max_tokens = Some(LIMIT);
+    // With no effort set, the host's own reasoning object is what is sent.
+    let mut generation = GenerationOptions::default();
+    generation.max_tokens = Some(LIMIT);
+    let reasoning = json!({"effort": "high", "summary": "auto"});
+    generation
+        .extra_body
+        .insert("reasoning".into(), reasoning.clone());
+    assert_eq!(render(1, &generation).unwrap()["reasoning"], reasoning);
+}
+
+#[test]
+fn no_renderer_judges_the_effort_or_its_combination_with_a_temperature() {
+    for protocol in [0, 1, 2] {
+        for effort in EFFORTS {
+            let mut generation = with_effort(effort);
+            generation.temperature = Some(1.0);
             generation
-        },
-        &AnthropicRenderOptions::default(),
-    )
-    .unwrap_err();
-    assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
-    assert!(error.message.contains("minimal"), "{error}");
-
-    // No default ceiling: the limit is the host's to set.
+                .extra_body
+                .insert("thinking".into(), json!({"type": "disabled"}));
+            let body = render(protocol, &generation).unwrap();
+            assert_eq!(body["temperature"], 1.0, "{protocol} {effort}");
+        }
+    }
+    // What the adapter itself needs is still checked: no default ceiling on
+    // Anthropic; the limit is the host's to set.
     let error = render_anthropic(
         &GenerationOptions::default(),
         &AnthropicRenderOptions::default(),
@@ -207,48 +233,13 @@ fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
     .unwrap_err();
     assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
     assert!(error.message.contains("max_tokens"), "{error}");
-
-    // The prefix-mismatch option renders only alongside a thinking object.
-    let options = {
-        let mut options = AnthropicRenderOptions::default();
-        options.prefix_mismatch_behavior =
-            Some(causa_protocol::translation::render_options::PrefixMismatchBehavior::DropBlock);
-        options
-    };
-    let body = render_anthropic(
-        &{
-            let mut generation = GenerationOptions::default();
-            generation.max_tokens = Some(LIMIT);
-            generation
-        },
-        &options,
-    )
-    .unwrap();
-    assert!(body.get("thinking").is_none());
-    let body = render_anthropic(
-        &{
-            let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(ReasoningEffort::High);
-            generation.max_tokens = Some(LIMIT);
-            generation
-        },
-        &options,
-    )
-    .unwrap();
-    assert_eq!(
-        body["thinking"],
-        json!({
-            "type": "adaptive",
-            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
-        })
-    );
 }
 
 #[test]
 fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
     let generation = {
         let mut generation = GenerationOptions::default();
-        generation.reasoning_effort = Some(ReasoningEffort::High);
+        generation.reasoning_effort = Some("high".into());
         generation.max_tokens = Some(LIMIT);
         generation
     };
@@ -314,13 +305,6 @@ fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
                 let mut generation = GenerationOptions::default();
                 generation.max_tokens = Some(LIMIT);
                 generation.temperature = Some(2.1);
-                generation
-            },
-            {
-                let mut generation = GenerationOptions::default();
-                generation.max_tokens = Some(LIMIT);
-                generation.reasoning_effort = Some(ReasoningEffort::High);
-                generation.temperature = Some(1.0);
                 generation
             },
         ] {

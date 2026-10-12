@@ -1,43 +1,47 @@
-//! Serializable generation choices distinguish omission from explicit effort.
-use causa_kernel::{GenerationOptions, ReasoningEffort};
+//! Serializable generation choices distinguish omission from an explicit
+//! value and keep whatever the host supplied.
+use causa_kernel::GenerationOptions;
 use serde_json::json;
 
 #[test]
-fn effort_vocabulary_round_trips_without_inventing_a_default() {
+fn effort_is_any_string_and_round_trips_without_inventing_a_default() {
     let unspecified: GenerationOptions = serde_json::from_value(json!({})).unwrap();
     assert_eq!(unspecified, GenerationOptions::default());
-    assert!(
-        serde_json::to_value(&unspecified)
-            .unwrap()
-            .get("reasoning_effort")
-            .is_none()
-    );
-    for (effort, wire) in [
-        (ReasoningEffort::None, "none"),
-        (ReasoningEffort::Minimal, "minimal"),
-        (ReasoningEffort::Low, "low"),
-        (ReasoningEffort::Medium, "medium"),
-        (ReasoningEffort::High, "high"),
-        (ReasoningEffort::XHigh, "xhigh"),
-        (ReasoningEffort::Max, "max"),
-    ] {
+    let encoded = serde_json::to_value(&unspecified).unwrap();
+    assert!(encoded.get("reasoning_effort").is_none());
+    assert!(encoded.get("extra_body").is_none());
+    // Values written by any version read back, known to this one or not.
+    for effort in ["none", "minimal", "xhigh", "off", "ultra", "HIGH", ""] {
         let value = {
             let mut generation = GenerationOptions::default();
-            generation.reasoning_effort = Some(effort);
+            generation.reasoning_effort = Some(effort.into());
             generation
         };
         let encoded = serde_json::to_value(&value).unwrap();
-        assert_eq!(encoded["reasoning_effort"], wire);
+        assert_eq!(encoded["reasoning_effort"], effort);
         assert_eq!(
             serde_json::from_value::<GenerationOptions>(encoded).unwrap(),
             value
         );
         assert_ne!(value, unspecified);
     }
-    for unknown in ["ultra", "HIGH", "default", ""] {
-        assert!(
-            serde_json::from_value::<GenerationOptions>(json!({"reasoning_effort": unknown}))
-                .is_err()
-        );
-    }
+}
+
+#[test]
+fn extra_request_fields_round_trip_as_given() {
+    let mut value = GenerationOptions::default();
+    value.extra_body.insert(
+        "thinking".into(),
+        json!({"type": "adaptive", "display": "summarized"}),
+    );
+    value.extra_body.insert("top_k".into(), json!(40));
+    let encoded = serde_json::to_value(&value).unwrap();
+    assert_eq!(
+        encoded["extra_body"],
+        json!({"thinking": {"type": "adaptive", "display": "summarized"}, "top_k": 40})
+    );
+    assert_eq!(
+        serde_json::from_value::<GenerationOptions>(encoded).unwrap(),
+        value
+    );
 }

@@ -5,10 +5,9 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, ContextBlock,
     ContextFrame, GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelOutput,
-    ModelRef, ModelRequest, ReasoningEffort, RoundId, SealedPart, StreamDelta, TextPayload,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    ModelRef, ModelRequest, RoundId, SealedPart, StreamDelta, TextPayload, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
-use causa_protocol::translation::render_options::PrefixMismatchBehavior;
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
 };
@@ -335,29 +334,27 @@ async fn anthropic_beta_values_are_one_optional_comma_separated_header() {
 }
 
 #[tokio::test]
-async fn anthropic_prefix_mismatch_behavior_renders_only_with_a_thinking_object() {
+async fn anthropic_thinking_is_the_object_the_host_sent_with_its_block_binding() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(ResponseTemplate::new(200).set_body_json(text_response("done")))
         .mount(&server)
         .await;
-    let gateway = AnthropicMessagesGateway::new(KEY)
-        .with_base_url(format!("{}/v1", server.uri()))
-        .with_prefix_mismatch_behavior(Some(PrefixMismatchBehavior::DropBlock));
-    // No effort: no thinking object, so the binding cannot render.
-    gateway
-        .invoke(&request(user_frame(), "claude-test"), &control())
-        .await
-        .unwrap();
+    let gateway = AnthropicMessagesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
+    // An effort alone derives no thinking object.
+    let mut with_effort = request(user_frame(), "claude-test");
+    with_effort.generation.reasoning_effort = Some("high".into());
+    gateway.invoke(&with_effort, &control()).await.unwrap();
     let body = only_request_body(&server).await;
     assert!(body.get("thinking").is_none());
+    assert_eq!(body["output_config"], json!({"effort": "high"}));
     assert!(
         server.received_requests().await.unwrap()[0]
             .headers
             .get("anthropic-beta")
             .is_none(),
-        "the option does not add the beta header"
+        "no header is added on the host's behalf"
     );
     server.reset().await;
     Mock::given(method("POST"))
@@ -365,16 +362,18 @@ async fn anthropic_prefix_mismatch_behavior_renders_only_with_a_thinking_object(
         .respond_with(ResponseTemplate::new(200).set_body_json(text_response("done")))
         .mount(&server)
         .await;
-    let mut with_effort = request(user_frame(), "claude-test");
-    with_effort.generation.reasoning_effort = Some(ReasoningEffort::High);
+    let thinking = json!({
+        "type": "adaptive",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    });
+    with_effort
+        .generation
+        .extra_body
+        .insert("thinking".into(), thinking.clone());
     gateway.invoke(&with_effort, &control()).await.unwrap();
     let body = only_request_body(&server).await;
-    assert_eq!(body["thinking"]["type"], "adaptive");
+    assert_eq!(body["thinking"], thinking);
     assert_eq!(body["output_config"], json!({"effort": "high"}));
-    assert_eq!(
-        body["thinking"]["block_binding"],
-        json!({"prefix_mismatch_behavior": "drop_block"})
-    );
 }
 /// A completed first round (no tool call): the frame of the next request.
 fn assistant_frame(frame: &ContextFrame, output: &ModelOutput) -> ContextFrame {

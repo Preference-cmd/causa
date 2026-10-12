@@ -13,7 +13,6 @@ use causa_kernel::{
     ModelRequest,
 };
 use causa_protocol::translation::media::MediaSet;
-use causa_protocol::translation::render_options::PrefixMismatchBehavior;
 use causa_protocol::translation::streaming::{
     StreamDecoder, StreamLimits, configure_stream_request,
 };
@@ -186,24 +185,6 @@ impl KernelHttpGateway<AnthropicGatewayConfig> {
     /// Override the `anthropic-version` header (default `2023-06-01`).
     pub fn with_anthropic_version(mut self, version: impl Into<String>) -> Self {
         self.config.anthropic_version = version.into();
-        self
-    }
-
-    /// Set `thinking.block_binding.prefix_mismatch_behavior` for this gateway
-    /// (provider default: unset, which is `error`). It renders only when the
-    /// request also renders a `thinking` object, that is, only with a
-    /// `GenerationOptions::reasoning_effort` set. Setting it does not add the
-    /// `anthropic-beta` header the field needs: list that with
-    /// [`Self::with_beta`], or the provider answers 400.
-    ///
-    /// The choice is per gateway value, not per request: a host that needs a
-    /// different behavior for one request builds a second gateway, which can
-    /// share the HTTP client, base URL and media resolver.
-    pub fn with_prefix_mismatch_behavior(
-        mut self,
-        behavior: Option<PrefixMismatchBehavior>,
-    ) -> Self {
-        self.config.render_options.prefix_mismatch_behavior = behavior;
         self
     }
 

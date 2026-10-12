@@ -12,45 +12,14 @@
 //! cheap to clone and the HTTP client, base URL and media resolver can be
 //! shared, so the cost is one extra value, not a second connection pool.
 
-/// Anthropic `thinking.block_binding.prefix_mismatch_behavior`.
-///
-/// The provider's default is `error`; `drop_block` lets a turn continue when
-/// a replayed thinking prefix no longer matches. The value is rendered only
-/// when the request also renders a `thinking` object — that is, only when
-/// `GenerationOptions::reasoning_effort` is set. Setting it does not add the
-/// `anthropic-beta` header the field needs: a host that sets one without the
-/// other gets the provider's 400.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PrefixMismatchBehavior {
-    /// `error` — reject a request whose thinking prefix does not match.
-    #[default]
-    Error,
-    /// `drop_block` — drop the mismatched thinking block instead.
-    DropBlock,
-}
-
-impl PrefixMismatchBehavior {
-    /// The wire value rendered into `thinking.block_binding`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::DropBlock => "drop_block",
-        }
-    }
-}
-
 /// Anthropic Messages render options.
 ///
-/// `Default` renders no `block_binding`.
+/// There are none at present. Settings of the `thinking` object, including
+/// `block_binding`, are part of the object the host sends in
+/// `GenerationOptions::extra_body`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub struct AnthropicRenderOptions {
-    /// Rendered as `thinking.block_binding.prefix_mismatch_behavior` whenever
-    /// a `thinking` object is rendered (that is, whenever
-    /// `GenerationOptions::reasoning_effort` is set). `None` renders
-    /// nothing, including when no `thinking` object is rendered.
-    pub prefix_mismatch_behavior: Option<PrefixMismatchBehavior>,
-}
+pub struct AnthropicRenderOptions {}
 
 /// OpenAI Responses render options.
 ///
