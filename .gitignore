@@ -25,6 +25,7 @@ __pycache__/
 /scripts/
 AGENTS.local.md
 CLAUDE.local.md
+.claude/
 
 # ----- Editor / OS -----
 .vscode/*
