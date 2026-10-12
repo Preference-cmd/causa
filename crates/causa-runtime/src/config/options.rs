@@ -58,4 +58,34 @@ impl TurnRunOptions {
             observer: None,
         }
     }
+
+    /// Replaces the generation parameters used by every invocation.
+    pub fn with_generation(mut self, generation: GenerationOptions) -> Self {
+        self.generation = generation;
+        self
+    }
+
+    /// Replaces the provider cache instruction.
+    pub fn with_cache(mut self, cache: CacheDirective) -> Self {
+        self.cache = cache;
+        self
+    }
+
+    /// Replaces the execution limits.
+    pub fn with_limits(mut self, limits: TurnLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Sets the exclusive material preparation before each invocation.
+    pub fn with_preparer(mut self, preparer: Arc<dyn ContextPreparer>) -> Self {
+        self.preparer = Some(preparer);
+        self
+    }
+
+    /// Sets the synchronous borrowed observation callback.
+    pub fn with_observer(mut self, observer: Arc<RunObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
 }

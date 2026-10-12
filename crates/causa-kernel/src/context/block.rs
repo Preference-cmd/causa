@@ -48,6 +48,24 @@ impl BlockMeta {
             ..Self::default()
         }
     }
+
+    /// Sets the provider-issued call identifier.
+    pub fn with_provider_call_id(mut self, provider_call_id: impl Into<String>) -> Self {
+        self.provider_call_id = Some(provider_call_id.into());
+        self
+    }
+
+    /// Sets the origin tag.
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    /// Sets the wire-level residue of the item.
+    pub fn with_wire(mut self, wire: WireMeta) -> Self {
+        self.wire = Some(wire);
+        self
+    }
 }
 
 /// Wire-level residue of one provider item: every field the translator did

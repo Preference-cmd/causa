@@ -336,6 +336,11 @@ adapters or data converters.
 
 ### Added
 
+- Chainable `with_*` setters for the optional and defaulted fields of the six
+  most-built types (`GenerationOptions`, `BlockMeta`, `ToolResultPayload`,
+  `ToolCallDraft`, `ToolExecutorOptions`, `TurnRunOptions`), allowing values to
+  be constructed in a single expression while leaving public fields and
+  constructors unchanged.
 - Reasoning replay: the Anthropic parser keeps `thinking`,
   `redacted_thinking` and unknown content blocks as sealed items and the
   renderer replays them verbatim; the Responses parser keeps a `reasoning`

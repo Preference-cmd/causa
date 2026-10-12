@@ -31,6 +31,12 @@ impl ToolCallDraft {
             provider_call_id: None,
         }
     }
+
+    /// Sets the provider-issued identifier for this tool call.
+    pub fn with_provider_call_id(mut self, provider_call_id: impl Into<String>) -> Self {
+        self.provider_call_id = Some(provider_call_id.into());
+        self
+    }
 }
 
 /// Why the model stopped producing output for this round, as reported by

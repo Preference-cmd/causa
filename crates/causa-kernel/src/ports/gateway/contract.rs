@@ -78,6 +78,41 @@ pub struct GenerationOptions {
     pub output_schema: Option<serde_json::Value>,
 }
 
+impl GenerationOptions {
+    /// Sets the sampling temperature.
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// Sets the upper bound on generated tokens.
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    /// Sets the reasoning effort.
+    pub fn with_reasoning_effort(mut self, reasoning_effort: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(reasoning_effort.into());
+        self
+    }
+
+    /// Replaces the extra request body fields.
+    pub fn with_extra_body(
+        mut self,
+        extra_body: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        self.extra_body = extra_body;
+        self
+    }
+
+    /// Sets the JSON Schema the final response should satisfy.
+    pub fn with_output_schema(mut self, output_schema: serde_json::Value) -> Self {
+        self.output_schema = Some(output_schema);
+        self
+    }
+}
+
 fn null_as_empty<'de, D>(
     deserializer: D,
 ) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>

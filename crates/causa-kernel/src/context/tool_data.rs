@@ -139,6 +139,18 @@ impl ToolResultPayload {
             notes: Vec::new(),
         }
     }
+
+    /// Replaces the media artifacts attached to this result.
+    pub fn with_media(mut self, media: Vec<crate::context::block::MediaRef>) -> Self {
+        self.media = media;
+        self
+    }
+
+    /// Replaces the ordered result notes.
+    pub fn with_notes(mut self, notes: Vec<crate::context::block::TextPayload>) -> Self {
+        self.notes = notes;
+        self
+    }
 }
 
 /// Pointer to a tool output persisted out-of-band (e.g. a spilled oversized
