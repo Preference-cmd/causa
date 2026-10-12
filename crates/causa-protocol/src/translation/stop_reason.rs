@@ -20,9 +20,12 @@
 //! | Chat `length` | [`ModelStopReason::MaxTokens`] |
 //! | Chat `content_filter` | [`ModelStopReason::Refusal`] |
 //! | Chat any other string | [`ModelStopReason::Unrecognized`] |
-//! | Responses `incomplete` with `max_output_tokens` | [`ModelStopReason::MaxTokens`] |
+//! | Responses `incomplete` with `max_output_tokens`, `length` | [`ModelStopReason::MaxTokens`] |
 //! | Responses `incomplete` with `content_filter` | [`ModelStopReason::Refusal`] |
 //! | Responses `incomplete` with any other reason | [`ModelStopReason::Unrecognized`] |
+//!
+//! `length` is not a Responses value. It is the Chat word for the same stop,
+//! and servers that translate a Chat backend into Responses pass it through.
 //!
 //! The Responses raw value is `status`, or `status.reason` for an
 //! `incomplete` status that carries a reason (for example
@@ -68,7 +71,7 @@ pub(crate) fn chat(value: &str) -> ModelStopReason {
 pub(crate) fn responses(status: &str, incomplete_reason: Option<&str>) -> ModelStopReason {
     match (status, incomplete_reason) {
         ("completed", _) => ModelStopReason::EndTurn,
-        ("incomplete", Some("max_output_tokens")) => ModelStopReason::MaxTokens,
+        ("incomplete", Some("max_output_tokens" | "length")) => ModelStopReason::MaxTokens,
         ("incomplete", Some("content_filter")) => ModelStopReason::Refusal,
         ("incomplete", _) => ModelStopReason::Unrecognized,
         // Callers reject every other status before mapping; this keeps the
@@ -153,6 +156,10 @@ mod tests {
         assert_eq!(responses("completed", None), ModelStopReason::EndTurn);
         assert_eq!(
             responses("incomplete", Some("max_output_tokens")),
+            ModelStopReason::MaxTokens
+        );
+        assert_eq!(
+            responses("incomplete", Some("length")),
             ModelStopReason::MaxTokens
         );
         assert_eq!(

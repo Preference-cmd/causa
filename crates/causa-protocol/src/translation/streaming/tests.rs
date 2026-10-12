@@ -232,6 +232,8 @@ fn explicit_responses_terminal_classifications_are_shared_with_full_parser() {
     }
     for (reason, expected) in [
         ("max_output_tokens", "MaxTokens"),
+        // The Chat word, passed through by servers translating a Chat backend.
+        ("length", "MaxTokens"),
         ("content_filter", "Refusal"),
     ] {
         let response =

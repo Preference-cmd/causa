@@ -238,6 +238,11 @@ adapters or data converters.
 
 ### Changed
 
+- A Responses `incomplete` status whose reason is `length` now maps to
+  `ModelStopReason::MaxTokens`, the same as `max_output_tokens`. A
+  compatible server was observed to pass the Chat word through, which made
+  a truncated output an unrecognized stop. The raw value is still reported
+  as `incomplete.length`.
 - A stream decode failure now ends its message with where it happened: the
   1-based position of the event and, when the event names one, its type, as
   in `stream: missing or invalid text (event 7:

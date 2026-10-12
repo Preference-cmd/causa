@@ -33,7 +33,7 @@
 //!   codec).
 //! - Stop-reason derivation: the Responses wire has no `finish_reason`.
 //!   A refusal output item wins, then `incomplete` + `max_output_tokens`
-//!   → MaxTokens, then any `function_call` output → ToolUse, else
+//!   (or the Chat word `length`) → MaxTokens, then any `function_call` output → ToolUse, else
 //!   EndTurn. `incomplete/content_filter` maps to Refusal; an unknown
 //!   incomplete reason is Unrecognized with the output intact, while
 //!   UnknownOutcome is reserved for a non-terminal or unknown status. Failed
