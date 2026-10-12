@@ -153,8 +153,12 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   value and who matches on it.
   - A struct with public fields that could gain one is `#[non_exhaustive]`
     and ships a `Default` or a `new` taking its required fields. Fields stay
-    public and there are no builders: callers construct, then assign. Other
-    crates in this workspace follow the same path as outside callers.
+    public, so a caller can always construct, then assign. A type may also
+    offer chainable `with_*` setters where a value is usually built in one
+    expression (`ModelInvokeError`, `RetryPolicy`); each sets one public
+    field and nothing else. A separate builder type is for a value whose
+    fields must be checked together, and says so in its docs. Other crates
+    in this workspace follow the same path as outside callers.
   - An enum callers only read (errors, events, interruption causes, error
     kinds) is `#[non_exhaustive]`.
   - Fact vocabulary that a renderer or the runtime must be total over stays
