@@ -86,6 +86,7 @@ pub struct ArtifactHint {
 
 /// Error surface of the [`ArtifactStore`] port.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// Persisting the artifact failed; carries the human-readable cause.
     #[error("persist failed: {0}")]

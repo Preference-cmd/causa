@@ -44,3 +44,6 @@ rmcp = { workspace = true, features = [
     "transport-async-rw",
     "transport-streamable-http-server",
 ] }
+
+[lints]
+workspace = true

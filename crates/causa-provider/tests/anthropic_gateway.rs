@@ -151,7 +151,7 @@ async fn status_case(status: u16, expected: ModelInvokeErrorKind, error_body: Va
         .await
         .unwrap_err();
     assert_eq!(
-        std::mem::discriminant(e.kind()),
+        std::mem::discriminant(&e.kind),
         std::mem::discriminant(&expected),
         "status {status}: got {e}"
     );
@@ -214,7 +214,7 @@ async fn oversized_response_body_is_undecodable_not_oom() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
+        matches!(e.kind, ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
     assert!(e.message.contains("too large"), "message: {}", e.message);
@@ -239,7 +239,7 @@ async fn unparseable_2xx_body_is_undecodable() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
+        matches!(e.kind, ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 
@@ -253,7 +253,7 @@ async fn unparseable_2xx_body_is_undecodable() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
+        matches!(e.kind, ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 }
@@ -269,10 +269,7 @@ async fn connect_error_is_transient() {
         .invoke(&request(user_frame()), &ctrl(None))
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Transient),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Transient), "got {e}");
 }
 
 // --- acceptance: cancellation and deadline return immediately ---------------
@@ -293,10 +290,7 @@ async fn attempt_deadline_yields_timed_out_promptly() {
         .invoke(&request(user_frame()), &ctrl(Some(deadline)))
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::TimedOut),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::TimedOut), "got {e}");
     assert!(
         started.elapsed() < Duration::from_secs(3),
         "timeout took {:?}",
@@ -326,10 +320,7 @@ async fn cancelled_token_yields_cancelled_promptly() {
         .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Cancelled),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Cancelled), "got {e}");
     assert!(
         started.elapsed() < Duration::from_secs(3),
         "cancellation took {:?}",
@@ -349,10 +340,7 @@ async fn pre_cancelled_control_never_reaches_the_wire() {
         .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Cancelled),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Cancelled), "got {e}");
 }
 
 /// Appends every write into the shared capture buffer.

@@ -18,6 +18,13 @@ description = "Causa — a minimal context kernel for Rust agents (facts, ports,
 repository = "https://github.com/Preference-cmd/causa"
 license = "MIT OR Apache-2.0"
 
+[workspace.lints.clippy]
+# Errors own the inputs of the operation that failed (a rejected tool result,
+# the blocks of a refused edit, an uncommitted model output), so a caller can
+# recover them without cloning beforehand. They are returned unboxed on
+# purpose; the size is the payload, not an accident.
+result_large_err = "allow"
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

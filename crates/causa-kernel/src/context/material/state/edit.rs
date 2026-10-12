@@ -17,6 +17,7 @@ pub struct Replacement {
 
 /// Why an atomic context edit could not be committed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum EditError {
     /// A replacement range is outside the original block sequence.
     #[error("replacement {replacement_index} range {range:?} is invalid for length {len}")]

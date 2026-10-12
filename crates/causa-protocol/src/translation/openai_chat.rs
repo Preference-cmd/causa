@@ -741,7 +741,7 @@ mod tests {
             &ChatRenderOptions::default(),
         )
         .unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::InvalidRequest));
     }
 
     // --- media -------------------------------------------------------------
@@ -988,15 +988,15 @@ mod tests {
     #[test]
     fn missing_choices_or_finish_reason_is_undecodable_error() {
         let e = parse_openai_chat_response(&json!({"choices": []})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         let e = parse_openai_chat_response(&json!({"choices": [{"message": {}}]})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("finish_reason"));
         // Present but not a string is reported as such, not as missing.
         let e =
             parse_openai_chat_response(&json!({"choices": [{"message": {}, "finish_reason": 7}]}))
                 .unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("expected a string"));
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
             }],
         });
         let e = parse_openai_chat_response(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("arguments"));
     }
 

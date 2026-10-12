@@ -33,3 +33,6 @@ tempfile = { workspace = true }
 blake3 = "1"
 # tracing-span tests capture the driver's span baseline
 tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

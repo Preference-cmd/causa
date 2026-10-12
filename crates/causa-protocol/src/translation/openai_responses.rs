@@ -720,7 +720,7 @@ mod tests {
             &ResponsesRenderOptions::default(),
         )
         .unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::InvalidRequest));
     }
 
     // --- media -------------------------------------------------------------
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn missing_status_is_undecodable_error() {
         let e = parse_openai_responses_output(&json!({"output": []})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("status"));
     }
 
@@ -947,7 +947,7 @@ mod tests {
             "status": "completed",
         });
         let e = parse_openai_responses_output(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("arguments"));
     }
 

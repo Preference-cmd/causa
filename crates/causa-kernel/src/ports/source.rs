@@ -67,6 +67,7 @@ pub trait DynamicToolSource: Send + Sync {
 
 /// Listing failure — the catalog as a whole is unusable right now.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum SourceError {
     /// Connection failure or server offline; retryable (transient).
     #[error("tool source unavailable: {0}")]

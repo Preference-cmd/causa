@@ -33,7 +33,6 @@ pub(super) fn stopped(
 }
 
 // TurnInterruption intentionally owns failed inputs for caller recovery.
-#[allow(clippy::result_large_err)]
 #[tracing::instrument(name = "agent.round", skip_all, fields(turn_id = %request.invocation_id.turn_id.0, round_id = request.invocation_id.round_id.0, model = %request.model.0))]
 pub(super) async fn invoke(
     gateway: &dyn ModelGateway,

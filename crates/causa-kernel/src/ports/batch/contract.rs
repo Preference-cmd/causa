@@ -252,6 +252,7 @@ pub struct ProcessorContext<'a> {
 /// Failure to finish a processing phase. Per-call rejection is a result,
 /// and should be recorded on the batch while returning `Ok(())`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProcessorError {
     /// The processor could not complete its phase.
     #[error("processor failed: {0}")]
@@ -272,6 +273,7 @@ pub trait ToolBatchProcessor: Send + Sync {
 
 /// Invalid batch construction, completion, or partition state.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BatchError {
     /// A declaration appears more than once in a batch.
     #[error("duplicate declaration block id: {0:?}")]

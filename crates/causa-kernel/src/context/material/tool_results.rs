@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 /// Why tool results cannot be appended to the supplied material scope.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ToolResultError {
     /// The reference does not identify a tool declaration in this scope.
     #[error("missing tool declaration {call_block_id:?}")]

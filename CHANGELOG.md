@@ -14,6 +14,19 @@ adapters or data converters.
 
 ### Breaking
 
+- Enums a caller only reads are `#[non_exhaustive]`, so a later variant is not
+  a breaking change: `ModelInvokeErrorKind`, `StreamDelta`, `RunEvent`,
+  `TurnInterruption`, and the error enums `ModelBlockError`,
+  `ToolResultError`, `ProcessorError`, `BatchError`, `EditError`,
+  `SourceError`, `StoreError`, `ToolRegistryError`, `ToolCatalogError` and
+  `ToolProcessingError`. Migration: add a wildcard arm to each `match` on one
+  of them. Treat an unknown `ModelInvokeErrorKind` as not retryable.
+- `ModelInvokeError::kind()` is removed; read the public `kind` field.
+- `Display` for `ModelInvokeError` prints the message alone (it was
+  `"{kind:?}: {message}"`), and `Display` for `TurnInterruption` prints one
+  sentence per cause (it forwarded `Debug`). Both now implement
+  `std::error::Error` through `thiserror`. Code that parsed either output
+  must read the fields instead.
 - `ModelInvokeErrorKind` gains `Undecodable`: the provider answered and the
   adapter could not use the answer (a malformed 2xx body or stream, a stream
   that breaks the protocol's rules, a response over a size limit). These

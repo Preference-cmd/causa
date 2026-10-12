@@ -4,6 +4,7 @@ use causa_kernel::{
 
 /// Failure to construct or change a tool registry.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ToolRegistryError {
     /// Static tool definitions must have distinct names.
     #[error("duplicate static tool: {name}")]
@@ -27,6 +28,7 @@ pub enum ToolRegistryError {
 
 /// Failure to bind a complete, unambiguous invocation catalog.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ToolCatalogError {
     /// The parent invocation control stopped catalog acquisition.
     #[error(transparent)]
@@ -68,6 +70,7 @@ pub enum ToolProcessorPhase {
 // The confirmed API retains the actual rejected payload without indirection.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ToolProcessingError {
     /// The binding's parent cancellation or deadline stopped processing.
     #[error(transparent)]

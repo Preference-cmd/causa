@@ -890,7 +890,7 @@ mod tests {
             &AnthropicRenderOptions::default(),
         )
         .unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::InvalidRequest));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::InvalidRequest));
     }
 
     #[test]
@@ -1298,11 +1298,11 @@ mod tests {
     fn missing_stop_reason_is_undecodable_error() {
         let v = json!({"content": []});
         let e = parse_anthropic_response(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("stop_reason"));
         // Present but not a string is reported as such, not as missing.
         let e = parse_anthropic_response(&json!({"content": [], "stop_reason": 7})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("expected a string"));
     }
 
@@ -1337,7 +1337,7 @@ mod tests {
     fn malformed_tool_use_is_undecodable_error() {
         let v = json!({"content": [{"type": "tool_use", "id": "x"}], "stop_reason": "tool_use"});
         let e = parse_anthropic_response(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
+        assert!(matches!(e.kind, ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("name"));
     }
 }

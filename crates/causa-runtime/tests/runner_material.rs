@@ -509,6 +509,7 @@ async fn observer_cancellation_respects_each_commit_boundary() {
                     "returned"
                 }
                 RunEvent::ModelDelta { .. } => "delta",
+                other => panic!("unexpected event: {other:?}"),
             };
             seen.lock().unwrap().push(name);
             if name == stage {

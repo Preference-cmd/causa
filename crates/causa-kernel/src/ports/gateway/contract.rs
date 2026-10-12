@@ -122,7 +122,11 @@ pub struct ModelOutput {
 }
 
 /// Classification of a logical model invocation failure.
+///
+/// More kinds may be added; a match needs a wildcard arm, and an unknown kind
+/// is best treated like [`Self::Permanent`]: not retried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ModelInvokeErrorKind {
     /// Recoverable failure a retry policy may allow: transport hiccups,
     /// rate limits, server-side errors.
@@ -158,7 +162,11 @@ pub enum ModelInvokeErrorKind {
 /// `retry_delay` carries a server-requested wait (an HTTP `retry-after` or
 /// `retry-after-ms` header) when the transport filled one. The kernel does
 /// not act on it; a caller-side retry policy decides whether to honor it.
-#[derive(Debug, Clone)]
+///
+/// `Display` prints the message alone; the kind is data, not prose.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+#[non_exhaustive]
 pub struct ModelInvokeError {
     /// The failure classification.
     pub kind: ModelInvokeErrorKind,
@@ -205,17 +213,7 @@ impl ModelInvokeError {
         self.retry_delay = Some(delay);
         self
     }
-    /// The failure classification.
-    pub fn kind(&self) -> &ModelInvokeErrorKind {
-        &self.kind
-    }
 }
-impl std::fmt::Display for ModelInvokeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.kind, self.message)
-    }
-}
-impl std::error::Error for ModelInvokeError {}
 
 /// Prompt-cache instruction carried on a [`ModelRequest`]. Adapters map this
 /// directive to protocol-specific cache mechanisms or treat it as a no-op where
@@ -319,6 +317,7 @@ pub fn completed_model_stream(output: ModelOutput) -> ModelStream {
 /// observations for hosts, never the source of truth. A stream that ends
 /// without `Done` is an `UnknownOutcome`-shaped failure at the driver.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum StreamDelta {
     /// An increment of assistant text.
     TextDelta {

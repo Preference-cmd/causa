@@ -15,7 +15,6 @@ impl BoundTools<'_> {
     /// Ordinary failed, rejected, or unknown results do not make this method
     /// fail. It does not commit material or cancel the caller's parent token.
     // ToolProcessingError preserves the rejected payload without boxing.
-    #[allow(clippy::result_large_err)]
     pub async fn process(self, batch: &mut ToolBatch) -> Result<(), ToolProcessingError> {
         batch
             .validate()
@@ -66,7 +65,6 @@ impl BoundTools<'_> {
     }
 
     // Preserve the confirmed error API carrying an unboxed rejected payload.
-    #[allow(clippy::result_large_err)]
     fn reject_unbound(&self, batch: &mut ToolBatch) -> Result<(), ToolProcessingError> {
         let rejected: Vec<_> = batch
             .calls()

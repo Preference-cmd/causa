@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // ToolProcessingError preserves the rejected payload without boxing.
-#[allow(clippy::result_large_err)]
 pub(crate) async fn process_phase(
     processors: &[Arc<dyn ToolBatchProcessor>],
     batch: &mut ToolBatch,

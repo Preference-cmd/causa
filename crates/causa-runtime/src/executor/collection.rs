@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 
 impl BoundTools<'_> {
     // ToolProcessingError preserves the rejected payload without boxing.
-    #[allow(clippy::result_large_err)]
     pub(super) async fn dispatch(&self, batch: &mut ToolBatch) -> Result<(), ToolProcessingError> {
         let started = Arc::new(Mutex::new(HashSet::new()));
         let calls: Vec<_> = batch
@@ -90,7 +89,6 @@ impl BoundTools<'_> {
 }
 
 // Preserve the actual rejected input in the confirmed public error shape.
-#[allow(clippy::result_large_err)]
 pub(super) fn resolve(
     batch: &mut ToolBatch,
     call_block_id: BlockId,

@@ -30,3 +30,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "ne
 wiremock = "0.6"
 # `agent.http` span assertions
 tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

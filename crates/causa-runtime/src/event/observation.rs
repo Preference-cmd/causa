@@ -6,6 +6,7 @@ use causa_kernel::{ContextBlock, InvocationId, ModelOutput, ModelRequest, Stream
 /// No event history is retained by the runner. `ModelDelta` excludes `Done`
 /// and `Error`; a committed notification describes only the actual append.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RunEvent<'a> {
     /// A complete logical request, immediately before gateway entry.
     ModelRequestReady {

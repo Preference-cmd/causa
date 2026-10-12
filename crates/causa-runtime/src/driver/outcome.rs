@@ -6,6 +6,7 @@ use causa_kernel::{
 
 /// Materials returned on completion or controlled interruption.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TurnOutcome {
     /// Identity supplied by the caller.
     pub turn_id: TurnId,
@@ -31,24 +32,34 @@ pub enum TurnResult {
     },
 }
 /// Typed interruption causes retaining the relevant failure inputs.
-#[derive(Debug)]
+///
+/// `Display` gives one sentence a host can show. More causes may be added; a
+/// match needs a wildcard arm.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TurnInterruption {
     /// Caller cancellation stopped an unselected execution stage.
+    #[error("the run was cancelled")]
     Cancelled {
         /// Logical invocation, or none when stopping between invocations.
         invocation_id: Option<InvocationId>,
     },
     /// The inherited absolute execution deadline stopped a stage.
+    #[error("the run's deadline passed")]
     DeadlineExceeded {
         /// Logical invocation, or none when stopping between invocations.
         invocation_id: Option<InvocationId>,
     },
     /// The logical invocation limit was reached before creating a new invocation.
+    #[error("the limit of {limit} model rounds was reached")]
     MaxModelRounds {
         /// Configured maximum for this execution.
         limit: u32,
     },
     /// New declarations committed, but their cumulative count exceeds the limit.
+    #[error(
+        "the limit of {limit} tool calls was exceeded: {declared_before} declared earlier, {declared_this_round} in this round"
+    )]
     MaxToolCalls {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -60,6 +71,7 @@ pub enum TurnInterruption {
         declared_this_round: usize,
     },
     /// Tool binding failed before preparation or model invocation.
+    #[error("tool binding failed: {error}")]
     ToolCatalogFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -67,6 +79,7 @@ pub enum TurnInterruption {
         error: ToolCatalogError,
     },
     /// Preparation failed; any edits already committed by the preparer remain.
+    #[error("context preparation failed: {error}")]
     PrepareFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -74,6 +87,7 @@ pub enum TurnInterruption {
         error: PrepareError,
     },
     /// The logical gateway call failed; its original classification is retained.
+    #[error("the model call failed: {error}")]
     ModelCallFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -81,6 +95,7 @@ pub enum TurnInterruption {
         error: ModelInvokeError,
     },
     /// Generation reached its token limit; the complete output was not committed.
+    #[error("the model reached its output token limit")]
     ModelMaxTokens {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -88,6 +103,7 @@ pub enum TurnInterruption {
         output: ModelOutput,
     },
     /// The model refused; the complete output was not committed.
+    #[error("the model refused the request")]
     ModelRefusal {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -96,6 +112,7 @@ pub enum TurnInterruption {
     },
     /// The provider stopped on the context window; the complete output was not
     /// committed.
+    #[error("the request no longer fits the model's context window")]
     ModelContextWindowExceeded {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -104,6 +121,7 @@ pub enum TurnInterruption {
     },
     /// The provider reported a stop value the kernel has no meaning for; the
     /// complete output was not committed and the wire value is on the output.
+    #[error("the provider stopped for a reason this version does not recognize ({})", .output.raw_stop_reason.as_deref().unwrap_or("no stop value given"))]
     ModelStopUnrecognized {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -111,6 +129,7 @@ pub enum TurnInterruption {
         output: ModelOutput,
     },
     /// Pure conversion failed before commit, retaining output and supplied IDs.
+    #[error("the model output could not be converted to context blocks: {error}")]
     ModelConversionFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -122,6 +141,7 @@ pub enum TurnInterruption {
         block_ids: Vec<BlockId>,
     },
     /// Fresh batch construction failed before the converted blocks were committed.
+    #[error("the model's tool calls could not form a batch: {error}")]
     ModelBatchFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -133,6 +153,7 @@ pub enum TurnInterruption {
         blocks: Vec<ContextBlock>,
     },
     /// Atomic model append failed; the edit error retains every submitted block.
+    #[error("the model output could not be committed: {error}")]
     ModelCommitFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -142,6 +163,7 @@ pub enum TurnInterruption {
         output: ModelOutput,
     },
     /// Tool processing failed; the complete current batch is returned in the outcome.
+    #[error("tool processing failed: {error}")]
     ToolProcessingFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -149,6 +171,7 @@ pub enum TurnInterruption {
         error: ToolProcessingError,
     },
     /// Result scope validation failed; the complete batch remains uncommitted.
+    #[error("tool results failed validation: {error}")]
     ToolResultValidationFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -156,6 +179,7 @@ pub enum TurnInterruption {
         error: ToolResultError,
     },
     /// Atomic tool-result append failed; both the batch and edit inputs are retained.
+    #[error("tool results could not be committed: {error}")]
     ToolCommitFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -163,15 +187,11 @@ pub enum TurnInterruption {
         error: EditFailure,
     },
     /// The full result batch committed, then execution stopped on an unknown result.
+    #[error("a tool call ended with an unknown outcome")]
     UnknownToolOutcome {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
         /// Declaration of the first unknown result in final postprocessor order.
         call_block_id: BlockId,
     },
-}
-impl std::fmt::Display for TurnInterruption {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
 }

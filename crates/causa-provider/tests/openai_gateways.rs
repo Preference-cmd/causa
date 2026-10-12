@@ -186,7 +186,7 @@ async fn chat_error_rows_map_to_their_kinds() {
             .await
             .unwrap_err();
         assert_eq!(
-            std::mem::discriminant(e.kind()),
+            std::mem::discriminant(&e.kind),
             std::mem::discriminant(&expected),
             "status {status}: got {e}"
         );
@@ -208,7 +208,7 @@ async fn chat_unparseable_2xx_body_is_undecodable() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
+        matches!(e.kind, ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 }
@@ -282,7 +282,7 @@ async fn responses_error_rows_map_to_their_kinds() {
             .await
             .unwrap_err();
         assert_eq!(
-            std::mem::discriminant(e.kind()),
+            std::mem::discriminant(&e.kind),
             std::mem::discriminant(&expected),
             "status {status}: got {e}"
         );
@@ -303,7 +303,7 @@ async fn responses_unparseable_2xx_body_is_undecodable() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
+        matches!(e.kind, ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 }
@@ -322,10 +322,7 @@ async fn connect_error_is_transient_on_both_paths() {
         .invoke(&request(user_frame()), &ctrl(None))
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Transient),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Transient), "got {e}");
 
     let responses =
         OpenAiResponsesGateway::new(KEY).with_endpoint(format!("http://{addr}/v1/responses"));
@@ -333,10 +330,7 @@ async fn connect_error_is_transient_on_both_paths() {
         .invoke(&request(user_frame()), &ctrl(None))
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Transient),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Transient), "got {e}");
 }
 
 #[tokio::test]
@@ -363,7 +357,7 @@ async fn deadline_yields_timed_out_promptly_on_both_paths() {
             .await
             .unwrap_err();
         assert!(
-            matches!(e.kind(), ModelInvokeErrorKind::TimedOut),
+            matches!(e.kind, ModelInvokeErrorKind::TimedOut),
             "{path_suffix}: got {e}"
         );
         assert!(
@@ -404,7 +398,7 @@ async fn cancelled_token_yields_cancelled_promptly_on_both_paths() {
             .await
             .unwrap_err();
         assert!(
-            matches!(e.kind(), ModelInvokeErrorKind::Cancelled),
+            matches!(e.kind, ModelInvokeErrorKind::Cancelled),
             "{path_suffix}: got {e}"
         );
         assert!(
@@ -429,18 +423,12 @@ async fn pre_cancelled_control_never_reaches_the_wire_on_both_paths() {
         .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Cancelled),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Cancelled), "got {e}");
 
     let responses = OpenAiResponsesGateway::new(KEY).with_base_url(format!("{}/v1", server.uri()));
     let e = responses
         .invoke(&request(user_frame()), &attempt)
         .await
         .unwrap_err();
-    assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Cancelled),
-        "got {e}"
-    );
+    assert!(matches!(e.kind, ModelInvokeErrorKind::Cancelled), "got {e}");
 }

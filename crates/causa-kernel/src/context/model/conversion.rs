@@ -6,6 +6,7 @@ use crate::context::ids::BlockId;
 
 /// Why a model response cannot be converted into blocks.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ModelBlockError {
     /// EndTurn cannot include tool declarations.
     #[error("EndTurn includes {count} tool calls")]

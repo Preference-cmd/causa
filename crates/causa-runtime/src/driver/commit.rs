@@ -17,7 +17,6 @@ pub(super) struct ModelCommit {
 }
 
 // Keep the public interruption's owned failure inputs without boxing or loss.
-#[allow(clippy::result_large_err)]
 pub(super) fn model(
     context: &mut Context,
     invocation_id: &InvocationId,
@@ -78,7 +77,6 @@ pub(super) struct ToolCommit {
 }
 
 // The caller still owns the batch on failure; EditFailure retains append inputs.
-#[allow(clippy::result_large_err)]
 pub(super) fn tools(
     context: &mut Context,
     invocation_id: &InvocationId,

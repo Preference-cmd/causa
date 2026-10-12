@@ -85,6 +85,7 @@ async fn streaming_tools_share_material_commit_loop() {
                 assert!(result.is_ok());
                 "returned"
             }
+            other => panic!("unexpected event: {other:?}"),
         })
     }));
     let out = runner_with(g.clone(), vec![Arc::new(EchoTool)])
