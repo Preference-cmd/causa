@@ -19,8 +19,9 @@
 //! entrances render the same options; fields are never silently dropped.
 //!
 //! The reasoning effort is a string sent as given: Chat `reasoning_effort`,
-//! Responses `reasoning.effort`, Anthropic `output_config.effort`. The keys
-//! of `extra_body` are copied to the top level of the request, which is how
+//! Responses `reasoning.effort`, Anthropic `output_config.effort`.
+//! `extra_body` is merged into the request, beside what the adapter wrote
+//! and never in place of it, which is how
 //! a host sends an Anthropic `thinking` object or any setting only one
 //! server knows. Neither is checked here. A value the provider refuses comes
 //! back as its error, with its message, status and code.

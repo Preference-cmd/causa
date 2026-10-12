@@ -117,9 +117,10 @@ On unreleased `main`, `GenerationOptions::reasoning_effort` is a string that
 is sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
 `reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
 map the value, and derives no `thinking` object from it. Settings that only
-one protocol or model has go in `GenerationOptions::extra_body`, whose keys
-are copied to the top level of the request unless the adapter already wrote
-that key; an Anthropic `thinking` object is sent this way. Which values a
+one protocol or model has go in `GenerationOptions::extra_body`, which is
+merged into the request: an object joins the object the adapter wrote under
+the same key, and any other value the adapter wrote is kept. An Anthropic
+`thinking` object or a Responses `reasoning.summary` is sent this way. Which values a
 model accepts is the host's knowledge, and a refused value comes back as the
 provider's error. Output limits render as `max_completion_tokens`,
 `max_output_tokens` and `max_tokens`, and include reasoning tokens where the

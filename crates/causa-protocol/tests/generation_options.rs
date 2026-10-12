@@ -194,7 +194,10 @@ fn an_extra_field_never_replaces_a_key_the_adapter_wrote() {
     assert_eq!(responses["model"], "configured-model");
     assert_eq!(responses["input"].as_array().unwrap().len(), 1);
     assert_eq!(responses["max_output_tokens"], LIMIT);
-    assert_eq!(responses["reasoning"], json!({"effort": "high"}));
+    assert_eq!(
+        responses["reasoning"],
+        json!({"effort": "high", "summary": "auto"})
+    );
     let anthropic = render(2, &generation).unwrap();
     assert_eq!(anthropic["model"], "configured-model");
     assert_eq!(anthropic["messages"].as_array().unwrap().len(), 1);
@@ -209,6 +212,66 @@ fn an_extra_field_never_replaces_a_key_the_adapter_wrote() {
         .extra_body
         .insert("reasoning".into(), reasoning.clone());
     assert_eq!(render(1, &generation).unwrap()["reasoning"], reasoning);
+}
+
+#[test]
+fn an_extra_object_joins_the_object_the_adapter_wrote_under_the_same_key() {
+    // Responses: a summary beside the effort.
+    let mut generation = with_effort("high");
+    generation
+        .extra_body
+        .insert("reasoning".into(), json!({"summary": "auto"}));
+    assert_eq!(
+        render(1, &generation).unwrap()["reasoning"],
+        json!({"effort": "high", "summary": "auto"})
+    );
+
+    // Responses: a verbosity beside the output format, which stays whole.
+    let mut generation = GenerationOptions::default();
+    generation.output_schema = Some(json!({"type": "object"}));
+    generation.extra_body.insert(
+        "text".into(),
+        json!({"verbosity": "low", "format": {"type": "text", "strict": true}}),
+    );
+    let text = &render(1, &generation).unwrap()["text"];
+    assert_eq!(text["verbosity"], "low");
+    assert_eq!(text["format"]["type"], "json_schema");
+    assert_eq!(text["format"]["schema"], json!({"type": "object"}));
+
+    // Anthropic: an output format beside the effort, and a thinking object.
+    let mut generation = with_effort("high");
+    generation
+        .extra_body
+        .insert("thinking".into(), json!({"type": "adaptive"}));
+    generation.extra_body.insert(
+        "output_config".into(),
+        json!({"effort": "low", "format": {"type": "json_schema"}}),
+    );
+    let anthropic = render(2, &generation).unwrap();
+    assert_eq!(anthropic["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(
+        anthropic["output_config"],
+        json!({"effort": "high", "format": {"type": "json_schema"}})
+    );
+
+    // Chat: the effort is a string, so nothing merges into it.
+    let mut generation = with_effort("off");
+    generation
+        .extra_body
+        .insert("thinking".into(), json!({"type": "disabled"}));
+    generation
+        .extra_body
+        .insert("reasoning_effort".into(), json!({"level": "low"}));
+    let chat = render(0, &generation).unwrap();
+    assert_eq!(chat["reasoning_effort"], "off");
+    assert_eq!(chat["thinking"], json!({"type": "disabled"}));
+
+    // An array the adapter wrote is never merged into or replaced.
+    let mut generation = with_effort("high");
+    generation
+        .extra_body
+        .insert("messages".into(), json!({"0": "replaced"}));
+    assert!(render(0, &generation).unwrap()["messages"].is_array());
 }
 
 #[test]

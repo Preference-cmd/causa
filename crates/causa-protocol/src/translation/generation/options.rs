@@ -1,5 +1,5 @@
 use causa_kernel::{GenerationOptions, ModelInvokeError, ModelInvokeErrorKind};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 fn invalid(message: &str) -> ModelInvokeError {
     ModelInvokeError::new(ModelInvokeErrorKind::InvalidRequest, message)
@@ -48,17 +48,29 @@ pub(in crate::translation) fn validate_anthropic(
     Ok(())
 }
 
-/// Writes the host's extra request fields into the top level of a rendered
-/// body. A key the renderer already wrote is left alone, so a host cannot
-/// replace the model, the messages or the tools by accident; every other key
-/// is copied unchanged and unchecked.
+/// Merges the host's extra request fields into a rendered body. Where both
+/// sides hold an object the merge continues inside it, so a host can add a
+/// key beside one the renderer wrote (`reasoning.summary` beside
+/// `reasoning.effort`). Any other value the renderer wrote is left alone, and
+/// arrays are never merged, so a host cannot replace the model, the messages
+/// or the tools by accident. Every other key is copied unchanged and
+/// unchecked.
 pub(in crate::translation) fn merge_extra_body(body: &mut Value, generation: &GenerationOptions) {
-    let Some(object) = body.as_object_mut() else {
-        return;
-    };
-    for (key, value) in &generation.extra_body {
-        if !object.contains_key(key) {
-            object.insert(key.clone(), value.clone());
+    if let Some(object) = body.as_object_mut() {
+        merge_missing(object, &generation.extra_body);
+    }
+}
+
+fn merge_missing(written: &mut Map<String, Value>, extra: &Map<String, Value>) {
+    for (key, value) in extra {
+        match (written.get_mut(key), value) {
+            (None, _) => {
+                written.insert(key.clone(), value.clone());
+            }
+            (Some(Value::Object(inner)), Value::Object(extra_inner)) => {
+                merge_missing(inner, extra_inner);
+            }
+            (Some(_), _) => {}
         }
     }
 }

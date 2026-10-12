@@ -42,9 +42,10 @@ sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
 `reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
 map the value and derives no `thinking` object from it; omission keeps the
 provider default. `GenerationOptions::extra_body` carries settings only one
-protocol or model has, such as an Anthropic `thinking` object: its keys are
-copied to the top level of the request unless the adapter already wrote that
-key. A value the provider refuses comes back as the provider's error. Output
+protocol or model has, such as an Anthropic `thinking` object: it is merged into
+the request, an object joining the object the adapter wrote under the same
+key (`reasoning.summary` beside `reasoning.effort`) and any other value the
+adapter wrote being kept. A value the provider refuses comes back as the provider's error. Output
 limits render as `max_completion_tokens`, `max_output_tokens` and
 `max_tokens`, and include reasoning tokens where counted. Anthropic requests
 must set `max_tokens`; that adapter supplies no default.

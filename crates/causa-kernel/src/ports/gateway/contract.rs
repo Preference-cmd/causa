@@ -45,13 +45,16 @@ pub struct GenerationOptions {
     /// value the provider refuses comes back as the provider's error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    /// Further request fields, written to the top level of the request body
-    /// exactly as given. This is where protocol- or model-specific settings
-    /// go, such as an Anthropic `thinking` object. A key the adapter writes
-    /// itself (`model`, the messages, `tools`, `stream` and the options above)
-    /// is not replaced; every other key is sent unchecked. A field that
-    /// changes the shape of the response can make it unreadable to the
-    /// adapter.
+    /// Further request fields, merged into the request body exactly as
+    /// given. This is where protocol- or model-specific settings go, such as
+    /// an Anthropic `thinking` object. Where the adapter wrote an object and
+    /// the same key here is an object too, the two are merged key by key, so
+    /// `{"reasoning": {"summary": "auto"}}` joins the effort the adapter
+    /// wrote. Any other value the adapter writes itself (`model`, the
+    /// messages, `tools`, `stream`, the options above) is kept and the value
+    /// given here is dropped without an error; every other key is sent
+    /// unchecked. A field that changes the shape of the response can make it
+    /// unreadable to the adapter.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// JSON Schema the final response should satisfy, rendered natively

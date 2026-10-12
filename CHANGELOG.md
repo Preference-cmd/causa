@@ -21,9 +21,10 @@ adapters or data converters.
     `reasoning.effort` and Anthropic `output_config.effort`. Migration:
     replace `Some(ReasoningEffort::High)` with `Some("high".into())`; the
     serialized form of the seven old values is unchanged.
-  - New `GenerationOptions::extra_body`: a JSON object whose keys are copied
-    to the top level of the request body unless the adapter already wrote
-    that key.
+  - New `GenerationOptions::extra_body`: a JSON object merged into the
+    request body. An object joins the object the adapter wrote under the same
+    key (`{"reasoning": {"summary": "auto"}}` beside the effort); any other
+    value the adapter wrote is kept and arrays are never merged.
   - Anthropic: an effort no longer adds `thinking: {"type": "adaptive"}`, and
     `none` no longer sends `thinking: {"type": "disabled"}`. Migration: put
     the `thinking` object you want in `extra_body`. A host that relied on the

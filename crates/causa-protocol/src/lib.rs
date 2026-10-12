@@ -34,10 +34,12 @@
 //!   Chat `reasoning_effort`, Responses `reasoning.effort` and Anthropic
 //!   `output_config.effort`. No value is refused, mapped or combined with
 //!   another field; which values a model accepts is the host's knowledge.
-//! - **Extra request fields**: every key of
-//!   [`causa_kernel::GenerationOptions::extra_body`] is copied to the top
-//!   level of the body unless the renderer already wrote that key. An
-//!   Anthropic `thinking` object is sent this way.
+//! - **Extra request fields**:
+//!   [`causa_kernel::GenerationOptions::extra_body`] is merged into the
+//!   body. Objects merge key by key with what the renderer wrote, so
+//!   `reasoning.summary` joins `reasoning.effort`; any other value the
+//!   renderer wrote is kept, and arrays are never merged. An Anthropic
+//!   `thinking` object is sent this way.
 //! - **Structured outputs**: `output_schema` renders as `response_format` on
 //!   Chat and `text.format` on Responses; the Anthropic adapter rejects it.
 //! - **Prompt cache directives**: [`causa_kernel::CacheDirective::StablePrefix`]
