@@ -17,6 +17,7 @@ use crate::{Protocol, translation::sse_parser::SseParser};
 /// Every limit must be positive; a zero limit is rejected when the decoder is
 /// built. A stream that exceeds a limit fails as `Undecodable`.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct StreamLimits {
     /// Maximum encoded bytes in one SSE line.
     pub max_line_bytes: usize,

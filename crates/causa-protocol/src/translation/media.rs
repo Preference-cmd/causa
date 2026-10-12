@@ -16,6 +16,7 @@ use causa_kernel::MediaRef;
 /// them (base64 source). Render-side only: produced by the host's
 /// `MediaResolver`, consumed by the renderers, never persisted.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MediaPayload {
     /// IANA media type of the inline bytes (e.g. `image/png`).
     pub media_type: String,

@@ -30,6 +30,8 @@ impl<'a> ToolCallId<'a> {
 
 /// Terminal status of one tool invocation, recorded verbatim as a fact;
 /// mapping from execution errors is the driver's job, not the kernel's.
+///
+/// Exhaustive on purpose: renderers and the runtime decide by status, so a new one is a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolResultStatus {
     /// The tool returned an outcome.
@@ -50,7 +52,8 @@ pub enum ToolResultStatus {
 }
 
 /// Optional observability sidecar on a tool output; never part of pairing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolOutputMeta {
     /// Wall-clock duration of the execution, if measured.
     pub duration_ms: Option<u64>,
@@ -74,6 +77,7 @@ pub enum Truncation {
 
 /// What a tool returned, as recorded by the tool door.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolOutput {
     /// The observation payload; after middle truncation this is a JSON
     /// string (head + notice + tail) regardless of the original shape.
@@ -105,6 +109,7 @@ impl ToolOutput {
 /// The result fact for one tool call: its declaration identity, terminal
 /// status, output, media, and ordered notes. Pairing is kernel-enforced.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolResultPayload {
     /// The declaration block this result answers.
     pub call_block_id: BlockId,
@@ -123,10 +128,23 @@ pub struct ToolResultPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<crate::context::block::TextPayload>,
 }
+impl ToolResultPayload {
+    /// A result for one declaration, with no media and no notes.
+    pub fn new(call_block_id: BlockId, status: ToolResultStatus, output: ToolOutput) -> Self {
+        Self {
+            call_block_id,
+            status,
+            output,
+            media: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
 
 /// Pointer to a tool output persisted out-of-band (e.g. a spilled oversized
 /// observation), kept on the result instead of the full content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ArtifactRef {
     /// Store-assigned handle for retrieving the artifact.
     pub id: String,
@@ -136,6 +154,22 @@ pub struct ArtifactRef {
     pub kind: ArtifactKind,
     /// Whether the artifact is durably persisted in a store.
     pub persisted: bool,
+}
+impl ArtifactRef {
+    /// A reference to one stored artifact.
+    pub fn new(
+        id: impl Into<String>,
+        size_bytes: usize,
+        kind: ArtifactKind,
+        persisted: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            size_bytes,
+            kind,
+            persisted,
+        }
+    }
 }
 
 /// What an artifact holds.

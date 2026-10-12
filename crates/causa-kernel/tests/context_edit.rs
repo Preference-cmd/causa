@@ -290,11 +290,7 @@ fn reusing_an_id_after_removal_requires_the_original_content_and_metadata() {
     let original = ContextBlock::new(
         id(2),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("A"))]),
-        BlockMeta {
-            source: Some("kept-source".into()),
-            provider_call_id: None,
-            wire: None,
-        },
+        BlockMeta::from_source("kept-source"),
     );
     let mut ctx = context(vec![
         text_block(1, "I"),
@@ -343,11 +339,7 @@ fn reusing_an_id_after_removal_requires_the_original_content_and_metadata() {
     let changed_meta_same_id = ContextBlock::new(
         id(2),
         original.content().clone(),
-        BlockMeta {
-            source: Some("rewritten-source".into()),
-            provider_call_id: None,
-            wire: None,
-        },
+        BlockMeta::from_source("rewritten-source"),
     );
     let failure = ctx
         .apply(
@@ -632,10 +624,11 @@ fn tagged_block(n: u128, text: &str, source: &str) -> ContextBlock {
     ContextBlock::new(
         id(n),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta {
-            source: Some(source.to_owned()),
-            provider_call_id: Some(format!("provider-{n}")),
-            wire: None,
+        {
+            let mut meta = BlockMeta::default();
+            meta.source = Some(source.to_owned());
+            meta.provider_call_id = Some(format!("provider-{n}"));
+            meta
         },
     )
 }

@@ -33,21 +33,15 @@ fn gateway_state(script: Vec<Result<ModelOutput, ModelInvokeError>>) -> Arc<Stat
 }
 
 fn output(items: Vec<ModelItem>, stop_reason: ModelStopReason) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse { items },
-        usage: None,
-        stop_reason,
-        raw_stop_reason: None,
-        reasoning: None,
-    }
+    ModelOutput::new(ModelResponse { items }, stop_reason)
 }
 
 fn tool_round() -> ModelOutput {
     output(
-        vec![ModelItem::tool_call(ToolCallDraft {
-            tool_name: "local".into(),
-            arguments: json!({}),
-            provider_call_id: Some("call-1".into()),
+        vec![ModelItem::tool_call({
+            let mut built = ToolCallDraft::new("local", json!({}));
+            built.provider_call_id = Some("call-1".into());
+            built
         })],
         ModelStopReason::ToolUse,
     )
@@ -84,22 +78,16 @@ struct CountingTool {
 impl Tool for CountingTool {
     fn definition(&self) -> ToolDefinition {
         self.definitions.fetch_add(1, Ordering::SeqCst);
-        ToolDefinition {
-            name: "local".into(),
-            description: "host tool".into(),
-            parameters: json!({"type":"object"}),
-        }
+        ToolDefinition::new("local", "host tool", json!({"type":"object"}))
     }
 
     async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
         self.executions.fetch_add(1, Ordering::SeqCst);
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("tool output")),
-            media: vec![],
-            notes: vec![],
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("tool output")),
+        )
     }
 }
 

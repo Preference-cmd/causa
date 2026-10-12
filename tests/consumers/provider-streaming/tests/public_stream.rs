@@ -20,10 +20,7 @@ fn input() -> Context {
     Context::from_blocks(vec![ContextBlock::new(
         causa::runtime::new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("input"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )])
     .unwrap()
 }
@@ -61,7 +58,6 @@ async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() 
             CallControl::new(Default::default(), None),
         ),
     )
-
     .await
     .unwrap();
     assert!(matches!(outcome.result, TurnResult::Completed { .. }));
@@ -99,20 +95,22 @@ async fn facade_direct_stream_observes_all_three_gateways_before_terminal() {
                     .with_stream_limits(StreamLimits::default()),
             ),
         };
-        let request = ModelRequest {
-            invocation_id: InvocationId {
-                turn_id: TurnId::new("public-stream"),
-                round_id: RoundId(0),
-            },
-            frame: input().frame(),
-            model: ModelRef::new("fixture"),
-            tool_surface: ToolSurface::empty(),
+        let request = {
+            let mut request = ModelRequest::new(
+                InvocationId {
+                    turn_id: TurnId::new("public-stream"),
+                    round_id: RoundId(0),
+                },
+                input().frame(),
+                ModelRef::new("fixture"),
+            );
             // The Anthropic wire requires an explicit output limit.
-            generation: GenerationOptions {
-                max_tokens: Some(1024),
-                ..GenerationOptions::default()
-            },
-            cache: CacheDirective::None,
+            request.generation = {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(1024);
+                generation
+            };
+            request
         };
         let mut stream = gateway
             .stream(&request, &CallControl::new(Default::default(), None))

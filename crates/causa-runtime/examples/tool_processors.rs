@@ -65,20 +65,18 @@ struct Search;
 #[async_trait]
 impl Tool for Search {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "search".into(),
-            description: "Offline research fixture".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
+        ToolDefinition::new(
+            "search",
+            "Offline research fixture",
+            serde_json::json!({"type": "object"}),
+        )
     }
     async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(serde_json::json!({"count": ctx.input.arguments["limit"]})),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        ToolResultPayload::new(
+            ctx.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(serde_json::json!({"count": ctx.input.arguments["limit"]})),
+        )
     }
 }
 
@@ -95,8 +93,8 @@ impl ModelGateway for ResearchGateway {
             .blocks
             .iter()
             .any(|block| matches!(block.content(), BlockContent::ToolResult(_)));
-        Ok(ModelOutput {
-            response: ModelResponse {
+        Ok(ModelOutput::new(
+            ModelResponse {
                 items: if has_results {
                     vec![ModelItem::text("Research complete.")]
                 } else {
@@ -105,40 +103,34 @@ impl ModelGateway for ResearchGateway {
                     [20, 10]
                         .into_iter()
                         .map(|limit| {
-                            ModelItem::tool_call(ToolCallDraft {
-                                tool_name: "search".into(),
-                                arguments: serde_json::json!({
+                            ModelItem::tool_call(ToolCallDraft::new(
+                                "search",
+                                serde_json::json!({
                                     "query": "video generation",
                                     "limit": limit
                                 }),
-                                provider_call_id: None,
-                            })
+                            ))
                         })
                         .collect()
                 },
             },
-            usage: None,
-            stop_reason: if has_results {
+            if has_results {
                 ModelStopReason::EndTurn
             } else {
                 ModelStopReason::ToolUse
             },
-            reasoning: None,
-            raw_stop_reason: None,
-        })
+        ))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let executor = ToolExecutor::new(
-        vec![Arc::new(Search)],
-        ToolExecutorOptions {
-            before: vec![Arc::new(LimitResults), Arc::new(DeduplicateProcessor)],
-            after: vec![Arc::new(DeclarationOrder)],
-            ..Default::default()
-        },
-    )?;
+    let executor = ToolExecutor::new(vec![Arc::new(Search)], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(LimitResults), Arc::new(DeduplicateProcessor)];
+        options.after = vec![Arc::new(DeclarationOrder)];
+        options
+    })?;
     let runner = TurnRunner::new(Arc::new(ResearchGateway), Arc::new(executor));
     let mut context = causa_kernel::Context::new();
     context
@@ -148,10 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
                 TextPayload::new("Research video models."),
             )]),
-            causa_kernel::BlockMeta {
-                source: Some("user".into()),
-                ..Default::default()
-            },
+            causa_kernel::BlockMeta::from_source("user"),
         )])
         .commit()?;
     let outcome = runner

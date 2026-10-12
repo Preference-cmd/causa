@@ -47,10 +47,7 @@ fn user_block(text: &str) -> ContextBlock {
     ContextBlock::new(
         next_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..BlockMeta::default()
-        },
+        BlockMeta::from_source("user"),
     )
 }
 
@@ -69,9 +66,10 @@ fn render(
 ) -> Result<Value, causa_kernel::ModelInvokeError> {
     let media = MediaSet::new();
     let surface = ToolSurface::empty();
-    let generation = GenerationOptions {
-        max_tokens: Some(1024),
-        ..GenerationOptions::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(1024);
+        generation
     };
     let model = ModelRef::new("m");
     match protocol {
@@ -125,13 +123,11 @@ fn frame_of(assistant: Vec<ContextBlock>) -> ContextFrame {
         .map(|call| {
             ContextBlock::new(
                 next_id(),
-                BlockContent::ToolResult(ToolResultPayload {
-                    call_block_id: call.id(),
-                    status: ToolResultStatus::Succeeded,
-                    output: ToolOutput::new(json!("ok")),
-                    media: Vec::new(),
-                    notes: Vec::new(),
-                }),
+                BlockContent::ToolResult(ToolResultPayload::new(
+                    call.id(),
+                    ToolResultStatus::Succeeded,
+                    ToolOutput::new(json!("ok")),
+                )),
                 BlockMeta::default(),
             )
         })
@@ -823,12 +819,13 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
             ContentPart::Text(TextPayload::new("a")),
             ContentPart::Text(TextPayload::new("b")),
         ]),
-        BlockMeta {
-            wire: Some(WireMeta {
-                format: "anthropic_messages".into(),
-                fields: json!({"type": "text", "x_unknown": 1}),
-            }),
-            ..BlockMeta::default()
+        {
+            let mut meta = BlockMeta::default();
+            meta.wire = Some(WireMeta::new(
+                "anthropic_messages",
+                json!({"type": "text", "x_unknown": 1}),
+            ));
+            meta
         },
     );
     let rendered = assistant_items(
@@ -847,13 +844,11 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
 fn sealed_block(source: Option<&str>, format: &str, item: Value) -> ContextBlock {
     ContextBlock::new(
         next_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-            format: format.into(),
-            item,
-        })]),
-        BlockMeta {
-            source: source.map(String::from),
-            ..BlockMeta::default()
+        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(format, item))]),
+        {
+            let mut meta = BlockMeta::default();
+            meta.source = source.map(String::from);
+            meta
         },
     )
 }
@@ -907,9 +902,10 @@ fn text_block(source: Option<&str>, text: &str) -> ContextBlock {
     ContextBlock::new(
         next_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta {
-            source: source.map(String::from),
-            ..BlockMeta::default()
+        {
+            let mut meta = BlockMeta::default();
+            meta.source = source.map(String::from);
+            meta
         },
     )
 }

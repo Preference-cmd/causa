@@ -63,10 +63,7 @@ impl FixtureAppend for Context {
             .append([ContextBlock::new(
                 id,
                 BlockContent::Parts(vec![ContentPart::Text(text)]),
-                BlockMeta {
-                    source: Some(source.into()),
-                    ..Default::default()
-                },
+                BlockMeta::from_source(source),
             )])
             .commit()
     }
@@ -133,10 +130,10 @@ fn scenario_frame() -> ContextFrame {
                 &ModelResponse {
                     items: vec![
                         ModelItem::text("reading"),
-                        ModelItem::tool_call(ToolCallDraft {
-                            tool_name: "read".into(),
-                            arguments: json!({"path": "a"}),
-                            provider_call_id: Some("toolu_1".into()),
+                        ModelItem::tool_call({
+                            let mut call = ToolCallDraft::new("read", json!({"path": "a"}));
+                            call.provider_call_id = Some("toolu_1".into());
+                            call
                         }),
                     ],
                 },
@@ -148,13 +145,11 @@ fn scenario_frame() -> ContextFrame {
         active
             .push_results(vec![(
                 block_id(),
-                ToolResultPayload {
+                ToolResultPayload::new(
                     call_block_id,
-                    status: ToolResultStatus::Succeeded,
-                    output: ToolOutput::new(json!("file-a")),
-                    media: Vec::new(),
-                    notes: Vec::new(),
-                },
+                    ToolResultStatus::Succeeded,
+                    ToolOutput::new(json!("file-a")),
+                ),
             )])
             .unwrap();
     })];
@@ -179,9 +174,10 @@ fn scenario_frame() -> ContextFrame {
 fn render(frame: &ContextFrame) -> (Value, Value, Value) {
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
-    let generation = GenerationOptions {
-        max_tokens: Some(1024),
-        ..GenerationOptions::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(1024);
+        generation
     };
     let media = causa_protocol::translation::media::MediaSet::new();
     (
@@ -228,10 +224,10 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let applied = turn
         .push_response(
             &ModelResponse {
-                items: vec![ModelItem::tool_call(ToolCallDraft {
-                    tool_name: "search".into(),
-                    arguments: json!({"limit": 20}),
-                    provider_call_id: Some("external-call-7".into()),
+                items: vec![ModelItem::tool_call({
+                    let mut built = ToolCallDraft::new("search", json!({"limit": 20}));
+                    built.provider_call_id = Some("external-call-7".into());
+                    built
                 })],
             },
             ModelStopReason::ToolUse,
@@ -239,19 +235,19 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         )
         .unwrap();
     let media_ref = MediaRef::new("image/png", "search-image");
-    turn.push_results(vec![(
-        block_id(),
-        ToolResultPayload {
-            call_block_id: applied[0],
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({"found": 1})),
-            media: vec![media_ref.clone()],
-            notes: vec![
-                TextPayload::new("The limit was reduced to 5."),
-                TextPayload::new("The result includes one image."),
-            ],
-        },
-    )])
+    turn.push_results(vec![(block_id(), {
+        let mut built = ToolResultPayload::new(
+            applied[0],
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!({"found": 1})),
+        );
+        built.media = vec![media_ref.clone()];
+        built.notes = vec![
+            TextPayload::new("The limit was reduced to 5."),
+            TextPayload::new("The result includes one image."),
+        ];
+        built
+    })])
     .unwrap();
 
     let frame = joined_frame(vec![], turn);
@@ -259,9 +255,10 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
     let model = ModelRef::new("test-model");
     let surface = ToolSurface::empty();
-    let generation = GenerationOptions {
-        max_tokens: Some(1024),
-        ..GenerationOptions::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(1024);
+        generation
     };
     let anthropic = render_anthropic_messages(
         &frame,
@@ -601,11 +598,7 @@ fn content_shapes_survive_all_three_renderers() {
             &ModelResponse {
                 items: vec![
                     ModelItem::text("listing"),
-                    ModelItem::tool_call(ToolCallDraft {
-                        tool_name: "list".into(),
-                        arguments: json!({"dir": "/"}),
-                        provider_call_id: None,
-                    }),
+                    ModelItem::tool_call(ToolCallDraft::new("list", json!({"dir": "/"}))),
                 ],
             },
             ModelStopReason::ToolUse,
@@ -615,13 +608,11 @@ fn content_shapes_survive_all_three_renderers() {
     active
         .push_results(vec![(
             block_id(),
-            ToolResultPayload {
-                call_block_id: applied[0],
-                status: ToolResultStatus::Failed,
-                output: ToolOutput::new(json!({"error": "denied"})),
-                media: Vec::new(),
-                notes: Vec::new(),
-            },
+            ToolResultPayload::new(
+                applied[0],
+                ToolResultStatus::Failed,
+                ToolOutput::new(json!({"error": "denied"})),
+            ),
         )])
         .unwrap();
 
@@ -656,10 +647,10 @@ fn tool_results_keep_their_declaration_identity_across_selected_materials() {
             let applied = turn
                 .push_response(
                     &ModelResponse {
-                        items: vec![ModelItem::tool_call(ToolCallDraft {
-                            tool_name: "read".into(),
-                            arguments: json!({"path": "same"}),
-                            provider_call_id: Some(wire_id.into()),
+                        items: vec![ModelItem::tool_call({
+                            let mut call = ToolCallDraft::new("read", json!({"path": "same"}));
+                            call.provider_call_id = Some(wire_id.into());
+                            call
                         })],
                     },
                     ModelStopReason::ToolUse,
@@ -668,13 +659,11 @@ fn tool_results_keep_their_declaration_identity_across_selected_materials() {
                 .unwrap();
             turn.push_results(vec![(
                 block_id(),
-                ToolResultPayload {
-                    call_block_id: applied[0],
-                    status: ToolResultStatus::Succeeded,
-                    output: ToolOutput::new(json!(turn_name)),
-                    media: Vec::new(),
-                    notes: Vec::new(),
-                },
+                ToolResultPayload::new(
+                    applied[0],
+                    ToolResultStatus::Succeeded,
+                    ToolOutput::new(json!(turn_name)),
+                ),
             )])
             .unwrap();
         }));

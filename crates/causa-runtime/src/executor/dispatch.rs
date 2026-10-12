@@ -1,6 +1,6 @@
 use causa_kernel::{
     ArtifactStore, CallControl, Tool, ToolCallContext, ToolOutput, ToolOutputMeta,
-    ToolResultPayload, ToolResultStatus, Truncation,
+    ToolResultPayload, ToolResultStatus,
 };
 use futures_util::FutureExt;
 use std::sync::Arc;
@@ -53,31 +53,18 @@ async fn execute_inner(
     };
     match result {
         Ok(result) => result,
-        Err(_) => ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Failed,
-            output: ToolOutput::new(serde_json::json!({"error": "tool panicked"})),
-            media: Vec::new(),
-            notes: Vec::new(),
-        },
+        Err(_) => ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Failed,
+            ToolOutput::new(serde_json::json!({"error": "tool panicked"})),
+        ),
     }
 }
 
 fn unknown(call: &ToolCallContext, message: &str, reason: &str) -> ToolResultPayload {
-    ToolResultPayload {
-        call_block_id: call.call_block_id,
-        status: ToolResultStatus::UnknownOutcome,
-        output: ToolOutput {
-            content: serde_json::json!({"error": message}),
-            truncation: Truncation::None,
-            meta: Some(ToolOutputMeta {
-                duration_ms: None,
-                original_tokens: None,
-                extra: Some(serde_json::json!({"reason": reason})),
-            }),
-            artifact: None,
-        },
-        media: Vec::new(),
-        notes: Vec::new(),
-    }
+    let mut meta = ToolOutputMeta::default();
+    meta.extra = Some(serde_json::json!({"reason": reason}));
+    let mut output = ToolOutput::new(serde_json::json!({"error": message}));
+    output.meta = Some(meta);
+    ToolResultPayload::new(call.call_block_id, ToolResultStatus::UnknownOutcome, output)
 }

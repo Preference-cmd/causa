@@ -28,10 +28,11 @@ pub(crate) fn block(
     ContextBlock::new(
         BlockId::new(uuid::Uuid::from_u128(u128::from(seq) + 1)),
         content,
-        BlockMeta {
-            provider_call_id: provider_call_id.map(String::from),
-            source: source.map(String::from),
-            wire: None,
+        {
+            let mut meta = BlockMeta::default();
+            meta.provider_call_id = provider_call_id.map(String::from);
+            meta.source = source.map(String::from);
+            meta
         },
     )
 }
@@ -64,14 +65,11 @@ pub(crate) fn call(
 ) -> ContextBlock {
     ContextBlock::new(
         label_id(call_id),
-        BlockContent::ToolCall(ToolCallPayload {
-            tool_name: name.into(),
-            arguments,
-        }),
-        BlockMeta {
-            provider_call_id: provider.map(String::from),
-            source: None,
-            wire: None,
+        BlockContent::ToolCall(ToolCallPayload::new(name, arguments)),
+        {
+            let mut meta = BlockMeta::default();
+            meta.provider_call_id = provider.map(String::from);
+            meta
         },
     )
 }
@@ -95,12 +93,11 @@ pub(crate) fn result_with_media(
 ) -> ContextBlock {
     block(
         seq,
-        BlockContent::ToolResult(ToolResultPayload {
-            call_block_id: label_id(call_id),
-            status,
-            output: ToolOutput::new(content),
-            media,
-            notes: Vec::new(),
+        BlockContent::ToolResult({
+            let mut result =
+                ToolResultPayload::new(label_id(call_id), status, ToolOutput::new(content));
+            result.media = media;
+            result
         }),
         None,
         None,

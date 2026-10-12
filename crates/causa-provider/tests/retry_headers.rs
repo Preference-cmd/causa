@@ -11,7 +11,7 @@ use std::time::Duration;
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
     GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelRef, ModelRequest, RoundId, TextPayload, ToolSurface, TurnId,
+    ModelRef, ModelRequest, RoundId, TextPayload, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -20,33 +20,31 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn request() -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("retry-headers"),
-            round_id: RoundId(0),
-        },
-        frame: ContextFrame {
-            blocks: vec![ContextBlock::new(
-                BlockId::new(uuid::Uuid::from_u128(1)),
-                BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                    "hi",
-                ))]),
-                BlockMeta {
-                    provider_call_id: None,
-                    source: Some("user".into()),
-                    wire: None,
-                },
-            )],
-        },
-        model: ModelRef::new("retry-test-model"),
-        tool_surface: ToolSurface::empty(),
+    {
+        let mut built = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("retry-headers"),
+                round_id: RoundId(0),
+            },
+            ContextFrame {
+                blocks: vec![ContextBlock::new(
+                    BlockId::new(uuid::Uuid::from_u128(1)),
+                    BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
+                        "hi",
+                    ))]),
+                    BlockMeta::from_source("user"),
+                )],
+            },
+            ModelRef::new("retry-test-model"),
+        );
         // The Anthropic leg requires `max_tokens`; the transport behavior
         // under test is reached only when the request renders.
-        generation: GenerationOptions {
-            max_tokens: Some(1024),
-            ..GenerationOptions::default()
-        },
-        cache: causa_kernel::CacheDirective::None,
+        built.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(1024);
+            generation
+        };
+        built
     }
 }
 

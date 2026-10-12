@@ -413,16 +413,17 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
             if let Some(function) = fields.get_mut("function").and_then(Value::as_object_mut) {
                 function.remove("name");
             }
-            items.push(ModelItem {
-                wire: Some(context_frame::wire_meta(
+            items.push({
+                let mut item = ModelItem::tool_call({
+                    let mut call = ToolCallDraft::new(name.to_string(), arguments);
+                    call.provider_call_id = Some(id.to_string());
+                    call
+                });
+                item.wire = Some(context_frame::wire_meta(
                     Protocol::OpenAiChatCompletions,
                     fields,
-                )),
-                ..ModelItem::tool_call(ToolCallDraft {
-                    tool_name: name.to_string(),
-                    arguments,
-                    provider_call_id: Some(id.to_string()),
-                })
+                ));
+                item
             });
         }
     }
@@ -439,21 +440,19 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
     let reasoning = message
         .get("reasoning_content")
         .and_then(Value::as_str)
-        .map(|text| ReasoningPayload {
-            text: text.to_string(),
-        });
+        .map(|text| ReasoningPayload::new(text.to_string()));
 
     let usage = value
         .get("usage")
         .filter(|v| v.is_object())
         .map(crate::translation::usage::model_usage_from_openai_chat);
 
-    Ok(ModelOutput {
-        response: ModelResponse { items },
-        usage,
-        stop_reason,
-        raw_stop_reason: Some(raw_stop_reason),
-        reasoning,
+    Ok({
+        let mut output = ModelOutput::new(ModelResponse { items }, stop_reason);
+        output.usage = usage;
+        output.raw_stop_reason = Some(raw_stop_reason);
+        output.reasoning = reasoning;
+        output
     })
 }
 
@@ -621,17 +620,17 @@ mod tests {
 
     #[test]
     fn tools_generation_and_byte_determinism() {
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
-            name: "read".into(),
-            description: "read a file".into(),
-            parameters: json!({"type": "object"}),
-        }]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+            "read",
+            "read a file",
+            json!({"type": "object"}),
+        )]);
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
-        let generation = GenerationOptions {
-            temperature: Some(0.5),
-            max_tokens: None,
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.temperature = Some(0.5);
+            generation
         };
         let v = render_openai_chat_messages(
             &f,
@@ -655,10 +654,11 @@ mod tests {
             }])
         );
 
-        let generation = GenerationOptions {
-            temperature: Some(0.5),
-            max_tokens: Some(100),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.temperature = Some(0.5);
+            generation.max_tokens = Some(100);
+            generation
         };
         let v2 = render_openai_chat_messages(
             &f,
@@ -690,9 +690,10 @@ mod tests {
     #[test]
     fn output_schema_maps_and_cache_directive_is_a_noop() {
         let f = frame(vec![text(0, "hi", Some("user"))]);
-        let generation = GenerationOptions {
-            output_schema: Some(json!({"type": "object"})),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.output_schema = Some(json!({"type": "object"}));
+            generation
         };
         let v = render_openai_chat_messages(
             &f,

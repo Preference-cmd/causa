@@ -1,9 +1,9 @@
 //! `with_base_url` appends the protocol path and nothing else: the base URL
 //! carries its own version segment.
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, CallControl, CancellationToken, ContentPart,
-    Context, ContextBlock, GenerationOptions, InvocationId, ModelGateway, ModelRef, ModelRequest,
-    RoundId, TextPayload, ToolSurface, TurnId,
+    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, Context,
+    ContextBlock, GenerationOptions, InvocationId, ModelGateway, ModelRef, ModelRequest, RoundId,
+    TextPayload, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -14,25 +14,24 @@ fn request() -> ModelRequest {
     let block = ContextBlock::new(
         BlockId::new(uuid::Uuid::from_u128(1)),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     );
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("base-url"),
-            round_id: RoundId(0),
-        },
-        frame: Context::from_blocks(vec![block]).unwrap().frame(),
-        model: ModelRef::new("test"),
-        tool_surface: ToolSurface::empty(),
+    {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("base-url"),
+                round_id: RoundId(0),
+            },
+            Context::from_blocks(vec![block]).unwrap().frame(),
+            ModelRef::new("test"),
+        );
         // The Anthropic leg requires `max_tokens`; the OpenAI legs ignore it.
-        generation: GenerationOptions {
-            max_tokens: Some(1024),
-            ..GenerationOptions::default()
-        },
-        cache: CacheDirective::None,
+        request.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(1024);
+            generation
+        };
+        request
     }
 }
 

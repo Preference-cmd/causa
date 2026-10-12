@@ -51,9 +51,9 @@ impl Tool for ToolBridge {
     ) -> ToolResultPayload {
         match self.source.invoke_with_store(ctx, control, store).await {
             Ok(result) => result,
-            Err(e) => ToolResultPayload {
-                call_block_id: ctx.call_block_id,
-                status: match &e {
+            Err(e) => ToolResultPayload::new(
+                ctx.call_block_id,
+                match &e {
                     ToolExecutionError::TimedOut | ToolExecutionError::Cancelled => {
                         ToolResultStatus::UnknownOutcome
                     }
@@ -62,10 +62,8 @@ impl Tool for ToolBridge {
                         ToolResultStatus::Failed
                     }
                 },
-                output: ToolOutput::new(serde_json::json!({ "error": e.to_string() })),
-                media: Vec::new(),
-                notes: Vec::new(),
-            },
+                ToolOutput::new(serde_json::json!({ "error": e.to_string() })),
+            ),
         }
     }
 }
@@ -85,11 +83,11 @@ mod tests {
             "stub"
         }
         async fn list(&self) -> Result<Vec<ToolDefinition>, causa_kernel::SourceError> {
-            Ok(vec![ToolDefinition {
-                name: "mcp_stub_echo".into(),
-                description: "stub".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            }])
+            Ok(vec![ToolDefinition::new(
+                "mcp_stub_echo",
+                "stub",
+                serde_json::json!({"type": "object"}),
+            )])
         }
         async fn invoke(
             &self,
@@ -98,13 +96,11 @@ mod tests {
         ) -> Result<ToolResultPayload, ToolExecutionError> {
             match &self.0 {
                 Some(e) => Err(e.clone()),
-                None => Ok(ToolResultPayload {
-                    call_block_id: call.call_block_id,
-                    status: ToolResultStatus::Succeeded,
-                    output: ToolOutput::new(call.input.arguments.clone()),
-                    media: Vec::new(),
-                    notes: Vec::new(),
-                }),
+                None => Ok(ToolResultPayload::new(
+                    call.call_block_id,
+                    ToolResultStatus::Succeeded,
+                    ToolOutput::new(call.input.arguments.clone()),
+                )),
             }
         }
     }
@@ -112,23 +108,19 @@ mod tests {
     fn bridge(error: Option<ToolExecutionError>) -> ToolBridge {
         ToolBridge::new(
             std::sync::Arc::new(StubSource(error)),
-            ToolDefinition {
-                name: "mcp_stub_echo".into(),
-                description: "stub".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            },
+            ToolDefinition::new(
+                "mcp_stub_echo",
+                "stub",
+                serde_json::json!({"type": "object"}),
+            ),
         )
     }
 
     fn call() -> ToolCallContext {
-        ToolCallContext {
-            call_block_id: crate::new_block_id(),
-            input: ToolCallPayload {
-                tool_name: "mcp_stub_echo".into(),
-                arguments: serde_json::json!({"k": "v"}),
-            },
-            result_notes: Vec::new(),
-        }
+        ToolCallContext::new(
+            crate::new_block_id(),
+            ToolCallPayload::new("mcp_stub_echo", serde_json::json!({"k": "v"})),
+        )
     }
 
     #[tokio::test]

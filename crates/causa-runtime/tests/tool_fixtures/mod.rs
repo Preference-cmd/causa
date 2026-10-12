@@ -19,20 +19,14 @@ pub fn control() -> CallControl {
     CallControl::new(CancellationToken::new(), None)
 }
 pub fn definition(name: &str) -> ToolDefinition {
-    ToolDefinition {
-        name: name.into(),
-        description: format!("definition for {name}"),
-        parameters: json!({"type": "object"}),
-    }
+    ToolDefinition::new(
+        name,
+        format!("definition for {name}"),
+        json!({"type": "object"}),
+    )
 }
 pub fn call(name: &str) -> ToolCallContext {
-    ToolCallContext::from_declaration(
-        new_block_id(),
-        &ToolCallPayload {
-            tool_name: name.into(),
-            arguments: json!({"q": 7}),
-        },
-    )
+    ToolCallContext::from_declaration(new_block_id(), &ToolCallPayload::new(name, json!({"q": 7})))
 }
 pub fn batch(names: &[&str]) -> ToolBatch {
     ToolBatch::new(names.iter().map(|name| call(name)).collect()).unwrap()
@@ -42,13 +36,7 @@ pub fn result(
     status: ToolResultStatus,
     content: serde_json::Value,
 ) -> ToolResultPayload {
-    ToolResultPayload {
-        call_block_id: call.call_block_id,
-        status,
-        output: ToolOutput::new(content),
-        media: vec![],
-        notes: vec![],
-    }
+    ToolResultPayload::new(call.call_block_id, status, ToolOutput::new(content))
 }
 pub fn executor(tools: Vec<Arc<dyn Tool>>, options: ToolExecutorOptions) -> ToolExecutor {
     ToolExecutor::new(tools, options).unwrap()

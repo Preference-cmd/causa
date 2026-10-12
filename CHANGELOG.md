@@ -14,6 +14,39 @@ adapters or data converters.
 
 ### Breaking
 
+- Structs that may gain a field are `#[non_exhaustive]`. Outside the defining
+  crate a struct literal no longer compiles, with or without
+  `..Default::default()`, and a pattern needs `..`. Fields stay public.
+  Migration: build the value with the constructor below, then assign any
+  other field.
+
+  | type | construct with |
+  |---|---|
+  | `GenerationOptions`, `ToolOutputMeta`, `ToolExecutorOptions`, `StreamLimits`, `AnthropicRenderOptions`, `ResponsesRenderOptions`, `ChatRenderOptions`, `AnthropicGatewayConfig`, `OpenAiChatGatewayConfig`, `OpenAiResponsesGatewayConfig` | `Default::default()` |
+  | `BlockMeta` | `Default::default()` or `BlockMeta::from_source(source)` |
+  | `ModelOutput` | `ModelOutput::new(response, stop_reason)` |
+  | `ModelRequest` | `ModelRequest::new(invocation_id, frame, model)` |
+  | `ModelUsage` | `ModelUsage::new(input_tokens, output_tokens)` |
+  | `ReasoningPayload` | `ReasoningPayload::new(text)` |
+  | `ToolResultPayload` | `ToolResultPayload::new(call_block_id, status, output)` |
+  | `ToolOutput` | `ToolOutput::new(content)` |
+  | `ToolDefinition` | `ToolDefinition::new(name, description, parameters)` |
+  | `SealedPart`, `WireMeta` | `new(format, item_or_fields)` |
+  | `ToolCallPayload`, `ToolCallDraft` | `new(tool_name, arguments)` |
+  | `ArtifactRef` | `ArtifactRef::new(id, size_bytes, kind, persisted)` |
+  | `ArtifactHint` | `ArtifactHint::new(tool_name, call_block_id, kind)` |
+  | `ModelItem` | `ModelItem::new(content)`, `text`, `tool_call` |
+  | `ToolCallContext` | `ToolCallContext::new(call_block_id, input)`, `from_declaration` |
+  | `PrepareError` | `PrepareError::new(message)` |
+  | `RoundInfo`, `ProcessorContext` | `new(...)`, each field in declaration order |
+  | `TurnLimits` | `TurnLimits::new(max_model_rounds, max_tool_calls)` or `Default::default()` |
+  | `SseEvent` | `SseEvent::new(event, data)` |
+  | `ToolSurface`, `MediaRef`, `MediaPayload`, `TurnRunOptions`, `RetryPolicy` | their existing constructors |
+
+  `ModelInvokeError`, `TurnOutcome`, `RejectedToolResult`, `EditFailure` and
+  `ErrorDetail` are also `#[non_exhaustive]`; callers read them and do not
+  build them, except `ModelInvokeError::new`.
+  `ToolOutputMeta` now implements `Default`.
 - Enums a caller only reads are `#[non_exhaustive]`, so a later variant is not
   a breaking change: `ModelInvokeErrorKind`, `StreamDelta`, `RunEvent`,
   `TurnInterruption`, and the error enums `ModelBlockError`,

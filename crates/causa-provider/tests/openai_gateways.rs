@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
-    GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest,
-    ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
+    InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason,
+    RoundId, TextPayload, TurnId,
 };
 use causa_provider::{OpenAiChatCompletionsGateway, OpenAiResponsesGateway};
 use serde_json::{Value, json};
@@ -27,27 +27,20 @@ fn user_frame() -> ContextFrame {
             BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
                 "hi",
             ))]),
-            BlockMeta {
-                provider_call_id: None,
-                source: Some("user".into()),
-                wire: None,
-            },
+            BlockMeta::from_source("user"),
         )],
     }
 }
 
 fn request(frame: ContextFrame) -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
+    ModelRequest::new(
+        InvocationId {
             turn_id: TurnId::new("t1"),
             round_id: RoundId(0),
         },
         frame,
-        model: ModelRef::new("gpt-test"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
-        cache: causa_kernel::CacheDirective::None,
-    }
+        ModelRef::new("gpt-test"),
+    )
 }
 
 fn post_mock(status: u16, path_suffix: &str, body: Value) -> Mock {

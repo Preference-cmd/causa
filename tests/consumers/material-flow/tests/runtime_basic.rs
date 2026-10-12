@@ -14,15 +14,12 @@ impl ModelGateway for Recorder {
         _: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
         self.0.lock().unwrap().push(request.clone());
-        Ok(ModelOutput {
-            response: ModelResponse {
+        Ok(ModelOutput::new(
+            ModelResponse {
                 items: vec![ModelItem::text("answer")],
             },
-            stop_reason: ModelStopReason::EndTurn,
-            usage: None,
-            reasoning: None,
-            raw_stop_reason: None,
-        })
+            ModelStopReason::EndTurn,
+        ))
     }
 }
 fn text(value: &str) -> ContextBlock {
@@ -103,48 +100,43 @@ impl ModelGateway for Scripted {
         let mut requests = self.0.lock().unwrap();
         let first = requests.is_empty();
         requests.push(request.clone());
-        Ok(ModelOutput {
-            response: ModelResponse {
+        Ok(ModelOutput::new(
+            ModelResponse {
                 items: if first {
-                    vec![ModelItem::tool_call(ToolCallDraft {
-                        tool_name: "fetch".into(),
-                        arguments: serde_json::json!({}),
-                        provider_call_id: Some("call-fetch".into()),
+                    vec![ModelItem::tool_call({
+                        let mut built = ToolCallDraft::new("fetch", serde_json::json!({}));
+                        built.provider_call_id = Some("call-fetch".into());
+                        built
                     })]
                 } else {
                     vec![ModelItem::text("final answer")]
                 },
             },
-            stop_reason: if first {
+            if first {
                 ModelStopReason::ToolUse
             } else {
                 ModelStopReason::EndTurn
             },
-            usage: None,
-            reasoning: None,
-            raw_stop_reason: None,
-        })
+        ))
     }
 }
 struct Fetch(std::sync::atomic::AtomicUsize);
 #[async_trait]
 impl Tool for Fetch {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "fetch".into(),
-            description: "fetch material".into(),
-            parameters: serde_json::json!({"type":"object"}),
-        }
+        ToolDefinition::new(
+            "fetch",
+            "fetch material",
+            serde_json::json!({"type":"object"}),
+        )
     }
     async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(serde_json::json!("fetched content")),
-            media: vec![],
-            notes: vec![],
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(serde_json::json!("fetched content")),
+        )
     }
 }
 #[tokio::test]

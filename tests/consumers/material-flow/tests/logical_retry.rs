@@ -14,31 +14,31 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 fn output() -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text("complete")],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 fn request() -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("retry-consumer"),
-            round_id: RoundId(2),
-        },
-        frame: Context::new().frame(),
-        model: ModelRef::new("fixed-model"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions {
-            max_tokens: Some(16),
-            reasoning_effort: Some(ReasoningEffort::High),
-            ..Default::default()
-        },
-        cache: CacheDirective::StablePrefix,
+    {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("retry-consumer"),
+                round_id: RoundId(2),
+            },
+            Context::new().frame(),
+            ModelRef::new("fixed-model"),
+        );
+        request.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(16);
+            generation.reasoning_effort = Some(ReasoningEffort::High);
+            generation
+        };
+        request.cache = CacheDirective::StablePrefix;
+        request
     }
 }
 fn fingerprint(request: &ModelRequest) -> String {
@@ -285,9 +285,10 @@ async fn any_visible_delta_prevents_transparent_retry_even_without_an_observer()
             name_delta: Some("tool".into()),
             arguments_delta: Some("{".into()),
         },
-        StreamDelta::Usage(ModelUsage {
-            input_tokens: 5,
-            ..Default::default()
+        StreamDelta::Usage({
+            let mut usage = ModelUsage::default();
+            usage.input_tokens = 5;
+            usage
         }),
         StreamDelta::ReasoningDelta {
             delta: "thinking".into(),

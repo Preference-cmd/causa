@@ -80,6 +80,8 @@ pub enum SourceError {
 /// Single-call failure inside a source. The executor's tool adapter
 /// (`ToolBridge` in `causa_runtime`) turns every variant into a structured
 /// tool result the model reads; the status mapping lives there, not here.
+///
+/// Exhaustive on purpose: the runtime maps every variant to a result status, so a new one is a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolExecutionError {
     /// The call may or may not have run server-side — the outcome is

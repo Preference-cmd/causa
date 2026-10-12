@@ -3,11 +3,10 @@
 //! setters change exactly the wire fields they name.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, CallControl, CancellationToken, ContentPart,
-    ContextBlock, ContextFrame, GenerationOptions, InvocationId, ModelGateway,
-    ModelInvokeErrorKind, ModelOutput, ModelRef, ModelRequest, ReasoningEffort, RoundId,
-    SealedPart, StreamDelta, TextPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
-    ToolSurface, TurnId,
+    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, ContextBlock,
+    ContextFrame, GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelOutput,
+    ModelRef, ModelRequest, ReasoningEffort, RoundId, SealedPart, StreamDelta, TextPayload,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_protocol::translation::render_options::PrefixMismatchBehavior;
 use causa_provider::{
@@ -38,10 +37,7 @@ fn user_block() -> ContextBlock {
     ContextBlock::new(
         BlockId::new(uuid::Uuid::from_u128(1)),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..BlockMeta::default()
-        },
+        BlockMeta::from_source("user"),
     )
 }
 
@@ -52,20 +48,22 @@ fn user_frame() -> ContextFrame {
 }
 
 fn request(frame: ContextFrame, model: &str) -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("replay"),
-            round_id: RoundId(0),
-        },
-        frame,
-        model: ModelRef::new(model),
-        tool_surface: ToolSurface::empty(),
+    {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("replay"),
+                round_id: RoundId(0),
+            },
+            frame,
+            ModelRef::new(model),
+        );
         // The Anthropic wire requires a limit; the other two ignore it.
-        generation: GenerationOptions {
-            max_tokens: Some(1024),
-            ..GenerationOptions::default()
-        },
-        cache: CacheDirective::None,
+        request.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(1024);
+            generation
+        };
+        request
     }
 }
 
@@ -88,13 +86,11 @@ fn answered_frame(frame: &ContextFrame, output: &ModelOutput) -> ContextFrame {
     all.extend(blocks);
     all.push(ContextBlock::new(
         next_id(),
-        BlockContent::ToolResult(ToolResultPayload {
-            call_block_id: call,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("ok")),
-            notes: Vec::new(),
-            media: Vec::new(),
-        }),
+        BlockContent::ToolResult(ToolResultPayload::new(
+            call,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("ok")),
+        )),
         BlockMeta::default(),
     ));
     ContextFrame { blocks: all }
@@ -182,10 +178,10 @@ async fn only_request_body(server: &MockServer) -> Value {
 fn anthropic_sealed(item: Value) -> ContextBlock {
     ContextBlock::new(
         next_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-            format: causa_protocol::Protocol::AnthropicMessages.as_str().into(),
+        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
+            causa_protocol::Protocol::AnthropicMessages.as_str(),
             item,
-        })]),
+        ))]),
         BlockMeta::default(),
     )
 }

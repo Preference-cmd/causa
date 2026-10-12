@@ -30,14 +30,11 @@ fn id(label: &str) -> BlockId {
 }
 
 fn block(label: &str, content: BlockContent, source: Option<&str>) -> ContextBlock {
-    ContextBlock::new(
-        id(label),
-        content,
-        BlockMeta {
-            source: source.map(String::from),
-            ..BlockMeta::default()
-        },
-    )
+    ContextBlock::new(id(label), content, {
+        let mut meta = BlockMeta::default();
+        meta.source = source.map(String::from);
+        meta
+    })
 }
 
 fn text(label: &str, text: &str, source: Option<&str>) -> ContextBlock {
@@ -51,13 +48,11 @@ fn text(label: &str, text: &str, source: Option<&str>) -> ContextBlock {
 fn call(label: &str, call_id: &str, name: &str) -> ContextBlock {
     ContextBlock::new(
         id(label),
-        BlockContent::ToolCall(ToolCallPayload {
-            tool_name: name.into(),
-            arguments: json!({"path": "a"}),
-        }),
-        BlockMeta {
-            provider_call_id: Some(call_id.into()),
-            ..BlockMeta::default()
+        BlockContent::ToolCall(ToolCallPayload::new(name, json!({"path": "a"}))),
+        {
+            let mut meta = BlockMeta::default();
+            meta.provider_call_id = Some(call_id.into());
+            meta
         },
     )
 }
@@ -68,9 +63,10 @@ fn frame(blocks: Vec<ContextBlock>) -> ContextFrame {
 
 /// Anthropic requires `max_tokens`; the renderer tests always supply one.
 fn anthropic_generation() -> GenerationOptions {
-    GenerationOptions {
-        max_tokens: Some(4096),
-        ..GenerationOptions::default()
+    {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(4096);
+        generation
     }
 }
 
@@ -197,10 +193,10 @@ fn a_chat_turn_left_with_only_sealed_residue_renders_no_assistant_message() {
         text("u0", "hello", Some("user")),
         block(
             "a-residue",
-            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-                format: "openai_chat_completions".into(),
-                item: json!({"refusal": null, "annotations": []}),
-            })]),
+            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
+                "openai_chat_completions",
+                json!({"refusal": null, "annotations": []}),
+            ))]),
             None,
         ),
         text("a-blank", "  \n", None),
@@ -220,10 +216,10 @@ fn a_chat_turn_left_with_only_sealed_residue_renders_no_assistant_message() {
         text("u0", "hello", Some("user")),
         block(
             "a-residue",
-            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-                format: "openai_chat_completions".into(),
-                item: json!({"content": null, "reasoning_content": "thought"}),
-            })]),
+            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
+                "openai_chat_completions",
+                json!({"content": null, "reasoning_content": "thought"}),
+            ))]),
             None,
         ),
         text("u1", "again", Some("user")),
@@ -336,13 +332,11 @@ fn consecutive_renders_of_one_tool_loop_share_their_prefix() {
         call("c0", "toolu_1", "read"),
         block(
             "r0",
-            BlockContent::ToolResult(causa_kernel::ToolResultPayload {
-                call_block_id: id("c0"),
-                status: causa_kernel::ToolResultStatus::Succeeded,
-                output: causa_kernel::ToolOutput::new(json!("file-a")),
-                media: Vec::new(),
-                notes: Vec::new(),
-            }),
+            BlockContent::ToolResult(causa_kernel::ToolResultPayload::new(
+                id("c0"),
+                causa_kernel::ToolResultStatus::Succeeded,
+                causa_kernel::ToolOutput::new(json!("file-a")),
+            )),
             None,
         ),
         text("a0", "the file says a", None),
@@ -354,23 +348,21 @@ fn consecutive_renders_of_one_tool_loop_share_their_prefix() {
     blocks.push(call("c1", "toolu_2", "read"));
     blocks.push(block(
         "r1",
-        BlockContent::ToolResult(causa_kernel::ToolResultPayload {
-            call_block_id: id("c1"),
-            status: causa_kernel::ToolResultStatus::Succeeded,
-            output: causa_kernel::ToolOutput::new(json!("file-b")),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }),
+        BlockContent::ToolResult(causa_kernel::ToolResultPayload::new(
+            id("c1"),
+            causa_kernel::ToolResultStatus::Succeeded,
+            causa_kernel::ToolOutput::new(json!("file-b")),
+        )),
         None,
     ));
     blocks.push(text("a1", "the second file says b", None));
     let round_two = frame(blocks);
 
-    let surface = ToolSurface::from_definitions(vec![ToolDefinition {
-        name: "read".into(),
-        description: "read a file".into(),
-        parameters: json!({"type": "object"}),
-    }]);
+    let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        "read",
+        "read a file",
+        json!({"type": "object"}),
+    )]);
     let first = anthropic_with_tools(&round_one, CacheDirective::StablePrefix, &surface);
     let second = anthropic_with_tools(&round_two, CacheDirective::StablePrefix, &surface);
 
@@ -425,10 +417,10 @@ fn the_stable_prefix_anchor_skips_a_sealed_item_and_moves_backward() {
         text("u0", "look", Some("user")),
         block(
             "a0",
-            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-                format: "anthropic_messages".into(),
-                item: json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
-            })]),
+            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
+                "anthropic_messages",
+                json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
+            ))]),
             None,
         ),
     ]);

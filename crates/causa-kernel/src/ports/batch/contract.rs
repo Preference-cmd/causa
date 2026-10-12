@@ -238,6 +238,7 @@ impl ToolBatch {
 }
 
 /// Context made available to tool batch processors.
+#[non_exhaustive]
 pub struct ProcessorContext<'a> {
     /// Turn identity for the active tool batch.
     pub turn_id: &'a TurnId,
@@ -247,6 +248,22 @@ pub struct ProcessorContext<'a> {
     pub declaration_order: &'a [BlockId],
     /// Cooperative cancellation and deadline control.
     pub control: &'a CallControl,
+}
+impl<'a> ProcessorContext<'a> {
+    /// The context one processor run sees.
+    pub fn new(
+        turn_id: &'a TurnId,
+        round_id: RoundId,
+        declaration_order: &'a [BlockId],
+        control: &'a CallControl,
+    ) -> Self {
+        Self {
+            turn_id,
+            round_id,
+            declaration_order,
+            control,
+        }
+    }
 }
 
 /// Failure to finish a processing phase. Per-call rejection is a result,
@@ -315,6 +332,7 @@ pub enum BatchError {
 /// A result [`ToolBatch::resolve_at`] refused, returned with the reason.
 #[derive(Debug, thiserror::Error)]
 #[error("{error}")]
+#[non_exhaustive]
 pub struct RejectedToolResult {
     /// Why the batch refused the result.
     pub error: BatchError,

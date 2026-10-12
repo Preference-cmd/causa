@@ -9,6 +9,7 @@ use crate::context::block::{ContentPart, TextPayload, WireMeta};
 
 /// A tool call as the model proposed it, before the caller assigns its declaration `BlockId`. Exactly what the gateway parsed off the wire.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolCallDraft {
     /// Name of the tool the model asked to invoke.
     pub tool_name: String,
@@ -21,10 +22,22 @@ pub struct ToolCallDraft {
     #[serde(default)]
     pub provider_call_id: Option<String>,
 }
+impl ToolCallDraft {
+    /// A draft call with no provider call id.
+    pub fn new(tool_name: impl Into<String>, arguments: serde_json::Value) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            arguments,
+            provider_call_id: None,
+        }
+    }
+}
 
 /// Why the model stopped producing output for this round, as reported by
 /// the gateway. The kernel validates only the EndTurn/ToolUse structural
 /// pairing; interpreting terminal reasons is driver policy.
+///
+/// Exhaustive on purpose: the runtime decides what a turn does next from this value, so a new one is a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelStopReason {
@@ -85,6 +98,7 @@ impl ModelResponse {
 /// One item the model produced: its content plus the wire fields that
 /// content does not hold.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ModelItem {
     /// What the item says or asks.
     pub content: ModelItemContent,
@@ -93,6 +107,15 @@ pub struct ModelItem {
     /// never reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire: Option<WireMeta>,
+}
+impl ModelItem {
+    /// An item with no wire residue.
+    pub fn new(content: ModelItemContent) -> Self {
+        Self {
+            content,
+            wire: None,
+        }
+    }
 }
 
 impl ModelItem {
@@ -114,6 +137,8 @@ impl ModelItem {
 }
 
 /// The content of a [`ModelItem`].
+///
+/// Exhaustive on purpose: conversion to blocks handles every shape, so a new one is a breaking change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelItemContent {
     /// Ordered content parts (text and sealed items) that commit as one

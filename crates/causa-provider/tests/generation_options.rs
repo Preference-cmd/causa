@@ -1,9 +1,8 @@
 //! Generation options reach actual batch/SSE HTTP bodies or fail before send.
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, CallControl, CancellationToken, ContentPart,
-    ContextBlock, ContextFrame, GenerationOptions, InvocationId, ModelGateway,
-    ModelInvokeErrorKind, ModelRef, ModelRequest, ReasoningEffort, RoundId, StreamDelta,
-    TextPayload, ToolSurface, TurnId,
+    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, ContextBlock,
+    ContextFrame, GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef,
+    ModelRequest, ReasoningEffort, RoundId, StreamDelta, TextPayload, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -16,25 +15,23 @@ use wiremock::{
 };
 
 fn request(generation: GenerationOptions) -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("generation"),
-            round_id: RoundId(0),
-        },
-        frame: ContextFrame {
-            blocks: vec![ContextBlock::new(
-                BlockId::new(uuid::Uuid::from_u128(1)),
-                BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-                BlockMeta {
-                    source: Some("user".into()),
-                    ..Default::default()
-                },
-            )],
-        },
-        model: ModelRef::new("configured-model"),
-        tool_surface: ToolSurface::empty(),
-        generation,
-        cache: CacheDirective::None,
+    {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("generation"),
+                round_id: RoundId(0),
+            },
+            ContextFrame {
+                blocks: vec![ContextBlock::new(
+                    BlockId::new(uuid::Uuid::from_u128(1)),
+                    BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
+                    BlockMeta::from_source("user"),
+                )],
+            },
+            ModelRef::new("configured-model"),
+        );
+        request.generation = generation;
+        request
     }
 }
 fn control() -> CallControl {
@@ -89,11 +86,12 @@ async fn configured_options_survive_batch_and_stream_request_preparation() {
         for effort in choices {
             let server = MockServer::start().await;
             let gateway = gateway(protocol, &server);
-            let generation = GenerationOptions {
-                reasoning_effort: effort,
-                max_tokens: Some(8192),
-                temperature: (effort != Some(ReasoningEffort::High)).then_some(0.5),
-                ..Default::default()
+            let generation = {
+                let mut generation = GenerationOptions::default();
+                generation.reasoning_effort = effort;
+                generation.max_tokens = Some(8192);
+                generation.temperature = (effort != Some(ReasoningEffort::High)).then_some(0.5);
+                generation
             };
             let mut expected = json!({"model":"configured-model"});
             expected[match protocol {
@@ -180,53 +178,58 @@ async fn invalid_generation_options_never_send_batch_or_stream_http() {
         // A limit is supplied wherever the case is not about the limit: on
         // Anthropic a missing `max_tokens` is its own InvalidRequest.
         let mut cases = vec![
-            GenerationOptions {
-                max_tokens: Some(0),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(0);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(64),
-                temperature: Some(f32::NAN),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.temperature = Some(f32::NAN);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(64),
-                temperature: Some(-0.1),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.temperature = Some(-0.1);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(64),
-                temperature: Some(2.1),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.temperature = Some(2.1);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(64),
-                reasoning_effort: Some(ReasoningEffort::High),
-                temperature: Some(1.0),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.reasoning_effort = Some(ReasoningEffort::High);
+                generation.temperature = Some(1.0);
+                generation
             },
         ];
         if protocol == 2 {
             // `Minimal` has no Anthropic wire level; the others render.
-            cases.push(GenerationOptions {
-                max_tokens: Some(64),
-                reasoning_effort: Some(ReasoningEffort::Minimal),
-                ..Default::default()
+            cases.push({
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.reasoning_effort = Some(ReasoningEffort::Minimal);
+                generation
             });
             // The required output limit is never defaulted.
-            cases.push(GenerationOptions {
-                max_tokens: None,
-                ..Default::default()
+            cases.push(GenerationOptions::default());
+            cases.push({
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.output_schema = Some(json!({"type":"object"}));
+                generation
             });
-            cases.push(GenerationOptions {
-                max_tokens: Some(64),
-                output_schema: Some(json!({"type":"object"})),
-                ..Default::default()
-            });
-            cases.push(GenerationOptions {
-                max_tokens: Some(64),
-                temperature: Some(1.1),
-                ..Default::default()
+            cases.push({
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.temperature = Some(1.1);
+                generation
             });
         }
         for generation in cases {

@@ -204,23 +204,16 @@ pub(crate) fn without_keys(value: &Value, keys: &[&str]) -> Value {
 
 /// The residue of a wire item as block wire metadata for `protocol`.
 pub(crate) fn wire_meta(protocol: Protocol, fields: Value) -> WireMeta {
-    WireMeta {
-        format: protocol.as_str().to_owned(),
-        fields,
-    }
+    WireMeta::new(protocol.as_str().to_owned(), fields)
 }
 
 /// One `ModelItem` holding a single sealed part of `protocol`'s format. The
 /// value is carried uninterpreted; the matching emitter writes it back
 /// verbatim, and every other emitter skips it.
 pub(crate) fn sealed_item(protocol: Protocol, item: Value) -> ModelItem {
-    ModelItem {
-        content: ModelItemContent::Parts(vec![ContentPart::Sealed(SealedPart {
-            format: protocol.as_str().to_owned(),
-            item,
-        })]),
-        wire: None,
-    }
+    ModelItem::new(ModelItemContent::Parts(vec![ContentPart::Sealed(
+        SealedPart::new(protocol.as_str().to_owned(), item),
+    )]))
 }
 
 /// The object a wire item is rebuilt on: the stored residue when it is an

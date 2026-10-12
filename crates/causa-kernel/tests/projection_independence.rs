@@ -28,13 +28,11 @@ fn declaration(context: &mut Context, name: &str) -> BlockId {
 
 fn complete(context: &mut Context, call_block_id: BlockId, output: serde_json::Value) {
     let id = common::block_id();
-    let result = ToolResultPayload {
+    let result = ToolResultPayload::new(
         call_block_id,
-        status: ToolResultStatus::Succeeded,
-        output: ToolOutput::new(output),
-        media: vec![],
-        notes: vec![],
-    };
+        ToolResultStatus::Succeeded,
+        ToolOutput::new(output),
+    );
     validate_tool_result_append(context.blocks(), &[(id, result.clone())]).unwrap();
     context
         .apply(

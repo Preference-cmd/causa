@@ -10,8 +10,7 @@ use causa::kernel::{
     ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa::runtime::{
-    ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions,
-    TurnRunner,
+    ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
 };
 
 use serde_json::json;
@@ -30,30 +29,27 @@ fn text(value: u128, content: &str) -> ContextBlock {
     )
 }
 fn output(tool_use: bool) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: if tool_use {
                 vec![
                     ModelItem::text("checking"),
-                    ModelItem::tool_call(ToolCallDraft {
-                        tool_name: "echo".into(),
-                        arguments: json!({}),
-                        provider_call_id: Some("provider-echo".into()),
+                    ModelItem::tool_call({
+                        let mut call = ToolCallDraft::new("echo", json!({}));
+                        call.provider_call_id = Some("provider-echo".into());
+                        call
                     }),
                 ]
             } else {
                 vec![ModelItem::text("done")]
             },
         },
-        usage: None,
-        stop_reason: if tool_use {
+        if tool_use {
             ModelStopReason::ToolUse
         } else {
             ModelStopReason::EndTurn
         },
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+    )
 }
 struct CapturingGateway {
     requests: Mutex<Vec<ModelRequest>>,
@@ -111,13 +107,11 @@ impl Tool for Echo {
     }
     async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("echoed")),
-            media: vec![],
-            notes: vec![],
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("echoed")),
+        )
     }
 }
 fn echo(definition: ToolDefinition, calls: Arc<AtomicUsize>) -> Arc<ToolExecutor> {
@@ -130,11 +124,7 @@ fn echo(definition: ToolDefinition, calls: Arc<AtomicUsize>) -> Arc<ToolExecutor
     )
 }
 fn definition() -> ToolDefinition {
-    ToolDefinition {
-        name: "echo".into(),
-        description: "echo tool".into(),
-        parameters: json!({"type":"object"}),
-    }
+    ToolDefinition::new("echo", "echo tool", json!({"type":"object"}))
 }
 
 #[derive(Default)]
@@ -163,16 +153,12 @@ impl ContextPreparer for InputPreparer {
             source.stages.push("read");
             context
                 .apply(Vec::new(), vec![block])
-                .map_err(|error| PrepareError {
-                    message: error.to_string(),
-                })?;
+                .map_err(|error| PrepareError::new(error.to_string()))?;
             source.stages.push("committed");
             source.pending.pop_front();
             source.stages.push("confirmed");
             if self.fail_after_commit {
-                return Err(PrepareError {
-                    message: "failure after committed input".into(),
-                });
+                return Err(PrepareError::new("failure after committed input"));
             }
         }
         let mut frame = context.frame();
@@ -208,7 +194,6 @@ fn includes_text(request: &ModelRequest, wanted: &str) -> usize {
 fn control() -> CallControl {
     CallControl::new(CancellationToken::new(), None)
 }
-
 
 #[tokio::test]
 async fn source_commits_and_confirms_each_input_once_and_observation_refreshes_per_invocation() {
@@ -417,12 +402,10 @@ impl ContextPreparer for BudgetPreparer {
         let total = estimate.total();
         self.estimates.lock().unwrap().push(estimate);
         if total > self.maximum {
-            return Err(PrepareError {
-                message: format!(
-                    "estimated request cost {total} exceeds {} units",
-                    self.maximum
-                ),
-            });
+            return Err(PrepareError::new(format!(
+                "estimated request cost {total} exceeds {} units",
+                self.maximum
+            )));
         }
         Ok(context.frame())
     }
@@ -440,9 +423,10 @@ async fn schema_only_threshold_crossing_changes_request_admission_with_identical
     .unwrap();
     let baseline_blocks = context.blocks().to_vec();
     let model = ModelRef::new("budget-model");
-    let generation = GenerationOptions {
-        max_tokens: Some(32),
-        ..Default::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(32);
+        generation
     };
     let small = definition();
     let mut large = small.clone();
@@ -455,21 +439,11 @@ async fn schema_only_threshold_crossing_changes_request_admission_with_identical
     };
     let small_cost = estimate(
         &context,
-        &RoundInfo {
-            invocation_id: &invocation,
-            model: &model,
-            tool_surface: &small_tools,
-            generation: &generation,
-        },
+        &RoundInfo::new(&invocation, &model, &small_tools, &generation),
     );
     let large_cost = estimate(
         &context,
-        &RoundInfo {
-            invocation_id: &invocation,
-            model: &model,
-            tool_surface: &large_tools,
-            generation: &generation,
-        },
+        &RoundInfo::new(&invocation, &model, &large_tools, &generation),
     );
     assert_eq!(small_cost.blocks, large_cost.blocks);
     assert_eq!(small_cost.media, 256);
@@ -525,12 +499,7 @@ async fn schema_only_threshold_crossing_changes_request_admission_with_identical
     description_changed.definitions[0].description = "long description ".repeat(200);
     let description_cost = estimate(
         &context,
-        &RoundInfo {
-            invocation_id: &invocation,
-            model: &model,
-            tool_surface: &description_changed,
-            generation: &generation,
-        },
+        &RoundInfo::new(&invocation, &model, &description_changed, &generation),
     );
     assert!(description_cost.tools > estimates[0].tools);
 }

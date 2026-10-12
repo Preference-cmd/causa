@@ -30,12 +30,12 @@ struct MemoryAssets(Mutex<Vec<u8>>);
 impl ArtifactStore for MemoryAssets {
     async fn persist(&self, data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
         *self.0.lock().unwrap() = data.to_vec();
-        Ok(ArtifactRef {
-            id: format!("blake3-{}", &blake3::hash(data).to_hex()[..8]),
-            size_bytes: data.len(),
-            kind: hint.kind,
-            persisted: true,
-        })
+        Ok(ArtifactRef::new(
+            format!("blake3-{}", &blake3::hash(data).to_hex()[..8]),
+            data.len(),
+            hint.kind,
+            true,
+        ))
     }
     async fn read(
         &self,
@@ -52,11 +52,11 @@ struct RenderChart(Arc<MemoryAssets>);
 #[async_trait]
 impl Tool for RenderChart {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "render_chart".into(),
-            description: "render a chart image".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
+        ToolDefinition::new(
+            "render_chart",
+            "render a chart image",
+            serde_json::json!({"type": "object"}),
+        )
     }
     async fn execute(
         &self,
@@ -68,22 +68,25 @@ impl Tool for RenderChart {
             .0
             .persist(
                 &bytes,
-                ArtifactHint {
-                    tool_name: ctx.input.tool_name.clone(),
-                    call_block_id: ctx.call_block_id,
-                    kind: ArtifactKind::Binary,
-                },
+                ArtifactHint::new(
+                    ctx.input.tool_name.clone(),
+                    ctx.call_block_id,
+                    ArtifactKind::Binary,
+                ),
             )
             .await
             .expect("ingest");
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(serde_json::json!(
-                "chart ready with explanatory details. ".repeat(100)
-            )),
-            media: vec![causa_kernel::MediaRef::new("image/png", artifact.id)],
-            notes: vec![TextPayload::new("Image reference preserved.")],
+        {
+            let mut result = ToolResultPayload::new(
+                ctx.call_block_id,
+                ToolResultStatus::Succeeded,
+                ToolOutput::new(serde_json::json!(
+                    "chart ready with explanatory details. ".repeat(100)
+                )),
+            );
+            result.media = vec![causa_kernel::MediaRef::new("image/png", artifact.id)];
+            result.notes = vec![TextPayload::new("Image reference preserved.")];
+            result
         }
     }
 }
@@ -100,29 +103,22 @@ impl ModelGateway for Recorder {
         self.0.lock().unwrap().push(req.clone());
         let n = self.0.lock().unwrap().len();
         Ok(if n == 1 {
-            ModelOutput {
-                response: ModelResponse {
-                    items: vec![ModelItem::tool_call(causa_kernel::ToolCallDraft {
-                        tool_name: "render_chart".into(),
-                        arguments: serde_json::json!({}),
-                        provider_call_id: None,
-                    })],
+            ModelOutput::new(
+                ModelResponse {
+                    items: vec![ModelItem::tool_call(causa_kernel::ToolCallDraft::new(
+                        "render_chart",
+                        serde_json::json!({}),
+                    ))],
                 },
-                usage: None,
-                stop_reason: ModelStopReason::ToolUse,
-                reasoning: None,
-                raw_stop_reason: None,
-            }
+                ModelStopReason::ToolUse,
+            )
         } else {
-            ModelOutput {
-                response: ModelResponse {
+            ModelOutput::new(
+                ModelResponse {
                     items: vec![ModelItem::text("I see the chart")],
                 },
-                usage: None,
-                stop_reason: ModelStopReason::EndTurn,
-                reasoning: None,
-                raw_stop_reason: None,
-            }
+                ModelStopReason::EndTurn,
+            )
         })
     }
 }
@@ -150,13 +146,11 @@ async fn main() {
         .with_token_counter(Arc::new(DemoCounter))
         .with_artifact_store(outputs.clone());
     let executor = Arc::new(
-        ToolExecutor::new(
-            vec![Arc::new(RenderChart(assets.clone()))],
-            ToolExecutorOptions {
-                after: vec![Arc::new(budget)],
-                ..Default::default()
-            },
-        )
+        ToolExecutor::new(vec![Arc::new(RenderChart(assets.clone()))], {
+            let mut options = ToolExecutorOptions::default();
+            options.after = vec![Arc::new(budget)];
+            options
+        })
         .expect("unique tools"),
     );
 
@@ -170,10 +164,7 @@ async fn main() {
             causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
                 TextPayload::new("chart the numbers"),
             )]),
-            causa_kernel::BlockMeta {
-                source: Some("user".into()),
-                ..Default::default()
-            },
+            causa_kernel::BlockMeta::from_source("user"),
         )])
         .commit()
         .unwrap();

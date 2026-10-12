@@ -7,35 +7,28 @@ use async_trait::async_trait;
 use causa_kernel::{
     CallControl, Context, InvocationId, ModelGateway, ModelInvokeError, ModelItem, ModelOutput,
     ModelRef, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage,
-    ReasoningPayload, RoundId, StreamDelta, TextPayload, ToolSurface, TurnId,
-    completed_model_stream,
+    ReasoningPayload, RoundId, StreamDelta, TextPayload, TurnId, completed_model_stream,
 };
 use futures_util::StreamExt;
 
 fn request(ctx: &Context) -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
+    ModelRequest::new(
+        InvocationId {
             turn_id: TurnId::new("t1"),
             round_id: RoundId(0),
         },
-        frame: ctx.frame(),
-        model: ModelRef::new("fake"),
-        tool_surface: ToolSurface::empty(),
-        generation: Default::default(),
-        cache: causa_kernel::CacheDirective::None,
-    }
+        ctx.frame(),
+        ModelRef::new("fake"),
+    )
 }
 
 fn output(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text(text)],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 /// A batch-only gateway: never overrides `stream`.

@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let context = Context::from_blocks(vec![ContextBlock::new(
         new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("Say hello in one sentence."))]),
-        BlockMeta { source: Some("user".into()), ..Default::default() },
+        BlockMeta::from_source("user"),
     )])?;
     let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?));
     let outcome = runner

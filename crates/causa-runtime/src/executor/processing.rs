@@ -26,12 +26,12 @@ impl BoundTools<'_> {
         }
         let declaration_order = batch.declaration_ids();
         self.control.check().map_err(ToolProcessingError::Control)?;
-        let context = ProcessorContext {
-            turn_id: &self.invocation_id.turn_id,
-            round_id: self.invocation_id.round_id,
-            declaration_order: &declaration_order,
-            control: &self.control,
-        };
+        let context = ProcessorContext::new(
+            &self.invocation_id.turn_id,
+            self.invocation_id.round_id,
+            &declaration_order,
+            &self.control,
+        );
         self.reject_unbound(batch)?;
         process_phase(
             &self.executor.options.before,
@@ -81,15 +81,11 @@ impl BoundTools<'_> {
             resolve(
                 batch,
                 call_block_id,
-                ToolResultPayload {
+                ToolResultPayload::new(
                     call_block_id,
-                    status: ToolResultStatus::Rejected,
-                    output: ToolOutput::new(
-                        serde_json::json!({"error": format!("unknown tool: {name}")}),
-                    ),
-                    media: Vec::new(),
-                    notes: Vec::new(),
-                },
+                    ToolResultStatus::Rejected,
+                    ToolOutput::new(serde_json::json!({"error": format!("unknown tool: {name}")})),
+                ),
             )?;
         }
         Ok(())

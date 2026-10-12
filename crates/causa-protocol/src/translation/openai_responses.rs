@@ -407,9 +407,11 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                         }
                     }
                 }
-                items.push(ModelItem {
-                    content: ModelItemContent::Parts(parts),
-                    wire: Some(context_frame::wire_meta(Protocol::OpenAiResponses, fields)),
+                items.push({
+                    let mut message = ModelItem::new(ModelItemContent::Parts(parts));
+                    message.wire =
+                        Some(context_frame::wire_meta(Protocol::OpenAiResponses, fields));
+                    message
                 });
             }
             Some("function_call") => {
@@ -422,16 +424,17 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                     .and_then(Value::as_str)
                     .ok_or_else(|| undecodable("function_call: missing `name` string"))?;
                 let arguments = context_frame::decode_wire_arguments(item.get("arguments"))?;
-                items.push(ModelItem {
-                    wire: Some(context_frame::wire_meta(
+                items.push({
+                    let mut call_item = ModelItem::tool_call({
+                        let mut call = ToolCallDraft::new(name.to_string(), arguments);
+                        call.provider_call_id = Some(call_id.to_string());
+                        call
+                    });
+                    call_item.wire = Some(context_frame::wire_meta(
                         Protocol::OpenAiResponses,
                         context_frame::without_keys(item, &["call_id", "name"]),
-                    )),
-                    ..ModelItem::tool_call(ToolCallDraft {
-                        tool_name: name.to_string(),
-                        arguments,
-                        provider_call_id: Some(call_id.to_string()),
-                    })
+                    ));
+                    call_item
                 });
             }
             Some("reasoning") => {
@@ -489,18 +492,16 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
         .filter(|v| v.is_object())
         .map(crate::translation::usage::model_usage_from_openai_responses);
 
-    Ok(ModelOutput {
-        response: ModelResponse { items },
-        usage,
-        stop_reason,
-        raw_stop_reason: Some(raw_stop_reason),
-        reasoning: if reasoning_parts.is_empty() {
+    Ok({
+        let mut output = ModelOutput::new(ModelResponse { items }, stop_reason);
+        output.usage = usage;
+        output.raw_stop_reason = Some(raw_stop_reason);
+        output.reasoning = if reasoning_parts.is_empty() {
             None
         } else {
-            Some(ReasoningPayload {
-                text: reasoning_parts.join("\n"),
-            })
-        },
+            Some(ReasoningPayload::new(reasoning_parts.join("\n")))
+        };
+        output
     })
 }
 
@@ -615,17 +616,18 @@ mod tests {
 
     #[test]
     fn tools_generation_and_byte_determinism() {
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
-            name: "read".into(),
-            description: "read a file".into(),
-            parameters: json!({"type": "object"}),
-        }]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+            "read",
+            "read a file",
+            json!({"type": "object"}),
+        )]);
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
-        let generation = GenerationOptions {
-            temperature: Some(0.5),
-            max_tokens: Some(256),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.temperature = Some(0.5);
+            generation.max_tokens = Some(256);
+            generation
         };
         let v = render_openai_responses_input(
             &f,
@@ -669,9 +671,10 @@ mod tests {
     #[test]
     fn output_schema_maps_and_cache_directive_is_a_noop() {
         let f = frame(vec![text(0, "hi", Some("user"))]);
-        let generation = GenerationOptions {
-            output_schema: Some(json!({"type": "object"})),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.output_schema = Some(json!({"type": "object"}));
+            generation
         };
         let v = render_openai_responses_input(
             &f,

@@ -11,6 +11,8 @@ pub struct CallControl {
 }
 
 /// Why a control check failed.
+///
+/// Exhaustive on purpose: a stop is a cancellation or a deadline, and callers map each to their own result.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ControlError {
     /// The turn was cancelled.

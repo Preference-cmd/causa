@@ -36,23 +36,16 @@ pub fn ctx(_s: &str) -> Context {
 }
 
 pub fn endturn_output(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text(text)],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 pub fn draft(tool_name: &str, args: serde_json::Value) -> ToolCallDraft {
-    ToolCallDraft {
-        tool_name: tool_name.into(),
-        arguments: args,
-        provider_call_id: None,
-    }
+    ToolCallDraft::new(tool_name, args)
 }
 
 /// A fixture block; the caller chooses its identity and metadata explicitly.
@@ -68,9 +61,6 @@ pub fn parts_block(
     causa_kernel::ContextBlock::new(
         id,
         causa_kernel::BlockContent::Parts(parts),
-        causa_kernel::BlockMeta {
-            source: Some(source.to_owned()),
-            ..Default::default()
-        },
+        causa_kernel::BlockMeta::from_source(source.to_owned()),
     )
 }

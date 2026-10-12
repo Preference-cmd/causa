@@ -17,6 +17,7 @@ use crate::ports::control::CallControl;
 /// The model-facing description of one callable tool; renderers map it onto
 /// the protocol's tool entries (name, description, parameter schema).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolDefinition {
     /// The name the model uses to invoke the tool.
     pub name: String,
@@ -26,10 +27,25 @@ pub struct ToolDefinition {
     /// rendered request.
     pub parameters: serde_json::Value,
 }
+impl ToolDefinition {
+    /// A definition from its name, description and JSON Schema parameters.
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
+    }
+}
 
 /// The tool definitions offered to the model for one invocation; renderers
 /// turn this into the protocol's `tools` array.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolSurface {
     /// Model-facing [`ToolDefinition`]s, in offer order.
     pub definitions: Vec<ToolDefinition>,
@@ -51,6 +67,7 @@ impl ToolSurface {
 
 /// Identity of one tool dispatch, handed to [`Tool::execute`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ToolCallContext {
     /// The declaration block whose result this dispatch produces.
     pub call_block_id: BlockId,
@@ -60,6 +77,16 @@ pub struct ToolCallContext {
     /// to the returned result's notes; tool implementations should return
     /// only notes they add and must not copy this field into the result.
     pub result_notes: Vec<TextPayload>,
+}
+impl ToolCallContext {
+    /// A call context with no result notes.
+    pub fn new(call_block_id: BlockId, input: ToolCallPayload) -> Self {
+        Self {
+            call_block_id,
+            input,
+            result_notes: Vec::new(),
+        }
+    }
 }
 
 impl ToolCallContext {
@@ -75,6 +102,7 @@ impl ToolCallContext {
 
 /// Provenance a caller attaches to bytes handed to [`ArtifactStore::persist`],
 /// so the store can label what it receives.
+#[non_exhaustive]
 pub struct ArtifactHint {
     /// The tool whose output produced the bytes.
     pub tool_name: String,
@@ -82,6 +110,16 @@ pub struct ArtifactHint {
     pub call_block_id: BlockId,
     /// The [`ArtifactKind`] classification of the bytes.
     pub kind: ArtifactKind,
+}
+impl ArtifactHint {
+    /// A hint for the artifact one call produced.
+    pub fn new(tool_name: impl Into<String>, call_block_id: BlockId, kind: ArtifactKind) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            call_block_id,
+            kind,
+        }
+    }
 }
 
 /// Error surface of the [`ArtifactStore`] port.

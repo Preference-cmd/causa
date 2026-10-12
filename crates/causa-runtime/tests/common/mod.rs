@@ -5,15 +5,12 @@ use causa_kernel::*;
 use causa_runtime::{ToolExecutor, ToolExecutorOptions, TurnRunOptions, TurnRunner, new_block_id};
 use std::sync::{Arc, Mutex};
 pub fn endturn_output(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text(text)],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 pub fn tooluse_output(text: &str, tool_name: &str, args: serde_json::Value) -> ModelOutput {
@@ -21,25 +18,18 @@ pub fn tooluse_output(text: &str, tool_name: &str, args: serde_json::Value) -> M
 }
 
 pub fn tooluse_calls_output(text: &str, calls: Vec<ToolCallDraft>) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: std::iter::once(ModelItem::text(text))
                 .chain(calls.into_iter().map(ModelItem::tool_call))
                 .collect(),
         },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::ToolUse,
+    )
 }
 
 pub fn draft(tool_name: &str, args: serde_json::Value) -> ToolCallDraft {
-    ToolCallDraft {
-        tool_name: tool_name.into(),
-        arguments: args,
-        provider_call_id: None,
-    }
+    ToolCallDraft::new(tool_name, args)
 }
 
 pub fn ctrl() -> CallControl {
@@ -59,10 +49,7 @@ pub fn text_block(text: &str) -> ContextBlock {
     ContextBlock::new(
         new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )
 }
 pub fn input(text: &str) -> Context {
@@ -104,19 +91,13 @@ pub struct EchoTool;
 #[async_trait]
 impl Tool for EchoTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".into(),
-            description: "echo".into(),
-            parameters: serde_json::json!({"type":"object"}),
-        }
+        ToolDefinition::new("echo", "echo", serde_json::json!({"type":"object"}))
     }
     async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(call.input.arguments.clone()),
-            media: vec![],
-            notes: vec![],
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(call.input.arguments.clone()),
+        )
     }
 }

@@ -46,13 +46,11 @@ impl ToolBatchProcessor for Count {
 async fn synchronous_before_cancel_preserves_mutations_and_stops_remaining_stages() {
     let count = Arc::new(AtomicUsize::new(0));
     let tool = NamedTool::new("work");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(CancelProcessor), Arc::new(Count(count.clone()))],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(CancelProcessor), Arc::new(Count(count.clone()))];
+        options
+    });
     let mut batch = batch(&["work", "work"]);
     assert!(matches!(
         executor
@@ -75,13 +73,11 @@ async fn synchronous_before_cancel_preserves_mutations_and_stops_remaining_stage
 async fn synchronous_after_cancel_returns_error_even_with_all_results_and_preserves_edits() {
     let count = Arc::new(AtomicUsize::new(0));
     let tool = NamedTool::new("work");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            after: vec![Arc::new(CancelProcessor), Arc::new(Count(count.clone()))],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.after = vec![Arc::new(CancelProcessor), Arc::new(Count(count.clone()))];
+        options
+    });
     let mut batch = batch(&["work"]);
     assert!(matches!(
         executor
@@ -263,14 +259,16 @@ async fn cancel_during_before_and_after_wait_keeps_current_materials() {
             entered: entered.clone(),
         })];
         let options = match phase {
-            ToolProcessorPhase::Before => ToolExecutorOptions {
-                before: processors,
-                ..Default::default()
-            },
-            ToolProcessorPhase::After => ToolExecutorOptions {
-                after: processors,
-                ..Default::default()
-            },
+            ToolProcessorPhase::Before => {
+                let mut options = ToolExecutorOptions::default();
+                options.before = processors;
+                options
+            }
+            ToolProcessorPhase::After => {
+                let mut options = ToolExecutorOptions::default();
+                options.after = processors;
+                options
+            }
         };
         let executor = Arc::new(executor(vec![tool.clone()], options));
         let task = tokio::spawn(async move {

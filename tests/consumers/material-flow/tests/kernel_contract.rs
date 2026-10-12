@@ -22,10 +22,10 @@ fn response(tool: &str) -> ModelResponse {
     ModelResponse {
         items: vec![
             ModelItem::text("selected output"),
-            ModelItem::tool_call(ToolCallDraft {
-                tool_name: tool.into(),
-                arguments: json!({"query":"same"}),
-                provider_call_id: Some("provider-new".into()),
+            ModelItem::tool_call({
+                let mut call = ToolCallDraft::new(tool, json!({"query":"same"}));
+                call.provider_call_id = Some("provider-new".into());
+                call
             }),
         ],
     }
@@ -64,13 +64,11 @@ fn material_driver_builds_work_only_from_new_blocks_and_preserves_failed_inputs(
         .resolve_at(
             0,
             id(6),
-            ToolResultPayload {
-                call_block_id: id(5),
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!({"answer":42})),
-                media: vec![],
-                notes: vec![],
-            },
+            ToolResultPayload::new(
+                id(5),
+                ToolResultStatus::Succeeded,
+                ToolOutput::new(json!({"answer":42})),
+            ),
         )
         .unwrap();
     let results = batch
@@ -152,13 +150,11 @@ fn pure_errors_leave_response_ids_and_batch_available_to_the_caller() {
         .resolve_at(
             0,
             id(3),
-            ToolResultPayload {
-                call_block_id: id(2),
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!("ok")),
-                media: vec![],
-                notes: vec![],
-            },
+            ToolResultPayload::new(
+                id(2),
+                ToolResultStatus::Succeeded,
+                ToolOutput::new(json!("ok")),
+            ),
         )
         .unwrap();
     let (result_id, result) = batch.results()[0].result().unwrap();

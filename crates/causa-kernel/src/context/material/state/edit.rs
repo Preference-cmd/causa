@@ -40,6 +40,7 @@ pub enum EditError {
 /// An edit failure together with every submitted block of edit material.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("context edit failed: {reason}")]
+#[non_exhaustive]
 pub struct EditFailure {
     /// The validation failure.
     #[source]

@@ -162,9 +162,10 @@ fn cumulative_usage_snapshots_and_unknown_wire_bytes_are_not_double_counted_or_u
         .unwrap();
     let usage = output.usage.unwrap();
     assert_eq!((usage.input_tokens, usage.output_tokens), (7, 3));
-    let limits = StreamLimits {
-        max_total_bytes: 80,
-        ..StreamLimits::default()
+    let limits = {
+        let mut limits = StreamLimits::default();
+        limits.max_total_bytes = 80;
+        limits
     };
     let unknown = response_event(json!({"type":"future.unknown"})).repeat(20);
     assert_eq!(

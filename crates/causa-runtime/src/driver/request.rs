@@ -15,12 +15,12 @@ pub(super) async fn prepare(
     control: &CallControl,
 ) -> Result<ModelRequest, TurnInterruption> {
     let frame = if let Some(preparer) = &options.preparer {
-        let round_info = RoundInfo {
+        let round_info = RoundInfo::new(
             invocation_id,
-            model: &options.model,
+            &options.model,
             tool_surface,
-            generation: &options.generation,
-        };
+            &options.generation,
+        );
         let call_control = control.clone();
 
         let prepared = tokio::select! {
@@ -38,12 +38,11 @@ pub(super) async fn prepare(
     } else {
         context.frame()
     };
-    Ok(ModelRequest {
-        invocation_id: invocation_id.clone(),
-        frame,
-        model: options.model.clone(),
-        tool_surface: tool_surface.clone(),
-        generation: options.generation.clone(),
-        cache: options.cache,
+    Ok({
+        let mut request = ModelRequest::new(invocation_id.clone(), frame, options.model.clone());
+        request.tool_surface = tool_surface.clone();
+        request.generation = options.generation.clone();
+        request.cache = options.cache;
+        request
     })
 }

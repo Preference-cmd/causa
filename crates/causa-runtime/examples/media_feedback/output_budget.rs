@@ -194,11 +194,7 @@ impl ToolBatchProcessor for ToolOutputBudgetProcessor {
                     store
                         .persist(
                             &full_output,
-                            ArtifactHint {
-                                tool_name,
-                                call_block_id: call_id,
-                                kind: ArtifactKind::FullOutput,
-                            },
+                            ArtifactHint::new(tool_name, call_id, ArtifactKind::FullOutput),
                         )
                         .await
                         .map_err(|error| ProcessorError::Failed(error.to_string()))?,
@@ -213,11 +209,9 @@ impl ToolBatchProcessor for ToolOutputBudgetProcessor {
             // truncation. Keep only a newly stored artifact for this exact
             // original content.
             output.artifact = artifact;
-            let meta = output.meta.get_or_insert(causa_kernel::ToolOutputMeta {
-                duration_ms: None,
-                original_tokens: None,
-                extra: None,
-            });
+            let meta = output
+                .meta
+                .get_or_insert(causa_kernel::ToolOutputMeta::default());
             meta.original_tokens = Some(output_tokens);
         }
         Ok(())

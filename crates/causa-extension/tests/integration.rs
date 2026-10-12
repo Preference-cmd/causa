@@ -28,14 +28,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn call_context(tool_name: &str, arguments: serde_json::Value) -> ToolCallContext {
-    ToolCallContext {
-        call_block_id: BlockId::new(uuid::Uuid::now_v7()),
-        input: ToolCallPayload {
-            tool_name: tool_name.into(),
-            arguments,
-        },
-        result_notes: Vec::new(),
-    }
+    ToolCallContext::new(
+        BlockId::new(uuid::Uuid::now_v7()),
+        ToolCallPayload::new(tool_name, arguments),
+    )
 }
 
 // ---- in-process MCP server fixture ---------------------------------------------
@@ -369,24 +365,18 @@ fn echo_static_tool() -> Arc<dyn causa_kernel::Tool> {
     #[async_trait]
     impl causa_kernel::Tool for Echo {
         fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: "echo".into(),
-                description: "echo".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            }
+            ToolDefinition::new("echo", "echo", serde_json::json!({"type": "object"}))
         }
         async fn execute(
             &self,
             ctx: &ToolCallContext,
             _control: &CallControl,
         ) -> ToolResultPayload {
-            ToolResultPayload {
-                call_block_id: ctx.call_block_id,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(serde_json::json!({"echo": ctx.input.arguments})),
-                media: Vec::new(),
-                notes: Vec::new(),
-            }
+            ToolResultPayload::new(
+                ctx.call_block_id,
+                ToolResultStatus::Succeeded,
+                ToolOutput::new(serde_json::json!({"echo": ctx.input.arguments})),
+            )
         }
     }
     Arc::new(Echo)
@@ -526,34 +516,24 @@ impl ModelGateway for ScriptedGateway {
 }
 
 fn tool_use_output(tool: &str, args: serde_json::Value) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![
                 ModelItem::text("calling"),
-                ModelItem::tool_call(causa_kernel::ToolCallDraft {
-                    tool_name: tool.into(),
-                    arguments: args,
-                    provider_call_id: None,
-                }),
+                ModelItem::tool_call(causa_kernel::ToolCallDraft::new(tool, args)),
             ],
         },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::ToolUse,
+    )
 }
 
 fn end_turn(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text(text)],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 #[tokio::test]
@@ -571,17 +551,11 @@ async fn kernel_turn_completes_through_the_mcp_source() {
     });
     let runner = TurnRunner::new(gateway, executor);
     let mut options = TurnRunOptions::new(ModelRef::new("fake"));
-    options.limits = TurnLimits {
-        max_model_rounds: 5,
-        max_tool_calls: 8,
-    };
+    options.limits = TurnLimits::new(5, 8);
     let ctx = Context::from_blocks(vec![ContextBlock::new(
         new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )])
     .unwrap();
 
@@ -796,12 +770,7 @@ struct MemStore {
 impl ArtifactStore for MemStore {
     async fn persist(&self, _data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
         *self.hint.lock().unwrap() = Some(hint);
-        Ok(ArtifactRef {
-            id: "asset-1".into(),
-            size_bytes: 3,
-            kind: ArtifactKind::Binary,
-            persisted: true,
-        })
+        Ok(ArtifactRef::new("asset-1", 3, ArtifactKind::Binary, true))
     }
     async fn read(
         &self,

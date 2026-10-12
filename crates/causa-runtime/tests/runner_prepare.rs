@@ -102,9 +102,7 @@ impl ContextPreparer for EditingFailure {
         if self.park {
             std::future::pending::<()>().await;
         }
-        Err(PrepareError {
-            message: "preparation failed after edit".into(),
-        })
+        Err(PrepareError::new("preparation failed after edit"))
     }
 }
 #[tokio::test]
@@ -201,9 +199,9 @@ impl ContextPreparer for BudgetedFrame {
         let mut frame = c.frame();
         while request_cost(&frame, r.tool_surface, r.generation) > self.limit {
             if frame.blocks.is_empty() {
-                return Err(PrepareError {
-                    message: "fixed tools/output budget exceeds request allowance".into(),
-                });
+                return Err(PrepareError::new(
+                    "fixed tools/output budget exceeds request allowance",
+                ));
             }
             frame.blocks.remove(0);
         }

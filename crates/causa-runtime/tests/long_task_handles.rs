@@ -160,11 +160,11 @@ struct JobTool(Arc<BackgroundJob>);
 #[async_trait]
 impl Tool for JobTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "job".into(),
-            description: "Start, query, or stop querying a background job".into(),
-            parameters: json!({"type":"object"}),
-        }
+        ToolDefinition::new(
+            "job",
+            "Start, query, or stop querying a background job",
+            json!({"type":"object"}),
+        )
     }
 
     async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
@@ -195,13 +195,11 @@ impl Tool for JobTool {
             }
             _ => json!({"error":"unknown action or handle"}),
         };
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(output),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(output),
+        )
     }
 }
 
@@ -225,31 +223,24 @@ fn tool_call(action: &str, handle: Option<&str>) -> ModelOutput {
     if let Some(handle) = handle {
         arguments.insert("handle".into(), Value::String(handle.into()));
     }
-    ModelOutput {
-        response: ModelResponse {
-            items: vec![ModelItem::tool_call(ToolCallDraft {
-                tool_name: "job".into(),
-                arguments: Value::Object(arguments),
-                provider_call_id: None,
-            })],
+    ModelOutput::new(
+        ModelResponse {
+            items: vec![ModelItem::tool_call(ToolCallDraft::new(
+                "job",
+                Value::Object(arguments),
+            ))],
         },
-        usage: None,
-        stop_reason: ModelStopReason::ToolUse,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::ToolUse,
+    )
 }
 
 fn end_turn(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text(text)],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 fn start_id_and_results(
@@ -284,13 +275,11 @@ async fn model_queries_long_task_handle_until_complete_without_framework_polling
     let runner = TurnRunner::new(
         gateway.clone(),
         Arc::new(
-            ToolExecutor::new(
-                vec![Arc::new(JobTool(job.clone()))],
-                ToolExecutorOptions {
-                    after: vec![Arc::new(CountPost(post_calls.clone()))],
-                    ..Default::default()
-                },
-            )
+            ToolExecutor::new(vec![Arc::new(JobTool(job.clone()))], {
+                let mut options = ToolExecutorOptions::default();
+                options.after = vec![Arc::new(CountPost(post_calls.clone()))];
+                options
+            })
             .unwrap(),
         ),
     );
@@ -355,13 +344,11 @@ async fn cancelling_a_waiting_query_preserves_start_and_leaves_job_running() {
     let runner = TurnRunner::new(
         gateway.clone(),
         Arc::new(
-            ToolExecutor::new(
-                vec![Arc::new(JobTool(job.clone()))],
-                ToolExecutorOptions {
-                    after: vec![Arc::new(CountPost(post_calls.clone()))],
-                    ..Default::default()
-                },
-            )
+            ToolExecutor::new(vec![Arc::new(JobTool(job.clone()))], {
+                let mut options = ToolExecutorOptions::default();
+                options.after = vec![Arc::new(CountPost(post_calls.clone()))];
+                options
+            })
             .unwrap(),
         ),
     );

@@ -40,20 +40,14 @@ struct ReadTool;
 #[async_trait::async_trait]
 impl Tool for ReadTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "read".into(),
-            description: "read a file".into(),
-            parameters: json!({"type": "object"}),
-        }
+        ToolDefinition::new("read", "read a file", json!({"type": "object"}))
     }
     async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("file-a")),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        ToolResultPayload::new(
+            ctx.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("file-a")),
+        )
     }
 }
 
@@ -98,10 +92,7 @@ async fn direct_runner_completes_two_tool_round_trips_over_http() {
     let context = Context::from_blocks(vec![ContextBlock::new(
         causa_runtime::new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("find files"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )])
     .unwrap();
     let mut options = TurnRunOptions::new(ModelRef::new("claude-test"));

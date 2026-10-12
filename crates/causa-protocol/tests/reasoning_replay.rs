@@ -25,10 +25,7 @@ fn user_block() -> ContextBlock {
     ContextBlock::new(
         BlockId::new(uuid::Uuid::from_u128(1)),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..BlockMeta::default()
-        },
+        BlockMeta::from_source("user"),
     )
 }
 
@@ -50,9 +47,10 @@ fn frame_of(output: &ModelOutput) -> ContextFrame {
 }
 
 fn generation() -> GenerationOptions {
-    GenerationOptions {
-        max_tokens: Some(1024),
-        ..GenerationOptions::default()
+    {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(1024);
+        generation
     }
 }
 
@@ -210,12 +208,11 @@ fn chat_reasoning_content_replays_by_default_and_can_be_opted_out() {
     assert_eq!(assistant["content"], "answer");
     assert_eq!(assistant["reasoning_content"], "think");
 
-    let opted_out = chat(
-        &frame,
-        &ChatRenderOptions {
-            replay_reasoning_content: false,
-        },
-    );
+    let opted_out = chat(&frame, &{
+        let mut options = ChatRenderOptions::default();
+        options.replay_reasoning_content = false;
+        options
+    });
     let assistant = assistant_message(&opted_out, Protocol::OpenAiChatCompletions);
     assert_eq!(assistant["content"], "answer");
     assert!(assistant.get("reasoning_content").is_none());

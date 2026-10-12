@@ -18,10 +18,7 @@ fn frame() -> ContextFrame {
         blocks: vec![ContextBlock::new(
             BlockId::new(uuid::Uuid::from_u128(1)),
             BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-            BlockMeta {
-                source: Some("user".into()),
-                ..Default::default()
-            },
+            BlockMeta::from_source("user"),
         )],
     }
 }
@@ -94,10 +91,11 @@ fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
         (ReasoningEffort::XHigh, "xhigh"),
         (ReasoningEffort::Max, "max"),
     ] {
-        let generation = GenerationOptions {
-            reasoning_effort: Some(effort),
-            max_tokens: Some(LIMIT),
-            ..Default::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.reasoning_effort = Some(effort);
+            generation.max_tokens = Some(LIMIT);
+            generation
         };
         let chat = render(0, &generation).unwrap();
         assert_eq!(chat["reasoning_effort"], wire);
@@ -123,14 +121,12 @@ fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
         ] {
             assert!(body.get(key).is_none());
         }
-        let body = render(
-            protocol,
-            &GenerationOptions {
-                reasoning_effort: Some(ReasoningEffort::None),
-                temperature: Some(0.0),
-                ..Default::default()
-            },
-        )
+        let body = render(protocol, &{
+            let mut generation = GenerationOptions::default();
+            generation.reasoning_effort = Some(ReasoningEffort::None);
+            generation.temperature = Some(0.0);
+            generation
+        })
         .unwrap();
         assert_eq!(body["temperature"], 0.0);
     }
@@ -140,9 +136,10 @@ fn openai_maps_every_effort_and_completion_budget_without_enabling_replay() {
 fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
     // Unset effort: no thinking field and no output_config.
     let body = render_anthropic(
-        &GenerationOptions {
-            max_tokens: Some(LIMIT),
-            ..Default::default()
+        &{
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(LIMIT);
+            generation
         },
         &AnthropicRenderOptions::default(),
     )
@@ -153,10 +150,11 @@ fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
 
     // `None`: thinking explicitly disabled, no effort level.
     let body = render_anthropic(
-        &GenerationOptions {
-            reasoning_effort: Some(ReasoningEffort::None),
-            max_tokens: Some(LIMIT),
-            ..Default::default()
+        &{
+            let mut generation = GenerationOptions::default();
+            generation.reasoning_effort = Some(ReasoningEffort::None);
+            generation.max_tokens = Some(LIMIT);
+            generation
         },
         &AnthropicRenderOptions::default(),
     )
@@ -173,10 +171,11 @@ fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
         (ReasoningEffort::Max, "max"),
     ] {
         let body = render_anthropic(
-            &GenerationOptions {
-                reasoning_effort: Some(effort),
-                max_tokens: Some(LIMIT),
-                ..Default::default()
+            &{
+                let mut generation = GenerationOptions::default();
+                generation.reasoning_effort = Some(effort);
+                generation.max_tokens = Some(LIMIT);
+                generation
             },
             &AnthropicRenderOptions::default(),
         )
@@ -188,10 +187,11 @@ fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
 
     // `Minimal` has no wire level.
     let error = render_anthropic(
-        &GenerationOptions {
-            reasoning_effort: Some(ReasoningEffort::Minimal),
-            max_tokens: Some(LIMIT),
-            ..Default::default()
+        &{
+            let mut generation = GenerationOptions::default();
+            generation.reasoning_effort = Some(ReasoningEffort::Minimal);
+            generation.max_tokens = Some(LIMIT);
+            generation
         },
         &AnthropicRenderOptions::default(),
     )
@@ -209,25 +209,28 @@ fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
     assert!(error.message.contains("max_tokens"), "{error}");
 
     // The prefix-mismatch option renders only alongside a thinking object.
-    let options = AnthropicRenderOptions {
-        prefix_mismatch_behavior: Some(
-            causa_protocol::translation::render_options::PrefixMismatchBehavior::DropBlock,
-        ),
+    let options = {
+        let mut options = AnthropicRenderOptions::default();
+        options.prefix_mismatch_behavior =
+            Some(causa_protocol::translation::render_options::PrefixMismatchBehavior::DropBlock);
+        options
     };
     let body = render_anthropic(
-        &GenerationOptions {
-            max_tokens: Some(LIMIT),
-            ..Default::default()
+        &{
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(LIMIT);
+            generation
         },
         &options,
     )
     .unwrap();
     assert!(body.get("thinking").is_none());
     let body = render_anthropic(
-        &GenerationOptions {
-            reasoning_effort: Some(ReasoningEffort::High),
-            max_tokens: Some(LIMIT),
-            ..Default::default()
+        &{
+            let mut generation = GenerationOptions::default();
+            generation.reasoning_effort = Some(ReasoningEffort::High);
+            generation.max_tokens = Some(LIMIT);
+            generation
         },
         &options,
     )
@@ -243,10 +246,11 @@ fn anthropic_renders_the_effort_table_and_requires_max_tokens() {
 
 #[test]
 fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
-    let generation = GenerationOptions {
-        reasoning_effort: Some(ReasoningEffort::High),
-        max_tokens: Some(LIMIT),
-        ..Default::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.reasoning_effort = Some(ReasoningEffort::High);
+        generation.max_tokens = Some(LIMIT);
+        generation
     };
     let body = render_responses(&generation, &ResponsesRenderOptions::default()).unwrap();
     assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
@@ -254,33 +258,27 @@ fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
     assert_eq!(body["reasoning"], json!({"effort": "high"}));
 
     // Each option changes exactly its own field.
-    let body = render_responses(
-        &generation,
-        &ResponsesRenderOptions {
-            include_encrypted_reasoning: false,
-            ..ResponsesRenderOptions::default()
-        },
-    )
+    let body = render_responses(&generation, &{
+        let mut options = ResponsesRenderOptions::default();
+        options.include_encrypted_reasoning = false;
+        options
+    })
     .unwrap();
     assert!(body.get("include").is_none());
     assert_eq!(body["store"], json!(false));
-    let body = render_responses(
-        &generation,
-        &ResponsesRenderOptions {
-            store: None,
-            ..ResponsesRenderOptions::default()
-        },
-    )
+    let body = render_responses(&generation, &{
+        let mut options = ResponsesRenderOptions::default();
+        options.store = None;
+        options
+    })
     .unwrap();
     assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     assert!(body.get("store").is_none());
-    let body = render_responses(
-        &generation,
-        &ResponsesRenderOptions {
-            store: Some(true),
-            ..ResponsesRenderOptions::default()
-        },
-    )
+    let body = render_responses(&generation, &{
+        let mut options = ResponsesRenderOptions::default();
+        options.store = Some(true);
+        options
+    })
     .unwrap();
     assert_eq!(body["store"], json!(true));
 }
@@ -289,35 +287,41 @@ fn responses_sends_encrypted_reasoning_and_store_false_by_default() {
 fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
     for protocol in [0, 1, 2] {
         for generation in [
-            GenerationOptions {
-                max_tokens: Some(0),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(0);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(LIMIT),
-                temperature: Some(f32::NAN),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(LIMIT);
+                generation.temperature = Some(f32::NAN);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(LIMIT),
-                temperature: Some(f32::INFINITY),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(LIMIT);
+                generation.temperature = Some(f32::INFINITY);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(LIMIT),
-                temperature: Some(-0.1),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(LIMIT);
+                generation.temperature = Some(-0.1);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(LIMIT),
-                temperature: Some(2.1),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(LIMIT);
+                generation.temperature = Some(2.1);
+                generation
             },
-            GenerationOptions {
-                max_tokens: Some(LIMIT),
-                reasoning_effort: Some(ReasoningEffort::High),
-                temperature: Some(1.0),
-                ..Default::default()
+            {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(LIMIT);
+                generation.reasoning_effort = Some(ReasoningEffort::High);
+                generation.temperature = Some(1.0);
+                generation
             },
         ] {
             assert_eq!(
@@ -327,25 +331,21 @@ fn invalid_options_fail_locally_instead_of_being_dropped_or_clipped() {
         }
     }
     assert!(
-        render(
-            2,
-            &GenerationOptions {
-                max_tokens: Some(LIMIT),
-                output_schema: Some(json!({"type": "object"})),
-                ..Default::default()
-            }
-        )
+        render(2, &{
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(LIMIT);
+            generation.output_schema = Some(json!({"type": "object"}));
+            generation
+        })
         .is_err()
     );
     assert!(
-        render(
-            2,
-            &GenerationOptions {
-                max_tokens: Some(LIMIT),
-                temperature: Some(1.1),
-                ..Default::default()
-            }
-        )
+        render(2, &{
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(LIMIT);
+            generation.temperature = Some(1.1);
+            generation
+        })
         .is_err()
     );
 }

@@ -54,15 +54,15 @@ struct ReadFile;
 #[async_trait]
 impl Tool for ReadFile {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "read_file".into(),
-            description: "Read a file from the host filesystem.".into(),
-            parameters: serde_json::json!({
+        ToolDefinition::new(
+            "read_file",
+            "Read a file from the host filesystem.",
+            serde_json::json!({
                 "type": "object",
                 "properties": { "path": { "type": "string" } },
                 "required": ["path"]
             }),
-        }
+        )
     }
 
     async fn execute(
@@ -70,15 +70,13 @@ impl Tool for ReadFile {
         ctx: &ToolCallContext,
         _control: &causa_kernel::CallControl,
     ) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(serde_json::json!(
+        ToolResultPayload::new(
+            ctx.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(serde_json::json!(
                 { "contents": "the promised file contents" }
             )),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        )
     }
 }
 
@@ -118,21 +116,17 @@ impl ToolBatchProcessor for ApprovalProcessor {
                 offset += 1;
             } else {
                 batch
-                    .resolve_at(
-                        batch.completed_len() + offset,
-                        new_block_id(),
-                        ToolResultPayload {
-                            call_block_id: id,
-                            status: ToolResultStatus::Rejected,
-                            output: ToolOutput::new(
-                                serde_json::json!({"error": "file access denied"}),
-                            ),
-                            media: Vec::new(),
-                            notes: vec![TextPayload::new(
-                                "Only notes.txt is allowed in this session.",
-                            )],
-                        },
-                    )
+                    .resolve_at(batch.completed_len() + offset, new_block_id(), {
+                        let mut result = ToolResultPayload::new(
+                            id,
+                            ToolResultStatus::Rejected,
+                            ToolOutput::new(serde_json::json!({"error": "file access denied"})),
+                        );
+                        result.notes = vec![TextPayload::new(
+                            "Only notes.txt is allowed in this session.",
+                        )];
+                        result
+                    })
                     .map_err(|error| ProcessorError::Failed(error.to_string()))?;
                 // Completion swaps the entry to the prefix; inspect the new
                 // element at this suffix offset before advancing.
@@ -145,32 +139,25 @@ impl ToolBatchProcessor for ApprovalProcessor {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = ScriptedGateway::new(vec![
-        ModelOutput {
-            response: ModelResponse {
+        ModelOutput::new(
+            ModelResponse {
                 items: std::iter::once(ModelItem::text("Read the requested files."))
                     .chain(["notes.txt", "private.txt"].into_iter().map(|path| {
-                        ModelItem::tool_call(ToolCallDraft {
-                            tool_name: "read_file".into(),
-                            arguments: serde_json::json!({"path": path}),
-                            provider_call_id: None,
-                        })
+                        ModelItem::tool_call(ToolCallDraft::new(
+                            "read_file",
+                            serde_json::json!({"path": path}),
+                        ))
                     }))
                     .collect(),
             },
-            usage: None,
-            stop_reason: ModelStopReason::ToolUse,
-            reasoning: None,
-            raw_stop_reason: None,
-        },
-        ModelOutput {
-            response: ModelResponse {
+            ModelStopReason::ToolUse,
+        ),
+        ModelOutput::new(
+            ModelResponse {
                 items: vec![ModelItem::text("Read notes.txt; private.txt was denied.")],
             },
-            usage: None,
-            stop_reason: ModelStopReason::EndTurn,
-            reasoning: None,
-            raw_stop_reason: None,
-        },
+            ModelStopReason::EndTurn,
+        ),
     ]);
     let (requests, mut receiver) = mpsc::channel::<ApprovalRequest>(1);
     let reviewer = tokio::spawn(async move {
@@ -179,13 +166,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = request.reply.send(request.path == "notes.txt");
         }
     });
-    let executor = ToolExecutor::new(
-        vec![Arc::new(ReadFile)],
-        ToolExecutorOptions {
-            before: vec![Arc::new(ApprovalProcessor(requests))],
-            ..Default::default()
-        },
-    )?;
+    let executor = ToolExecutor::new(vec![Arc::new(ReadFile)], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(ApprovalProcessor(requests))];
+        options
+    })?;
     let runner = TurnRunner::new(gateway, Arc::new(executor));
     let mut context = causa_kernel::Context::new();
     context
@@ -195,10 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
                 TextPayload::new("Read the two files."),
             )]),
-            causa_kernel::BlockMeta {
-                source: Some("user".into()),
-                ..Default::default()
-            },
+            causa_kernel::BlockMeta::from_source("user"),
         )])
         .commit()?;
     let outcome = runner

@@ -20,14 +20,8 @@ fn cause(out: &TurnOutcome) -> &TurnInterruption {
 #[tokio::test]
 async fn complete_output_and_actual_options_are_preserved() {
     let mut output = endturn_output(" done ");
-    output.usage = Some(ModelUsage {
-        input_tokens: 12,
-        output_tokens: 3,
-        ..Default::default()
-    });
-    output.reasoning = Some(ReasoningPayload {
-        text: "reason".into(),
-    });
+    output.usage = Some(ModelUsage::new(12, 3));
+    output.reasoning = Some(ReasoningPayload::new("reason"));
     let gateway = RecordingGateway::scripted(vec![Ok(output)]);
     let runner = runner_with(gateway.clone(), vec![]);
     let mut opts = options();
@@ -318,17 +312,16 @@ impl ToolBatchProcessor for ResolveWithId {
         _: &ProcessorContext<'_>,
     ) -> Result<(), ProcessorError> {
         let call = b.calls()[0].call().clone();
-        b.resolve_at(
-            0,
-            self.0,
-            ToolResultPayload {
-                call_block_id: call.call_block_id,
-                status: ToolResultStatus::Rejected,
-                output: ToolOutput::new(json!({"kept":true})),
-                media: vec![MediaRef::new("image/png", "asset")],
-                notes: vec![TextPayload::new("kept note")],
-            },
-        )
+        b.resolve_at(0, self.0, {
+            let mut result = ToolResultPayload::new(
+                call.call_block_id,
+                ToolResultStatus::Rejected,
+                ToolOutput::new(json!({"kept":true})),
+            );
+            result.media = vec![MediaRef::new("image/png", "asset")];
+            result.notes = vec![TextPayload::new("kept note")];
+            result
+        })
         .unwrap();
         Ok(())
     }
@@ -337,13 +330,11 @@ impl ToolBatchProcessor for ResolveWithId {
 async fn tool_commit_failure_returns_complete_batch_and_actual_edit_input() {
     let context = input("existing");
     let collision = context.blocks()[0].id();
-    let executor = ToolExecutor::new(
-        vec![Arc::new(EchoTool)],
-        ToolExecutorOptions {
-            before: vec![Arc::new(ResolveWithId(collision))],
-            ..Default::default()
-        },
-    )
+    let executor = ToolExecutor::new(vec![Arc::new(EchoTool)], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(ResolveWithId(collision))];
+        options
+    })
     .unwrap();
     let runner = TurnRunner::new(
         RecordingGateway::scripted(vec![Ok(tooluse_output(
@@ -412,13 +403,11 @@ impl ToolBatchProcessor for FailedProcessor {
 }
 #[tokio::test]
 async fn processor_error_is_selected_before_returned_callback_cancels() {
-    let executor = ToolExecutor::new(
-        vec![Arc::new(EchoTool)],
-        ToolExecutorOptions {
-            before: vec![Arc::new(FailedProcessor)],
-            ..Default::default()
-        },
-    )
+    let executor = ToolExecutor::new(vec![Arc::new(EchoTool)], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(FailedProcessor)];
+        options
+    })
     .unwrap();
     let runner = TurnRunner::new(
         RecordingGateway::scripted(vec![Ok(tooluse_output("", "echo", json!({})))]),

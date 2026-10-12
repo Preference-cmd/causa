@@ -73,14 +73,9 @@ impl BoundTools<'_> {
                 {
                     // The batch was valid before dispatch and is modified only
                     // by checked completion, so settlement cannot fail.
-                    resolve(batch, call_block_id, ToolResultPayload {
-                        call_block_id,
-                        status: ToolResultStatus::UnknownOutcome,
-                        output: ToolOutput::new(serde_json::json!({
+                    resolve(batch, call_block_id, ToolResultPayload::new(call_block_id, ToolResultStatus::UnknownOutcome, ToolOutput::new(serde_json::json!({
                             "error": "tool was started but no acceptable result was observed before the batch stopped"
-                        })),
-                        media: Vec::new(), notes: Vec::new(),
-                    }).expect("valid pending declaration during settlement");
+                        })))).expect("valid pending declaration during settlement");
                 }
             }
         }

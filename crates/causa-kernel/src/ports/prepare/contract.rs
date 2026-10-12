@@ -6,6 +6,7 @@ use crate::{
 use async_trait::async_trait;
 
 /// Configuration visible while preparing this invocation's material.
+#[non_exhaustive]
 pub struct RoundInfo<'a> {
     /// The actual logical model invocation being prepared.
     pub invocation_id: &'a InvocationId,
@@ -16,13 +17,38 @@ pub struct RoundInfo<'a> {
     /// The generation settings selected by the caller.
     pub generation: &'a GenerationOptions,
 }
+impl<'a> RoundInfo<'a> {
+    /// The facts of the round about to be invoked.
+    pub fn new(
+        invocation_id: &'a InvocationId,
+        model: &'a ModelRef,
+        tool_surface: &'a ToolSurface,
+        generation: &'a GenerationOptions,
+    ) -> Self {
+        Self {
+            invocation_id,
+            model,
+            tool_surface,
+            generation,
+        }
+    }
+}
 
 /// Failure to prepare a request's material.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
+#[non_exhaustive]
 pub struct PrepareError {
     /// Human-readable failure detail.
     pub message: String,
+}
+impl PrepareError {
+    /// A preparation failure with the given message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 /// Prepares an independent request frame with exclusive access to context.

@@ -39,11 +39,7 @@ async fn every_stop_reason_is_committed_or_reported_whole() {
         let mut output = endturn_output("body the model produced");
         output.stop_reason = reason;
         output.raw_stop_reason = Some("wire-value".into());
-        output.usage = Some(ModelUsage {
-            input_tokens: 7,
-            output_tokens: 3,
-            ..Default::default()
-        });
+        output.usage = Some(ModelUsage::new(7, 3));
         let gateway = RecordingGateway::scripted(vec![Ok(output)]);
         let out = runner_with(gateway, vec![])
             .run(TurnId::new("terminal"), Context::new(), options(), ctrl())

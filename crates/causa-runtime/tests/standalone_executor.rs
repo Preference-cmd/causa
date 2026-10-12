@@ -160,12 +160,7 @@ impl ArtifactStore for Store {
             .lock()
             .unwrap()
             .push((data.to_vec(), hint.call_block_id));
-        Ok(ArtifactRef {
-            id: "image".into(),
-            size_bytes: data.len(),
-            kind: hint.kind,
-            persisted: true,
-        })
+        Ok(ArtifactRef::new("image", data.len(), hint.kind, true))
     }
     async fn read(
         &self,
@@ -201,11 +196,7 @@ impl DynamicToolSource for MediaSource {
             .unwrap()
             .persist(
                 &[1, 2, 3],
-                ArtifactHint {
-                    tool_name: "image".into(),
-                    call_block_id: call.call_block_id,
-                    kind: ArtifactKind::Binary,
-                },
+                ArtifactHint::new("image", call.call_block_id, ArtifactKind::Binary),
             )
             .await
             .unwrap();
@@ -242,14 +233,12 @@ async fn artifact_store_passes_through_dynamic_bridge_and_output_edits_keep_medi
                 definition("image"),
             ))]
         };
-        let executor = executor(
-            tools,
-            ToolExecutorOptions {
-                artifact_store: Some(store.clone()),
-                after: vec![Arc::new(Shorten)],
-                ..Default::default()
-            },
-        );
+        let executor = executor(tools, {
+            let mut options = ToolExecutorOptions::default();
+            options.artifact_store = Some(store.clone());
+            options.after = vec![Arc::new(Shorten)];
+            options
+        });
         if dynamic {
             executor.register_dynamic(source).unwrap();
         }

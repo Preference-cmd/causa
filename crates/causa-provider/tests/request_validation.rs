@@ -1,9 +1,8 @@
 //! Malformed selected request material is rejected before any transport request.
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, CallControl, CancellationToken, Context,
-    ContextBlock, GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef,
-    ModelRequest, RoundId, ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
-    ToolSurface, TurnId,
+    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, Context, ContextBlock,
+    GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest,
+    RoundId, ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -17,26 +16,22 @@ fn id(value: u128) -> BlockId {
 fn call(value: u128, wire: &str) -> ContextBlock {
     ContextBlock::new(
         id(value),
-        BlockContent::ToolCall(ToolCallPayload {
-            tool_name: "read".into(),
-            arguments: json!({}),
-        }),
-        BlockMeta {
-            provider_call_id: Some(wire.into()),
-            ..Default::default()
+        BlockContent::ToolCall(ToolCallPayload::new("read", json!({}))),
+        {
+            let mut meta = BlockMeta::default();
+            meta.provider_call_id = Some(wire.into());
+            meta
         },
     )
 }
 fn result(value: u128, target: u128) -> ContextBlock {
     ContextBlock::new(
         id(value),
-        BlockContent::ToolResult(ToolResultPayload {
-            call_block_id: id(target),
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("ok")),
-            media: vec![],
-            notes: vec![],
-        }),
+        BlockContent::ToolResult(ToolResultPayload::new(
+            id(target),
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("ok")),
+        )),
         BlockMeta::default(),
     )
 }
@@ -62,21 +57,23 @@ async fn invalid_tool_material_never_reaches_http_for_any_gateway() {
     let control = CallControl::new(CancellationToken::new(), None);
     for blocks in cases {
         let context = Context::from_blocks(blocks).expect("legal partial material");
-        let request = ModelRequest {
-            invocation_id: InvocationId {
-                turn_id: TurnId::new("validation"),
-                round_id: RoundId(0),
-            },
-            frame: context.frame(),
-            model: ModelRef::new("test"),
-            tool_surface: ToolSurface::empty(),
+        let request = {
+            let mut request = ModelRequest::new(
+                InvocationId {
+                    turn_id: TurnId::new("validation"),
+                    round_id: RoundId(0),
+                },
+                context.frame(),
+                ModelRef::new("test"),
+            );
             // A limit, so every rejection below is the frame's, not the
             // Anthropic wire's required `max_tokens`.
-            generation: GenerationOptions {
-                max_tokens: Some(64),
-                ..GenerationOptions::default()
-            },
-            cache: CacheDirective::None,
+            request.generation = {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation
+            };
+            request
         };
         for gateway in &gateways {
             let error = gateway.invoke(&request, &control).await.unwrap_err();

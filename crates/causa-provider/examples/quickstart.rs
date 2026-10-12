@@ -36,15 +36,15 @@ struct WordCount;
 #[async_trait]
 impl Tool for WordCount {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "word_count".into(),
-            description: "Count whitespace-separated words in a text.".into(),
-            parameters: serde_json::json!({
+        ToolDefinition::new(
+            "word_count",
+            "Count whitespace-separated words in a text.",
+            serde_json::json!({
                 "type": "object",
                 "properties": { "text": { "type": "string" } },
                 "required": ["text"]
             }),
-        }
+        )
     }
 
     async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
@@ -55,13 +55,11 @@ impl Tool for WordCount {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let count = text.split_whitespace().count();
-        ToolResultPayload {
-            call_block_id: ctx.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(serde_json::json!({ "words": count })),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }
+        ToolResultPayload::new(
+            ctx.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(serde_json::json!({ "words": count })),
+        )
     }
 }
 
@@ -95,10 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
             "How many words are in \"the quick brown fox jumps over the lazy dog\"? Use the word_count tool, then answer with just the number.",
         ))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )])?;
     let options = TurnRunOptions::new(ModelRef::new("claude-sonnet-4-5"));
 

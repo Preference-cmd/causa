@@ -16,29 +16,30 @@ fn id(value: u128) -> BlockId {
 fn call(value: u128, wire: &str) -> ContextBlock {
     ContextBlock::new(
         id(value),
-        BlockContent::ToolCall(ToolCallPayload {
-            tool_name: "lookup".into(),
-            arguments: json!({}),
-        }),
-        BlockMeta {
-            provider_call_id: Some(wire.into()),
-            ..Default::default()
+        BlockContent::ToolCall(ToolCallPayload::new("lookup", json!({}))),
+        {
+            let mut meta = BlockMeta::default();
+            meta.provider_call_id = Some(wire.into());
+            meta
         },
     )
 }
 fn result(value: u128, declaration: u128, media: bool) -> ContextBlock {
     ContextBlock::new(
         id(value),
-        BlockContent::ToolResult(ToolResultPayload {
-            call_block_id: id(declaration),
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!("found")),
-            notes: vec![TextPayload::new("note")],
-            media: if media {
+        BlockContent::ToolResult({
+            let mut result = ToolResultPayload::new(
+                id(declaration),
+                ToolResultStatus::Succeeded,
+                ToolOutput::new(json!("found")),
+            );
+            result.notes = vec![TextPayload::new("note")];
+            result.media = if media {
                 vec![MediaRef::new("image/png", format!("asset-{value}"))]
             } else {
                 vec![]
-            },
+            };
+            result
         }),
         BlockMeta::default(),
     )
@@ -47,19 +48,17 @@ fn text(value: u128, source: &str) -> ContextBlock {
     ContextBlock::new(
         id(value),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("text"))]),
-        BlockMeta {
-            source: Some(source.into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source(source),
     )
 }
 fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::ModelInvokeError> {
     let media = MediaSet::new();
     let surface = ToolSurface::empty();
     // Anthropic requires `max_tokens`; the renderer tests always supply one.
-    let generation = GenerationOptions {
-        max_tokens: Some(1024),
-        ..GenerationOptions::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(1024);
+        generation
     };
     let model = ModelRef::new("test");
     match protocol {

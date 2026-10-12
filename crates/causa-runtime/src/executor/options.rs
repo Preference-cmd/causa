@@ -6,6 +6,7 @@ use std::time::Duration;
 
 /// Fixed processing configuration received when constructing an executor.
 #[derive(Default)]
+#[non_exhaustive]
 pub struct ToolExecutorOptions {
     /// Ordered processors invoked before tool dispatch.
     pub before: Vec<Arc<dyn ToolBatchProcessor>>,

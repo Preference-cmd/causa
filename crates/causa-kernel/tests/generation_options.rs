@@ -21,9 +21,10 @@ fn effort_vocabulary_round_trips_without_inventing_a_default() {
         (ReasoningEffort::XHigh, "xhigh"),
         (ReasoningEffort::Max, "max"),
     ] {
-        let value = GenerationOptions {
-            reasoning_effort: Some(effort),
-            ..Default::default()
+        let value = {
+            let mut generation = GenerationOptions::default();
+            generation.reasoning_effort = Some(effort);
+            generation
         };
         let encoded = serde_json::to_value(&value).unwrap();
         assert_eq!(encoded["reasoning_effort"], wire);

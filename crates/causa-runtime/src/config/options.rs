@@ -4,11 +4,21 @@ use std::sync::Arc;
 
 /// Numeric limits for one execution.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct TurnLimits {
     /// Maximum number of logical model invocations, including the first.
     pub max_model_rounds: u32,
     /// Maximum cumulative number of model tool declarations.
     pub max_tool_calls: u32,
+}
+impl TurnLimits {
+    /// Limits on model rounds and on tool calls for one run.
+    pub fn new(max_model_rounds: u32, max_tool_calls: u32) -> Self {
+        Self {
+            max_model_rounds,
+            max_tool_calls,
+        }
+    }
 }
 impl Default for TurnLimits {
     fn default() -> Self {
@@ -21,6 +31,7 @@ impl Default for TurnLimits {
 
 /// Choices fixed for one run; the model must be supplied explicitly.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct TurnRunOptions {
     /// Model used by every logical invocation.
     pub model: ModelRef,

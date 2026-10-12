@@ -13,7 +13,7 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
     GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelRef, ModelRequest, RoundId, StreamDelta, TextPayload, ToolSurface, TurnId,
+    ModelRef, ModelRequest, RoundId, StreamDelta, TextPayload, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -23,31 +23,29 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn request() -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("error-bodies"),
-            round_id: RoundId(0),
-        },
-        frame: ContextFrame {
-            blocks: vec![ContextBlock::new(
-                BlockId::new(uuid::Uuid::from_u128(1)),
-                BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                    "hello",
-                ))]),
-                BlockMeta {
-                    provider_call_id: None,
-                    source: Some("user".into()),
-                    wire: None,
-                },
-            )],
-        },
-        model: ModelRef::new("test-model"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions {
-            max_tokens: Some(1024),
-            ..GenerationOptions::default()
-        },
-        cache: causa_kernel::CacheDirective::None,
+    {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("error-bodies"),
+                round_id: RoundId(0),
+            },
+            ContextFrame {
+                blocks: vec![ContextBlock::new(
+                    BlockId::new(uuid::Uuid::from_u128(1)),
+                    BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
+                        "hello",
+                    ))]),
+                    BlockMeta::from_source("user"),
+                )],
+            },
+            ModelRef::new("test-model"),
+        );
+        request.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(1024);
+            generation
+        };
+        request
     }
 }
 

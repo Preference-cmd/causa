@@ -18,6 +18,7 @@ const MAX_MESSAGE_CHARS: usize = 200;
 
 /// What an error envelope says, reduced to what is safe to show.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ErrorDetail {
     /// The provider's `code`, or its `type` when there is no string code.
     /// `None` unless the value is a short identifier.

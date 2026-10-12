@@ -21,12 +21,15 @@ fn response(text: &str, calls: Vec<ToolCallDraft>) -> ModelResponse {
 }
 
 fn result(call_block_id: BlockId) -> ToolResultPayload {
-    ToolResultPayload {
-        call_block_id,
-        status: ToolResultStatus::Succeeded,
-        output: ToolOutput::new(json!({"ok": true})),
-        media: vec![MediaRef::new("image/png", "result-asset")],
-        notes: vec![TextPayload::new("parameters adjusted")],
+    {
+        let mut built = ToolResultPayload::new(
+            call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!({"ok": true})),
+        );
+        built.media = vec![MediaRef::new("image/png", "result-asset")];
+        built.notes = vec![TextPayload::new("parameters adjusted")];
+        built
     }
 }
 
@@ -104,10 +107,10 @@ fn conversion_binds_text_then_calls_preserving_provider_ids_names_and_arguments(
     let value = response(
         "  unchanged text\n",
         vec![
-            ToolCallDraft {
-                tool_name: " echo ".into(),
-                arguments: json!({"a":1}),
-                provider_call_id: Some("provider-1".into()),
+            {
+                let mut call = ToolCallDraft::new(" echo ", json!({"a":1}));
+                call.provider_call_id = Some("provider-1".into());
+                call
             },
             common::draft("echo", json!({"a":1})),
         ],
@@ -344,12 +347,12 @@ fn direct_serde_requires_blocks_checks_identity_and_preserves_partial_material()
 
 #[test]
 fn fidelity_fields_are_serde_additive() {
-    let usage = ModelUsage {
-        input_tokens: 120,
-        output_tokens: 30,
-        cache_read_tokens: Some(64),
-        cache_write_tokens: Some(12),
-        reasoning_tokens: Some(8),
+    let usage = {
+        let mut usage = ModelUsage::new(120, 30);
+        usage.cache_read_tokens = Some(64);
+        usage.cache_write_tokens = Some(12);
+        usage.reasoning_tokens = Some(8);
+        usage
     };
     let back: ModelUsage = serde_json::from_str(&serde_json::to_string(&usage).unwrap()).unwrap();
     assert_eq!(back.input_tokens, 120);
@@ -366,9 +369,7 @@ fn fidelity_fields_are_serde_additive() {
         ),
         (None, None, None)
     );
-    let reasoning = ReasoningPayload {
-        text: "thinking".into(),
-    };
+    let reasoning = ReasoningPayload::new("thinking");
     let back: ReasoningPayload =
         serde_json::from_str(&serde_json::to_string(&reasoning).unwrap()).unwrap();
     assert_eq!(back.text, "thinking");
@@ -383,19 +384,17 @@ fn fidelity_fields_are_serde_additive() {
     let legacy_meta: BlockMeta = serde_json::from_str("{}").unwrap();
     assert_eq!(legacy_meta.provider_call_id, None);
     assert_eq!(legacy_meta.source, None);
-    let full_meta = BlockMeta {
-        provider_call_id: Some("abc".into()),
-        source: Some("kernel".into()),
-        wire: None,
+    let full_meta = {
+        let mut meta = BlockMeta::default();
+        meta.provider_call_id = Some("abc".into());
+        meta.source = Some("kernel".into());
+        meta
     };
     let back: BlockMeta =
         serde_json::from_str(&serde_json::to_string(&full_meta).unwrap()).unwrap();
     assert_eq!(back.provider_call_id.as_deref(), Some("abc"));
     assert_eq!(back.source.as_deref(), Some("kernel"));
-    let call = ToolCallPayload {
-        tool_name: "echo".into(),
-        arguments: json!({"a": 1}),
-    };
+    let call = ToolCallPayload::new("echo", json!({"a": 1}));
     let round_trip: ToolCallPayload =
         serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
     assert_eq!(round_trip, call);
@@ -413,30 +412,31 @@ fn content_is_first_class_with_three_shapes() {
     )]));
     assert!(matches!(text.content(), BlockContent::Parts(_)));
 
-    let call = make(BlockContent::ToolCall(ToolCallPayload {
-        tool_name: "echo".into(),
-        arguments: json!({}),
-    }));
+    let call = make(BlockContent::ToolCall(ToolCallPayload::new(
+        "echo",
+        json!({}),
+    )));
     assert!(matches!(call.content(), BlockContent::ToolCall(_)));
 
-    let result = make(BlockContent::ToolResult(ToolResultPayload {
-        call_block_id: call.id(),
-        status: ToolResultStatus::Succeeded,
-        output: ToolOutput::new(json!({})),
-        media: Vec::new(),
-        notes: Vec::new(),
-    }));
+    let result = make(BlockContent::ToolResult(ToolResultPayload::new(
+        call.id(),
+        ToolResultStatus::Succeeded,
+        ToolOutput::new(json!({})),
+    )));
     assert!(matches!(result.content(), BlockContent::ToolResult(_)));
 }
 
 #[test]
 fn tool_result_media_is_serde_additive_both_ways() {
-    let payload = ToolResultPayload {
-        call_block_id: common::block_id(),
-        status: ToolResultStatus::Succeeded,
-        output: ToolOutput::new(json!("ok")),
-        media: vec![MediaRef::new("image/png", "a1")],
-        notes: vec![TextPayload::new("note")],
+    let payload = {
+        let mut result = ToolResultPayload::new(
+            common::block_id(),
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("ok")),
+        );
+        result.media = vec![MediaRef::new("image/png", "a1")];
+        result.notes = vec![TextPayload::new("note")];
+        result
     };
     let json = serde_json::to_string(&payload).unwrap();
     assert!(json.contains(r#""media":[{"media_type":"image/png","reference":"a1"}]"#));
@@ -444,13 +444,11 @@ fn tool_result_media_is_serde_additive_both_ways() {
     assert_eq!(restored.media, vec![MediaRef::new("image/png", "a1")]);
 
     // empty media is skipped on the wire...
-    let empty = ToolResultPayload {
-        call_block_id: common::block_id(),
-        status: ToolResultStatus::Failed,
-        output: ToolOutput::new(json!("no")),
-        media: Vec::new(),
-        notes: Vec::new(),
-    };
+    let empty = ToolResultPayload::new(
+        common::block_id(),
+        ToolResultStatus::Failed,
+        ToolOutput::new(json!("no")),
+    );
     assert!(!serde_json::to_string(&empty).unwrap().contains("media"));
     // ...and a stored record without the field defaults to empty.
     let old = json!({

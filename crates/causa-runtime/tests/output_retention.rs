@@ -26,39 +26,28 @@ impl ArtifactStore for Store {
             return Err(StoreError::Persist("offline".into()));
         }
         *self.0.lock().unwrap() = bytes.to_vec();
-        Ok(ArtifactRef {
-            id: "original".into(),
-            size_bytes: bytes.len(),
-            kind: hint.kind,
-            persisted: true,
-        })
+        Ok(ArtifactRef::new("original", bytes.len(), hint.kind, true))
     }
     async fn read(&self, _: &str, _: Option<std::ops::Range<u64>>) -> Result<Vec<u8>, StoreError> {
         Ok(self.0.lock().unwrap().clone())
     }
 }
 fn batch() -> ToolBatch {
-    let call = ToolCallContext::from_declaration(
-        new_block_id(),
-        &ToolCallPayload {
-            tool_name: "echo".into(),
-            arguments: json!({}),
-        },
-    );
+    let call =
+        ToolCallContext::from_declaration(new_block_id(), &ToolCallPayload::new("echo", json!({})));
     let id = call.call_block_id;
     let mut batch = ToolBatch::new(vec![call]).unwrap();
     batch
-        .resolve_at(
-            0,
-            new_block_id(),
-            ToolResultPayload {
-                call_block_id: id,
-                status: ToolResultStatus::Succeeded,
-                output: ToolOutput::new(json!("前缀 Unicode 🦀 tail ".repeat(100))),
-                media: vec![MediaRef::new("image/png", "image")],
-                notes: vec![TextPayload::new("retain this note")],
-            },
-        )
+        .resolve_at(0, new_block_id(), {
+            let mut result = ToolResultPayload::new(
+                id,
+                ToolResultStatus::Succeeded,
+                ToolOutput::new(json!("前缀 Unicode 🦀 tail ".repeat(100))),
+            );
+            result.media = vec![MediaRef::new("image/png", "image")];
+            result.notes = vec![TextPayload::new("retain this note")];
+            result
+        })
         .unwrap();
     batch
 }
@@ -72,12 +61,7 @@ async fn process(
     policy
         .process(
             batch,
-            &ProcessorContext {
-                turn_id: &turn,
-                round_id: RoundId(0),
-                declaration_order: &ids,
-                control: &control,
-            },
+            &ProcessorContext::new(&turn, RoundId(0), &ids, &control),
         )
         .await
 }

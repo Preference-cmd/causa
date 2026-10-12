@@ -10,20 +10,14 @@ struct LocalTool;
 #[async_trait]
 impl Tool for LocalTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "local".into(),
-            description: "Host-owned tool".into(),
-            parameters: json!({"type":"object"}),
-        }
+        ToolDefinition::new("local", "Host-owned tool", json!({"type":"object"}))
     }
     async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(call.input.arguments.clone()),
-            media: vec![],
-            notes: vec![],
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(call.input.arguments.clone()),
+        )
     }
 }
 #[tokio::test]
@@ -41,10 +35,7 @@ async fn standalone_host_binds_processes_and_decides_when_to_commit() {
     assert_eq!(bound.surface().definitions[0].name, "local");
     let declaration = ContextBlock::new(
         new_block_id(),
-        BlockContent::ToolCall(ToolCallPayload {
-            tool_name: "local".into(),
-            arguments: json!({"host":true}),
-        }),
+        BlockContent::ToolCall(ToolCallPayload::new("local", json!({"host":true}))),
         BlockMeta::default(),
     );
     let BlockContent::ToolCall(payload) = declaration.content() else {

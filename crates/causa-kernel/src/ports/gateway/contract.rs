@@ -53,6 +53,7 @@ pub enum ReasoningEffort {
 /// Protocol adapters reject options they cannot faithfully render. Hosts own
 /// model-specific capability validation, defaults, and aggregate budgets.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GenerationOptions {
     /// Sampling temperature; `None` leaves the provider default in force.
     pub temperature: Option<f32>,
@@ -74,6 +75,7 @@ pub struct GenerationOptions {
 
 /// Provider-reported token accounting for one model response.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ModelUsage {
     /// Tokens counted on the prompt side of the exchange.
     pub input_tokens: usize,
@@ -89,6 +91,18 @@ pub struct ModelUsage {
     #[serde(default)]
     pub reasoning_tokens: Option<usize>,
 }
+impl ModelUsage {
+    /// Usage with the two counts every provider reports; the optional counts start undisclosed.
+    pub fn new(input_tokens: usize, output_tokens: usize) -> Self {
+        Self {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        }
+    }
+}
 
 /// Structured reasoning content: the model's readable thinking text.
 /// Recorded as-is by callers; the kernel does not interpret or persist it.
@@ -97,14 +111,22 @@ pub struct ModelUsage {
 /// as context material (such as [`crate::ContentPart::Sealed`] parts). This
 /// observation is display-only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ReasoningPayload {
     /// The model's thinking text.
     pub text: String,
+}
+impl ReasoningPayload {
+    /// A payload holding the given thinking text.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
 }
 
 /// The gateway result envelope. Pure response conversion consumes neither
 /// this value nor its usage and reasoning; execution consumers retain them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ModelOutput {
     /// What the model said and asked: the [`ModelResponse`] fact.
     pub response: ModelResponse,
@@ -119,6 +141,18 @@ pub struct ModelOutput {
     pub raw_stop_reason: Option<String>,
     /// Structured reasoning payload, when the provider emitted one.
     pub reasoning: Option<ReasoningPayload>,
+}
+impl ModelOutput {
+    /// An output with its response and stop reason; usage, the raw stop value and reasoning start absent.
+    pub fn new(response: ModelResponse, stop_reason: ModelStopReason) -> Self {
+        Self {
+            response,
+            stop_reason,
+            usage: None,
+            raw_stop_reason: None,
+            reasoning: None,
+        }
+    }
 }
 
 /// Classification of a logical model invocation failure.
@@ -233,6 +267,7 @@ pub enum CacheDirective {
 /// Everything one logical invocation needs. All fields stay unchanged across
 /// internal retries; the gateway owns any attempt numbering and retry policy.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ModelRequest {
     /// Identifies the turn + round this logical invocation belongs to; the same id
     /// recurs on every retry.
@@ -248,6 +283,19 @@ pub struct ModelRequest {
     /// The prompt-cache instruction the translation face renders. Invariant
     /// across retries like the rest of the request.
     pub cache: CacheDirective,
+}
+impl ModelRequest {
+    /// A request with no tools, default generation options and no cache directive.
+    pub fn new(invocation_id: InvocationId, frame: ContextFrame, model: ModelRef) -> Self {
+        Self {
+            invocation_id,
+            frame,
+            model,
+            tool_surface: ToolSurface::empty(),
+            generation: GenerationOptions::default(),
+            cache: CacheDirective::None,
+        }
+    }
 }
 
 /// The model-invocation port: concrete gateways (provider adapters) live

@@ -4,11 +4,21 @@ const DEFAULT_LIMIT: usize = 32 * 1024 * 1024;
 
 /// A complete SSE event, delimited by an empty line.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SseEvent {
     /// Explicit event name; absent or empty means the SSE default `message`.
     pub event: Option<String>,
     /// Data fields joined with one newline, including empty data fields.
     pub data: String,
+}
+impl SseEvent {
+    /// An event with an optional name and its data.
+    pub fn new(event: Option<String>, data: impl Into<String>) -> Self {
+        Self {
+            event,
+            data: data.into(),
+        }
+    }
 }
 
 /// A bounded byte decoder with no event queue or input history.

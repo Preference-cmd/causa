@@ -45,24 +45,26 @@ pub fn openai_reasoning_tokens(usage: &Value) -> Option<u64> {
 /// / `cache_creation_input_tokens`. Reasoning tokens are not reported on
 /// this wire.
 pub fn model_usage_from_anthropic(usage: &Value) -> ModelUsage {
-    ModelUsage {
-        input_tokens: usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        output_tokens: usage
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        cache_read_tokens: usage
+    {
+        let mut counts = ModelUsage::new(
+            usage
+                .get("input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+            usage
+                .get("output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+        );
+        counts.cache_read_tokens = usage
             .get("cache_read_input_tokens")
             .and_then(Value::as_u64)
-            .map(|v| v as usize),
-        cache_write_tokens: usage
+            .map(|v| v as usize);
+        counts.cache_write_tokens = usage
             .get("cache_creation_input_tokens")
             .and_then(Value::as_u64)
-            .map(|v| v as usize),
-        reasoning_tokens: None,
+            .map(|v| v as usize);
+        counts
     }
 }
 
@@ -72,18 +74,20 @@ pub fn model_usage_from_anthropic(usage: &Value) -> ModelUsage {
 /// `prompt_tokens_details.cached_tokens` and
 /// `completion_tokens_details.reasoning_tokens`.
 pub fn model_usage_from_openai_chat(usage: &Value) -> ModelUsage {
-    ModelUsage {
-        input_tokens: usage
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        output_tokens: usage
-            .get("completion_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        cache_read_tokens: openai_cached_tokens(usage).map(|v| v as usize),
-        cache_write_tokens: None,
-        reasoning_tokens: openai_reasoning_tokens(usage).map(|v| v as usize),
+    {
+        let mut counts = ModelUsage::new(
+            usage
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+            usage
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+        );
+        counts.cache_read_tokens = openai_cached_tokens(usage).map(|v| v as usize);
+        counts.reasoning_tokens = openai_reasoning_tokens(usage).map(|v| v as usize);
+        counts
     }
 }
 
@@ -93,26 +97,28 @@ pub fn model_usage_from_openai_chat(usage: &Value) -> ModelUsage {
 /// `input_tokens_details.cached_tokens` and
 /// `output_tokens_details.reasoning_tokens`.
 pub fn model_usage_from_openai_responses(usage: &Value) -> ModelUsage {
-    ModelUsage {
-        input_tokens: usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        output_tokens: usage
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-        cache_read_tokens: usage
+    {
+        let mut counts = ModelUsage::new(
+            usage
+                .get("input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+            usage
+                .get("output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+        );
+        counts.cache_read_tokens = usage
             .get("input_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
             .and_then(Value::as_u64)
-            .map(|v| v as usize),
-        cache_write_tokens: None,
-        reasoning_tokens: usage
+            .map(|v| v as usize);
+        counts.reasoning_tokens = usage
             .get("output_tokens_details")
             .and_then(|d| d.get("reasoning_tokens"))
             .and_then(Value::as_u64)
-            .map(|v| v as usize),
+            .map(|v| v as usize);
+        counts
     }
 }
 

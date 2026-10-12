@@ -48,6 +48,7 @@ pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
 /// Stored in `config: C` so the generic struct holds all protocol state
 /// uniformly. The setters live on [`crate::KernelHttpGateway`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AnthropicGatewayConfig {
     pub(super) anthropic_version: String,
     pub(super) render_options: AnthropicRenderOptions,
@@ -107,6 +108,7 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
 
 /// OpenAI Chat Completions gateway config: the Chat-only render options.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct OpenAiChatGatewayConfig {
     pub(super) render_options: ChatRenderOptions,
 }
@@ -144,6 +146,7 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
 
 /// OpenAI Responses gateway config: the Responses-only render options.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct OpenAiResponsesGatewayConfig {
     pub(super) render_options: ResponsesRenderOptions,
 }

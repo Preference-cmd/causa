@@ -57,11 +57,13 @@ impl ToolBatchProcessor for DeduplicateProcessor {
 }
 
 fn rejected_result(call_block_id: causa_kernel::BlockId, reason: &str) -> ToolResultPayload {
-    ToolResultPayload {
-        call_block_id,
-        status: ToolResultStatus::Rejected,
-        output: ToolOutput::new(serde_json::json!({"error": reason})),
-        media: Vec::new(),
-        notes: vec![TextPayload::new(reason)],
+    {
+        let mut result = ToolResultPayload::new(
+            call_block_id,
+            ToolResultStatus::Rejected,
+            ToolOutput::new(serde_json::json!({"error": reason})),
+        );
+        result.notes = vec![TextPayload::new(reason)];
+        result
     }
 }

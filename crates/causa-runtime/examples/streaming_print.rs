@@ -86,15 +86,12 @@ fn print_observation(event: &RunEvent<'_>) {
 }
 
 fn turn_output(text: &str) -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text(text)],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        reasoning: None,
-        raw_stop_reason: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 #[tokio::main]
@@ -123,10 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
                 TextPayload::new("Say something about streaming."),
             )]),
-            causa_kernel::BlockMeta {
-                source: Some("user".into()),
-                ..Default::default()
-            },
+            causa_kernel::BlockMeta::from_source("user"),
         )])
         .commit()?;
 

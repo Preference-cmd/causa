@@ -23,11 +23,7 @@ fn identical_calls_have_distinct_material_ids() {
     let response = ModelResponse {
         items: vec![
             ModelItem::text(""),
-            ModelItem::tool_call(ToolCallDraft {
-                tool_name: "lookup".into(),
-                arguments: json!({"query":"same"}),
-                provider_call_id: None,
-            }),
+            ModelItem::tool_call(ToolCallDraft::new("lookup", json!({"query":"same"}))),
         ],
     };
     assert_eq!(response.block_count(), 1);

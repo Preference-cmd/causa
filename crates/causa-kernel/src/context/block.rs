@@ -24,6 +24,7 @@ use crate::context::tool_data::ToolResultPayload;
 /// Envelope provenance. Fields are serde-additive so older records
 /// without them still deserialize.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BlockMeta {
     /// Provider-issued identifier (e.g. upstream call id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,17 +40,36 @@ pub struct BlockMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire: Option<WireMeta>,
 }
+impl BlockMeta {
+    /// Metadata naming only where the block came from, such as `"user"`.
+    pub fn from_source(source: impl Into<String>) -> Self {
+        Self {
+            source: Some(source.into()),
+            ..Self::default()
+        }
+    }
+}
 
 /// Wire-level residue of one provider item: every field the translator did
 /// not turn into block content, kept uninterpreted so a renderer of the same
 /// format can send the item back as returned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WireMeta {
     /// Wire format the fields belong to (the protocol's stable name, for
     /// example `openai_responses`).
     pub format: String,
     /// The item as returned, minus the fields the block's content holds.
     pub fields: serde_json::Value,
+}
+impl WireMeta {
+    /// Wire residue in the named format.
+    pub fn new(format: impl Into<String>, fields: serde_json::Value) -> Self {
+        Self {
+            format: format.into(),
+            fields,
+        }
+    }
 }
 
 /// A single string of text. Serializes transparently as the inner string.
@@ -66,11 +86,21 @@ impl TextPayload {
 /// A model-issued tool call. Its containing block ID is the declaration
 /// identity; provider-issued identifiers ride on BlockMeta::provider_call_id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolCallPayload {
     /// Name of the invoked tool — the key the executor dispatches on.
     pub tool_name: String,
     /// The call's arguments as a JSON value.
     pub arguments: serde_json::Value,
+}
+impl ToolCallPayload {
+    /// A declaration of one call.
+    pub fn new(tool_name: impl Into<String>, arguments: serde_json::Value) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            arguments,
+        }
+    }
 }
 
 /// A typed fact. Three axes: identity, content, envelope provenance.
@@ -113,6 +143,7 @@ impl ContextBlock {
 /// A media fact: a cheap, durable reference. Bytes never enter facts —
 /// they appear only in resolved render payloads (provider side).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct MediaRef {
     /// IANA media type; only `image/*` renders to the wire, anything else
     /// degrades to a deterministic text placeholder.
@@ -134,6 +165,9 @@ impl MediaRef {
 
 /// The content shape of a block. Three shapes: one message's ordered
 /// parts (any role), a tool call, a tool result.
+///
+/// Exhaustive on purpose: a renderer must handle every shape, so a new one is
+/// a breaking change that should stop downstream code from compiling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", content = "value", rename_all = "snake_case")]
 pub enum BlockContent {
@@ -152,6 +186,11 @@ pub enum BlockContent {
 /// One content atom inside a [`BlockContent::Parts`] block: ordered,
 /// identity-free, sharing the block's envelope. New modalities arrive
 /// as new variants (additive); media bytes stay out of facts forever.
+///
+/// Exhaustive on purpose, like [`BlockContent`]. A new part is additive only
+/// in the serde sense: stored material written before it still reads. In Rust
+/// it is a breaking change, because a wildcard arm in a renderer would drop
+/// the new part without a trace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "part", content = "value", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -168,9 +207,19 @@ pub enum ContentPart {
 /// Only a renderer of the matching `format` writes it back; every other
 /// renderer skips it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SealedPart {
     /// Wire format of `item`; interpreted only by the matching renderer.
     pub format: String,
     /// The item exactly as the provider returned it.
     pub item: serde_json::Value,
+}
+impl SealedPart {
+    /// A sealed item in the named wire format.
+    pub fn new(format: impl Into<String>, item: serde_json::Value) -> Self {
+        Self {
+            format: format.into(),
+            item,
+        }
+    }
 }

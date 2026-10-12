@@ -45,17 +45,15 @@ async fn asynchronous_before_holds_dispatch_and_after_until_released() {
     let release = Arc::new(Semaphore::new(0));
     let tool = NamedTool::new("work");
     let after = Arc::new(AtomicUsize::new(0));
-    let executor = Arc::new(executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Gate {
-                entered: entered.clone(),
-                release: release.clone(),
-            })],
-            after: vec![Arc::new(Count(after.clone()))],
-            ..Default::default()
-        },
-    ));
+    let executor = Arc::new(executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Gate {
+            entered: entered.clone(),
+            release: release.clone(),
+        })];
+        options.after = vec![Arc::new(Count(after.clone()))];
+        options
+    }));
     let task = tokio::spawn(async move {
         let mut batch = batch(&["work"]);
         executor
@@ -96,14 +94,12 @@ impl ToolBatchProcessor for Reject {
 async fn before_can_complete_all_calls_and_after_still_runs() {
     let tool = NamedTool::new("work");
     let after = Arc::new(AtomicUsize::new(0));
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Reject)],
-            after: vec![Arc::new(Count(after.clone()))],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Reject)];
+        options.after = vec![Arc::new(Count(after.clone()))];
+        options
+    });
     let mut batch = batch(&["work", "work"]);
     executor
         .bind(invocation(), control())
@@ -144,13 +140,11 @@ impl ToolBatchProcessor for Rewrite {
 #[tokio::test]
 async fn original_unadvertised_name_cannot_be_rescued_by_before() {
     let tool = NamedTool::new("real");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Rewrite { name: "real" })],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Rewrite { name: "real" })];
+        options
+    });
     let mut batch = batch(&["unadvertised alias"]);
     executor
         .bind(invocation(), control())
@@ -169,13 +163,11 @@ async fn original_unadvertised_name_cannot_be_rescued_by_before() {
 #[tokio::test]
 async fn legal_name_rewritten_outside_binding_is_rejected() {
     let tool = NamedTool::new("real");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Rewrite { name: "outside" })],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Rewrite { name: "outside" })];
+        options
+    });
     let mut batch = batch(&["real"]);
     executor
         .bind(invocation(), control())
@@ -195,13 +187,11 @@ async fn legal_name_rewritten_outside_binding_is_rejected() {
 async fn legal_name_rewritten_inside_binding_dispatches_the_fixed_target() {
     let first = NamedTool::labeled("first", "first object");
     let second = NamedTool::labeled("second", "second object");
-    let executor = executor(
-        vec![first.clone(), second.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Rewrite { name: "second" })],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![first.clone(), second.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Rewrite { name: "second" })];
+        options
+    });
     let mut batch = batch(&["first"]);
     let id = batch.declaration_ids()[0];
     executor
@@ -243,13 +233,11 @@ impl ToolBatchProcessor for Reverse {
 #[tokio::test]
 async fn after_reorder_preserves_results_and_is_the_returned_order() {
     let reverse = Arc::new(Reverse(Mutex::new(vec![])));
-    let executor = executor(
-        vec![NamedTool::new("a"), NamedTool::new("b")],
-        ToolExecutorOptions {
-            after: vec![reverse.clone()],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![NamedTool::new("a"), NamedTool::new("b")], {
+        let mut options = ToolExecutorOptions::default();
+        options.after = vec![reverse.clone()];
+        options
+    });
     let mut batch = batch(&["a", "b"]);
     executor
         .bind(invocation(), control())
@@ -291,14 +279,16 @@ async fn before_and_after_errors_keep_edits_original_error_and_skip_later_proces
             Arc::new(Count(count.clone())),
         ];
         let options = match phase {
-            ToolProcessorPhase::Before => ToolExecutorOptions {
-                before: sequence,
-                ..Default::default()
-            },
-            ToolProcessorPhase::After => ToolExecutorOptions {
-                after: sequence,
-                ..Default::default()
-            },
+            ToolProcessorPhase::Before => {
+                let mut options = ToolExecutorOptions::default();
+                options.before = sequence;
+                options
+            }
+            ToolProcessorPhase::After => {
+                let mut options = ToolExecutorOptions::default();
+                options.after = sequence;
+                options
+            }
         };
         let executor = executor(vec![tool.clone()], options);
         let mut batch = batch(&["work"]);
@@ -334,13 +324,11 @@ async fn before_and_after_errors_keep_edits_original_error_and_skip_later_proces
 async fn precompleted_input_is_rejected_unchanged_without_processors_or_calls() {
     let tool = NamedTool::new("work");
     let count = Arc::new(AtomicUsize::new(0));
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Count(count.clone()))],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Count(count.clone()))];
+        options
+    });
     let mut batch = batch(&["work"]);
     let call = batch.calls()[0].call().clone();
     batch
@@ -441,17 +429,15 @@ async fn rejected_results_cannot_reopen_change_status_or_lose_notes() {
         },
     ] {
         let tool = NamedTool::new("work");
-        let executor = executor(
-            vec![tool.clone()],
-            ToolExecutorOptions {
-                before: vec![
-                    Arc::new(Rewrite { name: "work" }),
-                    Arc::new(Reject),
-                    Arc::new(replacement),
-                ],
-                ..Default::default()
-            },
-        );
+        let executor = executor(vec![tool.clone()], {
+            let mut options = ToolExecutorOptions::default();
+            options.before = vec![
+                Arc::new(Rewrite { name: "work" }),
+                Arc::new(Reject),
+                Arc::new(replacement),
+            ];
+            options
+        });
         let mut batch = batch(&["work"]);
         assert!(matches!(
             executor
@@ -484,13 +470,11 @@ impl ToolBatchProcessor for Foreign {
 #[tokio::test]
 async fn foreign_membership_is_rejected_at_handoff_without_dispatch() {
     let tool = NamedTool::new("work");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Foreign)],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Foreign)];
+        options
+    });
     let mut batch = batch(&["work"]);
     assert!(matches!(
         executor
@@ -538,13 +522,11 @@ impl ToolBatchProcessor for ChangeCompletedFact {
 async fn after_cannot_change_result_identity_or_completed_input() {
     for identity in [false, true] {
         let tool = NamedTool::new("work");
-        let executor = executor(
-            vec![tool.clone()],
-            ToolExecutorOptions {
-                after: vec![Arc::new(ChangeCompletedFact { identity })],
-                ..Default::default()
-            },
-        );
+        let executor = executor(vec![tool.clone()], {
+            let mut options = ToolExecutorOptions::default();
+            options.after = vec![Arc::new(ChangeCompletedFact { identity })];
+            options
+        });
         let mut batch = batch(&["work"]);
         assert!(matches!(
             executor
@@ -565,20 +547,18 @@ async fn after_cannot_change_result_identity_or_completed_input() {
 #[tokio::test]
 async fn pending_notes_cannot_be_removed_by_recreating_the_same_declaration() {
     let tool = NamedTool::new("work");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![
-                Arc::new(Rewrite { name: "work" }),
-                Arc::new(Replace {
-                    reopen: false,
-                    remove_notes: true,
-                    change_status: false,
-                }),
-            ],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![
+            Arc::new(Rewrite { name: "work" }),
+            Arc::new(Replace {
+                reopen: false,
+                remove_notes: true,
+                change_status: false,
+            }),
+        ];
+        options
+    });
     let mut batch = batch(&["work"]);
     assert!(matches!(
         executor
@@ -598,17 +578,15 @@ async fn pending_notes_cannot_be_removed_by_recreating_the_same_declaration() {
 #[tokio::test]
 async fn original_out_of_bounds_rejection_cannot_be_reopened() {
     let tool = NamedTool::new("work");
-    let executor = executor(
-        vec![tool.clone()],
-        ToolExecutorOptions {
-            before: vec![Arc::new(Replace {
-                reopen: true,
-                remove_notes: false,
-                change_status: false,
-            })],
-            ..Default::default()
-        },
-    );
+    let executor = executor(vec![tool.clone()], {
+        let mut options = ToolExecutorOptions::default();
+        options.before = vec![Arc::new(Replace {
+            reopen: true,
+            remove_notes: false,
+            change_status: false,
+        })];
+        options
+    });
     let mut batch = batch(&["outside"]);
     assert!(matches!(
         executor

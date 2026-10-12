@@ -8,22 +8,18 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 fn call(id: BlockId, name: &str, arguments: Value) -> ToolCallContext {
-    ToolCallContext::from_declaration(
-        id,
-        &ToolCallPayload {
-            tool_name: name.into(),
-            arguments,
-        },
-    )
+    ToolCallContext::from_declaration(id, &ToolCallPayload::new(name, arguments))
 }
 
 fn result(call_block_id: BlockId, note: &str) -> ToolResultPayload {
-    ToolResultPayload {
-        call_block_id,
-        status: ToolResultStatus::Succeeded,
-        output: ToolOutput::new(json!({"ok": true})),
-        media: Vec::new(),
-        notes: vec![TextPayload::new(note)],
+    {
+        let mut result = ToolResultPayload::new(
+            call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!({"ok": true})),
+        );
+        result.notes = vec![TextPayload::new(note)];
+        result
     }
 }
 

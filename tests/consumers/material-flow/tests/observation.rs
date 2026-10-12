@@ -13,17 +13,19 @@ impl ModelGateway for Refusal {
         _: &ModelRequest,
         _: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
-        Ok(ModelOutput {
-            response: ModelResponse {
-                items: vec![ModelItem::text("retained refusal")],
-            },
-            stop_reason: ModelStopReason::Refusal,
-            usage: Some(ModelUsage {
-                input_tokens: 7,
-                ..Default::default()
-            }),
-            reasoning: None,
-            raw_stop_reason: None,
+        Ok({
+            let mut output = ModelOutput::new(
+                ModelResponse {
+                    items: vec![ModelItem::text("retained refusal")],
+                },
+                ModelStopReason::Refusal,
+            );
+            output.usage = Some({
+                let mut usage = ModelUsage::default();
+                usage.input_tokens = 7;
+                usage
+            });
+            output
         })
     }
 }
@@ -61,7 +63,6 @@ async fn host_can_copy_selected_observations_and_recover_output_without_them() {
                 options,
                 CallControl::new(token, None),
             )
-
             .await;
         let TurnResult::Interrupted {
             cause: TurnInterruption::ModelRefusal { output, .. },

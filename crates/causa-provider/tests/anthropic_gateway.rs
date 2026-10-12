@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
     GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest,
-    ModelStopReason, RoundId, TextPayload, ToolSurface, TurnId,
+    ModelStopReason, RoundId, TextPayload, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use serde_json::{Value, json};
@@ -30,31 +30,29 @@ fn user_frame() -> ContextFrame {
             BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
                 "hi",
             ))]),
-            BlockMeta {
-                provider_call_id: None,
-                source: Some("user".into()),
-                wire: None,
-            },
+            BlockMeta::from_source("user"),
         )],
     }
 }
 
 fn request(frame: ContextFrame) -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("t1"),
-            round_id: RoundId(0),
-        },
-        frame,
-        model: ModelRef::new("claude-test"),
-        tool_surface: ToolSurface::empty(),
+    {
+        let mut built = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("t1"),
+                round_id: RoundId(0),
+            },
+            frame,
+            ModelRef::new("claude-test"),
+        );
         // Anthropic requires `max_tokens`; every case here supplies one so the
         // request under test is the transport behavior, not the validation.
-        generation: GenerationOptions {
-            max_tokens: Some(4096),
-            ..GenerationOptions::default()
-        },
-        cache: causa_kernel::CacheDirective::None,
+        built.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(4096);
+            generation
+        };
+        built
     }
 }
 
@@ -418,11 +416,7 @@ fn media_frame() -> ContextFrame {
                 ContentPart::Text(TextPayload::new("look")),
                 ContentPart::Media(MediaRef::new("image/png", "asset-1")),
             ]),
-            BlockMeta {
-                provider_call_id: None,
-                source: Some("user".into()),
-                wire: None,
-            },
+            BlockMeta::from_source("user"),
         )],
     }
 }

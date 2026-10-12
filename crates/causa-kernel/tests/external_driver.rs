@@ -40,35 +40,31 @@ async fn external_single_shot_driver_uses_independent_execution_identity_and_dir
     )])
     .unwrap();
     let gateway = OneShotGateway {
-        output: ModelOutput {
-            response: ModelResponse {
-                items: vec![ModelItem::text("hello")],
-            },
-            usage: Some(ModelUsage {
-                input_tokens: 10,
-                output_tokens: 2,
-                cache_read_tokens: Some(4),
-                cache_write_tokens: None,
-                reasoning_tokens: Some(1),
-            }),
-            stop_reason: ModelStopReason::EndTurn,
-            raw_stop_reason: None,
-            reasoning: Some(ReasoningPayload {
-                text: "thinking".into(),
-            }),
+        output: {
+            let mut output = ModelOutput::new(
+                ModelResponse {
+                    items: vec![ModelItem::text("hello")],
+                },
+                ModelStopReason::EndTurn,
+            );
+            output.usage = Some({
+                let mut usage = ModelUsage::new(10, 2);
+                usage.cache_read_tokens = Some(4);
+                usage.reasoning_tokens = Some(1);
+                usage
+            });
+            output.reasoning = Some(ReasoningPayload::new("thinking"));
+            output
         },
     };
-    let request = ModelRequest {
-        invocation_id: InvocationId {
+    let request = ModelRequest::new(
+        InvocationId {
             turn_id: TurnId::new("ext-1"),
             round_id: RoundId(0),
         },
-        frame: context.frame(),
-        model: ModelRef::new("external-model"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
-        cache: CacheDirective::None,
-    };
+        context.frame(),
+        ModelRef::new("external-model"),
+    );
     let control = CallControl::new(CancellationToken::new(), None);
     let output = gateway.invoke(&request, &control).await.unwrap();
     let ids = common::block_ids_for(&output.response);
@@ -126,13 +122,11 @@ fn external_tool_driver_converts_only_new_material_and_validates_results_before_
     assert_eq!(new_calls.len(), 1);
     assert_eq!(new_calls[0].1.tool_name, "echo");
     context.apply(Vec::new(), new_blocks).unwrap();
-    let result = ToolResultPayload {
-        call_block_id: new_calls[0].0,
-        status: ToolResultStatus::Succeeded,
-        output: ToolOutput::new(json!("hi")),
-        media: vec![],
-        notes: vec![],
-    };
+    let result = ToolResultPayload::new(
+        new_calls[0].0,
+        ToolResultStatus::Succeeded,
+        ToolOutput::new(json!("hi")),
+    );
     let result_id = common::block_id();
     validate_tool_result_append(context.blocks(), &[(result_id, result.clone())]).unwrap();
     context
@@ -190,16 +184,12 @@ async fn external_preparer_sees_actual_round_and_selects_temporary_material() {
     };
     let model = ModelRef::new("actual-model");
     let tool_surface = ToolSurface::empty();
-    let generation = GenerationOptions {
-        max_tokens: Some(32),
-        ..Default::default()
+    let generation = {
+        let mut generation = GenerationOptions::default();
+        generation.max_tokens = Some(32);
+        generation
     };
-    let round = RoundInfo {
-        invocation_id: &invocation_id,
-        model: &model,
-        tool_surface: &tool_surface,
-        generation: &generation,
-    };
+    let round = RoundInfo::new(&invocation_id, &model, &tool_surface, &generation);
     let mut context = Context::new();
     let preparer: &dyn ContextPreparer = &Preparing;
     let frame = preparer
@@ -281,16 +271,17 @@ async fn logical_gateway_wrapper_keeps_invocation_request_values_stable() {
             requests: Mutex::new(Vec::new()),
         },
     };
-    let request = ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("wrapped"),
-            round_id: RoundId(0),
-        },
-        frame: Context::new().frame(),
-        model: ModelRef::new("model"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
-        cache: CacheDirective::StablePrefix,
+    let request = {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("wrapped"),
+                round_id: RoundId(0),
+            },
+            Context::new().frame(),
+            ModelRef::new("model"),
+        );
+        request.cache = CacheDirective::StablePrefix;
+        request
     };
     let result = gateway
         .invoke(&request, &CallControl::new(CancellationToken::new(), None))

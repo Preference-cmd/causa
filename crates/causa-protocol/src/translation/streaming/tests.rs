@@ -513,10 +513,10 @@ fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
             sealed
                 .iter()
                 .map(|item| {
-                    causa_kernel::ContentPart::Sealed(causa_kernel::SealedPart {
-                        format: Protocol::AnthropicMessages.as_str().into(),
-                        item: item.clone(),
-                    })
+                    causa_kernel::ContentPart::Sealed(causa_kernel::SealedPart::new(
+                        Protocol::AnthropicMessages.as_str(),
+                        item.clone(),
+                    ))
                 })
                 .collect(),
         ),
@@ -530,19 +530,17 @@ fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
                     causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
                         causa_kernel::TextPayload::new("hi"),
                     )]),
-                    causa_kernel::BlockMeta {
-                        source: Some("user".into()),
-                        ..causa_kernel::BlockMeta::default()
-                    },
+                    causa_kernel::BlockMeta::from_source("user"),
                 ),
                 block,
             ],
         },
         &crate::translation::media::MediaSet::new(),
         &causa_kernel::ToolSurface::empty(),
-        &causa_kernel::GenerationOptions {
-            max_tokens: Some(64),
-            ..causa_kernel::GenerationOptions::default()
+        &{
+            let mut generation = causa_kernel::GenerationOptions::default();
+            generation.max_tokens = Some(64);
+            generation
         },
         &causa_kernel::ModelRef::new("m"),
         causa_kernel::CacheDirective::None,

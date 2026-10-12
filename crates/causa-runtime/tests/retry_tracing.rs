@@ -5,9 +5,9 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CacheDirective, CallControl, CancellationToken, Context, GenerationOptions, InvocationId,
-    ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef,
-    ModelRequest, ModelResponse, ModelStopReason, RoundId, ToolSurface, TurnId,
+    CallControl, CancellationToken, Context, InvocationId, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelStopReason, RoundId, TurnId,
 };
 use causa_runtime::{RetryPolicy, RetryingGateway};
 use std::io;
@@ -51,29 +51,23 @@ fn capture() -> &'static Arc<Mutex<String>> {
 }
 
 fn output() -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text("complete")],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        raw_stop_reason: None,
-        reasoning: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 fn request() -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
+    ModelRequest::new(
+        InvocationId {
             turn_id: TurnId::new("retry-tracing"),
             round_id: RoundId(0),
         },
-        frame: Context::new().frame(),
-        model: ModelRef::new("fixed-model"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
-        cache: CacheDirective::None,
-    }
+        Context::new().frame(),
+        ModelRef::new("fixed-model"),
+    )
 }
 
 /// Fails twice with a retryable kind, then succeeds.

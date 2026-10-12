@@ -414,12 +414,13 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                     .get("text")
                     .and_then(Value::as_str)
                     .ok_or_else(|| undecodable("text block: missing `text` string"))?;
-                items.push(ModelItem {
-                    wire: Some(context_frame::wire_meta(
+                items.push({
+                    let mut item = ModelItem::text(text);
+                    item.wire = Some(context_frame::wire_meta(
                         Protocol::AnthropicMessages,
                         context_frame::without_keys(block, &["text"]),
-                    )),
-                    ..ModelItem::text(text)
+                    ));
+                    item
                 });
             }
             Some("tool_use") => {
@@ -431,16 +432,20 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| undecodable("tool_use block: missing `name` string"))?;
-                items.push(ModelItem {
-                    wire: Some(context_frame::wire_meta(
+                items.push({
+                    let mut item = ModelItem::tool_call({
+                        let mut call = ToolCallDraft::new(
+                            name.to_string(),
+                            block.get("input").cloned().unwrap_or_else(|| json!({})),
+                        );
+                        call.provider_call_id = Some(id.to_string());
+                        call
+                    });
+                    item.wire = Some(context_frame::wire_meta(
                         Protocol::AnthropicMessages,
                         context_frame::without_keys(block, &["id", "name", "input"]),
-                    )),
-                    ..ModelItem::tool_call(ToolCallDraft {
-                        tool_name: name.to_string(),
-                        arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                        provider_call_id: Some(id.to_string()),
-                    })
+                    ));
+                    item
                 });
             }
             Some("thinking") => {
@@ -480,18 +485,16 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
         .filter(|v| v.is_object())
         .map(crate::translation::usage::model_usage_from_anthropic);
 
-    Ok(ModelOutput {
-        response: ModelResponse { items },
-        usage,
-        stop_reason,
-        raw_stop_reason: Some(raw_stop_reason),
-        reasoning: if thinking_parts.is_empty() {
+    Ok({
+        let mut output = ModelOutput::new(ModelResponse { items }, stop_reason);
+        output.usage = usage;
+        output.raw_stop_reason = Some(raw_stop_reason);
+        output.reasoning = if thinking_parts.is_empty() {
             None
         } else {
-            Some(ReasoningPayload {
-                text: thinking_parts.join("\n"),
-            })
-        },
+            Some(ReasoningPayload::new(thinking_parts.join("\n")))
+        };
+        output
     })
 }
 
@@ -537,9 +540,10 @@ mod tests {
 
     /// Anthropic requires `max_tokens`; the renderer tests always supply one.
     fn test_generation() -> GenerationOptions {
-        GenerationOptions {
-            max_tokens: Some(4096),
-            ..GenerationOptions::default()
+        {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(4096);
+            generation
         }
     }
 
@@ -686,17 +690,18 @@ mod tests {
 
     #[test]
     fn tools_generation_and_byte_determinism() {
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
-            name: "read".into(),
-            description: "read a file".into(),
-            parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
-        }]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+            "read",
+            "read a file",
+            json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        )]);
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
-        let generation = GenerationOptions {
-            temperature: Some(0.5),
-            max_tokens: Some(4096),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.temperature = Some(0.5);
+            generation.max_tokens = Some(4096);
+            generation
         };
         let v = render_anthropic_messages(
             &f,
@@ -720,10 +725,11 @@ mod tests {
             }])
         );
 
-        let generation = GenerationOptions {
-            temperature: Some(0.5),
-            max_tokens: Some(100),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.temperature = Some(0.5);
+            generation.max_tokens = Some(100);
+            generation
         };
         let v2 = render_anthropic_messages(
             &f,
@@ -779,10 +785,11 @@ mod tests {
         assert!(body.get("output_config").is_none());
 
         // None: thinking explicitly disabled, no effort level
-        let generation = GenerationOptions {
-            max_tokens: Some(64),
-            reasoning_effort: Some(ReasoningEffort::None),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(64);
+            generation.reasoning_effort = Some(ReasoningEffort::None);
+            generation
         };
         let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
         assert_eq!(body["thinking"], json!({"type": "disabled"}));
@@ -796,10 +803,11 @@ mod tests {
             (ReasoningEffort::XHigh, "xhigh"),
             (ReasoningEffort::Max, "max"),
         ] {
-            let generation = GenerationOptions {
-                max_tokens: Some(64),
-                reasoning_effort: Some(effort),
-                ..GenerationOptions::default()
+            let generation = {
+                let mut generation = GenerationOptions::default();
+                generation.max_tokens = Some(64);
+                generation.reasoning_effort = Some(effort);
+                generation
             };
             let body = render_with(&generation, &AnthropicRenderOptions::default()).unwrap();
             assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{wire}");
@@ -809,10 +817,11 @@ mod tests {
 
     #[test]
     fn minimal_effort_and_missing_max_tokens_fail_before_rendering() {
-        let generation = GenerationOptions {
-            max_tokens: Some(64),
-            reasoning_effort: Some(ReasoningEffort::Minimal),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(64);
+            generation.reasoning_effort = Some(ReasoningEffort::Minimal);
+            generation
         };
         let error = render_with(&generation, &AnthropicRenderOptions::default()).unwrap_err();
         assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
@@ -829,11 +838,12 @@ mod tests {
 
         // Active effort and temperature stay mutually exclusive; an explicit
         // `None` effort is not active.
-        let generation = GenerationOptions {
-            max_tokens: Some(64),
-            temperature: Some(1.0),
-            reasoning_effort: Some(ReasoningEffort::High),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(64);
+            generation.temperature = Some(1.0);
+            generation.reasoning_effort = Some(ReasoningEffort::High);
+            generation
         };
         assert_eq!(
             render_with(&generation, &AnthropicRenderOptions::default())
@@ -841,11 +851,12 @@ mod tests {
                 .kind,
             ModelInvokeErrorKind::InvalidRequest
         );
-        let generation = GenerationOptions {
-            max_tokens: Some(64),
-            temperature: Some(1.0),
-            reasoning_effort: Some(ReasoningEffort::None),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(64);
+            generation.temperature = Some(1.0);
+            generation.reasoning_effort = Some(ReasoningEffort::None);
+            generation
         };
         assert!(render_with(&generation, &AnthropicRenderOptions::default()).is_ok());
     }
@@ -860,10 +871,11 @@ mod tests {
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
 
-        let generation = GenerationOptions {
-            max_tokens: Some(64),
-            reasoning_effort: Some(ReasoningEffort::High),
-            ..GenerationOptions::default()
+        let generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(64);
+            generation.reasoning_effort = Some(ReasoningEffort::High);
+            generation
         };
         let body = render_with(&generation, &options).unwrap();
         assert_eq!(
@@ -899,11 +911,11 @@ mod tests {
             text(0, "be terse", Some("system")),
             text(1, "hi", Some("user")),
         ]);
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
-            name: "read".into(),
-            description: "read a file".into(),
-            parameters: json!({"type": "object"}),
-        }]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+            "read",
+            "read a file",
+            json!({"type": "object"}),
+        )]);
         let v = render_anthropic_messages(
             &f,
             &MediaSet::new(),
@@ -925,11 +937,11 @@ mod tests {
             call(2, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
             result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
         ]);
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition {
-            name: "read".into(),
-            description: "read a file".into(),
-            parameters: json!({"type": "object"}),
-        }]);
+        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+            "read",
+            "read a file",
+            json!({"type": "object"}),
+        )]);
         let v = render_anthropic_messages(
             &f,
             &MediaSet::new(),

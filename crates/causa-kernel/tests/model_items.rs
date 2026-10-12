@@ -11,16 +11,14 @@ use causa_kernel::{
 use serde_json::json;
 
 fn wire(format: &str, fields: serde_json::Value) -> Option<WireMeta> {
-    Some(WireMeta {
-        format: format.into(),
-        fields,
-    })
+    Some(WireMeta::new(format, fields))
 }
 
 fn parts_item(parts: Vec<ContentPart>, wire: Option<WireMeta>) -> ModelItem {
-    ModelItem {
-        content: ModelItemContent::Parts(parts),
-        wire,
+    {
+        let mut item = ModelItem::new(ModelItemContent::Parts(parts));
+        item.wire = wire;
+        item
     }
 }
 
@@ -29,10 +27,10 @@ fn text_part(text: &str) -> ContentPart {
 }
 
 fn call(name: &str, id: &str) -> ToolCallDraft {
-    ToolCallDraft {
-        tool_name: name.into(),
-        arguments: json!({"n": name}),
-        provider_call_id: Some(id.into()),
+    {
+        let mut call = ToolCallDraft::new(name, json!({"n": name}));
+        call.provider_call_id = Some(id.into());
+        call
     }
 }
 
@@ -76,10 +74,7 @@ fn readers_follow_item_order() {
             parts_item(
                 vec![
                     text_part("b"),
-                    ContentPart::Sealed(SealedPart {
-                        format: "f".into(),
-                        item: json!({"hidden": true}),
-                    }),
+                    ContentPart::Sealed(SealedPart::new("f", json!({"hidden": true}))),
                     text_part(" c"),
                 ],
                 None,
@@ -150,9 +145,10 @@ fn item_wire_is_copied_to_block_meta_untouched() {
     let response = ModelResponse {
         items: vec![
             parts_item(vec![text_part("hi")], parts_wire.clone()),
-            ModelItem {
-                content: ModelItemContent::ToolCall(call("a", "id-a")),
-                wire: call_wire.clone(),
+            {
+                let mut item = ModelItem::new(ModelItemContent::ToolCall(call("a", "id-a")));
+                item.wire = call_wire.clone();
+                item
             },
             ModelItem::text("plain"),
         ],
@@ -173,11 +169,7 @@ fn stop_reason_pairing_and_tool_checks_use_the_tool_call_items() {
             ModelItem::text("x"),
             ModelItem::tool_call(call("ok", "1")),
             ModelItem::text("y"),
-            ModelItem::tool_call(ToolCallDraft {
-                tool_name: "bad".into(),
-                arguments: json!([1]),
-                provider_call_id: None,
-            }),
+            ModelItem::tool_call(ToolCallDraft::new("bad", json!([1]))),
         ],
     };
     let ids = common::block_ids_for(&response);
@@ -224,28 +216,27 @@ fn blocks_written_before_the_wire_field_still_load() {
 
 #[test]
 fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
-    let sealed = ContentPart::Sealed(SealedPart {
-        format: "openai_chat_completions".into(),
-        item: json!({"reasoning_content": "think", "content": null, "n": [1, 2.5]}),
-    });
+    let sealed = ContentPart::Sealed(SealedPart::new(
+        "openai_chat_completions",
+        json!({"reasoning_content": "think", "content": null, "n": [1, 2.5]}),
+    ));
     let block = ContextBlock::new(
         common::block_id(),
         BlockContent::Parts(vec![sealed, text_part("hi")]),
-        BlockMeta {
-            wire: wire("anthropic_messages", json!({"type": "text", "x": {"a": 1}})),
-            ..BlockMeta::default()
+        {
+            let mut meta = BlockMeta::default();
+            meta.wire = wire("anthropic_messages", json!({"type": "text", "x": {"a": 1}}));
+            meta
         },
     );
     let call_block = ContextBlock::new(
         common::block_id(),
-        BlockContent::ToolCall(causa_kernel::ToolCallPayload {
-            tool_name: "t".into(),
-            arguments: json!({}),
-        }),
-        BlockMeta {
-            provider_call_id: Some("c1".into()),
-            wire: wire("openai_responses", json!({"id": "fc", "arguments": "{ }"})),
-            ..BlockMeta::default()
+        BlockContent::ToolCall(causa_kernel::ToolCallPayload::new("t", json!({}))),
+        {
+            let mut meta = BlockMeta::default();
+            meta.provider_call_id = Some("c1".into());
+            meta.wire = wire("openai_responses", json!({"id": "fc", "arguments": "{ }"}));
+            meta
         },
     );
     let context = Context::from_blocks(vec![block, call_block]).unwrap();
@@ -259,14 +250,11 @@ fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
 fn sealed_parts_are_edited_and_removed_through_the_existing_context_api() {
     let original = ContextBlock::new(
         common::block_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-            format: "anthropic_messages".into(),
-            item: json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
-        })]),
-        BlockMeta {
-            source: Some("assistant".into()),
-            ..BlockMeta::default()
-        },
+        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
+            "anthropic_messages",
+            json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
+        ))]),
+        BlockMeta::from_source("assistant"),
     );
     let mut context = Context::from_blocks(vec![original]).unwrap();
 
@@ -275,14 +263,11 @@ fn sealed_parts_are_edited_and_removed_through_the_existing_context_api() {
     // no new API and no sealed-specific rule is involved.
     let edited = ContextBlock::new(
         common::block_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart {
-            format: "anthropic_messages".into(),
-            item: json!({"type": "thinking", "thinking": "edited", "signature": "sig"}),
-        })]),
-        BlockMeta {
-            source: Some("assistant".into()),
-            ..BlockMeta::default()
-        },
+        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
+            "anthropic_messages",
+            json!({"type": "thinking", "thinking": "edited", "signature": "sig"}),
+        ))]),
+        BlockMeta::from_source("assistant"),
     );
     context
         .edit()

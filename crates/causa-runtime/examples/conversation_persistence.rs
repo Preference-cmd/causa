@@ -23,28 +23,22 @@ impl ModelGateway for AckGateway {
         request: &ModelRequest,
         _: &CallControl,
     ) -> Result<ModelOutput, ModelInvokeError> {
-        Ok(ModelOutput {
-            response: ModelResponse {
+        Ok(ModelOutput::new(
+            ModelResponse {
                 items: vec![ModelItem::text(format!(
                     "ack: {} material blocks",
                     request.frame.blocks.len()
                 ))],
             },
-            usage: None,
-            stop_reason: ModelStopReason::EndTurn,
-            reasoning: None,
-            raw_stop_reason: None,
-        })
+            ModelStopReason::EndTurn,
+        ))
     }
 }
 fn input(text: &str) -> ContextBlock {
     ContextBlock::new(
         new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )
 }
 async fn run(
@@ -84,10 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ContentPart::Text(TextPayload::new("chart")),
                 ContentPart::Media(MediaRef::new("image/png", "asset-chart")),
             ]),
-            BlockMeta {
-                source: Some("user".into()),
-                ..Default::default()
-            },
+            BlockMeta::from_source("user"),
         )])
         .commit()?;
     let scratch = tempfile::tempdir()?;

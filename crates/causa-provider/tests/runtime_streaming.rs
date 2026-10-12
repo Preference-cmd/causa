@@ -24,10 +24,7 @@ fn input() -> Context {
     Context::from_blocks(vec![ContextBlock::new(
         new_block_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("original"))]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..Default::default()
-        },
+        BlockMeta::from_source("user"),
     )])
     .unwrap()
 }
@@ -136,21 +133,15 @@ struct Echo {
 #[async_trait]
 impl Tool for Echo {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".into(),
-            description: "echo".into(),
-            parameters: json!({"type":"object"}),
-        }
+        ToolDefinition::new("echo", "echo", json!({"type":"object"}))
     }
     async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
         self.calls.lock().unwrap().push(call.clone());
-        ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status: self.status.clone(),
-            output: ToolOutput::new(call.input.arguments.clone()),
-            media: vec![],
-            notes: vec![],
-        }
+        ToolResultPayload::new(
+            call.call_block_id,
+            self.status.clone(),
+            ToolOutput::new(call.input.arguments.clone()),
+        )
     }
 }
 

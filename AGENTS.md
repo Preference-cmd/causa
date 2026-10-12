@@ -149,6 +149,24 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   `0.1.0`, wire-serde breaks require a minor bump. The previous `TurnContext`, Session, implicit trace, checkpoint and
   approval-resume interfaces have been removed. `Context` stores only blocks;
   execution identities are explicit runner inputs.
+- Public type evolution: decide it when the type is added, by who builds the
+  value and who matches on it.
+  - A struct with public fields that could gain one is `#[non_exhaustive]`
+    and ships a `Default` or a `new` taking its required fields. Fields stay
+    public and there are no builders: callers construct, then assign. Other
+    crates in this workspace follow the same path as outside callers.
+  - An enum callers only read (errors, events, interruption causes, error
+    kinds) is `#[non_exhaustive]`.
+  - Fact vocabulary that a renderer or the runtime must be total over stays
+    exhaustive on purpose, with a doc line saying so: `BlockContent`,
+    `ContentPart`, `ModelItemContent`, `ToolResultStatus`, `ModelStopReason`,
+    `ToolExecutionError`, `ControlError` and the option enums a renderer
+    switches on. A new variant there is a breaking change and should fail
+    downstream compilation.
+  - A struct whose fields are its definition stays a plain literal:
+    `InvocationId`, `ModelResponse`, `ContextFrame`, `Replacement`.
+  - Errors own the inputs of the failed operation and are returned unboxed;
+    the workspace allows `clippy::result_large_err` for that reason.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,
   namespaced re-exports so future additions cannot collide.
 - Library module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard

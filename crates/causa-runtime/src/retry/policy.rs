@@ -9,6 +9,7 @@ use std::time::Duration;
 /// starts from are the ones the compared references use — a 500 ms base
 /// delay, an 8 s backoff cap and a 60 s server-delay ceiling (`pi-ai`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RetryPolicy {
     /// Total calls including the first; at least 1.
     pub max_attempts: u32,

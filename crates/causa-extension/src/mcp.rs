@@ -281,10 +281,12 @@ impl DynamicToolSource for McpToolSource {
         Ok(listed
             .tools
             .into_iter()
-            .map(|tool| ToolDefinition {
-                name: self.namespaced(tool.name.as_ref()),
-                description: tool.description.map(|d| d.to_string()).unwrap_or_default(),
-                parameters: serde_json::Value::Object((*tool.input_schema).clone()),
+            .map(|tool| {
+                ToolDefinition::new(
+                    self.namespaced(tool.name.as_ref()),
+                    tool.description.map(|d| d.to_string()).unwrap_or_default(),
+                    serde_json::Value::Object((*tool.input_schema).clone()),
+                )
             })
             .collect())
     }
@@ -411,12 +413,11 @@ impl McpToolSource {
         } else {
             ToolResultStatus::Succeeded
         };
-        Ok(ToolResultPayload {
-            call_block_id: call.call_block_id,
-            status,
-            output: ToolOutput::new(content),
-            media,
-            notes: Vec::new(),
+        Ok({
+            let mut result =
+                ToolResultPayload::new(call.call_block_id, status, ToolOutput::new(content));
+            result.media = media;
+            result
         })
     }
 
@@ -434,11 +435,11 @@ impl McpToolSource {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&image.data)
             .ok()?;
-        let hint = ArtifactHint {
-            tool_name: call.input.tool_name.clone(),
-            call_block_id: call.call_block_id,
-            kind: ArtifactKind::Binary,
-        };
+        let hint = ArtifactHint::new(
+            call.input.tool_name.clone(),
+            call.call_block_id,
+            ArtifactKind::Binary,
+        );
         let artifact = store.persist(&bytes, hint).await.ok()?;
         Some(MediaRef::new(image.mime_type.clone(), artifact.id))
     }

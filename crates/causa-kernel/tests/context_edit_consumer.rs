@@ -16,25 +16,22 @@ fn note(id_value: u128, text: &str, source: &str) -> ContextBlock {
     ContextBlock::new(
         id(id_value),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta {
-            source: Some(source.to_owned()),
-            provider_call_id: None,
-            wire: None,
-        },
+        BlockMeta::from_source(source.to_owned()),
     )
 }
 
 fn call(id_value: u128, name: &str) -> ContextBlock {
     ContextBlock::new(
         id(id_value),
-        BlockContent::ToolCall(ToolCallPayload {
-            tool_name: name.to_owned(),
-            arguments: json!({"round": id_value}),
-        }),
-        BlockMeta {
-            source: Some("model".to_owned()),
-            provider_call_id: Some(format!("provider-call-{id_value}")),
-            wire: None,
+        BlockContent::ToolCall(ToolCallPayload::new(
+            name.to_owned(),
+            json!({"round": id_value}),
+        )),
+        {
+            let mut meta = BlockMeta::default();
+            meta.source = Some("model".to_owned());
+            meta.provider_call_id = Some(format!("provider-call-{id_value}"));
+            meta
         },
     )
 }
@@ -42,18 +39,12 @@ fn call(id_value: u128, name: &str) -> ContextBlock {
 fn result(id_value: u128, call_block_id: BlockId, value: &str) -> ContextBlock {
     ContextBlock::new(
         id(id_value),
-        BlockContent::ToolResult(ToolResultPayload {
+        BlockContent::ToolResult(ToolResultPayload::new(
             call_block_id,
-            status: ToolResultStatus::Succeeded,
-            output: ToolOutput::new(json!({"value": value})),
-            media: Vec::new(),
-            notes: Vec::new(),
-        }),
-        BlockMeta {
-            source: Some("tool-result".to_owned()),
-            provider_call_id: None,
-            wire: None,
-        },
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!({"value": value})),
+        )),
+        BlockMeta::from_source("tool-result"),
     )
 }
 

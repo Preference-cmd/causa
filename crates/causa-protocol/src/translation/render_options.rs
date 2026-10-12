@@ -43,6 +43,7 @@ impl PrefixMismatchBehavior {
 ///
 /// `Default` renders no `block_binding`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct AnthropicRenderOptions {
     /// Rendered as `thinking.block_binding.prefix_mismatch_behavior` whenever
     /// a `thinking` object is rendered (that is, whenever
@@ -57,6 +58,7 @@ pub struct AnthropicRenderOptions {
 /// `store: false`, as Codex and `pi-ai` do: encrypted reasoning is what makes
 /// a reasoning item replayable under `store: false` or zero data retention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResponsesRenderOptions {
     /// Send `include: ["reasoning.encrypted_content"]` (default `true`).
     /// Turning it off leaves the field out entirely, so the response carries
@@ -82,6 +84,7 @@ impl Default for ResponsesRenderOptions {
 ///
 /// `Default` replays sealed `reasoning_content`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ChatRenderOptions {
     /// Replay the frame's own-format sealed `reasoning_content` message-level
     /// items (default `true`). DeepSeek requires `reasoning_content` back on

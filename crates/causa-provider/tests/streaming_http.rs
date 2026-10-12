@@ -28,32 +28,31 @@ fn control() -> CallControl {
     CallControl::new(CancellationToken::new(), None)
 }
 fn request() -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
-            turn_id: TurnId::new("stream-http"),
-            round_id: RoundId(0),
-        },
-        frame: ContextFrame {
-            blocks: vec![causa_kernel::ContextBlock::new(
-                causa_kernel::BlockId::new(uuid::Uuid::from_u128(100)),
-                causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
-                    causa_kernel::TextPayload::new("hi"),
-                )]),
-                causa_kernel::BlockMeta {
-                    source: Some("user".into()),
-                    ..causa_kernel::BlockMeta::default()
-                },
-            )],
-        },
-        model: ModelRef::new("test-model"),
-        tool_surface: ToolSurface::empty(),
+    {
+        let mut request = ModelRequest::new(
+            InvocationId {
+                turn_id: TurnId::new("stream-http"),
+                round_id: RoundId(0),
+            },
+            ContextFrame {
+                blocks: vec![causa_kernel::ContextBlock::new(
+                    causa_kernel::BlockId::new(uuid::Uuid::from_u128(100)),
+                    causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
+                        causa_kernel::TextPayload::new("hi"),
+                    )]),
+                    causa_kernel::BlockMeta::from_source("user"),
+                )],
+            },
+            ModelRef::new("test-model"),
+        );
         // Anthropic requires `max_tokens`; the OpenAI wires render it as their
         // own limit key, which no case here asserts on.
-        generation: GenerationOptions {
-            max_tokens: Some(1024),
-            ..GenerationOptions::default()
-        },
-        cache: CacheDirective::None,
+        request.generation = {
+            let mut generation = GenerationOptions::default();
+            generation.max_tokens = Some(1024);
+            generation
+        };
+        request
     }
 }
 fn chat_delta() -> String {
@@ -515,9 +514,10 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
         false,
     )
     .await;
-    let limits = StreamLimits {
-        max_total_bytes: 10,
-        ..StreamLimits::default()
+    let limits = {
+        let mut limits = StreamLimits::default();
+        limits.max_total_bytes = 10;
+        limits
     };
     let gateway = OpenAiChatCompletionsGateway::new("test")
         .with_base_url(format!("{}/v1", fixture.url))
@@ -551,16 +551,13 @@ async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoi
             ContentPart::Text(TextPayload::new("look")),
             ContentPart::Media(MediaRef::new("image/png", "asset")),
         ]),
-        BlockMeta {
-            source: Some("user".into()),
-            ..BlockMeta::default()
-        },
+        BlockMeta::from_source("user"),
     ));
-    req.tool_surface = ToolSurface::from_definitions(vec![ToolDefinition {
-        name: "read".into(),
-        description: "read something".into(),
-        parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
-    }]);
+    req.tool_surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        "read",
+        "read something",
+        json!({"type":"object","properties":{"path":{"type":"string"}}}),
+    )]);
     req.cache = CacheDirective::StablePrefix;
     req.generation.temperature = Some(0.25);
     req.generation.max_tokens = Some(123);
@@ -864,9 +861,10 @@ async fn default_client_does_not_follow_redirects_or_resubmit_http_errors() {
 #[tokio::test]
 async fn invalid_stream_limits_fail_before_http() {
     let server = wiremock::MockServer::start().await;
-    let limits = StreamLimits {
-        max_pending_deltas: 0,
-        ..StreamLimits::default()
+    let limits = {
+        let mut limits = StreamLimits::default();
+        limits.max_pending_deltas = 0;
+        limits
     };
     let gateway = OpenAiChatCompletionsGateway::new("test")
         .with_base_url(format!("{}/v1", server.uri()))

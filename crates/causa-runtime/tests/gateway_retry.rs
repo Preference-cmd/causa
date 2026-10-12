@@ -6,10 +6,9 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CacheDirective, CallControl, CancellationToken, Context, GenerationOptions, InvocationId,
-    ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef,
-    ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage, RoundId, StreamDelta,
-    ToolSurface, TurnId,
+    CallControl, CancellationToken, Context, InvocationId, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelStopReason, ModelStream, ModelUsage, RoundId, StreamDelta, TurnId,
 };
 use causa_runtime::{RetryPolicy, RetryingGateway};
 use futures_util::{StreamExt, stream};
@@ -20,15 +19,12 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 fn output() -> ModelOutput {
-    ModelOutput {
-        response: ModelResponse {
+    ModelOutput::new(
+        ModelResponse {
             items: vec![ModelItem::text("complete")],
         },
-        usage: None,
-        stop_reason: ModelStopReason::EndTurn,
-        raw_stop_reason: None,
-        reasoning: None,
-    }
+        ModelStopReason::EndTurn,
+    )
 }
 
 fn done() -> StreamDelta {
@@ -38,17 +34,14 @@ fn done() -> StreamDelta {
 }
 
 fn request() -> ModelRequest {
-    ModelRequest {
-        invocation_id: InvocationId {
+    ModelRequest::new(
+        InvocationId {
             turn_id: TurnId::new("retry-wrapper"),
             round_id: RoundId(2),
         },
-        frame: Context::new().frame(),
-        model: ModelRef::new("fixed-model"),
-        tool_surface: ToolSurface::empty(),
-        generation: GenerationOptions::default(),
-        cache: CacheDirective::None,
-    }
+        Context::new().frame(),
+        ModelRef::new("fixed-model"),
+    )
 }
 
 fn error(kind: ModelInvokeErrorKind) -> ModelInvokeError {
@@ -368,9 +361,10 @@ async fn a_failure_after_a_visible_delta_is_never_retried() {
             name_delta: Some("tool".into()),
             arguments_delta: Some("{".into()),
         },
-        StreamDelta::Usage(ModelUsage {
-            input_tokens: 5,
-            ..Default::default()
+        StreamDelta::Usage({
+            let mut usage = ModelUsage::default();
+            usage.input_tokens = 5;
+            usage
         }),
     ];
     for delta in visible {
