@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::{
     anthropic::Anthropic,
     chat::Chat,
-    common::{located, permanent},
+    common::{located, misused, undecodable},
     responses::Responses,
 };
 use crate::{Protocol, translation::sse_parser::SseParser};
@@ -14,7 +14,8 @@ use crate::{Protocol, translation::sse_parser::SseParser};
 /// Limits for retained protocol state and all consumed wire bytes.
 /// Defaults allow 32 MiB lines/events, 64 MiB total wire bytes, 16 MiB
 /// cumulative output plus terminal snapshot, 1024 items and 4096 queued deltas.
-/// Every limit must be positive. Violations are permanent errors.
+/// Every limit must be positive; a zero limit is rejected when the decoder is
+/// built. A stream that exceeds a limit fails as `Undecodable`.
 #[derive(Clone, Copy, Debug)]
 pub struct StreamLimits {
     /// Maximum encoded bytes in one SSE line.
@@ -77,7 +78,7 @@ impl StreamDecoder {
         ]
         .contains(&0)
         {
-            return Err(permanent("stream limits must be positive"));
+            return Err(misused("stream limits must be positive"));
         }
         let assembly = match protocol {
             Protocol::OpenAiChatCompletions => Assembly::Chat(Chat::new(limits)),
@@ -123,7 +124,7 @@ impl StreamDecoder {
             // exceed the total limit before the next event boundary.
             let remaining = self.limits.max_total_bytes - self.total;
             if remaining == 0 && !input.is_empty() {
-                return Err(permanent("stream exceeds max_total_bytes"));
+                return Err(undecodable("stream exceeds max_total_bytes"));
             }
             let mut bounded = &input[..input.len().min(remaining)];
             let bounded_len = bounded.len();
@@ -133,7 +134,7 @@ impl StreamDecoder {
             self.total += consumed;
             let Some(event) = parsed? else {
                 if self.total == self.limits.max_total_bytes && !input.is_empty() {
-                    return Err(permanent("stream exceeds max_total_bytes"));
+                    return Err(undecodable("stream exceeds max_total_bytes"));
                 }
                 return Ok(None);
             };
@@ -145,7 +146,7 @@ impl StreamDecoder {
             }
             .map_err(|error| located(error, self.events, &event))?;
             if deltas.len() > self.limits.max_pending_deltas {
-                return Err(permanent("stream exceeds max_pending_deltas"));
+                return Err(undecodable("stream exceeds max_pending_deltas"));
             }
             self.terminal = deltas.iter().any(|d| matches!(d, StreamDelta::Done { .. }));
             self.pending.extend(deltas);
@@ -158,11 +159,11 @@ impl StreamDecoder {
         }
     }
 
-    /// Ends input explicitly. Malformed framing/encoding is permanent;
+    /// Ends input explicitly. Malformed framing/encoding is undecodable;
     /// a valid stream prefix without a provider terminal is unknown outcome.
     pub fn finish(&mut self) -> Result<(), ModelInvokeError> {
         if self.failed {
-            return Err(permanent("stream decoder is fused after an error"));
+            return Err(misused("stream decoder is fused after an error"));
         }
         if self.terminal {
             return Ok(());
@@ -189,7 +190,7 @@ pub fn configure_stream_request(
 ) -> Result<(), ModelInvokeError> {
     let object = body
         .as_object_mut()
-        .ok_or_else(|| permanent("stream request must be an object"))?;
+        .ok_or_else(|| misused("stream request must be an object"))?;
     object.insert("stream".into(), Value::Bool(true));
     if protocol == Protocol::OpenAiChatCompletions {
         let options = object
@@ -197,7 +198,7 @@ pub fn configure_stream_request(
             .or_insert_with(|| serde_json::json!({}));
         options
             .as_object_mut()
-            .ok_or_else(|| permanent("stream_options must be an object"))?
+            .ok_or_else(|| misused("stream_options must be an object"))?
             .insert("include_usage".into(), Value::Bool(true));
     }
     Ok(())

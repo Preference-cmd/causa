@@ -1,5 +1,5 @@
 use super::state::Responses;
-use crate::translation::streaming::common::{index, permanent, string};
+use crate::translation::streaming::common::{index, string, undecodable};
 use causa_kernel::{ModelInvokeError, StreamDelta};
 use serde_json::Value;
 
@@ -16,7 +16,7 @@ impl Responses {
                 let item = Self::item(&mut self.items, value)?;
                 let part = value
                     .get("part")
-                    .ok_or_else(|| permanent("Responses missing part"))?;
+                    .ok_or_else(|| undecodable("Responses missing part"))?;
                 let part_type = string(part, "type")?;
                 if matches!(part_type, "output_text" | "summary_text" | "refusal") {
                     // A part opens empty; some servers omit the empty string.
@@ -43,21 +43,21 @@ impl Responses {
                 }
                 if kind == "response.content_part.added" {
                     if item.kind != "message" {
-                        return Err(permanent("Responses content part for non-message"));
+                        return Err(undecodable("Responses content part for non-message"));
                     }
                     let i = index(value, "content_index")?;
                     if i != item.parts.len() {
-                        return Err(permanent("Responses invalid content part order"));
+                        return Err(undecodable("Responses invalid content part order"));
                     }
                     self.budget.add(part_type.len())?;
                     item.parts.insert(i, part_type.into());
                 } else {
                     if item.kind != "reasoning" || part_type != "summary_text" {
-                        return Err(permanent("Responses invalid reasoning summary part"));
+                        return Err(undecodable("Responses invalid reasoning summary part"));
                     }
                     let i = index(value, "summary_index")?;
                     if i != item.summaries.len() {
-                        return Err(permanent("Responses invalid summary part order"));
+                        return Err(undecodable("Responses invalid summary part order"));
                     }
                     item.summaries.insert(i);
                 }
@@ -73,7 +73,7 @@ impl Responses {
                 match kind {
                     "response.function_call_arguments.delta" => {
                         if item.kind != "function_call" || item.arguments_done {
-                            return Err(permanent("Responses arguments delta outside open tool"));
+                            return Err(undecodable("Responses arguments delta outside open tool"));
                         }
                         item.arguments.push_str(delta);
                         deltas.push(StreamDelta::ToolCallDelta {
@@ -89,7 +89,7 @@ impl Responses {
                             || !item.summaries.contains(&i)
                             || item.closed_summaries.contains(&i)
                         {
-                            return Err(permanent(
+                            return Err(undecodable(
                                 "Responses reasoning delta outside open summary",
                             ));
                         }
@@ -108,7 +108,7 @@ impl Responses {
                             || item.parts.get(&i).map(String::as_str) != Some(expected)
                             || item.closed_parts.contains(&i)
                         {
-                            return Err(permanent(
+                            return Err(undecodable(
                                 "Responses text delta outside matching open part",
                             ));
                         }
@@ -123,12 +123,12 @@ impl Responses {
             "response.function_call_arguments.done" => {
                 let item = Self::item(&mut self.items, value)?;
                 if item.kind != "function_call" || item.arguments_done {
-                    return Err(permanent("Responses invalid arguments done order"));
+                    return Err(undecodable("Responses invalid arguments done order"));
                 }
                 if let Some(name) = value.get("name")
                     && name.as_str() != item.name.as_deref()
                 {
-                    return Err(permanent("Responses tool name changed"));
+                    return Err(undecodable("Responses tool name changed"));
                 }
                 let args = string(value, "arguments")?;
                 Self::arguments(args)?;
@@ -143,7 +143,7 @@ impl Responses {
                 if kind == "response.reasoning_summary_text.done" {
                     let i = index(value, "summary_index")?;
                     if !item.summaries.contains(&i) || !item.closed_summaries.insert(i) {
-                        return Err(permanent("Responses invalid summary done order"));
+                        return Err(undecodable("Responses invalid summary done order"));
                     }
                     self.budget.add(string(value, "text")?.len())?;
                 } else {
@@ -156,7 +156,7 @@ impl Responses {
                     if item.parts.get(&i).map(String::as_str) != Some(expected)
                         || !item.closed_parts.insert(i)
                     {
-                        return Err(permanent("Responses invalid text done order"));
+                        return Err(undecodable("Responses invalid text done order"));
                     }
                     self.budget.add(
                         string(
@@ -175,14 +175,14 @@ impl Responses {
                 let item = Self::item(&mut self.items, value)?;
                 let part = value
                     .get("part")
-                    .ok_or_else(|| permanent("Responses missing completed part"))?;
+                    .ok_or_else(|| undecodable("Responses missing completed part"))?;
                 if kind == "response.content_part.done" {
                     let i = index(value, "content_index")?;
                     if item.parts.get(&i).map(String::as_str) != Some(string(part, "type")?) {
-                        return Err(permanent("Responses completed part identity changed"));
+                        return Err(undecodable("Responses completed part identity changed"));
                     }
                     if !item.completed_parts.insert(i) {
-                        return Err(permanent("Responses duplicate completed content part"));
+                        return Err(undecodable("Responses duplicate completed content part"));
                     }
                     let part_type = string(part, "type")?;
                     if matches!(part_type, "output_text" | "refusal") {
@@ -199,11 +199,11 @@ impl Responses {
                 } else {
                     let i = index(value, "summary_index")?;
                     if !item.summaries.contains(&i) || string(part, "type")? != "summary_text" {
-                        return Err(permanent("Responses invalid completed summary"));
+                        return Err(undecodable("Responses invalid completed summary"));
                     }
                     string(part, "text")?;
                     if !item.completed_summaries.insert(i) {
-                        return Err(permanent("Responses duplicate completed summary part"));
+                        return Err(undecodable("Responses duplicate completed summary part"));
                     }
                     item.closed_summaries.insert(i);
                 }

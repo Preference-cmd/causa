@@ -88,13 +88,13 @@ impl SseParser {
     /// reject nonempty input.
     pub fn decode(&mut self, input: &mut &[u8]) -> Result<Option<SseEvent>, ModelInvokeError> {
         if self.failed {
-            return Err(permanent("SSE parser is in a failed state"));
+            return Err(misused("SSE parser is in a failed state"));
         }
         if self.finished {
             return if input.is_empty() {
                 Ok(None)
             } else {
-                self.fail(permanent("SSE input received after EOF"))
+                self.fail(misused("SSE input received after EOF"))
             };
         }
         match self.decode_inner(input) {
@@ -105,15 +105,15 @@ impl SseParser {
 
     /// Validate EOF without emitting an unfinished event.
     ///
-    /// Invalid or truncated UTF-8 is `Permanent`; a valid unterminated line or
+    /// Invalid or truncated UTF-8 is `Undecodable`; a valid unterminated line or
     /// event is `UnknownOutcome`. A clean SSE boundary succeeds, but does not
     /// prove that the enclosing model protocol supplied its terminal event.
     pub fn finish(&mut self) -> Result<(), ModelInvokeError> {
         if self.failed {
-            return Err(permanent("SSE parser is in a failed state"));
+            return Err(misused("SSE parser is in a failed state"));
         }
         if std::str::from_utf8(&self.line).is_err() {
-            return self.fail(permanent("SSE input ended with invalid UTF-8"));
+            return self.fail(undecodable("SSE input ended with invalid UTF-8"));
         }
         if !self.line.is_empty() || self.has_data || self.event_name.is_some() {
             return self.fail(ModelInvokeError::new(
@@ -140,7 +140,7 @@ impl SseParser {
                 .position(|byte| matches!(byte, b'\r' | b'\n'))
                 .unwrap_or(input.len());
             if self.line.len().saturating_add(length) > self.max_line_bytes {
-                return Err(permanent("SSE line exceeds its byte limit"));
+                return Err(undecodable("SSE line exceeds its byte limit"));
             }
             self.count_bytes(length)?;
             self.line.extend_from_slice(&input[..length]);
@@ -163,14 +163,14 @@ impl SseParser {
             .event_bytes
             .checked_add(count)
             .filter(|bytes| *bytes <= self.max_event_bytes)
-            .ok_or_else(|| permanent("SSE event exceeds its byte limit"))?;
+            .ok_or_else(|| undecodable("SSE event exceeds its byte limit"))?;
         Ok(())
     }
 
     fn complete_line(&mut self) -> Result<Option<SseEvent>, ModelInvokeError> {
         let bytes = std::mem::take(&mut self.line);
         let raw = std::str::from_utf8(&bytes)
-            .map_err(|_| permanent("SSE line contains invalid UTF-8"))?;
+            .map_err(|_| undecodable("SSE line contains invalid UTF-8"))?;
         let line = if self.first_line {
             self.first_line = false;
             raw.strip_prefix('\u{feff}').unwrap_or(raw)
@@ -216,6 +216,11 @@ impl SseParser {
     }
 }
 
-fn permanent(message: &str) -> ModelInvokeError {
+fn undecodable(message: &str) -> ModelInvokeError {
+    ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
+}
+
+/// The caller broke the parser's contract; nothing the provider sent is at fault.
+fn misused(message: &str) -> ModelInvokeError {
     ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
 }

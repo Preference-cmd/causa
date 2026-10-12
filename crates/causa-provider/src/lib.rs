@@ -62,7 +62,8 @@
 //!
 //! Every non-2xx response is classified: 408, 409, 429 and 5xx are
 //! `Transient`, 400 and 422 are `InvalidRequest`, and the rest
-//! `Permanent`. An `x-should-retry` response header overrides that rule
+//! `Permanent`. A 2xx response the adapter cannot read is `Undecodable`,
+//! which is not retried either. An `x-should-retry` response header overrides that rule
 //! when it is `true` or `false`. A `retry-after-ms` or `retry-after`
 //! value (seconds or an HTTP date) fills
 //! [`causa_kernel::ModelInvokeError::retry_delay`]. The adapters never retry
@@ -78,6 +79,16 @@
 //! with `error.message` truncated to 200 characters (appended with `…` if longer).
 //! When the body is not that envelope, there is no fallback to raw body text and
 //! the message contains the provider label and status only: `"{provider} error {status}"`.
+//!
+//! The status is also in [`causa_kernel::ModelInvokeError::status`], and the
+//! envelope's `code` (or `type`) in [`causa_kernel::ModelInvokeError::code`]
+//! when it is a short identifier, so a host can tell a rejected credential
+//! from an unknown model without parsing the message.
+//!
+//! An error event inside a successful stream is read by the same rule and
+//! formatted as `"provider stream error ({code}): {error.message}"`; it has a
+//! code and no status. Provider text is always one line: control characters
+//! are replaced by spaces.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

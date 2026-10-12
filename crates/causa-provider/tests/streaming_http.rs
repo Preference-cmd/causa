@@ -402,7 +402,7 @@ async fn http_and_content_type_errors_are_pre_stream_failures_and_read_errors_en
             200,
             "application/json",
             "{}",
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
         ),
         (
             401,
@@ -450,7 +450,7 @@ async fn http_and_content_type_errors_are_pre_stream_failures_and_read_errors_en
     for (body, kind) in [
         (
             "data: nonsense\n\n".to_owned(),
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
         ),
         (chat_delta(), ModelInvokeErrorKind::UnknownOutcome),
         (
@@ -525,7 +525,7 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
     let mut stream = gateway.stream(&request(), &control()).await.unwrap();
     assert!(matches!(
         stream.next().await,
-        Some(StreamDelta::Error { error }) if error.kind == ModelInvokeErrorKind::Permanent
+        Some(StreamDelta::Error { error }) if error.kind == ModelInvokeErrorKind::Undecodable
     ));
     assert!(stream.next().await.is_none());
     assert!(stream.next().await.is_none());
@@ -787,7 +787,7 @@ async fn bounded_error_bodies_honor_control_and_never_echo_request_material() {
         Err(error) => error,
         Ok(_) => panic!("oversized error accepted"),
     };
-    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+    assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
     assert!(error.message.contains("too large"));
     assert_eq!(
         tokio::time::timeout(WAIT, server).await.unwrap().unwrap(),

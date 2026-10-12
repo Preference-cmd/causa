@@ -35,7 +35,7 @@ pub(super) async fn establish_stream(
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"));
     if !is_sse {
         return Err(ModelInvokeError::new(
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
             "successful streaming response requires Content-Type text/event-stream",
         ));
     }

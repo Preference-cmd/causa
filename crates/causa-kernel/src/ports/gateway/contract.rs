@@ -132,9 +132,17 @@ pub enum ModelInvokeErrorKind {
     /// The invocation was cancelled through its [`CallControl`], before send
     /// or while in flight.
     Cancelled,
-    /// Non-retryable failure: auth, unusable provider responses, parse
-    /// failures, and everything else not classified transient.
+    /// The provider refused and another attempt will not help: a rejected
+    /// credential, an unknown model or path, or any other refusal not
+    /// classified below.
     Permanent,
+    /// The provider answered and the adapter could not use the answer: a
+    /// success body or stream that is malformed or breaks the protocol's own
+    /// rules, or any response over a configured size limit. Not retryable. Unlike
+    /// [`Self::Permanent`], changing the credential, model or endpoint
+    /// setting is not the remedy; the adapter and the server disagree about
+    /// the wire.
+    Undecodable,
     /// The provider rejected the request itself as malformed.
     InvalidRequest,
     /// No observable outcome — e.g. a stream that ended without `Done`.
@@ -143,6 +151,9 @@ pub enum ModelInvokeErrorKind {
 
 /// A model-invocation failure: a [`ModelInvokeErrorKind`] plus human-readable
 /// detail (provider text included where available).
+///
+/// `status` and `code` repeat, as data, what the message says in words, so a
+/// host can choose what to tell its user without parsing the message.
 ///
 /// `retry_delay` carries a server-requested wait (an HTTP `retry-after` or
 /// `retry-after-ms` header) when the transport filled one. The kernel does
@@ -153,18 +164,40 @@ pub struct ModelInvokeError {
     pub kind: ModelInvokeErrorKind,
     /// Human-readable failure detail.
     pub message: String,
+    /// The HTTP status of a non-success response. `None` when the failure
+    /// did not come from one: a transport fault, a local check, or an error
+    /// reported inside a successful response.
+    pub status: Option<u16>,
+    /// The provider's own error code or type, such as `rate_limit_error`.
+    /// `None` when the provider named none or the value was not a short
+    /// identifier.
+    pub code: Option<String>,
     /// Server-requested delay before another attempt, when the provider sent
     /// one. `None` when no usable delay was disclosed.
     pub retry_delay: Option<Duration>,
 }
 impl ModelInvokeError {
-    /// Assembles an error from its kind and message, with no retry delay.
+    /// Assembles an error from its kind and message, with no status, code or
+    /// retry delay.
     pub fn new(kind: ModelInvokeErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
+            status: None,
+            code: None,
             retry_delay: None,
         }
+    }
+    /// Records the HTTP status of the non-success response behind this error.
+    pub fn with_status(mut self, status: u16) -> Self {
+        self.status = Some(status);
+        self
+    }
+    /// Records the provider's error code or type. The caller passes only a
+    /// short identifier; the kernel stores it as given.
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
     }
     /// Sets the server-requested retry delay. A retry policy may wait this
     /// long instead of using its own backoff.

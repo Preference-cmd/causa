@@ -43,7 +43,7 @@
 //!   to the shared placeholder text (the walk decides).
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
 //!   emitter, decoded by the shared `super::context_frame` codec);
-//!   parsing rejects a non-JSON arguments string as `Permanent`.
+//!   parsing rejects a non-JSON arguments string as `Undecodable`.
 //! - Sealed `reasoning_content` is replayed by default: the run's sealed
 //!   object becomes the assistant message, so a thinking-mode tool loop under
 //!   an API that requires the field back (DeepSeek) keeps working.
@@ -353,23 +353,23 @@ fn data_url(media_type: &str, data_base64: &str) -> String {
 /// — and additionally maps to the reasoning observation, which is
 /// display-only.
 pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInvokeError> {
-    fn permanent(message: impl Into<String>) -> ModelInvokeError {
-        ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
+    fn undecodable(message: impl Into<String>) -> ModelInvokeError {
+        ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
     }
 
     let choice = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|c| c.first())
-        .ok_or_else(|| permanent("missing choices[0]"))?;
+        .ok_or_else(|| undecodable("missing choices[0]"))?;
     let message = choice
         .get("message")
-        .ok_or_else(|| permanent("missing choices[0].message"))?;
+        .ok_or_else(|| undecodable("missing choices[0].message"))?;
 
     let text = match message.get("content") {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
-        Some(_) => return Err(permanent("choices[0].message.content: expected a string")),
+        Some(_) => return Err(undecodable("choices[0].message.content: expected a string")),
     };
 
     let mut items: Vec<ModelItem> = Vec::new();
@@ -397,14 +397,14 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| permanent("tool_calls[]: missing `id` string"))?;
+                .ok_or_else(|| undecodable("tool_calls[]: missing `id` string"))?;
             let function = call
                 .get("function")
-                .ok_or_else(|| permanent("tool_calls[]: missing `function`"))?;
+                .ok_or_else(|| undecodable("tool_calls[]: missing `function`"))?;
             let name = function
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| permanent("tool_calls[].function: missing `name` string"))?;
+                .ok_or_else(|| undecodable("tool_calls[].function: missing `name` string"))?;
             // Completed calls require a complete JSON-encoded argument value.
             let arguments = context_frame::decode_wire_arguments(function.get("arguments"))?;
             // The entry minus `id` and `function.name`: `type`, `index` and
@@ -430,9 +430,9 @@ pub fn parse_openai_chat_response(value: &Value) -> Result<ModelOutput, ModelInv
     let raw_stop_reason = match crate::translation::stop_reason::chat_raw(choice) {
         Some(raw) => raw.to_owned(),
         None if choice.get("finish_reason").is_some_and(|v| !v.is_null()) => {
-            return Err(permanent("choices[0].finish_reason: expected a string"));
+            return Err(undecodable("choices[0].finish_reason: expected a string"));
         }
-        None => return Err(permanent("missing choices[0].finish_reason")),
+        None => return Err(undecodable("missing choices[0].finish_reason")),
     };
     let stop_reason = crate::translation::stop_reason::chat(&raw_stop_reason);
 
@@ -986,22 +986,22 @@ mod tests {
     }
 
     #[test]
-    fn missing_choices_or_finish_reason_is_permanent_error() {
+    fn missing_choices_or_finish_reason_is_undecodable_error() {
         let e = parse_openai_chat_response(&json!({"choices": []})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         let e = parse_openai_chat_response(&json!({"choices": [{"message": {}}]})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("finish_reason"));
         // Present but not a string is reported as such, not as missing.
         let e =
             parse_openai_chat_response(&json!({"choices": [{"message": {}, "finish_reason": 7}]}))
                 .unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("expected a string"));
     }
 
     #[test]
-    fn malformed_arguments_string_is_permanent_error() {
+    fn malformed_arguments_string_is_undecodable_error() {
         let v = json!({
             "choices": [{
                 "message": {"content": null, "tool_calls": [
@@ -1011,12 +1011,12 @@ mod tests {
             }],
         });
         let e = parse_openai_chat_response(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("arguments"));
     }
 
     #[test]
-    fn empty_arguments_string_is_permanent_error() {
+    fn empty_arguments_string_is_undecodable_error() {
         let v = json!({
             "choices": [{
                 "message": {"tool_calls": [
@@ -1026,6 +1026,6 @@ mod tests {
             }],
         });
         let error = parse_openai_chat_response(&v).unwrap_err();
-        assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+        assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
     }
 }

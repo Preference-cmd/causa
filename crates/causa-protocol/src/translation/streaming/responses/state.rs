@@ -1,6 +1,6 @@
 use crate::translation::streaming::{
     StreamLimits,
-    common::{Budget, index, permanent, string},
+    common::{Budget, index, string, undecodable},
 };
 use causa_kernel::ModelInvokeError;
 use serde_json::Value;
@@ -44,9 +44,9 @@ impl Responses {
         if let Some(id) = response.get("id") {
             let id = id
                 .as_str()
-                .ok_or_else(|| permanent("Responses invalid response id"))?;
+                .ok_or_else(|| undecodable("Responses invalid response id"))?;
             if self.id.as_deref().is_some_and(|previous| previous != id) {
-                return Err(permanent("Responses response id changed"));
+                return Err(undecodable("Responses response id changed"));
             }
             if self.id.is_none() {
                 self.budget.add(id.len())?;
@@ -61,30 +61,30 @@ impl Responses {
     ) -> Result<&'a mut Item, ModelInvokeError> {
         let item = items
             .get_mut(&index(value, "output_index")?)
-            .ok_or_else(|| permanent("Responses event for undeclared item"))?;
+            .ok_or_else(|| undecodable("Responses event for undeclared item"))?;
         if item.closed {
-            return Err(permanent("Responses event for closed item"));
+            return Err(undecodable("Responses event for closed item"));
         }
         if string(value, "item_id")? != item.id {
-            return Err(permanent("Responses item id/index conflict"));
+            return Err(undecodable("Responses item id/index conflict"));
         }
         Ok(item)
     }
     pub(super) fn identity(item: &Item, wire: &Value) -> Result<(), ModelInvokeError> {
         if string(wire, "id")? != item.id || string(wire, "type")? != item.kind {
-            return Err(permanent("Responses output identity changed"));
+            return Err(undecodable("Responses output identity changed"));
         }
         if item.kind == "function_call"
             && (wire.get("call_id").and_then(Value::as_str) != item.call_id.as_deref()
                 || wire.get("name").and_then(Value::as_str) != item.name.as_deref())
         {
-            return Err(permanent("Responses tool identity changed"));
+            return Err(undecodable("Responses tool identity changed"));
         }
         Ok(())
     }
     pub(super) fn arguments(args: &str) -> Result<(), ModelInvokeError> {
         serde_json::from_str::<Value>(args)
-            .map_err(|_| permanent("Responses malformed or missing tool arguments"))?;
+            .map_err(|_| undecodable("Responses malformed or missing tool arguments"))?;
         Ok(())
     }
 }

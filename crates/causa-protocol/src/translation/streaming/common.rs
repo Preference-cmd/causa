@@ -2,44 +2,51 @@ use causa_kernel::{ModelInvokeError, ModelInvokeErrorKind, ModelOutput, StreamDe
 use serde_json::Value;
 
 use super::StreamLimits;
+use crate::translation::error_envelope::{ErrorDetail, is_identifier};
 use crate::translation::sse_parser::SseEvent;
 
-pub(super) fn permanent(message: impl Into<String>) -> ModelInvokeError {
+/// A failure of the adapter to use what the provider sent.
+pub(super) fn undecodable(message: impl Into<String>) -> ModelInvokeError {
+    ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
+}
+
+/// The caller broke the decoder's contract; nothing the provider sent is at fault.
+pub(super) fn misused(message: impl Into<String>) -> ModelInvokeError {
     ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
 }
 
 pub(super) fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str, ModelInvokeError> {
     v.get(key)
         .and_then(Value::as_str)
-        .ok_or_else(|| permanent(format!("stream: missing or invalid {key}")))
+        .ok_or_else(|| undecodable(format!("stream: missing or invalid {key}")))
 }
 
 pub(super) fn index(v: &Value, key: &str) -> Result<usize, ModelInvokeError> {
     let n = v
         .get(key)
         .and_then(Value::as_u64)
-        .ok_or_else(|| permanent(format!("stream: missing or invalid {key}")))?;
-    usize::try_from(n).map_err(|_| permanent("stream index exceeds platform range"))
+        .ok_or_else(|| undecodable(format!("stream: missing or invalid {key}")))?;
+    usize::try_from(n).map_err(|_| undecodable("stream index exceeds platform range"))
 }
 
-/// Appends where a failure happened: the 1-based position of the event in the
-/// stream and, when the event names one, its type. The type is provider text,
-/// so it is echoed only when it is a short identifier.
+/// Appends where a decode failure happened: the 1-based position of the event
+/// in the stream and, when the event names one, its type. The type is provider
+/// text, so it is echoed only when it is a short identifier. An error the
+/// provider reported itself is returned unchanged: its text already says what
+/// went wrong, and matches the same envelope arriving as an HTTP error.
 pub(super) fn located(
     mut error: ModelInvokeError,
     position: usize,
     event: &SseEvent,
 ) -> ModelInvokeError {
+    if error.kind != ModelInvokeErrorKind::Undecodable {
+        return error;
+    }
     let kind = serde_json::from_str::<Value>(&event.data)
         .ok()
         .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
         .or_else(|| event.event.clone())
-        .filter(|kind| {
-            (1..=64).contains(&kind.len())
-                && kind
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        });
+        .filter(|kind| is_identifier(kind));
     error.message = match kind {
         Some(kind) => format!("{} (event {position}: {kind})", error.message),
         None => format!("{} (event {position})", error.message),
@@ -53,39 +60,33 @@ pub(super) fn done(output: ModelOutput) -> StreamDelta {
     }
 }
 
-/// Diagnostic includes the error code, never the provider's arbitrary message,
-/// which can contain echoed prompts or tool arguments.
+/// An error the provider reported inside a successful response. The kind
+/// comes from the provider's code; the text is the envelope's code and
+/// message, read by the rule an HTTP error body goes through.
 pub(crate) fn provider_error(error: &Value) -> ModelInvokeError {
-    let code = error
-        .get("code")
-        .and_then(Value::as_str)
-        .or_else(|| error.get("type").and_then(Value::as_str))
-        .unwrap_or("unknown");
-    let kind = match code {
-        "rate_limit_exceeded"
-        | "rate_limit_error"
-        | "overloaded_error"
-        | "server_error"
-        | "api_error"
-        | "internal_server_error" => ModelInvokeErrorKind::Transient,
-        "invalid_request_error" | "invalid_request" => ModelInvokeErrorKind::InvalidRequest,
+    let detail = ErrorDetail::read(error);
+    let kind = match detail.code.as_deref() {
+        Some(
+            "rate_limit_exceeded"
+            | "rate_limit_error"
+            | "overloaded_error"
+            | "server_error"
+            | "api_error"
+            | "internal_server_error",
+        ) => ModelInvokeErrorKind::Transient,
+        Some("invalid_request_error" | "invalid_request") => ModelInvokeErrorKind::InvalidRequest,
         _ => ModelInvokeErrorKind::Permanent,
     };
-    let diagnostic_code = match code {
-        "rate_limit_exceeded"
-        | "rate_limit_error"
-        | "overloaded_error"
-        | "server_error"
-        | "api_error"
-        | "internal_server_error"
-        | "invalid_request_error"
-        | "invalid_request"
-        | "authentication_error"
-        | "permission_error"
-        | "not_found_error" => code,
-        _ => "unknown",
+    let label = detail.code.as_deref().unwrap_or("unknown");
+    let message = match &detail.message {
+        Some(message) => format!("provider stream error ({label}): {message}"),
+        None => format!("provider stream error ({label})"),
     };
-    ModelInvokeError::new(kind, format!("provider stream error ({diagnostic_code})"))
+    let error = ModelInvokeError::new(kind, message);
+    match detail.code {
+        Some(code) => error.with_code(code),
+        None => error,
+    }
 }
 
 pub(super) struct Budget {
@@ -101,15 +102,15 @@ impl Budget {
         self.bytes = self
             .bytes
             .checked_add(bytes)
-            .ok_or_else(|| permanent("stream output size overflow"))?;
+            .ok_or_else(|| undecodable("stream output size overflow"))?;
         if self.bytes > self.limits.max_output_bytes {
-            return Err(permanent("stream output exceeds max_output_bytes"));
+            return Err(undecodable("stream output exceeds max_output_bytes"));
         }
         Ok(())
     }
     pub fn item(&self, count: usize) -> Result<(), ModelInvokeError> {
         if count >= self.limits.max_items {
-            return Err(permanent("stream exceeds max_items"));
+            return Err(undecodable("stream exceeds max_items"));
         }
         Ok(())
     }
@@ -128,9 +129,9 @@ impl Budget {
         }
         let mut count = Count(0);
         serde_json::to_writer(&mut count, value)
-            .map_err(|_| permanent("invalid terminal snapshot"))?;
+            .map_err(|_| undecodable("invalid terminal snapshot"))?;
         if count.0.saturating_add(self.bytes) > self.limits.max_output_bytes {
-            return Err(permanent("terminal snapshot exceeds max_output_bytes"));
+            return Err(undecodable("terminal snapshot exceeds max_output_bytes"));
         }
         Ok(())
     }
@@ -142,14 +143,14 @@ pub(super) fn merge_usage(
     budget: &mut Budget,
 ) -> Result<(), ModelInvokeError> {
     let before = serde_json::to_vec(&target)
-        .map_err(|_| permanent("invalid usage state"))?
+        .map_err(|_| undecodable("invalid usage state"))?
         .len();
     let fields = update
         .as_object()
-        .ok_or_else(|| permanent("stream usage must be an object"))?;
+        .ok_or_else(|| undecodable("stream usage must be an object"))?;
     let target = target
         .as_object_mut()
-        .ok_or_else(|| permanent("invalid usage state"))?;
+        .ok_or_else(|| undecodable("invalid usage state"))?;
     const COUNTS: &[&str] = &[
         "input_tokens",
         "output_tokens",
@@ -169,9 +170,9 @@ pub(super) fn merge_usage(
         if let Some(value) = fields.get(*key).filter(|v| !v.is_null()) {
             let n = value
                 .as_u64()
-                .ok_or_else(|| permanent("stream usage count must be an unsigned integer"))?;
+                .ok_or_else(|| undecodable("stream usage count must be an unsigned integer"))?;
             usize::try_from(n)
-                .map_err(|_| permanent("stream usage count exceeds platform range"))?;
+                .map_err(|_| undecodable("stream usage count exceeds platform range"))?;
             target.insert((*key).into(), value.clone());
         }
     }
@@ -179,7 +180,7 @@ pub(super) fn merge_usage(
         if let Some(value) = fields.get(*key).filter(|v| !v.is_null()) {
             let values = value
                 .as_object()
-                .ok_or_else(|| permanent("stream usage details must be an object"))?;
+                .ok_or_else(|| undecodable("stream usage details must be an object"))?;
             let retained = target
                 .entry(*key)
                 .or_insert_with(|| serde_json::json!({}))
@@ -188,17 +189,17 @@ pub(super) fn merge_usage(
             for count in ["cached_tokens", "reasoning_tokens"] {
                 if let Some(value) = values.get(count).filter(|v| !v.is_null()) {
                     let n = value.as_u64().ok_or_else(|| {
-                        permanent("stream usage count must be an unsigned integer")
+                        undecodable("stream usage count must be an unsigned integer")
                     })?;
                     usize::try_from(n)
-                        .map_err(|_| permanent("stream usage count exceeds platform range"))?;
+                        .map_err(|_| undecodable("stream usage count exceeds platform range"))?;
                     retained.insert(count.into(), value.clone());
                 }
             }
         }
     }
     let after = serde_json::to_vec(&target)
-        .map_err(|_| permanent("invalid usage state"))?
+        .map_err(|_| undecodable("invalid usage state"))?
         .len();
     budget.add(after.saturating_sub(before))?;
     Ok(())

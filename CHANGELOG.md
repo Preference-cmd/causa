@@ -14,6 +14,29 @@ adapters or data converters.
 
 ### Breaking
 
+- `ModelInvokeErrorKind` gains `Undecodable`: the provider answered and the
+  adapter could not use the answer (a malformed 2xx body or stream, a stream
+  that breaks the protocol's rules, a response over a size limit). These
+  failures were `Permanent`, which now means only that the provider refused
+  and another attempt will not help. Neither kind is retried. Migration: add
+  an `Undecodable` arm to exhaustive matches on `ModelInvokeErrorKind`; code
+  that treated `Permanent` as "check the credential, model or endpoint"
+  should give `Undecodable` a different message, since those settings are not
+  the cause.
+- `ModelInvokeError` gains two public fields, `status: Option<u16>` (the HTTP
+  status of a non-2xx response) and `code: Option<String>` (the provider's
+  error `code` or `type`, kept only when it is a short identifier), with the
+  builders `with_status` and `with_code`. Migration: construct errors with
+  `ModelInvokeError::new` and the builders in place of a struct literal. A
+  host can now tell 401 from 404 without parsing the message.
+- An error event inside a successful stream now carries the provider's
+  message, read by the rule for an HTTP error body: `error.message`, at most
+  200 characters. The text is `"provider stream error ({code}): {message}"`.
+  Before, the message was dropped and a code outside a fixed list was shown
+  as `unknown`; now any code that is a short identifier is shown. Hosts that
+  log these errors will see provider text they did not see before.
+- Provider text in an error message is one line: each run of control
+  characters becomes a space, on HTTP errors and stream error events alike.
 - `RunControl` and the `causa_runtime::control` module are removed.
   `TurnRunner::run` and `run_streaming` take a kernel `CallControl` by value.
   Migration: replace `RunControl::new(token, deadline)` with

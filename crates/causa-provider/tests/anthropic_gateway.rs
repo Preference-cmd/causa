@@ -197,7 +197,7 @@ async fn http_error_rows_map_to_their_kinds() {
 }
 
 #[tokio::test]
-async fn oversized_response_body_is_permanent_not_oom() {
+async fn oversized_response_body_is_undecodable_not_oom() {
     // A response over the transport cap must abort before buffering the
     // whole payload. Content-Length is present here, so the header
     // path rejects without reading.
@@ -214,7 +214,7 @@ async fn oversized_response_body_is_permanent_not_oom() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Permanent),
+        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
     assert!(e.message.contains("too large"), "message: {}", e.message);
@@ -227,7 +227,7 @@ async fn oversized_response_body_is_permanent_not_oom() {
 }
 
 #[tokio::test]
-async fn unparseable_2xx_body_is_permanent() {
+async fn unparseable_2xx_body_is_undecodable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -239,11 +239,11 @@ async fn unparseable_2xx_body_is_permanent() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Permanent),
+        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 
-    // valid JSON but body-schema violation (missing stop_reason) → Permanent
+    // valid JSON but body-schema violation (missing stop_reason) → Undecodable
     let server = MockServer::start().await;
     messages_mock(200, json!({"content": []}))
         .mount(&server)
@@ -253,7 +253,7 @@ async fn unparseable_2xx_body_is_permanent() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Permanent),
+        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 }

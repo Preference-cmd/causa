@@ -321,14 +321,14 @@ fn data_url(media_type: &str, data_base64: &str) -> String {
 /// Parse an OpenAI Responses API response body into a kernel
 /// [`ModelOutput`]. See the module docs for the stop-reason derivation.
 pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, ModelInvokeError> {
-    fn permanent(message: impl Into<String>) -> ModelInvokeError {
-        ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
+    fn undecodable(message: impl Into<String>) -> ModelInvokeError {
+        ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
     }
 
     let status = value
         .get("status")
         .and_then(Value::as_str)
-        .ok_or_else(|| permanent("missing status"))?;
+        .ok_or_else(|| undecodable("missing status"))?;
     let incomplete_reason = match status {
         "completed" => None,
         "failed" => {
@@ -362,7 +362,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
     let output = match value.get("output") {
         None | Some(Value::Null) => &empty,
         Some(Value::Array(items)) => items,
-        Some(_) => return Err(permanent("output: expected an array")),
+        Some(_) => return Err(undecodable("output: expected an array")),
     };
 
     let mut items: Vec<ModelItem> = Vec::new();
@@ -375,7 +375,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                     None | Some(Value::Null) => continue,
                     Some(Value::Array(items)) => items,
                     Some(_) => {
-                        return Err(permanent("output[].message.content: expected an array"));
+                        return Err(undecodable("output[].message.content: expected an array"));
                     }
                 };
                 let mut parts = Vec::new();
@@ -385,7 +385,7 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                             let text = part
                                 .get("text")
                                 .and_then(Value::as_str)
-                                .ok_or_else(|| permanent("output_text: missing `text` string"))?;
+                                .ok_or_else(|| undecodable("output_text: missing `text` string"))?;
                             parts.push(ContentPart::Text(TextPayload::new(text)));
                         }
                         // Refusal content inside a message marks the stop.
@@ -416,11 +416,11 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                 let call_id = item
                     .get("call_id")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| permanent("function_call: missing `call_id` string"))?;
+                    .ok_or_else(|| undecodable("function_call: missing `call_id` string"))?;
                 let name = item
                     .get("name")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| permanent("function_call: missing `name` string"))?;
+                    .ok_or_else(|| undecodable("function_call: missing `name` string"))?;
                 let arguments = context_frame::decode_wire_arguments(item.get("arguments"))?;
                 items.push(ModelItem {
                     wire: Some(context_frame::wire_meta(
@@ -933,21 +933,21 @@ mod tests {
     }
 
     #[test]
-    fn missing_status_is_permanent_error() {
+    fn missing_status_is_undecodable_error() {
         let e = parse_openai_responses_output(&json!({"output": []})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("status"));
     }
 
     #[test]
-    fn malformed_function_call_arguments_is_permanent_error() {
+    fn malformed_function_call_arguments_is_undecodable_error() {
         let v = json!({
             "output": [{"type": "function_call", "call_id": "c1", "name": "read",
                         "arguments": "{not json"}],
             "status": "completed",
         });
         let e = parse_openai_responses_output(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("arguments"));
     }
 

@@ -13,8 +13,16 @@
 //! | HTTP 408 / 409 / 429 / 5xx              | `Transient`     |
 //! | HTTP 400 / 422                          | `InvalidRequest`|
 //! | HTTP 401 / 403 / 404                    | `Permanent`     |
-//! | 2xx body not parseable / over cap       | `Permanent`     |
-//! | anything else                           | `Permanent`     |
+//! | any other non-2xx status                | `Permanent`     |
+//! | 2xx body not parseable / over cap       | `Undecodable`   |
+//! | 2xx stream without an SSE content type  | `Undecodable`   |
+//! | any other transport error               | `Permanent`     |
+//!
+//! A non-2xx error carries its status in [`ModelInvokeError::status`] and
+//! the provider's error code or type in [`ModelInvokeError::code`], so a
+//! caller can tell a rejected credential (401, 403) from an unknown model or
+//! path (404) without reading the message. The message keeps at most 200
+//! characters of the provider's `error.message`, on one line.
 //!
 //! Two response headers can override the status rule: `x-should-retry: true`
 //! classifies as `Transient` whatever the status, and `false` removes
@@ -31,6 +39,7 @@ use std::{future::Future, time::Duration};
 use causa_kernel::{
     CallControl, ControlError, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
 };
+use causa_protocol::translation::error_envelope::ErrorDetail;
 use reqwest::header::HeaderMap;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
@@ -119,7 +128,7 @@ pub(crate) struct BufferedResponse {
 /// Content-Length header is rejected up front when present; the chunk
 /// loop covers chunked bodies with no declared length. Mid-body network
 /// failures surface through the transport table (body error →
-/// `Transient`); an over-cap body or non-UTF-8 payload is `Permanent`
+/// `Transient`); an over-cap body or non-UTF-8 payload is `Undecodable`
 /// (the provider produced an unusable response).
 pub(crate) async fn read_bounded(
     mut response: reqwest::Response,
@@ -155,7 +164,7 @@ pub(crate) async fn read_bounded(
         Err(_) if !status.is_success() => String::new(),
         Err(_) => {
             return Err(ModelInvokeError::new(
-                ModelInvokeErrorKind::Permanent,
+                ModelInvokeErrorKind::Undecodable,
                 "provider response body is not valid UTF-8",
             ));
         }
@@ -169,7 +178,7 @@ pub(crate) async fn read_bounded(
 
 fn oversize_error(len: usize) -> ModelInvokeError {
     ModelInvokeError::new(
-        ModelInvokeErrorKind::Permanent,
+        ModelInvokeErrorKind::Undecodable,
         format!(
             "provider response too large: {len} bytes exceeds the {MAX_RESPONSE_BYTES}-byte cap"
         ),
@@ -177,9 +186,9 @@ fn oversize_error(len: usize) -> ModelInvokeError {
 }
 
 /// Turn a raw response into a [`ModelOutput`]: non-2xx through the error
-/// table, 2xx JSON-syntax failures as `Permanent`, then the
+/// table, 2xx JSON-syntax failures as `Undecodable`, then the
 /// protocol-specific body parser (whose own schema failures also surface
-/// as `Permanent`).
+/// as `Undecodable`).
 pub(crate) fn finish_response<F>(
     response: BufferedResponse,
     provider: &str,
@@ -198,7 +207,7 @@ where
     }
     let value: Value = serde_json::from_str(&response.body).map_err(|e| {
         ModelInvokeError::new(
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
             format!("{provider} 2xx response body is not valid JSON: {e}"),
         )
     })?;
@@ -237,11 +246,15 @@ pub(crate) fn map_status_error(
         },
         None => status_kind(status),
     };
-    let message = match error_message_snippet(body) {
+    let detail = ErrorDetail::read_body(body);
+    let message = match &detail.message {
         Some(msg) => format!("{provider} error {}: {msg}", status.as_u16()),
         None => format!("{provider} error {}", status.as_u16()),
     };
-    let error = ModelInvokeError::new(kind, message);
+    let mut error = ModelInvokeError::new(kind, message).with_status(status.as_u16());
+    if let Some(code) = detail.code {
+        error = error.with_code(code);
+    }
     match retry_after(headers) {
         Some(delay) => error.with_retry_delay(delay),
         None => error,
@@ -298,21 +311,6 @@ fn http_date_duration(value: &str) -> Option<Duration> {
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
-}
-
-/// Extract the provider's `error.message` from the documented error envelope
-/// (`{"error": {"message": "..."}}`). Truncated to 200 characters with an
-/// ellipsis if longer. If the payload is not that envelope, returns `None`
-/// (there is no fallback to raw body text).
-fn error_message_snippet(body: &str) -> Option<String> {
-    let envelope = serde_json::from_str::<Value>(body).ok()?;
-    let message = envelope.get("error")?.get("message")?.as_str()?;
-    let mut chars = message.chars();
-    let mut snippet: String = chars.by_ref().take(200).collect();
-    if chars.next().is_some() {
-        snippet.push('…');
-    }
-    Some(snippet)
 }
 
 /// Check local progress as well as socket waits.

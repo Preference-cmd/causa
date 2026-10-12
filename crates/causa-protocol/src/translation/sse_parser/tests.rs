@@ -69,7 +69,7 @@ fn oversized_line_multiline_event_and_ignored_fields_fail_closed() {
         let mut input = bytes;
         assert_eq!(
             parser.decode(&mut input).unwrap_err().kind,
-            ModelInvokeErrorKind::Permanent
+            ModelInvokeErrorKind::Undecodable
         );
         assert!(parser.decode(&mut b"data: ok\n\n".as_slice()).is_err());
         assert!(parser.finish().is_err());
@@ -96,7 +96,7 @@ fn eof_cannot_dispatch_a_partial_event_or_replace_invalid_unicode() {
             Ok(None) => parser.finish().unwrap_err(),
             Ok(Some(_)) => panic!("invalid UTF-8 produced an event"),
         };
-        assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+        assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
     }
 }
 

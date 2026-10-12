@@ -78,6 +78,7 @@ pub(crate) const OUTPUT_SCHEMA_NAME: &str = "response";
 
 pub mod anthropic;
 pub(crate) mod context_frame;
+pub mod error_envelope;
 mod generation;
 pub mod media;
 pub mod openai_chat;

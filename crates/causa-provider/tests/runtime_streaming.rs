@@ -254,7 +254,7 @@ async fn stream_error_missing_terminal_and_truncated_tool_leave_original_context
         (chat_tool("{"), ModelInvokeErrorKind::UnknownOutcome),
         (
             chat_tool("{") + &chat_terminal("tool_calls"),
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
         ),
         (
             chat_tool("{")

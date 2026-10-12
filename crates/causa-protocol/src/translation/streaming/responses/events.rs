@@ -1,5 +1,5 @@
 use super::state::{Item, Responses};
-use crate::translation::streaming::common::{done, index, permanent, provider_error, string};
+use crate::translation::streaming::common::{done, index, provider_error, string, undecodable};
 use crate::translation::{
     openai_responses::parse_openai_responses_output, sse_parser::SseEvent,
     usage::model_usage_from_openai_responses,
@@ -11,51 +11,59 @@ use std::collections::{BTreeMap, BTreeSet};
 impl Responses {
     pub fn event(&mut self, event: &SseEvent) -> Result<Vec<StreamDelta>, ModelInvokeError> {
         let value: Value = serde_json::from_str(&event.data)
-            .map_err(|_| permanent("Responses event contains invalid JSON"))?;
+            .map_err(|_| undecodable("Responses event contains invalid JSON"))?;
         let kind = string(&value, "type")?;
         if let Some(name) = &event.event
             && name != kind
             && name != "message"
         {
-            return Err(permanent("Responses SSE event/type mismatch"));
+            return Err(undecodable("Responses SSE event/type mismatch"));
         }
         let mut deltas = Vec::new();
         match kind {
-            "error" => return Err(provider_error(value.get("error").unwrap_or(&value))),
+            "error" => {
+                // The documented event is flat: `code` and `message` sit beside
+                // the event's own `type`, which is not an error code.
+                let flat = serde_json::json!({
+                    "code": value.get("code"),
+                    "message": value.get("message"),
+                });
+                return Err(provider_error(value.get("error").unwrap_or(&flat)));
+            }
             "response.created" | "response.in_progress" => {
                 let response = value
                     .get("response")
-                    .ok_or_else(|| permanent("Responses missing response"))?;
+                    .ok_or_else(|| undecodable("Responses missing response"))?;
                 self.response_id(response)?;
                 let status = string(response, "status")?;
                 if status != "in_progress" && status != "queued" {
-                    return Err(permanent("Responses invalid initial status"));
+                    return Err(undecodable("Responses invalid initial status"));
                 }
             }
             "response.output_item.added" => {
                 let i = index(&value, "output_index")?;
                 self.budget.item(self.items.len())?;
                 if i != self.items.len() {
-                    return Err(permanent(
+                    return Err(undecodable(
                         "Responses output index must follow declaration order",
                     ));
                 }
                 let wire = value
                     .get("item")
-                    .ok_or_else(|| permanent("Responses missing item"))?;
+                    .ok_or_else(|| undecodable("Responses missing item"))?;
                 let id = string(wire, "id")?;
                 let item_type = string(wire, "type")?;
                 if self.items.values().any(|item| item.id == id) {
-                    return Err(permanent("Responses duplicate item id"));
+                    return Err(undecodable("Responses duplicate item id"));
                 }
                 if id.is_empty() {
-                    return Err(permanent("Responses empty item id"));
+                    return Err(undecodable("Responses empty item id"));
                 }
                 if item_type == "message" && !wire.get("content").is_some_and(Value::is_array) {
-                    return Err(permanent("Responses message content must be an array"));
+                    return Err(undecodable("Responses message content must be an array"));
                 }
                 if item_type == "reasoning" && !wire.get("summary").is_some_and(Value::is_array) {
-                    return Err(permanent("Responses reasoning summary must be an array"));
+                    return Err(undecodable("Responses reasoning summary must be an array"));
                 }
                 self.budget.add(id.len() + item_type.len())?;
                 let mut item = Item {
@@ -78,14 +86,14 @@ impl Responses {
                     let call_id = string(wire, "call_id")?;
                     let name = string(wire, "name")?;
                     if call_id.is_empty() || name.is_empty() {
-                        return Err(permanent("Responses empty tool identity"));
+                        return Err(undecodable("Responses empty tool identity"));
                     }
                     if self
                         .items
                         .values()
                         .any(|item| item.call_id.as_deref() == Some(call_id))
                     {
-                        return Err(permanent("Responses duplicate call id"));
+                        return Err(undecodable("Responses duplicate call id"));
                     }
                     // A call opens with no arguments yet; some servers omit
                     // the empty string instead of sending it.
@@ -132,13 +140,13 @@ impl Responses {
                 let item = self
                     .items
                     .get_mut(&i)
-                    .ok_or_else(|| permanent("Responses done for undeclared item"))?;
+                    .ok_or_else(|| undecodable("Responses done for undeclared item"))?;
                 if item.closed {
-                    return Err(permanent("Responses duplicate item done"));
+                    return Err(undecodable("Responses duplicate item done"));
                 }
                 let wire = value
                     .get("item")
-                    .ok_or_else(|| permanent("Responses missing completed item"))?;
+                    .ok_or_else(|| undecodable("Responses missing completed item"))?;
                 Self::identity(item, wire)?;
                 if item.kind == "function_call" {
                     Self::arguments(string(wire, "arguments")?)?;
@@ -151,11 +159,11 @@ impl Responses {
             "response.completed" | "response.incomplete" | "response.failed" => {
                 let response = value
                     .get("response")
-                    .ok_or_else(|| permanent("Responses missing terminal response"))?;
+                    .ok_or_else(|| undecodable("Responses missing terminal response"))?;
                 self.response_id(response)?;
                 let expected = kind.strip_prefix("response.").expect("response prefix");
                 if string(response, "status")? != expected {
-                    return Err(permanent("Responses terminal event/status mismatch"));
+                    return Err(undecodable("Responses terminal event/status mismatch"));
                 }
                 self.budget.snapshot(response)?;
                 if expected == "failed" {
@@ -166,25 +174,24 @@ impl Responses {
                 let output = response
                     .get("output")
                     .and_then(Value::as_array)
-                    .ok_or_else(|| permanent("Responses terminal output must be an array"))?;
+                    .ok_or_else(|| undecodable("Responses terminal output must be an array"))?;
                 if output.len() > self.budget.limits.max_items {
-                    return Err(permanent("Responses terminal exceeds max_items"));
+                    return Err(undecodable("Responses terminal exceeds max_items"));
                 }
                 // Terminal snapshot may replace advisory text and arguments,
                 // while every declared output identity and tool ordinal stays fixed.
                 if output.len() != self.items.len() {
-                    return Err(permanent("Responses terminal output declarations differ"));
+                    return Err(undecodable("Responses terminal output declarations differ"));
                 }
                 let mut tool_index = 0;
                 for (i, wire) in output.iter().enumerate() {
-                    let item = self
-                        .items
-                        .get(&i)
-                        .ok_or_else(|| permanent("Responses terminal missing item declaration"))?;
+                    let item = self.items.get(&i).ok_or_else(|| {
+                        undecodable("Responses terminal missing item declaration")
+                    })?;
                     Self::identity(item, wire)?;
                     if item.kind == "function_call" {
                         if item.call_index != Some(tool_index) {
-                            return Err(permanent("Responses terminal tool order changed"));
+                            return Err(undecodable("Responses terminal tool order changed"));
                         }
                         Self::arguments(string(wire, "arguments")?)?;
                         tool_index += 1;
@@ -195,7 +202,7 @@ impl Responses {
                         .and_then(Value::as_array)
                         && parts.len() > self.budget.limits.max_items
                     {
-                        return Err(permanent("Responses terminal parts exceed max_items"));
+                        return Err(undecodable("Responses terminal parts exceed max_items"));
                     }
                 }
                 let output = parse_openai_responses_output(response)?;

@@ -394,15 +394,15 @@ fn media_block_json(media: &ResolvedMedia) -> Value {
 /// wire value is preserved on [`ModelOutput::raw_stop_reason`]. One mapping
 /// table is shared with the streaming decoder.
 pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvokeError> {
-    fn permanent(message: impl Into<String>) -> ModelInvokeError {
-        ModelInvokeError::new(ModelInvokeErrorKind::Permanent, message)
+    fn undecodable(message: impl Into<String>) -> ModelInvokeError {
+        ModelInvokeError::new(ModelInvokeErrorKind::Undecodable, message)
     }
 
     let empty = Vec::new();
     let content = match value.get("content") {
         None | Some(Value::Null) => &empty,
         Some(Value::Array(items)) => items,
-        Some(_) => return Err(permanent("content: expected an array")),
+        Some(_) => return Err(undecodable("content: expected an array")),
     };
 
     let mut items: Vec<ModelItem> = Vec::new();
@@ -413,7 +413,7 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                 let text = block
                     .get("text")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| permanent("text block: missing `text` string"))?;
+                    .ok_or_else(|| undecodable("text block: missing `text` string"))?;
                 items.push(ModelItem {
                     wire: Some(context_frame::wire_meta(
                         Protocol::AnthropicMessages,
@@ -426,11 +426,11 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                 let id = block
                     .get("id")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| permanent("tool_use block: missing `id` string"))?;
+                    .ok_or_else(|| undecodable("tool_use block: missing `id` string"))?;
                 let name = block
                     .get("name")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| permanent("tool_use block: missing `name` string"))?;
+                    .ok_or_else(|| undecodable("tool_use block: missing `name` string"))?;
                 items.push(ModelItem {
                     wire: Some(context_frame::wire_meta(
                         Protocol::AnthropicMessages,
@@ -447,7 +447,7 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
                 let text = block
                     .get("thinking")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| permanent("thinking block: missing `thinking` string"))?;
+                    .ok_or_else(|| undecodable("thinking block: missing `thinking` string"))?;
                 thinking_parts.push(text.to_string());
                 // The block, signature included, is sealed material; the text
                 // above is the display-only observation.
@@ -469,9 +469,9 @@ pub fn parse_anthropic_response(value: &Value) -> Result<ModelOutput, ModelInvok
     let raw_stop_reason = match crate::translation::stop_reason::anthropic_raw(value) {
         Some(raw) => raw.to_owned(),
         None if value.get("stop_reason").is_some_and(|v| !v.is_null()) => {
-            return Err(permanent("stop_reason: expected a string"));
+            return Err(undecodable("stop_reason: expected a string"));
         }
-        None => return Err(permanent("missing stop_reason")),
+        None => return Err(undecodable("missing stop_reason")),
     };
     let stop_reason = crate::translation::stop_reason::anthropic(&raw_stop_reason);
 
@@ -1295,14 +1295,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_stop_reason_is_permanent_error() {
+    fn missing_stop_reason_is_undecodable_error() {
         let v = json!({"content": []});
         let e = parse_anthropic_response(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("stop_reason"));
         // Present but not a string is reported as such, not as missing.
         let e = parse_anthropic_response(&json!({"content": [], "stop_reason": 7})).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("expected a string"));
     }
 
@@ -1334,10 +1334,10 @@ mod tests {
     }
 
     #[test]
-    fn malformed_tool_use_is_permanent_error() {
+    fn malformed_tool_use_is_undecodable_error() {
         let v = json!({"content": [{"type": "tool_use", "id": "x"}], "stop_reason": "tool_use"});
         let e = parse_anthropic_response(&v).unwrap_err();
-        assert!(matches!(e.kind(), ModelInvokeErrorKind::Permanent));
+        assert!(matches!(e.kind(), ModelInvokeErrorKind::Undecodable));
         assert!(e.message.contains("name"));
     }
 }

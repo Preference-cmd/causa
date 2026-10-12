@@ -418,13 +418,13 @@ pub(crate) fn normalize(
 pub(crate) fn decode_wire_arguments(raw: Option<&Value>) -> Result<Value, ModelInvokeError> {
     let raw = raw.and_then(Value::as_str).ok_or_else(|| {
         ModelInvokeError::new(
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
             "function arguments: expected a JSON string",
         )
     })?;
     serde_json::from_str(raw).map_err(|_| {
         ModelInvokeError::new(
-            ModelInvokeErrorKind::Permanent,
+            ModelInvokeErrorKind::Undecodable,
             "function arguments: invalid or incomplete JSON",
         )
     })

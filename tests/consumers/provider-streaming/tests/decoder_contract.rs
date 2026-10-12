@@ -76,7 +76,7 @@ fn native_output_indices_map_to_tool_ordinals_and_terminal_identity_cannot_rebin
         )
         .unwrap_err()
         .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -100,7 +100,7 @@ fn unsupported_choices_giant_native_indices_and_truncated_arguments_fail_explici
             decode(protocol, &wire, StreamLimits::default())
                 .unwrap_err()
                 .kind,
-            ModelInvokeErrorKind::Permanent
+            ModelInvokeErrorKind::Undecodable
         );
     }
 }
@@ -115,7 +115,7 @@ fn repeated_known_part_completion_is_an_invalid_sequence() {
         decode(Protocol::OpenAiResponses, &wire, StreamLimits::default())
             .unwrap_err()
             .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -132,7 +132,7 @@ fn malformed_supported_part_snapshot_cannot_be_hidden_by_a_valid_terminal() {
         decode(Protocol::OpenAiResponses, &wire, StreamLimits::default())
             .unwrap_err()
             .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -171,6 +171,6 @@ fn cumulative_usage_snapshots_and_unknown_wire_bytes_are_not_double_counted_or_u
         decode(Protocol::OpenAiResponses, &unknown, limits)
             .unwrap_err()
             .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }

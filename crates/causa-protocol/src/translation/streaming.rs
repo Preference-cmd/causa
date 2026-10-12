@@ -8,7 +8,7 @@
 //! type the decoder has no rule for is not: that protocol has no terminal
 //! snapshot, so a block is rebuilt from its start event and its deltas, and a
 //! block missing part of its content would be committed and replayed as sealed
-//! material. Such a stream fails as `Permanent` and commits nothing.
+//! material. Such a stream fails as `Undecodable` and commits nothing.
 //! `input_json_delta` is applied to every block that declares an object
 //! `input`, so a non-client tool block matches its batch form; only a client
 //! `tool_use` yields tool-call deltas.

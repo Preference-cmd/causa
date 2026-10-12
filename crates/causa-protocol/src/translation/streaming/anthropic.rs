@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::{
     StreamLimits,
-    common::{Budget, done, index, merge_usage, permanent, provider_error, string},
+    common::{Budget, done, index, merge_usage, provider_error, string, undecodable},
 };
 use crate::translation::{
     anthropic::parse_anthropic_response, sse_parser::SseEvent, usage::model_usage_from_anthropic,
@@ -45,19 +45,19 @@ impl Anthropic {
     }
     pub fn event(&mut self, event: &SseEvent) -> Result<Vec<StreamDelta>, ModelInvokeError> {
         let value: Value = serde_json::from_str(&event.data)
-            .map_err(|_| permanent("Anthropic event contains invalid JSON"))?;
+            .map_err(|_| undecodable("Anthropic event contains invalid JSON"))?;
         let kind = string(&value, "type")?;
         if let Some(name) = &event.event
             && name != kind
             && name != "message"
         {
-            return Err(permanent("Anthropic SSE event/type mismatch"));
+            return Err(undecodable("Anthropic SSE event/type mismatch"));
         }
         if kind == "error" {
             return Err(provider_error(
                 value
                     .get("error")
-                    .ok_or_else(|| permanent("Anthropic missing error"))?,
+                    .ok_or_else(|| undecodable("Anthropic missing error"))?,
             ));
         }
         if kind == "ping" {
@@ -67,21 +67,23 @@ impl Anthropic {
         match kind {
             "message_start" => {
                 if self.started {
-                    return Err(permanent("Anthropic duplicate message_start"));
+                    return Err(undecodable("Anthropic duplicate message_start"));
                 }
                 let message = value
                     .get("message")
                     .and_then(Value::as_object)
-                    .ok_or_else(|| permanent("Anthropic missing message"))?;
+                    .ok_or_else(|| undecodable("Anthropic missing message"))?;
                 if message
                     .get("content")
                     .and_then(Value::as_array)
                     .is_none_or(|c| !c.is_empty())
                 {
-                    return Err(permanent("Anthropic message_start must have empty content"));
+                    return Err(undecodable(
+                        "Anthropic message_start must have empty content",
+                    ));
                 }
                 if message.get("stop_reason").is_some_and(|r| !r.is_null()) {
-                    return Err(permanent("Anthropic message_start contains stop_reason"));
+                    return Err(undecodable("Anthropic message_start contains stop_reason"));
                 }
                 self.started = true;
                 if let Some(usage) = message.get("usage").filter(|u| !u.is_null()) {
@@ -93,19 +95,19 @@ impl Anthropic {
             "content_block_start" => {
                 self.require_active()?;
                 if self.stopped {
-                    return Err(permanent("Anthropic block after message_delta"));
+                    return Err(undecodable("Anthropic block after message_delta"));
                 }
                 self.budget.item(self.blocks.len())?;
                 let i = index(&value, "index")?;
                 if i != self.blocks.len() {
-                    return Err(permanent(
+                    return Err(undecodable(
                         "Anthropic block index must follow declaration order",
                     ));
                 }
                 let wire = value
                     .get("content_block")
                     .cloned()
-                    .ok_or_else(|| permanent("Anthropic missing content_block"))?;
+                    .ok_or_else(|| undecodable("Anthropic missing content_block"))?;
                 let block_type = string(&wire, "type")?.to_owned();
                 self.budget.add(block_type.len())?;
                 let mut call_index = None;
@@ -123,7 +125,7 @@ impl Anthropic {
                         if let Some(sig) = wire.get("signature") {
                             self.budget.add(
                                 sig.as_str()
-                                    .ok_or_else(|| permanent("Anthropic invalid signature"))?
+                                    .ok_or_else(|| undecodable("Anthropic invalid signature"))?
                                     .len(),
                             )?;
                         }
@@ -135,17 +137,17 @@ impl Anthropic {
                         let id = string(&wire, "id")?;
                         let name = string(&wire, "name")?;
                         if id.is_empty() || name.is_empty() {
-                            return Err(permanent("Anthropic empty tool identity"));
+                            return Err(undecodable("Anthropic empty tool identity"));
                         }
                         if self
                             .blocks
                             .values()
                             .any(|b| b.wire.get("id").and_then(Value::as_str) == Some(id))
                         {
-                            return Err(permanent("Anthropic duplicate tool id"));
+                            return Err(undecodable("Anthropic duplicate tool id"));
                         }
                         if !wire.get("input").is_some_and(Value::is_object) {
-                            return Err(permanent("Anthropic tool input must be an object"));
+                            return Err(undecodable("Anthropic tool input must be an object"));
                         }
                         self.budget.add(id.len() + name.len())?;
                         call_index = Some(self.tools);
@@ -166,7 +168,7 @@ impl Anthropic {
                 // stream delivers is budgeted like any output.
                 let object = wire
                     .as_object()
-                    .ok_or_else(|| permanent("Anthropic block must be an object"))?;
+                    .ok_or_else(|| undecodable("Anthropic block must be an object"))?;
                 let known: &[&str] = match block_type.as_str() {
                     "text" => &["type", "text"],
                     "tool_use" => &["type", "id", "name", "input"],
@@ -177,7 +179,7 @@ impl Anthropic {
                         self.budget.add(
                             key.len()
                                 + serde_json::to_vec(value)
-                                    .map_err(|_| permanent("Anthropic invalid field"))?
+                                    .map_err(|_| undecodable("Anthropic invalid field"))?
                                     .len(),
                         )?;
                     }
@@ -185,7 +187,7 @@ impl Anthropic {
                 if block_type == "tool_use" {
                     self.budget.add(
                         serde_json::to_vec(&wire["input"])
-                            .map_err(|_| permanent("Anthropic invalid input"))?
+                            .map_err(|_| undecodable("Anthropic invalid input"))?
                             .len(),
                     )?;
                 }
@@ -203,19 +205,19 @@ impl Anthropic {
             "content_block_delta" => {
                 self.require_active()?;
                 if self.stopped {
-                    return Err(permanent("Anthropic delta after message_delta"));
+                    return Err(undecodable("Anthropic delta after message_delta"));
                 }
                 let i = index(&value, "index")?;
                 let block = self
                     .blocks
                     .get_mut(&i)
-                    .ok_or_else(|| permanent("Anthropic delta for undeclared block"))?;
+                    .ok_or_else(|| undecodable("Anthropic delta for undeclared block"))?;
                 if block.closed {
-                    return Err(permanent("Anthropic delta for closed block"));
+                    return Err(undecodable("Anthropic delta for closed block"));
                 }
                 let delta = value
                     .get("delta")
-                    .ok_or_else(|| permanent("Anthropic missing delta"))?;
+                    .ok_or_else(|| undecodable("Anthropic missing delta"))?;
                 let delta_type = string(delta, "type")?;
                 let block_type = string(&block.wire, "type")?;
                 let (field, delta_field) = match delta_type {
@@ -240,10 +242,10 @@ impl Anthropic {
                         // wire residue, appended in delivery order.
                         let citation = delta
                             .get("citation")
-                            .ok_or_else(|| permanent("Anthropic missing citation"))?;
+                            .ok_or_else(|| undecodable("Anthropic missing citation"))?;
                         self.budget.add(
                             serde_json::to_vec(citation)
-                                .map_err(|_| permanent("Anthropic invalid citation"))?
+                                .map_err(|_| undecodable("Anthropic invalid citation"))?
                                 .len(),
                         )?;
                         let object = block.wire.as_object_mut().expect("validated block");
@@ -274,13 +276,17 @@ impl Anthropic {
                     }
                     "text_delta" | "thinking_delta" | "signature_delta" | "input_json_delta"
                     | "citations_delta" => {
-                        return Err(permanent("Anthropic delta/block type conflict"));
+                        return Err(undecodable("Anthropic delta/block type conflict"));
                     }
                     // A delta this decoder has no rule for cannot be applied,
                     // and a block missing part of its content must not become
                     // material that is replayed verbatim. The diagnostic is
                     // static: the wire value is provider-controlled.
-                    _ => return Err(permanent("Anthropic unsupported content block delta type")),
+                    _ => {
+                        return Err(undecodable(
+                            "Anthropic unsupported content block delta type",
+                        ));
+                    }
                 };
                 let text = string(delta, delta_field)?;
                 self.budget.add(text.len())?;
@@ -291,7 +297,7 @@ impl Anthropic {
                     .entry(field)
                     .or_insert_with(|| Value::String(String::new()));
                 if !target.is_string() {
-                    return Err(permanent("Anthropic invalid block field"));
+                    return Err(undecodable("Anthropic invalid block field"));
                 }
                 // serde_json strings have no mutable string accessor; take the
                 // existing value to append without copying its accumulated prefix.
@@ -311,20 +317,20 @@ impl Anthropic {
             "content_block_stop" => {
                 self.require_active()?;
                 if self.stopped {
-                    return Err(permanent("Anthropic block stop after message_delta"));
+                    return Err(undecodable("Anthropic block stop after message_delta"));
                 }
                 let block = self
                     .blocks
                     .get_mut(&index(&value, "index")?)
-                    .ok_or_else(|| permanent("Anthropic stop for undeclared block"))?;
+                    .ok_or_else(|| undecodable("Anthropic stop for undeclared block"))?;
                 if block.closed {
-                    return Err(permanent("Anthropic duplicate block stop"));
+                    return Err(undecodable("Anthropic duplicate block stop"));
                 }
                 if block.saw_arguments {
                     let input: Value = serde_json::from_str(&block.arguments)
-                        .map_err(|_| permanent("Anthropic malformed tool arguments"))?;
+                        .map_err(|_| undecodable("Anthropic malformed tool arguments"))?;
                     if !input.is_object() {
-                        return Err(permanent("Anthropic tool arguments must be an object"));
+                        return Err(undecodable("Anthropic tool arguments must be an object"));
                     }
                     block.wire["input"] = input;
                     block.arguments.clear();
@@ -334,20 +340,20 @@ impl Anthropic {
             "message_delta" => {
                 self.require_active()?;
                 if self.blocks.values().any(|b| !b.closed) {
-                    return Err(permanent("Anthropic message_delta before block closure"));
+                    return Err(undecodable("Anthropic message_delta before block closure"));
                 }
                 let delta = value
                     .get("delta")
-                    .ok_or_else(|| permanent("Anthropic missing message delta"))?;
+                    .ok_or_else(|| undecodable("Anthropic missing message delta"))?;
                 if let Some(reason) = delta.get("stop_reason").filter(|r| !r.is_null()) {
                     let reason = reason
                         .as_str()
-                        .ok_or_else(|| permanent("Anthropic invalid stop_reason"))?;
+                        .ok_or_else(|| undecodable("Anthropic invalid stop_reason"))?;
                     // The value is recorded verbatim and classified by the same
                     // mapping table the batch parser uses. An unknown value is
                     // not an error here: it becomes Unrecognized downstream.
                     if self.stop_reason.as_deref().is_some_and(|old| old != reason) {
-                        return Err(permanent("Anthropic stop_reason changed"));
+                        return Err(undecodable("Anthropic stop_reason changed"));
                     }
                     self.stop_reason = Some(reason.into());
                     self.stopped = true;
@@ -361,12 +367,12 @@ impl Anthropic {
             "message_stop" => {
                 self.require_active()?;
                 if self.blocks.values().any(|b| !b.closed) {
-                    return Err(permanent("Anthropic message_stop with open blocks"));
+                    return Err(undecodable("Anthropic message_stop with open blocks"));
                 }
                 let reason = self
                     .stop_reason
                     .as_ref()
-                    .ok_or_else(|| permanent("Anthropic message_stop without stop_reason"))?;
+                    .ok_or_else(|| undecodable("Anthropic message_stop without stop_reason"))?;
                 let content: Vec<Value> = std::mem::take(&mut self.blocks)
                     .into_values()
                     .map(|b| b.wire)
@@ -383,7 +389,7 @@ impl Anthropic {
     }
     fn require_active(&self) -> Result<(), ModelInvokeError> {
         if !self.started {
-            return Err(permanent("Anthropic event before message_start"));
+            return Err(undecodable("Anthropic event before message_start"));
         }
         Ok(())
     }

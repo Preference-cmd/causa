@@ -188,7 +188,7 @@ fn responses_parts_and_calls_that_open_without_their_empty_string_decode_the_sam
     events[2]["part"]["text"] = json!(7);
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -257,44 +257,44 @@ fn explicit_responses_terminal_classifications_are_shared_with_full_parser() {
 }
 
 #[test]
-fn malformed_order_ids_and_arguments_fail_permanently() {
+fn malformed_order_ids_and_arguments_fail_as_undecodable() {
     let (mut events, _) = responses_fixture();
     events[3]["item_id"] = json!("other");
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let (mut events, _) = responses_fixture();
     events.last_mut().unwrap()["response"]["output"][2]["call_id"] = json!("other");
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let (mut events, _) = responses_fixture();
     events.last_mut().unwrap()["response"]["output"][3]["arguments"] = json!("{");
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let (mut events, _) = responses_fixture();
     events[13]["item"]["name"] = json!("changed");
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     assert_eq!(
         fail(
             Protocol::AnthropicMessages,
             &[json!({"type":"message_stop"})]
         ),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     assert_eq!(
         fail(
             Protocol::OpenAiChatCompletions,
             &[json!({"choices":[{"index":1,"delta":{}}]})]
         ),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -314,7 +314,7 @@ fn eof_unknown_events_and_errors_fuse() {
             .decode(&mut b"data: [DONE]\n\n".as_slice())
             .unwrap_err()
             .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     assert!(
         decoder
@@ -362,7 +362,7 @@ fn all_resource_boundaries_and_sparse_indices_fail() {
             )
             .unwrap_err()
             .kind,
-            ModelInvokeErrorKind::Permanent
+            ModelInvokeErrorKind::Undecodable
         );
     }
     let events = [
@@ -370,7 +370,7 @@ fn all_resource_boundaries_and_sparse_indices_fail() {
     ];
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let comments = b": heartbeat\n\n: heartbeat\n\n";
     assert_eq!(
@@ -385,7 +385,7 @@ fn all_resource_boundaries_and_sparse_indices_fail() {
         )
         .unwrap_err()
         .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -417,19 +417,19 @@ fn duplicate_parts_and_malformed_known_initial_shapes_fail() {
     events.insert(5, completed);
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let (mut events, _) = responses_fixture();
     events[2]["part"]["text"] = json!({"wrong":"type"});
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let (mut events, _) = responses_fixture();
     events[1]["item"]["content"] = json!("wrong");
     assert_eq!(
         fail(Protocol::OpenAiResponses, &events),
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
 }
 
@@ -569,7 +569,7 @@ fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
         },
     )
     .unwrap_err();
-    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+    assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
 }
 
 #[test]
@@ -578,12 +578,12 @@ fn completed_arguments_require_explicit_json_in_full_and_streamed_calls() {
         let chat = json!({"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"f","arguments":raw}}]},"finish_reason":"tool_calls"}]});
         assert_eq!(
             parse_openai_chat_response(&chat).unwrap_err().kind,
-            ModelInvokeErrorKind::Permanent
+            ModelInvokeErrorKind::Undecodable
         );
         let responses = json!({"status":"completed","output":[{"type":"function_call","id":"f","call_id":"c","name":"f","arguments":raw}]});
         assert_eq!(
             parse_openai_responses_output(&responses).unwrap_err().kind,
-            ModelInvokeErrorKind::Permanent
+            ModelInvokeErrorKind::Undecodable
         );
     }
     let mut bytes = wire(&[
@@ -600,7 +600,7 @@ fn completed_arguments_require_explicit_json_in_full_and_streamed_calls() {
         )
         .unwrap_err()
         .kind,
-        ModelInvokeErrorKind::Permanent
+        ModelInvokeErrorKind::Undecodable
     );
     let response = json!({"status":"completed","output":[{"type":"function_call","call_id":"c","name":"f","arguments":"{}"}]});
     assert_eq!(
@@ -616,14 +616,77 @@ fn completed_arguments_require_explicit_json_in_full_and_streamed_calls() {
 }
 
 #[test]
-fn error_diagnostics_exclude_echoed_arguments_and_unknown_codes() {
-    let secret = "echoed_prompt_and_tool_args";
-    let mut decoder =
-        StreamDecoder::new(Protocol::OpenAiResponses, StreamLimits::default()).unwrap();
-    let bytes = wire(&[json!({"type":"error","code":secret,"message":secret})]);
-    let error = decoder.decode(&mut bytes.as_slice()).unwrap_err();
+fn provider_errors_carry_the_envelope_message_and_code_and_nothing_else() {
+    let decode = |protocol, event: Value| {
+        let mut decoder = StreamDecoder::new(protocol, StreamLimits::default()).unwrap();
+        let bytes = wire(&[event]);
+        decoder.decode(&mut bytes.as_slice()).unwrap_err()
+    };
+    // The same envelope on each wire yields the same kind, code and text, and
+    // a provider's own error is not given an event location.
+    for (protocol, event) in [
+        (
+            Protocol::OpenAiResponses,
+            json!({"type":"error","code":"rate_limit_exceeded","message":"slow down"}),
+        ),
+        (
+            Protocol::OpenAiChatCompletions,
+            json!({"error":{"code":"rate_limit_exceeded","message":"slow down"}}),
+        ),
+        (
+            Protocol::AnthropicMessages,
+            json!({"type":"error","error":{"type":"rate_limit_exceeded","message":"slow down"}}),
+        ),
+    ] {
+        let error = decode(protocol, event);
+        assert_eq!(error.kind, ModelInvokeErrorKind::Transient, "{protocol:?}");
+        assert_eq!(error.code.as_deref(), Some("rate_limit_exceeded"));
+        assert_eq!(error.status, None);
+        assert_eq!(
+            error.message,
+            "provider stream error (rate_limit_exceeded): slow down"
+        );
+    }
+    let error = decode(
+        Protocol::AnthropicMessages,
+        json!({"type":"error","error":{"type":"authentication_error","message":"bad key"}}),
+    );
     assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
-    assert!(!error.message.contains(secret));
+    assert_eq!(error.code.as_deref(), Some("authentication_error"));
+
+    // A code that is not a short identifier is dropped, the message is cut
+    // and made one line, and no other field of the event is echoed.
+    let long = "echoed prompt ".repeat(40);
+    let error = decode(
+        Protocol::OpenAiResponses,
+        json!({
+            "type":"error",
+            "code":"not an identifier",
+            "message":format!("line one\r\nline\u{1b} two {long}"),
+            "param":"hidden_param",
+            "sequence_number":7
+        }),
+    );
+    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+    assert_eq!(error.code, None);
+    assert!(
+        error
+            .message
+            .starts_with("provider stream error (unknown): line one line two echoed prompt"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.ends_with('…'));
+    assert_eq!(
+        error.message.chars().count(),
+        "provider stream error (unknown): ".chars().count() + 201
+    );
+    assert!(!error.message.chars().any(char::is_control));
+    assert!(!error.message.contains("hidden_param"));
+
+    // An event with no message keeps the label alone.
+    let error = decode(Protocol::OpenAiResponses, json!({"type":"error"}));
+    assert_eq!(error.message, "provider stream error (unknown)");
 }
 
 #[test]
@@ -810,7 +873,7 @@ fn anthropic_delta_without_a_rule_fails_instead_of_truncating_the_block() {
             StreamLimits::default(),
         )
         .unwrap_err();
-        assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+        assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
         assert!(!error.message.contains(secret), "{}", error.message);
     }
     // `input_json_delta` still conflicts with a block that declared no input.
@@ -825,7 +888,7 @@ fn anthropic_delta_without_a_rule_fails_instead_of_truncating_the_block() {
         StreamLimits::default(),
     )
     .unwrap_err();
-    assert_eq!(error.kind, ModelInvokeErrorKind::Permanent);
+    assert_eq!(error.kind, ModelInvokeErrorKind::Undecodable);
 }
 
 #[test]

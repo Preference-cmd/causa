@@ -195,7 +195,7 @@ async fn chat_error_rows_map_to_their_kinds() {
 }
 
 #[tokio::test]
-async fn chat_unparseable_2xx_body_is_permanent() {
+async fn chat_unparseable_2xx_body_is_undecodable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -208,7 +208,7 @@ async fn chat_unparseable_2xx_body_is_permanent() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Permanent),
+        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 }
@@ -290,7 +290,7 @@ async fn responses_error_rows_map_to_their_kinds() {
 }
 
 #[tokio::test]
-async fn responses_unparseable_2xx_body_is_permanent() {
+async fn responses_unparseable_2xx_body_is_undecodable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
@@ -303,7 +303,7 @@ async fn responses_unparseable_2xx_body_is_permanent() {
         .await
         .unwrap_err();
     assert!(
-        matches!(e.kind(), ModelInvokeErrorKind::Permanent),
+        matches!(e.kind(), ModelInvokeErrorKind::Undecodable),
         "got {e}"
     );
 }

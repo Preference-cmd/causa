@@ -20,7 +20,8 @@ use super::RetryPolicy;
 ///
 /// - Only [`ModelInvokeErrorKind::Transient`] and
 ///   [`ModelInvokeErrorKind::TimedOut`] failures are retried. `Permanent`,
-///   `InvalidRequest`, `Cancelled` and `UnknownOutcome` are never retried,
+///   `Undecodable`, `InvalidRequest`, `Cancelled` and `UnknownOutcome` are
+///   never retried,
 ///   and there is no setting for that.
 /// - `invoke` and `stream` share the policy; each logical call counts its
 ///   own attempts.
