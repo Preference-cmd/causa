@@ -68,6 +68,8 @@ dry-runs for the first release.
    artifacts. Do not move a tag used for an upload.
 4. Run **Publish** again, select the matching tag, enter `0.0.3`, and check
    `publish`. The workflow reruns CI for the selected commit before upload.
+   After the upload it creates the GitHub release `v0.0.3 — Experimental`
+   as a pre-release, with the dated CHANGELOG entry as its notes.
 5. Check all six crates.io pages and docs.rs builds, then compile an external
    consumer using `causa = "0.0.3"` in default, kernel-only and full modes.
 
@@ -82,7 +84,9 @@ helper checks all six exact versions. It skips an existing version only if
 its published VCS metadata identifies this clean commit; yanked versions,
 different commits, malformed archives and registry errors stop the release.
 Cargo publishes the remaining packages in dependency order and waits for
-index visibility. If all six already exist from the tag, the rerun is a no-op.
+index visibility. If all six already exist from the tag, the upload is a no-op.
+The GitHub release is created only when the tag has none; an existing release
+is left as it is, so edit its notes on GitHub or delete it before a rerun.
 
 This check uses the package's recorded VCS metadata; it is a retry guard,
 not a cryptographic source attestation. A failed upload may already have

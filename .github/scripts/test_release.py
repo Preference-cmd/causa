@@ -178,6 +178,50 @@ class ReleaseTests(unittest.TestCase):
             release.publish(VERSION)
             upload.assert_not_called()
 
+    def test_notes_are_the_section_of_one_dated_release(self):
+        (self.root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [Unreleased]\n\n## [0.0.2] - 2026-10-02\n\nSecond.\n\n"
+            "### Breaking\n\n- A change.\n\n## [0.0.1] - 2026-09-16\n\nFirst.\n")
+        self.assertEqual(release.notes("0.0.2"), "Second.\n\n### Breaking\n\n- A change.\n")
+        self.assertEqual(release.notes("0.0.1"), "First.\n")
+        for version, text in (("0.0.3", "## [0.0.3]\n\nUndated.\n"), ("0.0.3", "## [0.0.3] - 2026-10-12\n\n")):
+            (self.root / "CHANGELOG.md").write_text(text)
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                release.notes(version)
+
+    def github(self, lookup):
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/tags/v0.0.1"}
+        self.enterContext(patch.dict(os.environ, environment, clear=True))
+        (self.root / "CHANGELOG.md").write_text("## [0.0.1] - 2026-09-16\n\nFirst.\n")
+        return self.enterContext(patch.object(release.subprocess, "run", side_effect=[lookup, None]))
+
+    def test_github_release_is_created_from_the_notes_once(self):
+        missing = release.subprocess.CompletedProcess([], 1, "", "release not found\n")
+        gh = self.github(missing)
+        release.github_release(VERSION)
+        self.assertEqual(gh.call_count, 2)
+        gh.assert_called_with(
+            ["gh", "release", "create", "v0.0.1", "--verify-tag", "--prerelease",
+             "--title", "v0.0.1 — Experimental", "--notes-file", "-"],
+            cwd=self.root, input="First.\n", text=True, check=True)
+
+    def test_existing_github_release_is_left_alone(self):
+        gh = self.github(release.subprocess.CompletedProcess([], 0, "v0.0.1", ""))
+        release.github_release(VERSION)
+        self.assertEqual(gh.call_count, 1)
+
+    def test_github_release_stops_on_a_failed_lookup_or_outside_the_tagged_workflow(self):
+        gh = self.github(release.subprocess.CompletedProcess([], 1, "", "HTTP 503\n"))
+        with self.assertRaisesRegex(ValueError, "look up"):
+            release.github_release(VERSION)
+        self.assertEqual(gh.call_count, 1)
+        for environment in ({"GITHUB_REF": "refs/tags/v0.0.1"},
+                            {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main"}):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True):
+                with self.assertRaises(ValueError):
+                    release.github_release(VERSION)
+        self.assertEqual(gh.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

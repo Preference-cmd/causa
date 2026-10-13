@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Validate the experimental crate family and resume a tagged manual release."""
+"""Validate the experimental crate family, resume a tagged manual release and
+create its GitHub release."""
 
 import argparse
 import io
@@ -122,16 +123,53 @@ def publish(version):
     subprocess.run(command, cwd=ROOT, check=True)
 
 
+def notes(version):
+    """Return the CHANGELOG section of one dated release, without its heading."""
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    heading = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.M)
+    require(heading, f"CHANGELOG has no dated entry for {version}")
+    rest = changelog[heading.end():]
+    following = re.search(r"^## ", rest, re.M)
+    body = (rest[:following.start()] if following else rest).strip()
+    require(body, f"CHANGELOG entry for {version} is empty")
+    return body + "\n"
+
+
+def github_release(version):
+    """Create the GitHub release for an uploaded version; a rerun changes nothing."""
+    require(os.environ.get("GITHUB_ACTIONS") == "true", "Create releases only through the manual Publish workflow")
+    require(os.environ.get("GITHUB_REF") == f"refs/tags/v{version}",
+            f"Select the v{version} tag to create its release")
+    tag = f"v{version}"
+    body = notes(version)
+    existing = subprocess.run(["gh", "release", "view", tag], cwd=ROOT, capture_output=True, text=True)
+    if existing.returncode == 0:
+        print(f"GitHub release {tag} already exists")
+        return
+    require("release not found" in existing.stderr.lower(),
+            f"Could not look up release {tag}: {existing.stderr.strip()}")
+    subprocess.run(
+        ["gh", "release", "create", tag, "--verify-tag", "--prerelease",
+         "--title", f"{tag} — Experimental", "--notes-file", "-"],
+        cwd=ROOT, input=body, text=True, check=True)
+    print(f"Created GitHub release {tag}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "packages", "publish"))
+    parser.add_argument("command", choices=("check", "packages", "publish", "notes", "github-release"))
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
+    if args.command == "notes":
+        sys.stdout.write(notes(args.version))
+        return
     metadata, packages = workspace(args.version)
     if args.command == "packages":
         check_packages(metadata, packages)
     elif args.command == "publish":
         publish(args.version)
+    elif args.command == "github-release":
+        github_release(args.version)
     else:
         print(f"Validated all six crates at {args.version}")
 

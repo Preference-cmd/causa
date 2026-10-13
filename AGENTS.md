@@ -23,7 +23,7 @@ crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on
 .github/workflows/publish.yml  # manual dispatch ONLY — never `cargo publish` by hand
 .github/scripts/check-dependency-directions.sh  # layering guard, runs in CI
 .github/scripts/check-module-layout.py # rejects mod.rs in library sources
-.github/scripts/release.py # version / archive checks and tagged release retries
+.github/scripts/release.py # version / archive checks, tagged release retries, GitHub release
 CHANGELOG.md               # 0.0.x experimental; from 0.1 wire breaks bump minor
 .github/RELEASING.md        # experimental release checklist and manual workflow
 website/                   # Astro Starlight docs site (its own pnpm project + workflow)
