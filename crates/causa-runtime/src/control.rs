@@ -1,5 +1,17 @@
-//! Execution cancellation and deadline helpers.
+//! Cancellation and deadline wait helper for runtime operations.
 
-mod stop;
+use causa_kernel::{CallControl, ControlError};
 
-pub(crate) use stop::wait_for_stop;
+/// Races the control plane's cancellation token and optional deadline.
+pub(crate) async fn wait_for_stop(control: &CallControl) -> ControlError {
+    tokio::select! {
+        biased;
+        _ = control.cancellation_token().cancelled() => ControlError::Cancelled,
+        _ = async {
+            match control.deadline() {
+                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                None => std::future::pending::<()>().await,
+            }
+        } => ControlError::TimedOut,
+    }
+}

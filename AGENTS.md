@@ -188,8 +188,10 @@ rendering) — bare `causa` false-positives on `causa-*` names.
   namespaced re-exports so future additions cannot collide.
 - Library module layout: `foo.rs` + `foo/`, never `mod.rs` (the layout guard
   rejects it under `crates/*/src`; test fixtures may use `tests/common/mod.rs`).
-  `foo.rs` is a thin index — docs, `mod` declarations,
-  re-exports — and the code lives in `foo/*.rs`. Private submodules
+  A module with one file is just `foo.rs`. Once it needs a second file it
+  becomes `foo.rs` + `foo/`: `foo.rs` is then a thin index — docs, `mod`
+  declarations, re-exports — and the code lives in `foo/*.rs`. A directory
+  holding a single file is not created. Private submodules
   re-exported at `foo.rs` keep the path flat (`crate::driver::TurnOutcome`);
   `pub mod` only for nested surfaces (`ports`, `context`).
 - Commit style: Conventional Commits (`feat:`, `fix:`, `refactor!:`,
