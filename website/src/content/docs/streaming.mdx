@@ -3,12 +3,6 @@ title: Streaming
 description: Consume provider increments while preserving complete-output ownership.
 ---
 
-:::note[Unreleased implementation]
-This page describes the current `main` checkout. The published Causa `0.0.2`
-already has streaming ports and a runner, but its built-in HTTP gateways use
-the default single-`Done` fallback. Real provider SSE requires the new implementation.
-:::
-
 ## Choose a consumer
 
 All three built-in gateways implement `ModelGateway::stream()`. Call it directly
@@ -84,7 +78,7 @@ request for endpoints that return a complete JSON body instead; when that
 body is an error envelope, the call fails with the provider's error and its
 code, otherwise it is `Undecodable`.
 
-On unreleased `main`, a response the token limit stopped inside a tool call
+A response the token limit stopped inside a tool call
 ends with `MaxTokens` and without that call. Its `ToolCallDelta` values have
 already been delivered, so take the calls to act on from `Done`.
 

@@ -5,21 +5,21 @@ description: Add Causa to a Rust project and run your first turn.
 
 ## Add the dependency
 
-The following dependency selections use the published **0.0.2 experimental
+The following dependency selections use the published **0.0.3 experimental
 release**. The application example below uses the same registry version.
 
 ```bash
 # Default: kernel + runtime + providers (Anthropic / OpenAI adapters).
-cargo add causa@0.0.2
+cargo add causa@0.0.3
 
 # Everything, including MCP extension adapters:
-cargo add causa@0.0.2 --features full
+cargo add causa@0.0.3 --features full
 
 # Kernel only — offline audit / minimal embed, no I/O:
-cargo add causa@0.0.2 --no-default-features
+cargo add causa@0.0.3 --no-default-features
 
 # Kernel + offline driver, no network adapters:
-cargo add causa@0.0.2 --no-default-features --features runtime
+cargo add causa@0.0.3 --no-default-features --features runtime
 ```
 
 Choose one of the dependency configurations above. Causa requires Rust
@@ -32,7 +32,7 @@ Use Rust **1.96+** and create an application:
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.0.2
+cargo add causa@0.0.3
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -89,7 +89,7 @@ git clone https://github.com/Preference-cmd/causa.git
 cd causa
 ```
 
-The default checkout follows development. Run `git checkout v0.0.2` to use
+The default checkout follows development. Run `git checkout v0.0.3` to use
 this release's examples.
 
 With `ANTHROPIC_API_KEY` already set, run this from the repository root:

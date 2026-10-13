@@ -20,10 +20,10 @@ Its optional runtime adds turn execution, streaming and tool-processing chains, 
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
-> **Experimental 0.0.2.** Requires Rust **1.96+**. This release separates
-> editable context material from execution and removes session ownership.
+> **Experimental 0.0.3.** Requires Rust **1.96+**. This release adds real
+> provider streaming, reasoning replay and classified model-call failures.
 > APIs and stored formats have no backward compatibility guarantee before 0.1;
-> review the [migration notes](https://github.com/Preference-cmd/causa/blob/v0.0.2/CHANGELOG.md#002---2026-10-02) when upgrading.
+> review the [migration notes](https://github.com/Preference-cmd/causa/blob/v0.0.3/CHANGELOG.md#003---2026-10-12) when upgrading.
 
 ## Try it offline
 
@@ -37,7 +37,7 @@ cargo run --example conversation_persistence -p causa-runtime
 
 Repository examples run from this checkout, even if you have already added
 `causa` to another project. The default checkout follows development; use
-`git checkout v0.0.2` to run the examples for this release.
+`git checkout v0.0.3` to run the examples for this release.
 
 ## Use in your application
 
@@ -47,7 +47,7 @@ application using the published release:
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.0.2
+cargo add causa@0.0.3
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -93,7 +93,7 @@ ID, then run `cargo run`. This example makes a real network request. To add a
 local tool, see the
 [provider quickstart](https://github.com/Preference-cmd/causa/blob/main/crates/causa-provider/examples/quickstart.rs).
 
-### Streaming on main (unreleased)
+### Streaming
 
 The built-in Anthropic Messages, OpenAI Chat Completions and OpenAI Responses
 gateways now implement real HTTP SSE through `ModelGateway::stream()`.
@@ -106,14 +106,12 @@ explicit host choice — wrap the gateway in `causa::runtime::RetryingGateway`
 with a `RetryPolicy` — and the wrapper never retries once any stream delta has
 been yielded.
 
-This provider implementation is not in the published `0.0.2` crates, whose
-built-in gateways return a single completed output from the stream entry.
 See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
 for supported events, resource limits and direct consumption.
 
-### Generation options on main (unreleased)
+### Generation options
 
-On unreleased `main`, `GenerationOptions::reasoning_effort` is a string that
+`GenerationOptions::reasoning_effort` is a string that
 is sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
 `reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
 map the value, and derives no `thinking` object from it. Settings that only
@@ -145,10 +143,10 @@ Choose the dependencies your application needs:
 
 | Configuration | Included |
 |---|---|
-| `causa = "0.0.2"` | Kernel + runtime + providers |
-| `causa = { version = "0.0.2", features = ["full"] }` | Default stack + MCP extensions |
-| `causa = { version = "0.0.2", default-features = false }` | Kernel only |
-| `causa = { version = "0.0.2", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
+| `causa = "0.0.3"` | Kernel + runtime + providers |
+| `causa = { version = "0.0.3", features = ["full"] }` | Default stack + MCP extensions |
+| `causa = { version = "0.0.3", default-features = false }` | Kernel only |
+| `causa = { version = "0.0.3", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
 The kernel is always present. `providers` also enables `protocol`; `full`
 enables the MCP adapter through `extensions`. See the
@@ -203,16 +201,16 @@ To edit the retained blocks explicitly, see the
 
 ## Status and boundaries
 
-**0.0.2 is an experimental release.** It provides
+**0.0.3 is an experimental release.** It provides
 multimodal material, turn execution and tool-processing contracts. Session management and subagent orchestration belong to applications built
 on Causa. This release does not announce a 0.1 stability commitment.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
-compatibility. Cargo does not automatically upgrade `"0.0.1"` to `0.0.2`;
+compatibility. Cargo does not automatically upgrade `"0.0.2"` to `0.0.3`;
 review the [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
 before upgrading. Starting with `0.1.0`, breaking wire-format changes bump the
-minor version. The 0.0.2 API replaces `TurnContext` with editable `Context`
-and removes session ownership, implicit traces and built-in budget policies.
+minor version. Since 0.0.2 the API has editable `Context` in place of `TurnContext`
+and has no session ownership, implicit traces and built-in budget policies.
 Applications own history, input admission, preparation and persistence.
 
 Persistence stays in your application. Processing interruptions return the

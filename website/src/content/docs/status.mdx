@@ -5,22 +5,37 @@ description: Where Causa stands and where it's going.
 
 ## Experimental 0.0.x
 
-**0.0.2** separates context material from execution: editable `Context`, a
-material-returning runner, explicit preparation and bound tool processing.
+**0.0.3** adds real provider streaming, reasoning replay, host-written
+reasoning settings, an optional retrying gateway and classified model-call
+failures, on the 0.0.2 separation of context material from execution.
 Session management, history policies and subagent orchestration belong to
 applications built on Causa. This is an experimental release with breaking
-changes from 0.0.1.
+changes from 0.0.2.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Breaking changes and migration notes appear at the top of
-the release notes. Cargo does not automatically upgrade `"0.0.1"` to
-`0.0.2`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
+the release notes. Cargo does not automatically upgrade `"0.0.2"` to
+`0.0.3`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
 version.
+
+## Upgrading from 0.0.2
+
+Update your dependency explicitly to `causa = "0.0.3"`. The changelog lists
+every break with its migration; these are the ones most code meets:
+
+| 0.0.2 usage | 0.0.3 replacement |
+| --- | --- |
+| Struct literals for options, outputs and requests | The type's constructor or `Default`, then `with_*` setters or field assignment |
+| `Tool::execute(ctx, control)`, `DynamicToolSource::invoke(call, control)` | The same methods take the host's artifact store as a third argument |
+| `RunControl` | `CallControl` |
+| `ModelInvokeError::kind()` and matching on its message | The public `kind`, `status` and `code` fields |
+| `ModelResponse` text and tool-call fields | An ordered list of `ModelItem` values |
+| Stored tool results with `"Succeeded"`-style statuses | snake_case strings; rewrite stored context, no reader for the old form |
+| A complete tool batch handed back on a late stop | The batch is committed; `uncommitted_tool_batch` is `None` |
 
 ## Upgrading from 0.0.1
 
-Update your dependency explicitly to `causa = "0.0.2"`, then migrate these
-boundaries:
+Migrate these boundaries first, then apply the table above:
 
 | 0.0.1 usage | 0.0.2 replacement |
 | --- | --- |
@@ -37,7 +52,7 @@ uncommitted tool batch deliberately. An interrupted external tool may have an
 unknown outcome; recreating context does not guarantee exactly-once execution.
 
 The [getting-started example](/getting-started/) uses the new facade API. The
-[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.2/CHANGELOG.md)
+[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.3/CHANGELOG.md)
 details the control, conversion, tool-binding and protocol changes.
 
 ## Changelog

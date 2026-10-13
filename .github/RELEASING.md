@@ -11,8 +11,8 @@ The Publish workflow currently accepts only experimental `0.0.x` versions with a
    dev-dependencies) to the same version; update Cargo.lock. Keep the README,
    facade examples, AGENTS.md and website installation instructions in sync.
 2. Record breaking API/wire changes and migration instructions. In `0.0.x`,
-   patch releases may be incompatible; Cargo's `"0.0.1"` constraint does not
-   automatically select `0.0.2`. There is no separate checkpoint schema version
+   patch releases may be incompatible; Cargo's `"0.0.2"` constraint does not
+   automatically select `0.0.3`. There is no separate checkpoint schema version
    or automatic reader for the removed context/session formats.
 3. Keep each crate's two license symlinks pointing to the root license texts.
    Cargo flattens these into ordinary files in the published archives.
@@ -28,14 +28,14 @@ bash .github/scripts/check-dependency-directions.sh
 python3 .github/scripts/check-module-layout.py
 python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
 python3 -m unittest discover -s .github/scripts -p 'test_release.py'
-python3 .github/scripts/release.py check --version 0.0.2
+python3 .github/scripts/release.py check --version 0.0.3
 cargo check -p causa --locked
 cargo check -p causa --no-default-features --locked
 cargo check -p causa --features full --locked
 cargo check -p causa-extension --no-default-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
 cargo publish --workspace --dry-run --locked --registry crates-io
-python3 .github/scripts/release.py packages --version 0.0.2
+python3 .github/scripts/release.py packages --version 0.0.3
 ```
 
 Use the actual version in these commands. Before committing, the local
@@ -59,17 +59,17 @@ dry-runs for the first release.
 
 ## Manual release
 
-1. Finalize `## [0.0.2] - YYYY-MM-DD` in CHANGELOG and change the README/site
+1. Finalize `## [0.0.3] - YYYY-MM-DD` in CHANGELOG and change the README/site
    status from “preparing” to “experimental release”. Commit the reviewed
    release changes and push them. CI must pass on that commit.
 2. In GitHub Actions, run **Publish** on that commit's branch with its version
    and `publish` unchecked. This repeats CI and the complete package preflight.
-3. Tag the same release commit `v0.0.2` and push the tag after approving the
+3. Tag the same release commit `v0.0.3` and push the tag after approving the
    artifacts. Do not move a tag used for an upload.
-4. Run **Publish** again, select the matching tag, enter `0.0.2`, and check
+4. Run **Publish** again, select the matching tag, enter `0.0.3`, and check
    `publish`. The workflow reruns CI for the selected commit before upload.
 5. Check all six crates.io pages and docs.rs builds, then compile an external
-   consumer using `causa = "0.0.2"` in default, kernel-only and full modes.
+   consumer using `causa = "0.0.3"` in default, kernel-only and full modes.
 
 Actual uploads run only in this manually dispatched workflow. The default
 is preflight-only. The upload helper refuses missing tokens, wrong tags,

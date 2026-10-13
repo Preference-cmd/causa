@@ -12,6 +12,13 @@ adapters or data converters.
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-10-12
+
+Real provider streaming, reasoning replay and host-written reasoning
+settings, an optional retrying gateway, classified model-call failures, and
+one evolution rule per public type. This release breaks the `0.0.2` Rust API
+and the serialized form of tool results.
+
 ### Breaking
 
 - Four kernel enums serialize in snake_case, like the rest of the context

@@ -3,7 +3,7 @@ title: Crates
 description: The six Causa crates and how to select them.
 ---
 
-`cargo add causa@0.0.2` is the default entry for the 0.0.2 experimental
+`cargo add causa@0.0.3` is the default entry for the 0.0.3 experimental
 release. Cargo resolves the family dependencies for you; using the layer
 crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
 `MIT OR Apache-2.0`.
@@ -23,7 +23,7 @@ crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
 
 | selection | gets |
 | --------- | ---- |
-| `causa = "0.0.2"` (default) | kernel + runtime + providers |
+| `causa = "0.0.3"` (default) | kernel + runtime + providers |
 | `features = ["full"]` | + extensions (MCP) |
 | `default-features = false` | kernel only (offline audit / minimal embed) |
 | `default-features = false, features = ["runtime"]` | kernel + offline driver |
@@ -33,11 +33,10 @@ A provider renders through the protocol crate, so `providers` implies
 Extensions stay opt-in because `rmcp` is a heavier dependency that offline
 hosts should not pay for.
 
-Real HTTP provider streaming is currently an unreleased change on `main`;
-the published `0.0.2` gateways still use the single-completed-output fallback.
-See [Streaming](/streaming/) for the development API and supported scope.
+The built-in gateways stream over real HTTP SSE; see [Streaming](/streaming/)
+for the API and supported scope.
 
-Unreleased `main` also adds `GenerationOptions::reasoning_effort`, a string
+`GenerationOptions::reasoning_effort` is a string
 sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
 `reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
 map the value and derives no `thinking` object from it; omission keeps the
