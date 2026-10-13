@@ -4,7 +4,7 @@
 //! ends in `..`, which is the form a caller can keep across added fields. The
 //! doc tests in `src/lib.rs` hold the same patterns without `..`.
 // Naming each field is the point: the doc tests use the same lists.
-#![allow(dead_code, clippy::unneeded_field_pattern)]
+#![allow(dead_code, clippy::unneeded_wildcard_pattern)]
 
 fn batcherror(value: &causa::kernel::BatchError) -> bool {
     matches!(
