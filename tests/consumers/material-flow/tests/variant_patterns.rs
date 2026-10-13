@@ -3,7 +3,8 @@
 //! The functions only need to compile: each pattern names all current fields and
 //! ends in `..`, which is the form a caller can keep across added fields. The
 //! doc tests in `src/lib.rs` hold the same patterns without `..`.
-#![allow(dead_code)]
+// Naming each field is the point: the doc tests use the same lists.
+#![allow(dead_code, clippy::unneeded_field_pattern)]
 
 fn batcherror(value: &causa::kernel::BatchError) -> bool {
     matches!(
