@@ -92,6 +92,31 @@ async fn every_stop_reason_is_committed_or_reported_whole() {
     }
 }
 
+/// The provider's stop value is text of any length and content. It reaches
+/// the host on the output, never through the interruption's message.
+#[tokio::test]
+async fn an_unrecognized_stop_value_stays_out_of_the_message() {
+    let wire = format!("{}\nsecond line\u{1b}[31m", "x".repeat(4096));
+    let mut output = endturn_output("body");
+    output.stop_reason = ModelStopReason::Unrecognized;
+    output.raw_stop_reason = Some(wire.clone());
+    let gateway = RecordingGateway::scripted(vec![Ok(output)]);
+    let out = runner_with(gateway, vec![])
+        .run(TurnId::new("terminal"), Context::new(), options(), ctrl())
+        .await;
+    let interruption = cause(&out);
+    let message = interruption.to_string();
+    assert_eq!(
+        message,
+        "the provider stopped for a reason this version does not recognize"
+    );
+    assert!(!message.chars().any(char::is_control));
+    let TurnInterruption::ModelStopUnrecognized { output, .. } = interruption else {
+        panic!("produced {interruption:?}");
+    };
+    assert_eq!(output.raw_stop_reason.as_deref(), Some(wire.as_str()));
+}
+
 /// A normal-end stop value with tool calls present is not reclassified: the
 /// runner reports the conversion failure and hands the output back whole.
 #[tokio::test]

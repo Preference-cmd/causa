@@ -637,6 +637,12 @@ fn assert_failure_payload(
     appended: &[ContextBlock],
 ) {
     assert_eq!(failure.reason, reason);
+    // The reason is the source; the message does not repeat it.
+    assert_eq!(failure.to_string(), "context edit failed");
+    assert_eq!(
+        std::error::Error::source(&failure).map(ToString::to_string),
+        Some(reason.to_string())
+    );
     assert_eq!(failure.replacements, replacements);
     assert_eq!(failure.appended, appended);
 }

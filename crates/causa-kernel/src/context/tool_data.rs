@@ -65,6 +65,8 @@ pub struct ToolOutputMeta {
 }
 
 /// Whether tool output content was shortened to fit the token limit.
+///
+/// Exhaustive on purpose: content was shortened or it was not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Truncation {
@@ -184,8 +186,10 @@ impl ArtifactRef {
     }
 }
 
-/// What an artifact holds.
+/// What an artifact holds. A label for the host; nothing in the library
+/// decides by it, so further kinds may be added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ArtifactKind {
     /// The complete, untruncated tool output.
     FullOutput,

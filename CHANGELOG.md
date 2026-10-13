@@ -14,6 +14,18 @@ adapters or data converters.
 
 ### Breaking
 
+- Messages no longer repeat text that is available as a value.
+  `TurnInterruption::ModelStopUnrecognized` prints a fixed sentence; the
+  provider's stop value, which may be any length and hold control
+  characters, is read from `output.raw_stop_reason`. `EditFailure` prints
+  `context edit failed` and reports the `EditError` as its source, so a
+  printed error chain shows the reason once. Migration: read the field, or
+  print the source chain, where the code relied on the message.
+- `ArtifactKind` is `#[non_exhaustive]`; a `match` on it outside the crate
+  needs a wildcard arm.
+- `GenerationOptions` leaves `temperature` and `max_tokens` out of its
+  serialized form when they are unset, as it already did for its other
+  fields. The earlier form wrote them as `null` and still reads back.
 - A tool batch that finished processing is committed before a stop is
   reported. When cancellation or a deadline is first seen after every tool
   returned and every after-processor ran (or none is configured), the run
@@ -82,7 +94,7 @@ adapters or data converters.
 
   | type | construct with |
   |---|---|
-  | `GenerationOptions`, `ToolOutputMeta`, `ToolExecutorOptions`, `StreamLimits`, `AnthropicRenderOptions`, `ResponsesRenderOptions`, `ChatRenderOptions`, `AnthropicGatewayConfig`, `OpenAiChatGatewayConfig`, `OpenAiResponsesGatewayConfig` | `Default::default()` |
+  | `GenerationOptions`, `ToolOutputMeta`, `ToolExecutorOptions`, `StreamLimits`, `AnthropicRenderOptions`, `ResponsesRenderOptions`, `ChatRenderOptions` | `Default::default()` |
   | `BlockMeta` | `Default::default()` or `BlockMeta::from_source(source)` |
   | `ModelOutput` | `ModelOutput::new(response, stop_reason)` |
   | `ModelRequest` | `ModelRequest::new(invocation_id, frame, model)` |
@@ -189,7 +201,7 @@ adapters or data converters.
   `CallControl::new(token, deadline)`, and `control.call_control()` with
   `control.clone()`. `should_stop` and `remaining_turn_time` have no
   replacement; use `CallControl::check` and `CallControl::deadline`.
-- `ToolBatch::resolve_at` returns `Result<(), Box<RejectedToolResult>>`. A
+- `ToolBatch::resolve_at` returns `Result<(), RejectedToolResult>`. A
   refused result is handed back with its `BatchError`, so callers no longer
   clone a payload to keep it. Migration: read `rejected.error` where the code
   matched on `BatchError`, and `rejected.result` to recover the payload.

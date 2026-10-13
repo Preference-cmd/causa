@@ -166,9 +166,9 @@ impl ToolBatch {
         index: usize,
         result_block_id: BlockId,
         mut result: ToolResultPayload,
-    ) -> Result<(), Box<RejectedToolResult>> {
+    ) -> Result<(), RejectedToolResult> {
         if let Err(error) = self.check_resolve(index, result_block_id, &result) {
-            return Err(Box::new(RejectedToolResult { error, result }));
+            return Err(RejectedToolResult { error, result });
         }
         let mut notes = std::mem::take(&mut self.entries[index].call.result_notes);
         notes.append(&mut result.notes);

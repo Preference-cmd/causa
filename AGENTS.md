@@ -181,7 +181,8 @@ rendering) — bare `causa` false-positives on `causa-*` names.
     switches on. A new variant there is a breaking change and should fail
     downstream compilation.
   - A struct whose fields are its definition stays a plain literal:
-    `InvocationId`, `ModelResponse`, `ContextFrame`, `Replacement`.
+    `InvocationId`, `ModelResponse`, `ContextFrame`, `Replacement`,
+    `ToolCallId`.
   - Errors own the inputs of the failed operation and are returned unboxed;
     the workspace allows `clippy::result_large_err` for that reason.
 - Re-exports over globs: facade and kernel `lib.rs` use explicit,

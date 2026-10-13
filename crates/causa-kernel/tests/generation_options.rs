@@ -7,9 +7,9 @@ use serde_json::json;
 fn effort_is_any_string_and_round_trips_without_inventing_a_default() {
     let unspecified: GenerationOptions = serde_json::from_value(json!({})).unwrap();
     assert_eq!(unspecified, GenerationOptions::default());
+    // An unset option is left out, never written as `null`.
     let encoded = serde_json::to_value(&unspecified).unwrap();
-    assert!(encoded.get("reasoning_effort").is_none());
-    assert!(encoded.get("extra_body").is_none());
+    assert_eq!(encoded, json!({}));
     // Values written by any version read back, known to this one or not.
     for effort in ["none", "minimal", "xhigh", "off", "ultra", "HIGH", ""] {
         let value = GenerationOptions::default().with_reasoning_effort(effort);

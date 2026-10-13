@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Discriminator for the message protocol a provider entry speaks.
+///
+/// Exhaustive on purpose: a gateway is built for exactly one protocol and a
+/// host selects by it, so a new one is a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Protocol {
     /// OpenAI Chat Completions request and response format.

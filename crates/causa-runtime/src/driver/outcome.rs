@@ -23,6 +23,9 @@ pub struct TurnOutcome {
     pub uncommitted_tool_batch: Option<ToolBatch>,
 }
 /// The selected execution result, without an implicit execution history.
+///
+/// Exhaustive on purpose: a run completes or is interrupted, and a host
+/// handles both.
 #[derive(Debug)]
 pub enum TurnResult {
     /// A final model output was committed.
@@ -125,8 +128,10 @@ pub enum TurnInterruption {
         output: ModelOutput,
     },
     /// The provider reported a stop value the kernel has no meaning for; the
-    /// complete output was not committed and the wire value is on the output.
-    #[error("the provider stopped for a reason this version does not recognize ({})", .output.raw_stop_reason.as_deref().unwrap_or("no stop value given"))]
+    /// complete output was not committed. The wire value is on
+    /// `output.raw_stop_reason` and is kept out of this message, because it
+    /// is provider text of any length and content.
+    #[error("the provider stopped for a reason this version does not recognize")]
     ModelStopUnrecognized {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,

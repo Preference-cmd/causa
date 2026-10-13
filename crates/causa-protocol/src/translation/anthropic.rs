@@ -247,12 +247,15 @@ pub fn render_anthropic_messages(
     // the last block; within the conversation on the last content block that is
     // not a sealed item, searching backward from the anchor message because a
     // sealed item is written verbatim and never modified.
-    if matches!(cache, CacheDirective::StablePrefix) {
-        if let Some(last) = system_blocks.last_mut() {
-            last["cache_control"] = json!({"type": "ephemeral"});
-        }
-        if let Some(last_block) = anchor_block(&mut messages, &sealed_blocks) {
-            last_block["cache_control"] = json!({"type": "ephemeral"});
+    match cache {
+        CacheDirective::None => {}
+        CacheDirective::StablePrefix => {
+            if let Some(last) = system_blocks.last_mut() {
+                last["cache_control"] = json!({"type": "ephemeral"});
+            }
+            if let Some(last_block) = anchor_block(&mut messages, &sealed_blocks) {
+                last_block["cache_control"] = json!({"type": "ephemeral"});
+            }
         }
     }
 
@@ -284,10 +287,13 @@ pub fn render_anthropic_messages(
     if !tool_surface.definitions.is_empty() {
         let mut tools =
             context_frame::tool_definitions(tool_surface, context_frame::ToolShape::Anthropic);
-        if matches!(cache, CacheDirective::StablePrefix)
-            && let Some(last_tool) = tools.last_mut()
-        {
-            last_tool["cache_control"] = json!({"type": "ephemeral"});
+        match cache {
+            CacheDirective::None => {}
+            CacheDirective::StablePrefix => {
+                if let Some(last_tool) = tools.last_mut() {
+                    last_tool["cache_control"] = json!({"type": "ephemeral"});
+                }
+            }
         }
         body["tools"] = json!(tools);
     }

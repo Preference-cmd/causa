@@ -36,9 +36,11 @@ impl ModelRef {
 #[non_exhaustive]
 pub struct GenerationOptions {
     /// Sampling temperature; `None` leaves the provider default in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// Upper bound on generated tokens, including reasoning tokens where the
     /// provider counts them. `None` leaves the limit unconstrained by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     /// Reasoning effort, written to the protocol's effort key exactly as
     /// given: Chat `reasoning_effort`, Responses `reasoning.effort`, Anthropic
@@ -308,6 +310,9 @@ impl ModelInvokeError {
 /// Prompt-cache instruction carried on a [`ModelRequest`]. Adapters map this
 /// directive to protocol-specific cache mechanisms or treat it as a no-op where
 /// caching is automatic or unsupported.
+///
+/// Exhaustive on purpose: a renderer that marks cache anchors matches every
+/// directive, so a new one is a breaking change.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheDirective {

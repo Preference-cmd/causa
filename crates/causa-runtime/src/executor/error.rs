@@ -58,6 +58,8 @@ pub enum ToolCatalogError {
 }
 
 /// Position of a processor in the executor's fixed processing flow.
+///
+/// Exhaustive on purpose: the flow has these two positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolProcessorPhase {
     /// Before dispatch; pending inputs may be changed or completed.
