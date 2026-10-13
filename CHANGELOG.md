@@ -14,6 +14,18 @@ adapters or data converters.
 
 ### Breaking
 
+- A tool batch that finished processing is committed before a stop is
+  reported. When cancellation or a deadline is first seen after every tool
+  returned and every after-processor ran (or none is configured), the run
+  still returns `Cancelled`
+  or `DeadlineExceeded` and starts no further model round, but the results
+  are in the returned context and `uncommitted_tool_batch` is `None`. Before,
+  the complete batch was handed back and a host that saved the context
+  without committing it lost the results. `BoundTools::process` likewise
+  returns `Ok` for such a batch instead of a control error. A stop while
+  tools run, or before the last after-processor finishes, still returns the
+  batch uncommitted. Migration: a host that committed such a batch by hand
+  no longer receives it.
 - `Tool` and `DynamicToolSource` each have one entry method. `Tool::execute`
   and `DynamicToolSource::invoke` take the host's artifact store as a third
   parameter, `store: Option<&dyn ArtifactStore>`; `execute_with_store` and

@@ -35,6 +35,9 @@ ordered after processors to one `ToolBatch`. A processor can await approval.
 The executor collects started calls before returning a controlled interruption;
 the runner commits results atomically only after successful processing and
 validation. An unknown outcome is committed and stops further model rounds.
+A stop first seen after every tool returned and every after processor finished
+does not discard that work: the results are committed, then the run returns
+the cancellation or deadline with no uncommitted batch.
 
 Six borrowed `RunEvent` observations expose requests, streaming deltas, complete
 outputs, actual block appends and tool-processing entry/return. Observers choose

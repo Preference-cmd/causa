@@ -535,14 +535,19 @@ async fn observer_cancellation_respects_each_commit_boundary() {
             out.context.blocks().len(),
             match stage {
                 "request" | "output" => 0,
-                "result" => 2,
+                // A batch that came back fully processed is committed before
+                // the stop is honored.
+                "returned" | "result" => 2,
                 _ => 1,
             }
         );
         assert_eq!(
             out.uncommitted_tool_batch.is_some(),
-            matches!(stage, "declaration" | "ready" | "returned")
+            matches!(stage, "declaration" | "ready")
         );
+        if stage == "returned" {
+            assert!(notices.lock().unwrap().contains(&"result"));
+        }
         if matches!(stage, "declaration" | "ready") {
             assert!(!notices.lock().unwrap().contains(&"returned"));
         }
@@ -669,4 +674,181 @@ async fn tool_limit_is_selected_before_declaration_commit_callback_cancels() {
     ));
     assert_eq!(out.context.blocks().len(), 1);
     assert_eq!(out.uncommitted_tool_batch.unwrap().calls().len(), 1);
+}
+
+/// Cancels the caller's token and reports success.
+struct CancelsThenReturns;
+#[async_trait]
+impl ToolBatchProcessor for CancelsThenReturns {
+    async fn process(
+        &self,
+        _: &mut ToolBatch,
+        ctx: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        ctx.control.cancellation_token().cancel();
+        Ok(())
+    }
+}
+struct CountsRuns(Arc<AtomicUsize>);
+#[async_trait]
+impl ToolBatchProcessor for CountsRuns {
+    async fn process(
+        &self,
+        _: &mut ToolBatch,
+        _: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn result_blocks(out: &TurnOutcome) -> usize {
+    out.context
+        .blocks()
+        .iter()
+        .filter(|block| matches!(block.content(), BlockContent::ToolResult(_)))
+        .count()
+}
+
+#[tokio::test]
+async fn a_stop_from_the_last_after_processor_commits_the_finished_batch() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("", "echo", json!({}))),
+        Ok(endturn_output("never requested")),
+    ]);
+    let executor = ToolExecutor::new(
+        vec![Arc::new(EchoTool)],
+        ToolExecutorOptions::default().with_after(vec![Arc::new(CancelsThenReturns)]),
+    )
+    .unwrap();
+    let runner = TurnRunner::new(gateway.clone(), Arc::new(executor));
+    let committed = Arc::new(AtomicUsize::new(0));
+    let seen = committed.clone();
+    let opts = options().with_observer(Arc::new(move |event| {
+        if let RunEvent::BlocksCommitted { blocks, .. } = event
+            && blocks
+                .iter()
+                .any(|block| matches!(block.content(), BlockContent::ToolResult(_)))
+        {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+    let out = runner
+        .run(TurnId::new("late"), Context::new(), opts, ctrl())
+        .await;
+    assert!(matches!(
+        cause(&out),
+        TurnInterruption::Cancelled {
+            invocation_id: Some(_)
+        }
+    ));
+    assert!(out.uncommitted_tool_batch.is_none());
+    assert_eq!(result_blocks(&out), 1);
+    assert_eq!(committed.load(Ordering::SeqCst), 1);
+    // The stop still holds: no second model round was requested.
+    assert_eq!(gateway.recorded.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_stop_during_the_after_phase_still_returns_the_batch() {
+    let later = Arc::new(AtomicUsize::new(0));
+    let executor = ToolExecutor::new(
+        vec![Arc::new(EchoTool)],
+        ToolExecutorOptions::default().with_after(vec![
+            Arc::new(CancelsThenReturns),
+            Arc::new(CountsRuns(later.clone())),
+        ]),
+    )
+    .unwrap();
+    let runner = TurnRunner::new(
+        RecordingGateway::scripted(vec![Ok(tooluse_output("", "echo", json!({})))]),
+        Arc::new(executor),
+    );
+    let out = runner
+        .run(TurnId::new("mid"), Context::new(), options(), ctrl())
+        .await;
+    assert!(matches!(cause(&out), TurnInterruption::Cancelled { .. }));
+    // The second after-processor never ran, so host policy was not applied
+    // and nothing is committed on the host's behalf.
+    assert_eq!(later.load(Ordering::SeqCst), 0);
+    assert_eq!(result_blocks(&out), 0);
+    let batch = out.uncommitted_tool_batch.as_ref().unwrap();
+    assert_eq!(batch.completed_len(), 1);
+}
+
+#[tokio::test]
+async fn a_deadline_passing_after_processing_commits_the_finished_batch() {
+    let runner = runner_with(
+        RecordingGateway::scripted(vec![
+            Ok(tooluse_output("", "echo", json!({}))),
+            Ok(endturn_output("never requested")),
+        ]),
+        vec![Arc::new(EchoTool)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    // The observer is synchronous: holding the batch-returned notification
+    // until the deadline has passed puts the stop after processing and
+    // before the commit.
+    let opts = options().with_observer(Arc::new(move |event| {
+        if let RunEvent::ToolBatchReturned { result, .. } = event {
+            assert!(result.is_ok());
+            while Instant::now() <= deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }));
+    let out = runner
+        .run(
+            TurnId::new("deadline"),
+            Context::new(),
+            opts,
+            CallControl::new(CancellationToken::new(), Some(deadline)),
+        )
+        .await;
+    assert!(matches!(
+        cause(&out),
+        TurnInterruption::DeadlineExceeded {
+            invocation_id: Some(_)
+        }
+    ));
+    assert!(out.uncommitted_tool_batch.is_none());
+    assert_eq!(result_blocks(&out), 1);
+}
+
+/// Cancels the caller's token, then returns an ordinary result.
+struct CancelsThenSucceeds;
+#[async_trait]
+impl Tool for CancelsThenSucceeds {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new("echo", "cancels, then answers", json!({"type": "object"}))
+    }
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        control: &CallControl,
+        _store: Option<&dyn ArtifactStore>,
+    ) -> ToolResultPayload {
+        control.cancellation_token().cancel();
+        ToolResultPayload::new(
+            call.call_block_id,
+            ToolResultStatus::Succeeded,
+            ToolOutput::new(json!("done")),
+        )
+    }
+}
+
+#[tokio::test]
+async fn with_no_after_processors_a_batch_whose_tools_returned_is_committed() {
+    let gateway = RecordingGateway::scripted(vec![
+        Ok(tooluse_output("", "echo", json!({}))),
+        Ok(endturn_output("never requested")),
+    ]);
+    let runner = runner_with(gateway.clone(), vec![Arc::new(CancelsThenSucceeds)]);
+    let out = runner
+        .run(TurnId::new("no-after"), Context::new(), options(), ctrl())
+        .await;
+    assert!(matches!(cause(&out), TurnInterruption::Cancelled { .. }));
+    assert!(out.uncommitted_tool_batch.is_none());
+    assert_eq!(result_blocks(&out), 1);
+    assert_eq!(gateway.recorded.lock().unwrap().len(), 1);
 }

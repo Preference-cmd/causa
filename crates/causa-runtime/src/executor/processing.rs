@@ -12,6 +12,8 @@ impl BoundTools<'_> {
     ///
     /// On controlled interruption, accepted results remain, started calls with
     /// no accepted result become unknown, and unstarted calls remain pending.
+    /// A stop first seen after the last after-processor finished is not an
+    /// interruption of this call: the batch is complete and `Ok` is returned.
     /// Ordinary failed, rejected, or unknown results do not make this method
     /// fail. It does not commit material or cancel the caller's parent token.
     // ToolProcessingError preserves the rejected payload without boxing.
@@ -43,7 +45,8 @@ impl BoundTools<'_> {
         self.control.check().map_err(ToolProcessingError::Control)?;
         self.reject_unbound(batch)?;
         self.dispatch(batch).await?;
-        self.control.check().map_err(ToolProcessingError::Control)?;
+        // The after phase checks for a stop before each of its processors.
+        // With none configured, a batch whose tools all returned is finished.
         process_phase(
             &self.executor.options.after,
             batch,
@@ -51,7 +54,9 @@ impl BoundTools<'_> {
             ToolProcessorPhase::After,
         )
         .await?;
-        self.control.check().map_err(ToolProcessingError::Control)?;
+        // A stop seen from here on does not fail the call: every tool has
+        // returned and every processor has run, so the batch is reported as
+        // processed and the caller decides what the stop means.
         batch
             .validate()
             .map_err(ToolProcessingError::InvalidBatch)?;

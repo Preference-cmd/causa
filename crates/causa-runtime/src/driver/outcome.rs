@@ -15,6 +15,11 @@ pub struct TurnOutcome {
     /// The selected terminal result.
     pub result: TurnResult,
     /// Complete current batch whose declarations, but not results, were committed.
+    ///
+    /// Present when the run stopped before the batch finished processing, or
+    /// when its results failed validation or the commit. A batch whose tools
+    /// all returned and whose after processors all ran is committed even if a
+    /// cancellation or deadline is seen at that point, and is not returned here.
     pub uncommitted_tool_batch: Option<ToolBatch>,
 }
 /// The selected execution result, without an implicit execution history.

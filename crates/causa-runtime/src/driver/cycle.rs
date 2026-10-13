@@ -217,16 +217,17 @@ impl TurnRunner {
                 };
                 return interrupted(cause, Some(batch));
             }
-            if let Some(cause) = stopped(control, Some(&invocation_id)) {
-                return interrupted(cause, Some(batch));
-            }
+            // A fully processed batch is committed before any stop is
+            // honored: the tools ran and the host's processors ran, so the
+            // results are facts and there is nothing left for the host to
+            // decide about them.
             let commit::ToolCommit { start, unknown } =
                 match commit::tools(context, &invocation_id, &batch) {
                     Ok(committed) => committed,
                     Err(cause) => return interrupted(cause, Some(batch)),
                 };
-            // The successful commit consumes the uncommitted tool batch even when an observer
-            // requests cancellation. Unknown is already a fixed terminal cause.
+            // The successful commit consumes the uncommitted tool batch.
+            // Unknown is a fixed terminal cause and is selected before a stop.
             if let Some(call_block_id) = unknown {
                 let cause = TurnInterruption::UnknownToolOutcome {
                     invocation_id: invocation_id.clone(),
@@ -248,6 +249,9 @@ impl TurnRunner {
                     blocks: &context.blocks()[start..],
                 },
             );
+            if let Some(cause) = stopped(control, Some(&invocation_id)) {
+                return interrupted(cause, None);
+            }
             round += 1;
         }
     }

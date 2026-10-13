@@ -48,10 +48,9 @@ pub(crate) async fn process_phase(
                 index,
                 message,
             })?;
-        context
-            .control
-            .check()
-            .map_err(ToolProcessingError::Control)?;
+        // No stop check here: the next processor's entry check covers a stop
+        // between processors, and a phase whose last processor finished has
+        // finished.
         previous = current;
     }
     Ok(())

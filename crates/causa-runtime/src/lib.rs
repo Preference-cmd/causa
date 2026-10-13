@@ -22,6 +22,7 @@
 //! | Tool dispatch | Concurrent pending calls; panic becomes failed result |
 //! | Tool timeout | None; local timeout becomes unknown outcome |
 //! | Unknown outcomes | Commit the successful batch, then stop |
+//! | Stop after a batch finished processing | Commit its results, then report the stop |
 //! | Output retention and persistence | Caller-owned policies and storage |
 //!
 //! # Optional retries
