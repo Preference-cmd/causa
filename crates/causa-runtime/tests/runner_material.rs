@@ -177,7 +177,7 @@ async fn limits_count_declarations_and_return_new_batch() {
         .await;
     assert!(matches!(
         cause(&out),
-        TurnInterruption::MaxModelRounds { limit: 0 }
+        TurnInterruption::MaxModelRounds { limit: 0, .. }
     ));
     assert!(gateway.recorded.lock().unwrap().is_empty());
     let mut opts = options();
@@ -211,7 +211,7 @@ async fn model_round_limit_stops_before_another_binding_or_request() {
         .await;
     assert!(matches!(
         cause(&out),
-        TurnInterruption::MaxModelRounds { limit: 1 }
+        TurnInterruption::MaxModelRounds { limit: 1, .. }
     ));
     assert_eq!(gateway.recorded.lock().unwrap().len(), 1);
     assert_eq!(out.context.blocks().len(), 2);
@@ -239,7 +239,7 @@ async fn malformed_model_output_retains_output_ids_and_provider_metadata() {
     };
     assert!(matches!(
         error,
-        ModelBlockError::EmptyToolName { tool_index: 0 }
+        ModelBlockError::EmptyToolName { tool_index: 0, .. }
     ));
     assert_eq!(
         output
@@ -293,7 +293,8 @@ async fn cancellation_and_deadline_return_existing_materials_without_cancelling_
             assert!(matches!(
                 cause(&out),
                 TurnInterruption::DeadlineExceeded {
-                    invocation_id: Some(_)
+                    invocation_id: Some(_),
+                    ..
                 }
             ));
             assert!(!token.is_cancelled());
@@ -301,7 +302,8 @@ async fn cancellation_and_deadline_return_existing_materials_without_cancelling_
             assert!(matches!(
                 cause(&out),
                 TurnInterruption::Cancelled {
-                    invocation_id: Some(_)
+                    invocation_id: Some(_),
+                    ..
                 }
             ));
         }
@@ -739,7 +741,8 @@ async fn a_stop_from_the_last_after_processor_commits_the_finished_batch() {
     assert!(matches!(
         cause(&out),
         TurnInterruption::Cancelled {
-            invocation_id: Some(_)
+            invocation_id: Some(_),
+            ..
         }
     ));
     assert!(out.uncommitted_tool_batch.is_none());
@@ -808,7 +811,8 @@ async fn a_deadline_passing_after_processing_commits_the_finished_batch() {
     assert!(matches!(
         cause(&out),
         TurnInterruption::DeadlineExceeded {
-            invocation_id: Some(_)
+            invocation_id: Some(_),
+            ..
         }
     ));
     assert!(out.uncommitted_tool_batch.is_none());

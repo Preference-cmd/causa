@@ -101,7 +101,7 @@ async fn static_name_drift_fails_new_binding_but_does_not_change_old_target() {
     let bound = executor.bind(invocation(), control()).await.unwrap();
     *tool.name.lock().unwrap() = "new".into();
     assert!(
-        matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::StaticNameChanged { registered, actual }) if registered == "old" && actual == "new")
+        matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::StaticNameChanged { registered, actual, .. }) if registered == "old" && actual == "new")
     );
     let mut batch = batch(&["old"]);
     bound.process(&mut batch).await.unwrap();
@@ -112,17 +112,17 @@ async fn static_name_drift_fails_new_binding_but_does_not_change_old_target() {
 fn registry_rejects_duplicate_static_names_and_source_ids() {
     let tool = NamedTool::new("same");
     assert!(
-        matches!(ToolExecutor::new(vec![tool.clone(), tool], ToolExecutorOptions::default()), Err(ToolRegistryError::DuplicateTool { name }) if name == "same")
+        matches!(ToolExecutor::new(vec![tool.clone(), tool], ToolExecutorOptions::default()), Err(ToolRegistryError::DuplicateTool { name, .. }) if name == "same")
     );
     let executor = executor(vec![], ToolExecutorOptions::default());
     let source = Source::new("same", "same", &[]);
     executor.register_dynamic(source.clone()).unwrap();
     assert_eq!(source.lists.load(Ordering::SeqCst), 0);
     assert!(
-        matches!(executor.register_dynamic(source), Err(ToolRegistryError::DuplicateSource { source_id }) if source_id == "same")
+        matches!(executor.register_dynamic(source), Err(ToolRegistryError::DuplicateSource { source_id, .. }) if source_id == "same")
     );
     assert!(
-        matches!(executor.unregister_dynamic("absent"), Err(ToolRegistryError::UnknownSource { source_id }) if source_id == "absent")
+        matches!(executor.unregister_dynamic("absent"), Err(ToolRegistryError::UnknownSource { source_id, .. }) if source_id == "absent")
     );
 }
 
@@ -146,7 +146,7 @@ async fn bind_rejects_same_source_cross_source_and_static_dynamic_duplicates() {
                 .unwrap();
         }
         assert!(
-            matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::DuplicateTool { name }) if name == "same")
+            matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::DuplicateTool { name, .. }) if name == "same")
         );
     }
 }

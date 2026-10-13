@@ -70,7 +70,7 @@ async fn cache_hit_avoids_list_and_failed_refresh_keeps_original_source_error() 
     source.version.store(1, Ordering::SeqCst);
     *source.error.lock().unwrap() = Some(SourceError::Protocol("original listing failure".into()));
     assert!(
-        matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::Source { source_id, error: SourceError::Protocol(message) }) if source_id == "source" && message == "original listing failure")
+        matches!(executor.bind(invocation(), control()).await, Err(ToolCatalogError::Source { source_id, error: SourceError::Protocol(message), .. }) if source_id == "source" && message == "original listing failure")
     );
     assert_eq!(source.lists.load(Ordering::SeqCst), 2);
     assert_eq!(source.invocations.load(Ordering::SeqCst), 0);

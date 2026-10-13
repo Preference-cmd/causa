@@ -75,6 +75,7 @@ async fn all_builtin_gateways_observe_http_text_before_terminal_and_commit_only_
             RunEvent::ModelDelta {
                 invocation_id,
                 delta: StreamDelta::TextDelta { delta },
+                ..
             } => {
                 assert_eq!(*invocation_id, &invocation(0));
                 assert_eq!(recorded.lock().unwrap().as_slice(), [] as [&str; 0]);
@@ -85,6 +86,7 @@ async fn all_builtin_gateways_observe_http_text_before_terminal_and_commit_only_
             RunEvent::ModelOutput {
                 invocation_id,
                 output,
+                ..
             } => {
                 assert_eq!(*invocation_id, &invocation(0));
                 assert_eq!(output.response.text(), expected);
@@ -181,6 +183,7 @@ async fn terminal_tool_executes_once_with_round_identity_and_provider_id_then_ne
                     provider_call_id,
                     ..
                 },
+            ..
         } => {
             assert_eq!(*invocation_id, &invocation(0));
             assert_eq!(*call_index, 0);
@@ -200,6 +203,7 @@ async fn terminal_tool_executes_once_with_round_identity_and_provider_id_then_ne
         RunEvent::ModelDelta {
             invocation_id,
             delta: StreamDelta::TextDelta { .. },
+            ..
         } => assert_eq!(*invocation_id, &invocation(1)),
         _ => {}
     }));
@@ -281,6 +285,7 @@ async fn stream_error_missing_terminal_and_truncated_tool_leave_original_context
                 TurnInterruption::ModelCallFailed {
                     invocation_id,
                     error,
+                    ..
                 },
         } = outcome.result
         else {
@@ -312,6 +317,7 @@ async fn observer_cancelled_partial_second_round_preserves_completed_first_round
         if let RunEvent::ModelDelta {
             invocation_id,
             delta: StreamDelta::ToolCallDelta { .. },
+            ..
         } = event
             && invocation_id.round_id == RoundId(1)
         {
@@ -333,7 +339,7 @@ async fn observer_cancelled_partial_second_round_preserves_completed_first_round
     )
     .await;
     assert!(
-        matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::Cancelled { invocation_id: Some(ref id) } } if id == &invocation(1))
+        matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::Cancelled { invocation_id: Some(ref id), .. } } if id == &invocation(1))
     );
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert_eq!(outcome.context.blocks().len(), 3);
@@ -415,7 +421,7 @@ async fn failed_later_round_preserves_completed_tool_material_and_original_block
     )
     .await;
     assert!(
-        matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::ModelCallFailed { invocation_id, error } } if invocation_id == invocation(1) && error.kind == ModelInvokeErrorKind::UnknownOutcome)
+        matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::ModelCallFailed { invocation_id, error, .. } } if invocation_id == invocation(1) && error.kind == ModelInvokeErrorKind::UnknownOutcome)
     );
     assert_eq!(outcome.context.blocks()[0], first);
     assert_eq!(outcome.context.blocks().len(), 3);

@@ -113,15 +113,16 @@ fn material_driver_builds_work_only_from_new_blocks_and_preserves_failed_inputs(
 fn pure_errors_leave_response_ids_and_batch_available_to_the_caller() {
     let response = response("new");
     let ids = [id(1)];
-    assert_eq!(
+    assert!(matches!(
         response
             .to_blocks(ModelStopReason::ToolUse, &ids)
             .unwrap_err(),
         ModelBlockError::BlockIdCountMismatch {
             expected: 2,
-            actual: 1
+            actual: 1,
+            ..
         }
-    );
+    ));
     assert_eq!(
         response
             .tool_calls()
@@ -157,12 +158,10 @@ fn pure_errors_leave_response_ids_and_batch_available_to_the_caller() {
         )
         .unwrap();
     let (result_id, result) = batch.results()[0].result().unwrap();
-    assert_eq!(
-        validate_tool_result_append(&[], &[(*result_id, result.clone())]).unwrap_err(),
-        ToolResultError::MissingDeclaration {
-            call_block_id: id(2)
-        }
-    );
+    assert!(matches!(
+            validate_tool_result_append(&[], &[(*result_id, result.clone())]).unwrap_err(),
+    ToolResultError::MissingDeclaration { call_block_id, .. } if call_block_id == id(2)
+    ));
     assert_eq!(batch.completed_len(), 1);
     let failure = Context::from_blocks(vec![blocks[0].clone(), blocks[0].clone()]).unwrap_err();
     assert_eq!(failure.appended, vec![blocks[0].clone(), blocks[0].clone()]);

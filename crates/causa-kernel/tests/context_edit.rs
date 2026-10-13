@@ -246,6 +246,7 @@ fn invalid_ranges_are_checked_even_when_a_later_operation_covers_them() {
             replacement_index: 0,
             range,
             len: 3,
+            ..
         } if range == (1..99)
     ));
     assert_eq!(failure.replacements[0].range, 1..99);
@@ -276,6 +277,7 @@ fn invalid_ranges_are_checked_even_when_a_later_operation_covers_them() {
             replacement_index: 1,
             range,
             len: 3,
+            ..
         } if range == (Range { start: 2, end: 1 })
     ));
     assert_eq!(failure.replacements[0].with, vec![first]);
@@ -632,16 +634,16 @@ fn tagged_block(n: u128, text: &str, source: &str) -> ContextBlock {
 
 fn assert_failure_payload(
     failure: causa_kernel::EditFailure,
-    reason: EditError,
+    reason: impl Fn(&EditError) -> bool,
     replacements: &[Replacement],
     appended: &[ContextBlock],
 ) {
-    assert_eq!(failure.reason, reason);
+    assert!(reason(&failure.reason), "{:?}", failure.reason);
     // The reason is the source; the message does not repeat it.
     assert_eq!(failure.to_string(), "context edit failed");
     assert_eq!(
         std::error::Error::source(&failure).map(ToString::to_string),
-        Some(reason.to_string())
+        Some(failure.reason.to_string())
     );
     assert_eq!(failure.replacements, replacements);
     assert_eq!(failure.appended, appended);
@@ -679,10 +681,12 @@ fn all_edit_errors_return_every_input_and_leave_context_wire_unchanged() {
         .unwrap_err();
     assert_failure_payload(
         failure,
-        EditError::InvalidRange {
-            replacement_index: 1,
-            range: Range { start: 2, end: 1 },
-            len: 2,
+        |reason| {
+            matches!(
+                reason,
+                EditError::InvalidRange { replacement_index: 1, range, len: 2, .. }
+                    if *range == (Range { start: 2, end: 1 })
+            )
         },
         &invalid_replacements,
         &invalid_appended,
@@ -703,7 +707,7 @@ fn all_edit_errors_return_every_input_and_leave_context_wire_unchanged() {
         .unwrap_err();
     assert_failure_payload(
         failure,
-        EditError::BlockIdentityMismatch(id(30)),
+        |reason| *reason == EditError::BlockIdentityMismatch(id(30)),
         &mismatch_replacements,
         &mismatch_appended,
     );
@@ -725,7 +729,7 @@ fn all_edit_errors_return_every_input_and_leave_context_wire_unchanged() {
         .unwrap_err();
     assert_failure_payload(
         failure,
-        EditError::DuplicateBlockId(id(41)),
+        |reason| *reason == EditError::DuplicateBlockId(id(41)),
         &duplicate_replacements,
         &duplicate_appended,
     );
@@ -765,7 +769,7 @@ fn identity_mismatch_precedes_duplicate_final_id_validation() {
         .unwrap_err();
     assert_failure_payload(
         failure,
-        EditError::BlockIdentityMismatch(id(2)),
+        |reason| *reason == EditError::BlockIdentityMismatch(id(2)),
         &replacements,
         &appended,
     );

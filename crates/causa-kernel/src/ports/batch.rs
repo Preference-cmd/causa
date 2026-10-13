@@ -217,16 +217,21 @@ impl ToolBatch {
         Ok(())
     }
 
-    /// Consumes a fully completed batch into result blocks in current order.
-    pub fn into_results(self) -> Result<Vec<(BlockId, ToolResultPayload)>, (BatchError, Self)> {
-        if let Err(error) = self.validate() {
-            return Err((error, self));
-        }
+    /// Validates the invariants and that every entry has a result.
+    pub fn validate_complete(&self) -> Result<(), BatchError> {
+        self.validate()?;
         if self.completed != self.entries.len() {
-            let error = BatchError::Incomplete {
+            return Err(BatchError::Incomplete {
                 completed: self.completed,
                 total: self.entries.len(),
-            };
+            });
+        }
+        Ok(())
+    }
+
+    /// Consumes a fully completed batch into result blocks in current order.
+    pub fn into_results(self) -> Result<Vec<(BlockId, ToolResultPayload)>, (BatchError, Self)> {
+        if let Err(error) = self.validate_complete() {
             return Err((error, self));
         }
         Ok(self
@@ -297,6 +302,7 @@ pub enum BatchError {
     DuplicateDeclaration(BlockId),
     /// The requested absolute index is not in the pending suffix.
     #[error("index {index} is not pending (completed {completed}, total {total})")]
+    #[non_exhaustive]
     InvalidIndex {
         /// Requested entry index.
         index: usize,
@@ -307,6 +313,7 @@ pub enum BatchError {
     },
     /// A result references a different declaration than its entry.
     #[error("result call ID mismatch: expected {expected:?}, got {actual:?}")]
+    #[non_exhaustive]
     MismatchedCall {
         /// Declaration identity expected by the entry.
         expected: BlockId,
@@ -321,6 +328,7 @@ pub enum BatchError {
     InvalidPartition(String),
     /// Not all entries have results.
     #[error("batch is incomplete: {completed} of {total} entries completed")]
+    #[non_exhaustive]
     Incomplete {
         /// Number of completed entries.
         completed: usize,

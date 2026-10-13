@@ -11,11 +11,13 @@ use causa_kernel::{ContextBlock, InvocationId, ModelOutput, ModelRequest, Stream
 #[non_exhaustive]
 pub enum RunEvent<'a> {
     /// A complete logical request, immediately before gateway entry.
+    #[non_exhaustive]
     ModelRequestReady {
         /// The request to be sent.
         request: &'a ModelRequest,
     },
     /// A nonterminal streaming observation.
+    #[non_exhaustive]
     ModelDelta {
         /// The logical invocation.
         invocation_id: &'a InvocationId,
@@ -23,6 +25,7 @@ pub enum RunEvent<'a> {
         delta: &'a StreamDelta,
     },
     /// A complete model output, before material conversion.
+    #[non_exhaustive]
     ModelOutput {
         /// The logical invocation.
         invocation_id: &'a InvocationId,
@@ -30,6 +33,7 @@ pub enum RunEvent<'a> {
         output: &'a ModelOutput,
     },
     /// An atomic append succeeded, including an empty append.
+    #[non_exhaustive]
     BlocksCommitted {
         /// The logical invocation.
         invocation_id: &'a InvocationId,
@@ -37,6 +41,7 @@ pub enum RunEvent<'a> {
         blocks: &'a [ContextBlock],
     },
     /// Newly committed declarations are about to enter tool processing.
+    #[non_exhaustive]
     ToolBatchReady {
         /// The logical invocation.
         invocation_id: &'a InvocationId,
@@ -44,6 +49,7 @@ pub enum RunEvent<'a> {
         batch: &'a ToolBatch,
     },
     /// Tool processing actually returned; results are not yet committed.
+    #[non_exhaustive]
     ToolBatchReturned {
         /// The logical invocation.
         invocation_id: &'a InvocationId,

@@ -42,6 +42,7 @@ async fn host_can_copy_selected_observations_and_recover_output_without_them() {
                 if let RunEvent::ModelOutput {
                     invocation_id,
                     output,
+                    ..
                 } = event
                 {
                     copies

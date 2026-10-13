@@ -12,6 +12,24 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Breaking
+
+- The struct-like variants of nine enums that only the library builds are
+  `#[non_exhaustive]`: `RunEvent`, `TurnInterruption`, `ToolProcessingError`,
+  `ToolCatalogError`, `ToolRegistryError`, `BatchError`, `EditError`,
+  `ToolResultError` and `ModelBlockError`. A pattern over one of these
+  variants must end in `..`, and the variant can no longer be written as a
+  value outside its crate.
+
+  Migration: add `..` to each such pattern, for example
+  `TurnInterruption::MaxModelRounds { limit, .. }`. A test that compared an
+  error with a constructed variant uses `matches!` instead.
+
+### Added
+
+- `ToolBatch::validate_complete` checks the batch invariants and that every
+  entry has a result, returning `BatchError::Incomplete` otherwise.
+
 ## [0.0.3] - 2026-10-12
 
 Real provider streaming, reasoning replay and host-written reasoning

@@ -289,7 +289,7 @@ async fn before_and_after_errors_keep_edits_original_error_and_skip_later_proces
             .await
             .unwrap_err();
         assert!(
-            matches!(error, ToolProcessingError::Processor { phase: actual, index: 1, error: ProcessorError::Failed(message) } if actual == phase && message == "original processor failure")
+            matches!(error, ToolProcessingError::Processor { phase: actual, index: 1, error: ProcessorError::Failed(message), .. } if actual == phase && message == "original processor failure")
         );
         assert!(!parent.is_cancelled());
         assert_eq!(count.load(Ordering::SeqCst), 0);
@@ -333,7 +333,7 @@ async fn precompleted_input_is_rejected_unchanged_without_processors_or_calls() 
             .unwrap()
             .process(&mut batch)
             .await,
-        Err(ToolProcessingError::NotFreshBatch { completed: 1 })
+        Err(ToolProcessingError::NotFreshBatch { completed: 1, .. })
     ));
     assert_eq!(format!("{batch:?}"), input);
     assert_eq!(count.load(Ordering::SeqCst), 0);

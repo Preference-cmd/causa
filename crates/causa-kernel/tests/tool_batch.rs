@@ -221,7 +221,8 @@ fn empty_batch_and_middle_completion_use_native_slice_order() {
         error,
         BatchError::Incomplete {
             completed: 1,
-            total: 4
+            total: 4,
+            ..
         }
     ));
     assert_eq!(format!("{returned:?}"), before);

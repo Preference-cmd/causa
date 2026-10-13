@@ -10,6 +10,7 @@ use crate::context::ids::BlockId;
 pub enum ModelBlockError {
     /// EndTurn cannot include tool declarations.
     #[error("EndTurn includes {count} tool calls")]
+    #[non_exhaustive]
     EndTurnWithToolCalls {
         /// Number of tool declarations in the response.
         count: usize,
@@ -19,6 +20,7 @@ pub enum ModelBlockError {
     ToolUseWithoutToolCalls,
     /// The supplied identities do not match the response's material count.
     #[error("expected {expected} block ids, received {actual}")]
+    #[non_exhaustive]
     BlockIdCountMismatch {
         /// Number of identities required by the response.
         expected: usize,
@@ -27,12 +29,14 @@ pub enum ModelBlockError {
     },
     /// A tool declaration's name is blank.
     #[error("tool {tool_index} has an empty name")]
+    #[non_exhaustive]
     EmptyToolName {
         /// Zero-based index in the response's tool declarations.
         tool_index: usize,
     },
     /// A tool declaration's arguments are not a JSON object.
     #[error("tool {tool_index} arguments are not an object")]
+    #[non_exhaustive]
     ArgumentsNotObject {
         /// Zero-based index in the response's tool declarations.
         tool_index: usize,

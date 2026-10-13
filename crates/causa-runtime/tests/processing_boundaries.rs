@@ -430,8 +430,11 @@ async fn rejected_tool_payload_is_retained_and_module_error_never_cancels_shared
     match error.unwrap_err() {
         ToolProcessingError::ResultRejected {
             call_block_id,
-            error: BatchError::MismatchedCall { expected, actual },
+            error: BatchError::MismatchedCall {
+                expected, actual, ..
+            },
             result,
+            ..
         } => {
             assert_eq!(call_block_id, wrong_id);
             assert_eq!(expected, wrong_id);

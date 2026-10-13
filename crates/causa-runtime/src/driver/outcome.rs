@@ -48,18 +48,21 @@ pub enum TurnResult {
 pub enum TurnInterruption {
     /// Caller cancellation stopped an unselected execution stage.
     #[error("the run was cancelled")]
+    #[non_exhaustive]
     Cancelled {
         /// Logical invocation, or none when stopping between invocations.
         invocation_id: Option<InvocationId>,
     },
     /// The inherited absolute execution deadline stopped a stage.
     #[error("the run's deadline passed")]
+    #[non_exhaustive]
     DeadlineExceeded {
         /// Logical invocation, or none when stopping between invocations.
         invocation_id: Option<InvocationId>,
     },
     /// The logical invocation limit was reached before creating a new invocation.
     #[error("the limit of {limit} model rounds was reached")]
+    #[non_exhaustive]
     MaxModelRounds {
         /// Configured maximum for this execution.
         limit: u32,
@@ -68,6 +71,7 @@ pub enum TurnInterruption {
     #[error(
         "the limit of {limit} tool calls was exceeded: {declared_before} declared earlier, {declared_this_round} in this round"
     )]
+    #[non_exhaustive]
     MaxToolCalls {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -80,6 +84,7 @@ pub enum TurnInterruption {
     },
     /// Tool binding failed before preparation or model invocation.
     #[error("tool binding failed: {error}")]
+    #[non_exhaustive]
     ToolCatalogFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -88,6 +93,7 @@ pub enum TurnInterruption {
     },
     /// Preparation failed; any edits already committed by the preparer remain.
     #[error("context preparation failed: {error}")]
+    #[non_exhaustive]
     PrepareFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -96,6 +102,7 @@ pub enum TurnInterruption {
     },
     /// The logical gateway call failed; its original classification is retained.
     #[error("the model call failed: {error}")]
+    #[non_exhaustive]
     ModelCallFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -104,6 +111,7 @@ pub enum TurnInterruption {
     },
     /// Generation reached its token limit; the complete output was not committed.
     #[error("the model reached its output token limit")]
+    #[non_exhaustive]
     ModelMaxTokens {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -112,6 +120,7 @@ pub enum TurnInterruption {
     },
     /// The model refused; the complete output was not committed.
     #[error("the model refused the request")]
+    #[non_exhaustive]
     ModelRefusal {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -121,6 +130,7 @@ pub enum TurnInterruption {
     /// The provider stopped on the context window; the complete output was not
     /// committed.
     #[error("the request no longer fits the model's context window")]
+    #[non_exhaustive]
     ModelContextWindowExceeded {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -132,6 +142,7 @@ pub enum TurnInterruption {
     /// `output.raw_stop_reason` and is kept out of this message, because it
     /// is provider text of any length and content.
     #[error("the provider stopped for a reason this version does not recognize")]
+    #[non_exhaustive]
     ModelStopUnrecognized {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -140,6 +151,7 @@ pub enum TurnInterruption {
     },
     /// Pure conversion failed before commit, retaining output and supplied IDs.
     #[error("the model output could not be converted to context blocks: {error}")]
+    #[non_exhaustive]
     ModelConversionFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -152,6 +164,7 @@ pub enum TurnInterruption {
     },
     /// Fresh batch construction failed before the converted blocks were committed.
     #[error("the model's tool calls could not form a batch: {error}")]
+    #[non_exhaustive]
     ModelBatchFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -164,6 +177,7 @@ pub enum TurnInterruption {
     },
     /// Atomic model append failed; the edit error retains every submitted block.
     #[error("the model output could not be committed: {error}")]
+    #[non_exhaustive]
     ModelCommitFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -174,6 +188,7 @@ pub enum TurnInterruption {
     },
     /// Tool processing failed; the complete current batch is returned in the outcome.
     #[error("tool processing failed: {error}")]
+    #[non_exhaustive]
     ToolProcessingFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -182,6 +197,7 @@ pub enum TurnInterruption {
     },
     /// Result scope validation failed; the complete batch remains uncommitted.
     #[error("tool results failed validation: {error}")]
+    #[non_exhaustive]
     ToolResultValidationFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -190,6 +206,7 @@ pub enum TurnInterruption {
     },
     /// Atomic tool-result append failed; both the batch and edit inputs are retained.
     #[error("tool results could not be committed: {error}")]
+    #[non_exhaustive]
     ToolCommitFailed {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,
@@ -198,6 +215,7 @@ pub enum TurnInterruption {
     },
     /// The full result batch committed, then execution stopped on an unknown result.
     #[error("a tool call ended with an unknown outcome")]
+    #[non_exhaustive]
     UnknownToolOutcome {
         /// The logical invocation associated with this stage.
         invocation_id: InvocationId,

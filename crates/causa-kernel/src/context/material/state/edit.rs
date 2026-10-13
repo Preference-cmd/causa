@@ -21,6 +21,7 @@ pub struct Replacement {
 pub enum EditError {
     /// A replacement range is outside the original block sequence.
     #[error("replacement {replacement_index} range {range:?} is invalid for length {len}")]
+    #[non_exhaustive]
     InvalidRange {
         /// The replacement's position in the submitted list.
         replacement_index: usize,

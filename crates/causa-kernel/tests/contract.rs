@@ -50,30 +50,31 @@ fn pure_conversion_validates_in_documented_order_and_preserves_inputs() {
     let mut value = response("text", vec![common::draft(" ", json!(42))]);
     let ids = common::block_ids_for(&value);
     let original = serde_json::to_value(&value).unwrap();
-    assert_eq!(
+    assert!(matches!(
         value.to_blocks(ModelStopReason::EndTurn, &[]).unwrap_err(),
-        ModelBlockError::EndTurnWithToolCalls { count: 1 }
-    );
-    assert_eq!(
+        ModelBlockError::EndTurnWithToolCalls { count: 1, .. }
+    ));
+    assert!(matches!(
         value.to_blocks(ModelStopReason::ToolUse, &[]).unwrap_err(),
         ModelBlockError::BlockIdCountMismatch {
             expected: 2,
-            actual: 0
+            actual: 0,
+            ..
         }
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         value.to_blocks(ModelStopReason::ToolUse, &ids).unwrap_err(),
-        ModelBlockError::EmptyToolName { tool_index: 0 }
-    );
+        ModelBlockError::EmptyToolName { tool_index: 0, .. }
+    ));
     assert_eq!(serde_json::to_value(&value).unwrap(), original);
     let ModelItemContent::ToolCall(call) = &mut value.items[1].content else {
         panic!("second item is the tool call");
     };
     call.tool_name = "valid".into();
-    assert_eq!(
+    assert!(matches!(
         value.to_blocks(ModelStopReason::ToolUse, &ids).unwrap_err(),
-        ModelBlockError::ArgumentsNotObject { tool_index: 0 }
-    );
+        ModelBlockError::ArgumentsNotObject { tool_index: 0, .. }
+    ));
     let no_calls = response("text", vec![]);
     assert_eq!(
         no_calls
@@ -88,15 +89,15 @@ fn pure_conversion_validates_in_documented_order_and_preserves_inputs() {
             common::draft("bad", json!(null)),
         ],
     );
-    assert_eq!(
+    assert!(matches!(
         late_invalid
             .to_blocks(
                 ModelStopReason::ToolUse,
                 &common::block_ids_for(&late_invalid)
             )
             .unwrap_err(),
-        ModelBlockError::ArgumentsNotObject { tool_index: 1 }
-    );
+        ModelBlockError::ArgumentsNotObject { tool_index: 1, .. }
+    ));
 }
 
 #[test]
@@ -143,15 +144,16 @@ fn empty_output_requires_no_ids_and_terminal_recording_policy_remains_external()
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
+    assert!(matches!(
         blank
             .to_blocks(ModelStopReason::EndTurn, &[common::block_id()])
             .unwrap_err(),
         ModelBlockError::BlockIdCountMismatch {
             expected: 0,
-            actual: 1
+            actual: 1,
+            ..
         }
-    );
+    ));
     for reason in [ModelStopReason::MaxTokens, ModelStopReason::Refusal] {
         let value = response("partial", vec![common::draft("echo", json!({}))]);
         assert_eq!(
@@ -176,41 +178,33 @@ fn scope_validation_distinguishes_missing_completed_and_duplicate_results() {
     assert!(validate_tool_result_append(&blocks, std::slice::from_ref(&valid)).is_ok());
     assert_eq!(serde_json::to_value(&valid.1).unwrap(), before);
     let missing = common::block_id();
-    assert_eq!(
-        validate_tool_result_append(&blocks, &[(common::block_id(), result(missing))]).unwrap_err(),
-        ToolResultError::MissingDeclaration {
-            call_block_id: missing
-        }
-    );
+    assert!(matches!(
+            validate_tool_result_append(&blocks, &[(common::block_id(), result(missing))]).unwrap_err(),
+    ToolResultError::MissingDeclaration { call_block_id, .. } if call_block_id == missing
+    ));
     let part = common::text_block(missing, TextPayload::new("not a declaration"), "user");
     blocks.push(part);
-    assert_eq!(
-        validate_tool_result_append(&blocks, &[(common::block_id(), result(missing))]).unwrap_err(),
-        ToolResultError::MissingDeclaration {
-            call_block_id: missing
-        }
-    );
-    assert_eq!(
-        validate_tool_result_append(
-            &blocks,
-            &[valid.clone(), (common::block_id(), result(declaration))]
-        )
-        .unwrap_err(),
-        ToolResultError::DuplicateResult {
-            call_block_id: declaration
-        }
-    );
+    assert!(matches!(
+            validate_tool_result_append(&blocks, &[(common::block_id(), result(missing))]).unwrap_err(),
+    ToolResultError::MissingDeclaration { call_block_id, .. } if call_block_id == missing
+    ));
+    assert!(matches!(
+            validate_tool_result_append(
+                &blocks,
+                &[valid.clone(), (common::block_id(), result(declaration))]
+            )
+            .unwrap_err(),
+    ToolResultError::DuplicateResult { call_block_id, .. } if call_block_id == declaration
+    ));
     blocks.push(ContextBlock::new(
         valid.0,
         BlockContent::ToolResult(valid.1.clone()),
         BlockMeta::default(),
     ));
-    assert_eq!(
-        validate_tool_result_append(&blocks, &[valid]).unwrap_err(),
-        ToolResultError::AlreadyCompleted {
-            call_block_id: declaration
-        }
-    );
+    assert!(matches!(
+            validate_tool_result_append(&blocks, &[valid]).unwrap_err(),
+    ToolResultError::AlreadyCompleted { call_block_id, .. } if call_block_id == declaration
+    ));
     assert!(validate_tool_result_append(&blocks, &[]).is_ok());
 }
 
@@ -229,16 +223,14 @@ fn scope_validation_reports_first_input_error_and_ignores_unrelated_local_materi
     ));
     let valid = (common::block_id(), result(declaration));
     assert!(validate_tool_result_append(&blocks, std::slice::from_ref(&valid)).is_ok());
-    assert_eq!(
-        validate_tool_result_append(
-            &blocks,
-            &[(common::block_id(), result(missing)), valid.clone(), valid]
-        )
-        .unwrap_err(),
-        ToolResultError::MissingDeclaration {
-            call_block_id: missing
-        }
-    );
+    assert!(matches!(
+            validate_tool_result_append(
+                &blocks,
+                &[(common::block_id(), result(missing)), valid.clone(), valid]
+            )
+            .unwrap_err(),
+    ToolResultError::MissingDeclaration { call_block_id, .. } if call_block_id == missing
+    ));
 }
 
 #[test]

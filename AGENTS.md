@@ -149,7 +149,10 @@ In shell guards, match the facade as `"causa v"`; bare `causa` also matches
     that must be checked together, and says so in its docs. Other crates in
     this workspace build values the same way outside callers do.
   - An enum callers only read (errors, events, interruption causes, error
-    kinds) is `#[non_exhaustive]`.
+    kinds) is `#[non_exhaustive]`. When only its own crate builds it, each
+    struct-like variant is `#[non_exhaustive]` too, so a caller's pattern
+    ends in `..` and a new field does not break it. An enum another crate
+    builds (`StreamDelta`) keeps the attribute on the enum alone.
   - Fact vocabulary that a renderer or the runtime must be total over stays
     exhaustive, with a doc line saying so: `BlockContent`, `ContentPart`,
     `ModelItemContent`, `ToolResultStatus`, `ModelStopReason`,

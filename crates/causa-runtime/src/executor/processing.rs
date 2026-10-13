@@ -2,9 +2,7 @@
 
 use super::{ToolProcessingError, ToolProcessorPhase, catalog::BoundTools, collection::resolve};
 use crate::processors::process_phase;
-use causa_kernel::{
-    BatchError, ProcessorContext, ToolBatch, ToolOutput, ToolResultPayload, ToolResultStatus,
-};
+use causa_kernel::{ProcessorContext, ToolBatch, ToolOutput, ToolResultPayload, ToolResultStatus};
 
 impl BoundTools<'_> {
     /// Processes a new, entirely pending batch using only this binding's fixed
@@ -58,15 +56,8 @@ impl BoundTools<'_> {
         // returned and every processor has run, so the batch is reported as
         // processed and the caller decides what the stop means.
         batch
-            .validate()
-            .map_err(ToolProcessingError::InvalidBatch)?;
-        if batch.completed_len() != declaration_order.len() {
-            return Err(ToolProcessingError::InvalidBatch(BatchError::Incomplete {
-                completed: batch.completed_len(),
-                total: declaration_order.len(),
-            }));
-        }
-        Ok(())
+            .validate_complete()
+            .map_err(ToolProcessingError::InvalidBatch)
     }
 
     // Preserve the confirmed error API carrying an unboxed rejected payload.

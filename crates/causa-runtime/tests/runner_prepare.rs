@@ -169,7 +169,8 @@ async fn pre_cancelled_run_never_binds_prepares_or_calls_model() {
         out.result,
         TurnResult::Interrupted {
             cause: TurnInterruption::Cancelled {
-                invocation_id: None
+                invocation_id: None,
+                ..
             }
         }
     ));

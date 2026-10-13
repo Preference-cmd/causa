@@ -8,18 +8,21 @@ use causa_kernel::{
 pub enum ToolRegistryError {
     /// Static tool definitions must have distinct names.
     #[error("duplicate static tool: {name}")]
+    #[non_exhaustive]
     DuplicateTool {
         /// Conflicting advertised name.
         name: String,
     },
     /// A source with this identity is already registered.
     #[error("dynamic source already registered: {source_id}")]
+    #[non_exhaustive]
     DuplicateSource {
         /// Conflicting source identity.
         source_id: String,
     },
     /// A requested source is not registered.
     #[error("no dynamic source registered: {source_id}")]
+    #[non_exhaustive]
     UnknownSource {
         /// Requested source identity.
         source_id: String,
@@ -35,6 +38,7 @@ pub enum ToolCatalogError {
     Control(ControlError),
     /// A catalog could not be listed; its original error is retained.
     #[error("source {source_id} failed: {error}")]
+    #[non_exhaustive]
     Source {
         /// Identity of the failed source registration.
         source_id: String,
@@ -43,12 +47,14 @@ pub enum ToolCatalogError {
     },
     /// A name occurred more than once in the assembled catalog.
     #[error("duplicate advertised tool: {name}")]
+    #[non_exhaustive]
     DuplicateTool {
         /// Conflicting advertised name.
         name: String,
     },
     /// A static tool changed the name registered at construction.
     #[error("static tool name changed from {registered} to {actual}")]
+    #[non_exhaustive]
     StaticNameChanged {
         /// Name registered at construction.
         registered: String,
@@ -82,12 +88,14 @@ pub enum ToolProcessingError {
     InvalidBatch(BatchError),
     /// This entry point only accepts new, entirely pending declarations.
     #[error("tool batch already contains {completed} completed calls")]
+    #[non_exhaustive]
     NotFreshBatch {
         /// Number of completed calls at entry.
         completed: usize,
     },
     /// A processor returned its own error.
     #[error("{phase:?} processor {index} failed: {error}")]
+    #[non_exhaustive]
     Processor {
         /// Processing phase.
         phase: ToolProcessorPhase,
@@ -98,6 +106,7 @@ pub enum ToolProcessingError {
     },
     /// A processor returned a structurally invalid batch.
     #[error("{phase:?} processor {index} returned an invalid batch: {error}")]
+    #[non_exhaustive]
     InvalidProcessorBatch {
         /// Processing phase.
         phase: ToolProcessorPhase,
@@ -108,6 +117,7 @@ pub enum ToolProcessingError {
     },
     /// A processor violated fixed membership or immutable completed facts.
     #[error("{phase:?} processor {index} violated its handoff: {message}")]
+    #[non_exhaustive]
     Handoff {
         /// Processing phase.
         phase: ToolProcessorPhase,
@@ -118,6 +128,7 @@ pub enum ToolProcessingError {
     },
     /// An actual tool result could not be associated with its declaration.
     #[error("tool result rejected for declaration {call_block_id:?}: {error}")]
+    #[non_exhaustive]
     ResultRejected {
         /// Declaration actually dispatched.
         call_block_id: BlockId,

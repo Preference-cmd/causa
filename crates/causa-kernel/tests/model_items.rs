@@ -169,19 +169,19 @@ fn stop_reason_pairing_and_tool_checks_use_the_tool_call_items() {
         ],
     };
     let ids = common::block_ids_for(&response);
-    assert_eq!(
+    assert!(matches!(
         response
             .to_blocks(ModelStopReason::EndTurn, &ids)
             .unwrap_err(),
-        ModelBlockError::EndTurnWithToolCalls { count: 2 }
-    );
+        ModelBlockError::EndTurnWithToolCalls { count: 2, .. }
+    ));
     // `tool_index` counts tool-call items, not all items
-    assert_eq!(
+    assert!(matches!(
         response
             .to_blocks(ModelStopReason::ToolUse, &ids)
             .unwrap_err(),
-        ModelBlockError::ArgumentsNotObject { tool_index: 1 }
-    );
+        ModelBlockError::ArgumentsNotObject { tool_index: 1, .. }
+    ));
     assert_eq!(
         ModelResponse {
             items: vec![ModelItem::text("only text")]

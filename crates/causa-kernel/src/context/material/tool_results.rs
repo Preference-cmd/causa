@@ -11,18 +11,21 @@ use std::collections::HashSet;
 pub enum ToolResultError {
     /// The reference does not identify a tool declaration in this scope.
     #[error("missing tool declaration {call_block_id:?}")]
+    #[non_exhaustive]
     MissingDeclaration {
         /// The declaration referenced by the rejected result.
         call_block_id: BlockId,
     },
     /// This declaration already has a result in the supplied material.
     #[error("tool declaration already completed: {call_block_id:?}")]
+    #[non_exhaustive]
     AlreadyCompleted {
         /// The declaration referenced by the rejected result.
         call_block_id: BlockId,
     },
     /// This append would complete the same declaration more than once.
     #[error("duplicate tool result for declaration {call_block_id:?}")]
+    #[non_exhaustive]
     DuplicateResult {
         /// The declaration referenced by the rejected result.
         call_block_id: BlockId,

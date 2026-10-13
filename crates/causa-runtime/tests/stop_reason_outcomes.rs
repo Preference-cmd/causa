@@ -133,7 +133,7 @@ async fn end_turn_with_tool_calls_is_a_conversion_failure_carrying_the_output() 
     };
     assert!(matches!(
         error,
-        ModelBlockError::EndTurnWithToolCalls { count: 1 }
+        ModelBlockError::EndTurnWithToolCalls { count: 1, .. }
     ));
     assert_eq!(output.response.tool_calls().count(), 1);
     assert_eq!(output.raw_stop_reason.as_deref(), Some("end_turn"));
