@@ -5,22 +5,35 @@ description: Where Causa stands and where it's going.
 
 ## Experimental 0.0.x
 
-**0.0.3** adds real provider streaming, reasoning replay, host-written
-reasoning settings, an optional retrying gateway and classified model-call
-failures, on the 0.0.2 separation of context material from execution.
-Session management, history policies and subagent orchestration belong to
-applications built on Causa. This is an experimental release with breaking
-changes from 0.0.2.
+**0.0.4** prepares the public surface for `0.1`: struct-like variants of
+library-built enums are `#[non_exhaustive]`, the serialized forms held stable
+from `0.1.0` are named, and the tool port states its concurrency
+requirements. It builds on 0.0.3, which added real provider streaming,
+reasoning replay, host-written reasoning settings, an optional retrying
+gateway and classified model-call failures. Session management, history
+policies and subagent orchestration belong to applications built on Causa.
+This is an experimental release with breaking changes from 0.0.3.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Breaking changes and migration notes appear at the top of
-the release notes. Cargo does not automatically upgrade `"0.0.2"` to
-`0.0.3`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
+the release notes. Cargo does not automatically upgrade `"0.0.3"` to
+`0.0.4`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
 version.
+
+## Upgrading from 0.0.3
+
+Update your dependency explicitly to `causa = "0.0.4"`. The changelog lists
+every break with its migration:
+
+| 0.0.3 usage | 0.0.4 replacement |
+| --- | --- |
+| A pattern naming every field of a `TurnInterruption`, `RunEvent` or tool error variant | The same pattern ending in `..` |
+| A test building one of those variants to compare with `assert_eq!` | `matches!` with the pattern |
+| Comparing serialized tool output text that contains `"meta": null` or `"artifact": null` | Unset fields are left out; stored contexts written by 0.0.3 still load |
 
 ## Upgrading from 0.0.2
 
-Update your dependency explicitly to `causa = "0.0.3"`. The changelog lists
+Move to 0.0.3 usage first, then apply the table above. The changelog lists
 every break with its migration; these are the ones most code meets:
 
 | 0.0.2 usage | 0.0.3 replacement |
@@ -52,7 +65,7 @@ uncommitted tool batch deliberately. An interrupted external tool may have an
 unknown outcome; recreating context does not guarantee exactly-once execution.
 
 The [getting-started example](/getting-started/) uses the new facade API. The
-[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.3/CHANGELOG.md)
+[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.4/CHANGELOG.md)
 details the control, conversion, tool-binding and protocol changes.
 
 ## Changelog

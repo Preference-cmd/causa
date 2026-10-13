@@ -12,8 +12,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-causa-protocol = { path = "../causa-protocol", version = "0.0.3" }
-causa-kernel = { path = "../causa-kernel", version = "0.0.3" }
+causa-protocol = { path = "../causa-protocol", version = "0.0.4" }
+causa-kernel = { path = "../causa-kernel", version = "0.0.4" }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
@@ -24,7 +24,7 @@ tracing = { workspace = true }
 httpdate = { workspace = true }
 
 [dev-dependencies]
-causa-runtime = { path = "../causa-runtime", version = "0.0.3" }
+causa-runtime = { path = "../causa-runtime", version = "0.0.4" }
 uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync"] }
 wiremock = "0.6"

@@ -12,6 +12,14 @@ adapters or data converters.
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-10-13
+
+Preparation of the public surface for `0.1`: struct-like variants of
+library-built enums are `#[non_exhaustive]`, the serialized forms held stable
+from `0.1.0` are named, the tool port states its concurrency requirements,
+and interrupted runs are documented. This release breaks the `0.0.3` Rust
+API for code that matches those variants.
+
 ### Breaking
 
 - The struct-like variants of nine enums that only the library builds are
