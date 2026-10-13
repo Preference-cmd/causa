@@ -18,6 +18,9 @@ use crate::ports::tool::ToolSurface;
 
 /// Opaque model identifier handed to the gateway. The kernel never parses
 /// it; resolution is the gateway's job.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRef(pub String);
 impl ModelRef {
@@ -32,6 +35,9 @@ impl ModelRef {
 /// Protocol adapters reject options they cannot faithfully render. Hosts own
 /// model-specific capability validation, defaults, and aggregate budgets;
 /// `reasoning_effort` and `extra_body` are sent as given for that reason.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct GenerationOptions {
@@ -127,6 +133,9 @@ where
 }
 
 /// Provider-reported token accounting for one model response.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelUsage {
@@ -163,6 +172,9 @@ impl ModelUsage {
 /// Opaque provider items that must be echoed back on later turns are carried
 /// as context material (such as [`crate::ContentPart::Sealed`] parts). This
 /// observation is display-only.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ReasoningPayload {
@@ -178,6 +190,9 @@ impl ReasoningPayload {
 
 /// The gateway result envelope. Pure response conversion consumes neither
 /// this value nor its usage and reasoning; execution consumers retain them.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelOutput {
@@ -212,6 +227,9 @@ impl ModelOutput {
 ///
 /// More kinds may be added; a match needs a wildcard arm, and an unknown kind
 /// is best treated like [`Self::Permanent`]: not retried.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -314,6 +332,9 @@ impl ModelInvokeError {
 ///
 /// Exhaustive on purpose: a renderer that marks cache anchors matches every
 /// directive, so a new one is a breaking change.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheDirective {

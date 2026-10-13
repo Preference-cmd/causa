@@ -33,6 +33,12 @@ adapters or data converters.
   unchanged; a tool that blocks the thread was never stopped by cancellation
   or a timeout, and tests now pin that.
 
+- The serialized forms held stable from `0.1.0` are now named: `Context` and
+  every type it contains, listed in the `causa-kernel` crate docs. Adding an
+  optional field is not a break. Other serializable types (model output,
+  request options, identifiers, error kinds) carry no promise, and their
+  docs say so. No serialized form changes.
+
 ### Added
 
 - `ToolBatch::validate_complete` checks the batch invariants and that every

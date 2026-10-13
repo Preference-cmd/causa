@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::context::block::{ContentPart, TextPayload, WireMeta};
 
 /// A tool call as the model proposed it, before the caller assigns its declaration `BlockId`. Exactly what the gateway parsed off the wire.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ToolCallDraft {
@@ -44,6 +47,9 @@ impl ToolCallDraft {
 /// pairing; interpreting terminal reasons is driver policy.
 ///
 /// Exhaustive on purpose: the runtime decides what a turn does next from this value, so a new one is a breaking change.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelStopReason {
@@ -68,6 +74,9 @@ pub enum ModelStopReason {
 /// The model door's fact shape: what the model produced, as an ordered list
 /// of items. One item becomes one block on commit, in item order. Named for
 /// the participant, not for any wire role.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponse {
     /// What the model said and asked, in the order the provider returned it.
@@ -103,6 +112,9 @@ impl ModelResponse {
 
 /// One item the model produced: its content plus the wire fields that
 /// content does not hold.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelItem {
@@ -145,6 +157,9 @@ impl ModelItem {
 /// The content of a [`ModelItem`].
 ///
 /// Exhaustive on purpose: conversion to blocks handles every shape, so a new one is a breaking change.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelItemContent {

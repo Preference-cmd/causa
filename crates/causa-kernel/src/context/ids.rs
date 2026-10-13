@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Identity of an execution, independent of its context material.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TurnId(pub String);
 impl TurnId {
@@ -12,10 +15,16 @@ impl TurnId {
 }
 
 /// Ordinal of a model round within a turn (0-based).
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoundId(pub u32);
 
 /// Identity of one model invocation: which turn, and which round inside it.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InvocationId {
     /// The turn the invocation belongs to.

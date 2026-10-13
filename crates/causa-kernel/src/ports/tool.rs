@@ -16,6 +16,9 @@ use crate::ports::control::CallControl;
 
 /// The model-facing description of one callable tool; renderers map it onto
 /// the protocol's tool entries (name, description, parameter schema).
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ToolDefinition {
@@ -44,6 +47,9 @@ impl ToolDefinition {
 
 /// The tool definitions offered to the model for one invocation; renderers
 /// turn this into the protocol's `tools` array.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ToolSurface {

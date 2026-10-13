@@ -1,0 +1,155 @@
+{
+  "blocks": [
+    {
+      "content": {
+        "shape": "parts",
+        "value": [
+          {
+            "part": "text",
+            "value": "hello"
+          },
+          {
+            "part": "media",
+            "value": {
+              "media_type": "image/png",
+              "reference": "asset://1"
+            }
+          },
+          {
+            "part": "sealed",
+            "value": {
+              "format": "anthropic",
+              "item": {
+                "type": "thinking"
+              }
+            }
+          }
+        ]
+      },
+      "id": "00000000-0000-0000-0000-000000000001",
+      "meta": {
+        "provider_call_id": "call_1",
+        "source": "user",
+        "wire": {
+          "fields": {
+            "index": 0
+          },
+          "format": "anthropic"
+        }
+      }
+    },
+    {
+      "content": {
+        "shape": "tool_call",
+        "value": {
+          "arguments": {
+            "path": "a"
+          },
+          "tool_name": "read_file"
+        }
+      },
+      "id": "00000000-0000-0000-0000-000000000002",
+      "meta": {
+        "provider_call_id": "call_1",
+        "source": "user",
+        "wire": {
+          "fields": {
+            "index": 0
+          },
+          "format": "anthropic"
+        }
+      }
+    },
+    {
+      "content": {
+        "shape": "tool_result",
+        "value": {
+          "call_block_id": "00000000-0000-0000-0000-000000000002",
+          "media": [
+            {
+              "media_type": "image/png",
+              "reference": "asset://2"
+            }
+          ],
+          "notes": [
+            "note"
+          ],
+          "output": {
+            "artifact": {
+              "id": "asset-1",
+              "kind": "full_output",
+              "persisted": true,
+              "size_bytes": 9000
+            },
+            "content": {
+              "text": "body"
+            },
+            "meta": {
+              "duration_ms": 12,
+              "extra": {
+                "reason": "trimmed"
+              },
+              "original_tokens": 3400
+            },
+            "truncation": "middle"
+          },
+          "status": "succeeded"
+        }
+      },
+      "id": "00000000-0000-0000-0000-000000000003",
+      "meta": {
+        "provider_call_id": "call_1",
+        "source": "user",
+        "wire": {
+          "fields": {
+            "index": 0
+          },
+          "format": "anthropic"
+        }
+      }
+    },
+    {
+      "content": {
+        "shape": "parts",
+        "value": [
+          {
+            "part": "text",
+            "value": "bare"
+          }
+        ]
+      },
+      "id": "00000000-0000-0000-0000-000000000004",
+      "meta": {}
+    },
+    {
+      "content": {
+        "shape": "tool_call",
+        "value": {
+          "arguments": {
+            "path": "a"
+          },
+          "tool_name": "read_file"
+        }
+      },
+      "id": "00000000-0000-0000-0000-000000000005",
+      "meta": {}
+    },
+    {
+      "content": {
+        "shape": "tool_result",
+        "value": {
+          "call_block_id": "00000000-0000-0000-0000-000000000005",
+          "output": {
+            "artifact": null,
+            "content": "plain",
+            "meta": null,
+            "truncation": "none"
+          },
+          "status": "unknown_outcome"
+        }
+      },
+      "id": "00000000-0000-0000-0000-000000000006",
+      "meta": {}
+    }
+  ]
+}

@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Exhaustive on purpose: a gateway is built for exactly one protocol and a
 /// host selects by it, so a new one is a breaking change.
+///
+/// Serializable for logs and tests; the serialized form is not part of the
+/// stable set and may change in any release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Protocol {
     /// OpenAI Chat Completions request and response format.

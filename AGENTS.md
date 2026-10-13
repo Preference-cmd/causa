@@ -139,6 +139,12 @@ In shell guards, match the facade as `"causa v"`; bare `causa` also matches
   implementation or format instead of adapting to it, and record the break
   and its migration at the top of `CHANGELOG.md`. From `0.1.0`, a wire-serde
   break needs a minor bump.
+- The stable serialized set is `Context` and every type it contains; the
+  list is in the `causa-kernel` crate docs and
+  `crates/causa-kernel/tests/stable_context.rs` holds it against a committed
+  fixture. Adding an optional field with a serde default is not a break, so
+  no type in the set uses `deny_unknown_fields`. Other serializable types
+  carry no promise and say so in their docs.
 - Public type evolution is decided when the type is added, by who builds the
   value and who matches on it.
   - A struct with public fields that could gain one is `#[non_exhaustive]`

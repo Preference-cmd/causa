@@ -7,6 +7,22 @@
 //! lives in causa-runtime; concrete transports live in edge crates.
 //! [`GenerationOptions`] describes requested generation settings; hosts own
 //! model capability selection and persisted definitions.
+//!
+//! # Stable serialized forms
+//!
+//! A host stores context, so the serialized form of [`Context`] and of every
+//! type it contains is the stable set: [`ContextBlock`], [`BlockId`],
+//! [`BlockMeta`], [`WireMeta`], [`BlockContent`], [`ContentPart`],
+//! [`TextPayload`], [`MediaRef`], [`SealedPart`], [`ToolCallPayload`],
+//! [`ToolResultPayload`], [`ToolResultStatus`], [`ToolOutput`],
+//! [`ToolOutputMeta`], [`Truncation`], [`ArtifactRef`] and [`ArtifactKind`].
+//! From `0.1.0` a breaking change to one of these forms needs a minor
+//! version. Adding an optional field is not a break: a reader ignores a field
+//! it does not know, and a field missing from an older record reads as unset.
+//!
+//! Every other serializable type (model output, request options,
+//! identifiers, error kinds) can be written to logs but carries no such
+//! promise. A host that stores one owns its migration.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
