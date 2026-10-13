@@ -20,10 +20,9 @@ Its optional runtime adds turn execution, streaming and tool-processing chains, 
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
-> **Experimental 0.0.3.** Requires Rust **1.96+**. This release adds real
-> provider streaming, reasoning replay and classified model-call failures.
-> APIs and stored formats have no backward compatibility guarantee before 0.1;
-> review the [migration notes](https://github.com/Preference-cmd/causa/blob/v0.0.3/CHANGELOG.md#003---2026-10-12) when upgrading.
+> **Experimental 0.0.3.** Requires Rust **1.96+**. APIs and stored formats
+> may change before 0.1; read the
+> [migration notes](https://github.com/Preference-cmd/causa/blob/v0.0.3/CHANGELOG.md#003---2026-10-12) when upgrading.
 
 ## Try it offline
 
@@ -35,14 +34,12 @@ cd causa
 cargo run --example conversation_persistence -p causa-runtime
 ```
 
-Repository examples run from this checkout, even if you have already added
-`causa` to another project. The default checkout follows development; use
-`git checkout v0.0.3` to run the examples for this release.
+The default checkout follows development; use `git checkout v0.0.3` to run
+the examples for this release.
 
 ## Use in your application
 
-Start with **`causa`**. Cargo resolves the underlying crates. Create an
-application using the published release:
+Depend on **`causa`**; Cargo resolves the underlying crates.
 
 ```bash
 cargo new causa-hello
@@ -93,48 +90,24 @@ ID, then run `cargo run`. This example makes a real network request. To add a
 local tool, see the
 [provider quickstart](https://github.com/Preference-cmd/causa/blob/main/crates/causa-provider/examples/quickstart.rs).
 
-### Streaming
+### Streaming and reasoning
 
 The built-in Anthropic Messages, OpenAI Chat Completions and OpenAI Responses
-gateways now implement real HTTP SSE through `ModelGateway::stream()`.
-Use `TurnRunner::run_streaming()` with `TurnRunOptions::observer` to observe
-increments during a run. Deltas are provisional; only the complete terminal
-output supplies context material. Cancellation, deadlines and dropping the
-stream stop local consumption without an automatic retry: the runner makes one
-logical gateway call per round and the first failure ends it. Retries are an
-explicit host choice — wrap the gateway in `causa::runtime::RetryingGateway`
-with a `RetryPolicy` — and the wrapper never retries once any stream delta has
-been yielded.
+gateways stream over HTTP SSE. Use `TurnRunner::run_streaming()` with
+`TurnRunOptions::observer` to watch a run; deltas are provisional, and only
+the complete output becomes context material. The runner makes one gateway
+call per round and does not retry; wrap the gateway in
+`causa::runtime::RetryingGateway` if you want retries.
+
+`GenerationOptions::reasoning_effort` is sent to the provider as you wrote
+it, and settings only one protocol has go in `extra_body`. Provider reasoning
+items are kept whole and replayed, so a thinking-enabled tool loop runs on
+all three protocols.
 
 See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
-for supported events, resource limits and direct consumption.
-
-### Generation options
-
-`GenerationOptions::reasoning_effort` is a string that
-is sent as the host wrote it: OpenAI Chat `reasoning_effort`, Responses
-`reasoning.effort`, Anthropic `output_config.effort`. Causa does not check or
-map the value, and derives no `thinking` object from it. Settings that only
-one protocol or model has go in `GenerationOptions::extra_body`, which is
-merged into the request: an object joins the object the adapter wrote under
-the same key, and any other value the adapter wrote is kept. An Anthropic
-`thinking` object or a Responses `reasoning.summary` is sent this way. Which values a
-model accepts is the host's knowledge, and a refused value comes back as the
-provider's error. Output limits render as `max_completion_tokens`,
-`max_output_tokens` and `max_tokens`, and include reasoning tokens where the
-provider counts them. Anthropic requires `max_tokens` (a request without one
-is rejected before HTTP rather than defaulted) and has no `output_schema`
-mapping.
-
-Reasoning state replays as sealed context material: the Anthropic and
-Responses parsers keep provider reasoning items whole, and the Chat renderer
-sends sealed `reasoning_content` back, so a thinking-enabled tool loop can run
-on any of the three wires. Responses sends
-`include: ["reasoning.encrypted_content"]` and `store: false` by default.
-Renderer-specific choices live in `causa_protocol::translation::render_options`
-and are set on the matching gateway (`with_beta`, `with_encrypted_reasoning`, `with_store`,
-`with_reasoning_content_replay`); each applies to the gateway value, not to
-one request.
+for events and limits, and the
+[crate guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/crates.mdx)
+for generation options and reasoning replay.
 
 ### Choose your features
 
@@ -148,9 +121,7 @@ Choose the dependencies your application needs:
 | `causa = { version = "0.0.3", default-features = false }` | Kernel only |
 | `causa = { version = "0.0.3", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
-The kernel is always present. `providers` also enables `protocol`; `full`
-enables the MCP adapter through `extensions`. See the
-[crate guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/crates.mdx)
+See the [crate guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/crates.mdx)
 for layer selection.
 
 ## Examples
@@ -188,45 +159,33 @@ provides storage, credentials, tools and the policies it needs.
 | `causa-extension` | Dynamic tool-source adapters, currently MCP |
 
 All six crates share one release version and can also be used directly.
-The runtime and extension depend on the kernel; provider adapters use the
-protocol layer. CI checks the family dependency directions.
-
 Read the [concepts guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/concepts.mdx)
-for layer boundaries and the
+for layer boundaries, the
+[context editing guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/context-editing.mdx)
+for changing retained blocks, and the
 [runtime policy overview](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/src/lib.rs)
 for defaults and component contracts.
 
-To edit the retained blocks explicitly, see the
-[context editing guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/context-editing.mdx).
-
 ## Status and boundaries
 
-**0.0.3 is an experimental release.** It provides
-multimodal material, turn execution and tool-processing contracts. Session management and subagent orchestration belong to applications built
-on Causa. This release does not announce a 0.1 stability commitment.
+**0.0.3 is experimental.** During `0.0.x`, patch releases may break the Rust
+API and serialized formats, and Cargo does not upgrade `"0.0.2"` to `0.0.3`
+on its own; read the
+[changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
+before upgrading. From `0.1.0`, a breaking wire-format change bumps the minor
+version.
 
-During `0.0.x`, patch releases may break Rust API and serialized-format
-compatibility. Cargo does not automatically upgrade `"0.0.2"` to `0.0.3`;
-review the [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
-before upgrading. Starting with `0.1.0`, breaking wire-format changes bump the
-minor version. Since 0.0.2 the API has editable `Context` in place of `TurnContext`
-and has no session ownership, implicit traces and built-in budget policies.
-Applications own history, input admission, preparation and persistence.
-
-Persistence stays in your application. Processing interruptions return the
-uncommitted tool batch and their cause; your code chooses whether to inspect,
-save or discard it. Reconstructing context does not guarantee exactly-once
-execution of external tools.
+Sessions, history, input admission, persistence and subagent orchestration
+belong to your application. An interrupted run returns its uncommitted tool
+batch and the cause, and your code decides what to do with it. Rebuilding
+context does not make an external tool run exactly once.
 
 ## Contributing
 
 See [AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
-repository layout, conventions and verification commands. Public facade consumers
-are checked with `cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked`,
-the same command with `--features runtime`, and
-`cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked`. The
+repository layout, conventions and verification commands, and the
 [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
-covers the manual publishing workflow.
+for publishing.
 
 ## License
 

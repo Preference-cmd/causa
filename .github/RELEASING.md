@@ -9,7 +9,7 @@ The Publish workflow currently accepts only experimental `0.0.x` versions with a
 
 1. Set `workspace.package.version` and every family dependency (including
    dev-dependencies) to the same version; update Cargo.lock. Keep the README,
-   facade examples, AGENTS.md and website installation instructions in sync.
+   facade examples and website installation instructions in sync.
 2. Record breaking API/wire changes and migration instructions. In `0.0.x`,
    patch releases may be incompatible; Cargo's `"0.0.2"` constraint does not
    automatically select `0.0.3`. There is no separate checkpoint schema version
