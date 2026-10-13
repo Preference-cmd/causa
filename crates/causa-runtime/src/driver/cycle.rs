@@ -72,54 +72,6 @@ impl TurnRunner {
                     Ok(output) => output,
                     Err(cause) => return interrupted(cause, None),
                 };
-            // Only EndTurn and ToolUse are committed and continued. Every
-            // other reason is selected before invoking the observer and returns
-            // the complete uncommitted output, so no wildcard arm is needed.
-            // One classification, two construction sites: the reason selects
-            // the interruption variant, and the value is moved into it.
-            enum Terminal {
-                MaxTokens,
-                Refusal,
-                ContextWindowExceeded,
-                Unrecognized,
-            }
-            let terminal = match output.stop_reason {
-                ModelStopReason::EndTurn | ModelStopReason::ToolUse => None,
-                ModelStopReason::MaxTokens => Some(Terminal::MaxTokens),
-                ModelStopReason::Refusal => Some(Terminal::Refusal),
-                ModelStopReason::ContextWindowExceeded => Some(Terminal::ContextWindowExceeded),
-                ModelStopReason::Unrecognized => Some(Terminal::Unrecognized),
-            };
-            if let Some(terminal) = terminal {
-                notify(
-                    options,
-                    RunEvent::ModelOutput {
-                        invocation_id: &invocation_id,
-                        output: &output,
-                    },
-                );
-                let cause = match terminal {
-                    Terminal::MaxTokens => TurnInterruption::ModelMaxTokens {
-                        invocation_id,
-                        output,
-                    },
-                    Terminal::Refusal => TurnInterruption::ModelRefusal {
-                        invocation_id,
-                        output,
-                    },
-                    Terminal::ContextWindowExceeded => {
-                        TurnInterruption::ModelContextWindowExceeded {
-                            invocation_id,
-                            output,
-                        }
-                    }
-                    Terminal::Unrecognized => TurnInterruption::ModelStopUnrecognized {
-                        invocation_id,
-                        output,
-                    },
-                };
-                return interrupted(cause, None);
-            }
             notify(
                 options,
                 RunEvent::ModelOutput {
@@ -127,6 +79,49 @@ impl TurnRunner {
                     output: &output,
                 },
             );
+            // Only EndTurn and ToolUse are committed and continued. Every
+            // other reason returns the complete uncommitted output, and is
+            // selected before the stop check so a stop raised by the observer
+            // cannot replace it. No wildcard arm is needed.
+            match output.stop_reason {
+                ModelStopReason::EndTurn | ModelStopReason::ToolUse => {}
+                ModelStopReason::MaxTokens => {
+                    return interrupted(
+                        TurnInterruption::ModelMaxTokens {
+                            invocation_id,
+                            output,
+                        },
+                        None,
+                    );
+                }
+                ModelStopReason::Refusal => {
+                    return interrupted(
+                        TurnInterruption::ModelRefusal {
+                            invocation_id,
+                            output,
+                        },
+                        None,
+                    );
+                }
+                ModelStopReason::ContextWindowExceeded => {
+                    return interrupted(
+                        TurnInterruption::ModelContextWindowExceeded {
+                            invocation_id,
+                            output,
+                        },
+                        None,
+                    );
+                }
+                ModelStopReason::Unrecognized => {
+                    return interrupted(
+                        TurnInterruption::ModelStopUnrecognized {
+                            invocation_id,
+                            output,
+                        },
+                        None,
+                    );
+                }
+            }
             if let Some(cause) = stopped(control, Some(&invocation_id)) {
                 return interrupted(cause, None);
             }
@@ -138,14 +133,14 @@ impl TurnRunner {
                 Ok(committed) => committed,
                 Err(cause) => return interrupted(cause, None),
             };
+            notify(
+                options,
+                RunEvent::BlocksCommitted {
+                    invocation_id: &invocation_id,
+                    blocks: &context.blocks()[start..],
+                },
+            );
             if output.stop_reason == ModelStopReason::EndTurn {
-                notify(
-                    options,
-                    RunEvent::BlocksCommitted {
-                        invocation_id: &invocation_id,
-                        blocks: &context.blocks()[start..],
-                    },
-                );
                 return (
                     TurnResult::Completed {
                         final_output: output,
@@ -158,29 +153,17 @@ impl TurnRunner {
                 .ok()
                 .and_then(|n| declared_before.checked_add(n));
             if total.is_none_or(|total| total > options.limits.max_tool_calls) {
-                let cause = TurnInterruption::MaxToolCalls {
-                    invocation_id: invocation_id.clone(),
-                    limit: options.limits.max_tool_calls,
-                    declared_before,
-                    declared_this_round,
-                };
-                notify(
-                    options,
-                    RunEvent::BlocksCommitted {
-                        invocation_id: &invocation_id,
-                        blocks: &context.blocks()[start..],
+                return interrupted(
+                    TurnInterruption::MaxToolCalls {
+                        invocation_id,
+                        limit: options.limits.max_tool_calls,
+                        declared_before,
+                        declared_this_round,
                     },
+                    Some(batch),
                 );
-                return interrupted(cause, Some(batch));
             }
             declared_before = total.expect("checked tool declaration total");
-            notify(
-                options,
-                RunEvent::BlocksCommitted {
-                    invocation_id: &invocation_id,
-                    blocks: &context.blocks()[start..],
-                },
-            );
             if let Some(cause) = stopped(control, Some(&invocation_id)) {
                 return interrupted(cause, Some(batch));
             }
@@ -226,22 +209,6 @@ impl TurnRunner {
                     Ok(committed) => committed,
                     Err(cause) => return interrupted(cause, Some(batch)),
                 };
-            // The successful commit consumes the uncommitted tool batch.
-            // Unknown is a fixed terminal cause and is selected before a stop.
-            if let Some(call_block_id) = unknown {
-                let cause = TurnInterruption::UnknownToolOutcome {
-                    invocation_id: invocation_id.clone(),
-                    call_block_id,
-                };
-                notify(
-                    options,
-                    RunEvent::BlocksCommitted {
-                        invocation_id: &invocation_id,
-                        blocks: &context.blocks()[start..],
-                    },
-                );
-                return interrupted(cause, None);
-            }
             notify(
                 options,
                 RunEvent::BlocksCommitted {
@@ -249,6 +216,17 @@ impl TurnRunner {
                     blocks: &context.blocks()[start..],
                 },
             );
+            // The successful commit consumes the uncommitted tool batch.
+            // Unknown is a fixed terminal cause and is selected before a stop.
+            if let Some(call_block_id) = unknown {
+                return interrupted(
+                    TurnInterruption::UnknownToolOutcome {
+                        invocation_id,
+                        call_block_id,
+                    },
+                    None,
+                );
+            }
             if let Some(cause) = stopped(control, Some(&invocation_id)) {
                 return interrupted(cause, None);
             }
