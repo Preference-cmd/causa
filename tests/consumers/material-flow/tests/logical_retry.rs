@@ -5,7 +5,7 @@ use causa::kernel::{
     CacheDirective, CallControl, CancellationToken, Context, ControlError, GenerationOptions,
     InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput,
     ModelRef, ModelRequest, ModelResponse, ModelStopReason, ModelStream, ModelUsage, RoundId,
-    StreamDelta, ToolSurface, TurnId,
+    StreamDelta, TurnId,
 };
 use futures_util::{StreamExt, stream};
 use std::collections::VecDeque;
@@ -31,7 +31,9 @@ fn request() -> ModelRequest {
             Context::new().frame(),
             ModelRef::new("fixed-model"),
         );
-        request.generation = GenerationOptions::default().with_max_tokens(16).with_reasoning_effort("high");
+        request.generation = GenerationOptions::default()
+            .with_max_tokens(16)
+            .with_reasoning_effort("high");
         request.cache = CacheDirective::StablePrefix;
         request
     }

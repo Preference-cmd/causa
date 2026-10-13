@@ -103,7 +103,10 @@ impl ModelGateway for Scripted {
         Ok(ModelOutput::new(
             ModelResponse {
                 items: if first {
-                    vec![ModelItem::tool_call(ToolCallDraft::new("fetch", serde_json::json!({})).with_provider_call_id("call-fetch"))]
+                    vec![ModelItem::tool_call(
+                        ToolCallDraft::new("fetch", serde_json::json!({}))
+                            .with_provider_call_id("call-fetch"),
+                    )]
                 } else {
                     vec![ModelItem::text("final answer")]
                 },
@@ -159,10 +162,10 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
             request: input.clone(),
         }))
         .with_observer(Arc::new(move |event| {
-        if let RunEvent::BlocksCommitted { blocks, .. } = event {
-            saved.lock().unwrap().extend_from_slice(blocks);
-        }
-    }));
+            if let RunEvent::BlocksCommitted { blocks, .. } = event {
+                saved.lock().unwrap().extend_from_slice(blocks);
+            }
+        }));
     let first = runner
         .run(
             TurnId::new("T1"),

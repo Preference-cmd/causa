@@ -34,7 +34,10 @@ fn output(tool_use: bool) -> ModelOutput {
             items: if tool_use {
                 vec![
                     ModelItem::text("checking"),
-                    ModelItem::tool_call(ToolCallDraft::new("echo", json!({})).with_provider_call_id("provider-echo")),
+                    ModelItem::tool_call(
+                        ToolCallDraft::new("echo", json!({}))
+                            .with_provider_call_id("provider-echo"),
+                    ),
                 ]
             } else {
                 vec![ModelItem::text("done")]
@@ -214,8 +217,7 @@ async fn source_commits_and_confirms_each_input_once_and_observation_refreshes_p
         Arc::new(Retry(inner.clone())),
         echo(definition(), calls.clone()),
     );
-    let options = TurnRunOptions::new(ModelRef::new("input-model"))
-        .with_preparer(source.clone());
+    let options = TurnRunOptions::new(ModelRef::new("input-model")).with_preparer(source.clone());
     let outcome = runner
         .run(
             causa::kernel::TurnId::new("input"),
@@ -289,8 +291,7 @@ async fn failed_material_commit_keeps_source_pending_and_does_not_confirm_or_inv
         gateway.clone(),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
-    let options = TurnRunOptions::new(ModelRef::new("input-model"))
-        .with_preparer(source.clone());
+    let options = TurnRunOptions::new(ModelRef::new("input-model")).with_preparer(source.clone());
     let outcome = runner
         .run(
             causa::kernel::TurnId::new("failure"),
@@ -321,8 +322,7 @@ async fn preparation_failure_after_input_commit_returns_that_material_and_source
         gateway.clone(),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
-    let options = TurnRunOptions::new(ModelRef::new("input-model"))
-        .with_preparer(source.clone());
+    let options = TurnRunOptions::new(ModelRef::new("input-model")).with_preparer(source.clone());
     let outcome = runner
         .run(
             causa::kernel::TurnId::new("post-commit-failure"),

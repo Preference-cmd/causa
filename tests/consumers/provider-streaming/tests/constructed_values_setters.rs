@@ -1,65 +1,58 @@
 //! Consumer test proving all six types can be built through the facade with setters only.
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use causa::kernel::{
     ArtifactHint, ArtifactRef, ArtifactStore, BlockMeta, CacheDirective, CallControl, Context,
-    ContextFrame, ContextPreparer, GenerationOptions, MediaRef, ModelRef, PrepareError, RoundInfo,
-    StoreError, TextPayload, ToolBatchProcessor, ToolCallDraft, ToolOutput, ToolResultPayload,
-    ToolResultStatus, WireMeta,
+    ContextFrame, ContextPreparer, GenerationOptions, MediaRef, ModelRef, PrepareError,
+    ProcessorContext, ProcessorError, RoundInfo, StoreError, TextPayload, ToolBatch,
+    ToolBatchProcessor, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus, WireMeta,
 };
-use causa::runtime::{
-    new_block_id, RunObserver, ToolExecutorOptions, TurnLimits, TurnRunOptions,
-};
+use causa::runtime::{RunObserver, ToolExecutorOptions, TurnLimits, TurnRunOptions, new_block_id};
 
 struct DummyArtifactStore;
+
+#[async_trait]
 impl ArtifactStore for DummyArtifactStore {
-    fn persist<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        _data: &'life1 [u8],
-        _hint: ArtifactHint,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<ArtifactRef, StoreError>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async { unimplemented!() })
+    async fn persist(&self, _data: &[u8], _hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+        unimplemented!()
     }
 
-    fn read<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        _id: &'life1 str,
+    async fn read(
+        &self,
+        _id: &str,
         _range: Option<std::ops::Range<u64>>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, StoreError>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async { unimplemented!() })
+    ) -> Result<Vec<u8>, StoreError> {
+        unimplemented!()
     }
 }
 
 struct DummyContextPreparer;
+
+#[async_trait]
 impl ContextPreparer for DummyContextPreparer {
-    fn prepare<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(
-        &'life0 self,
-        _context: &'life1 mut Context,
-        _round: &'life2 RoundInfo<'life3>,
-        _control: &'life4 CallControl,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<ContextFrame, PrepareError>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        'life3: 'async_trait,
-        'life4: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async { unimplemented!() })
+    async fn prepare(
+        &self,
+        _context: &mut Context,
+        _round: &RoundInfo<'_>,
+        _control: &CallControl,
+    ) -> Result<ContextFrame, PrepareError> {
+        unimplemented!()
+    }
+}
+
+struct DummyProcessor;
+
+#[async_trait]
+impl ToolBatchProcessor for DummyProcessor {
+    async fn process(
+        &self,
+        _batch: &mut ToolBatch,
+        _ctx: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        unimplemented!()
     }
 }
 
@@ -119,15 +112,19 @@ fn six_most_built_types_construct_through_facade_with_setters() {
     assert_eq!(draft.provider_call_id.as_deref(), Some("call_draft_99"));
 
     // 5. ToolExecutorOptions
-    let before: Vec<Arc<dyn ToolBatchProcessor>> = vec![];
-    let after: Vec<Arc<dyn ToolBatchProcessor>> = vec![];
+    let first: Arc<dyn ToolBatchProcessor> = Arc::new(DummyProcessor);
+    let second: Arc<dyn ToolBatchProcessor> = Arc::new(DummyProcessor);
     let store: Arc<dyn ArtifactStore> = Arc::new(DummyArtifactStore);
     let exec_opts = ToolExecutorOptions::default()
-        .with_before(before)
-        .with_after(after)
+        .with_before(vec![first.clone()])
+        .with_after(vec![second.clone(), first.clone()])
         .with_call_timeout(Duration::from_secs(30))
         .with_artifact_store(store);
 
+    assert_eq!(exec_opts.before.len(), 1);
+    assert!(Arc::ptr_eq(&exec_opts.before[0], &first));
+    assert_eq!(exec_opts.after.len(), 2);
+    assert!(Arc::ptr_eq(&exec_opts.after[0], &second));
     assert_eq!(exec_opts.call_timeout, Some(Duration::from_secs(30)));
     assert!(exec_opts.artifact_store.is_some());
 

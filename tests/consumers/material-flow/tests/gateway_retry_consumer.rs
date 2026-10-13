@@ -38,7 +38,9 @@ fn output(items: Vec<ModelItem>, stop_reason: ModelStopReason) -> ModelOutput {
 
 fn tool_round() -> ModelOutput {
     output(
-        vec![ModelItem::tool_call(ToolCallDraft::new("local", json!({})).with_provider_call_id("call-1"))],
+        vec![ModelItem::tool_call(
+            ToolCallDraft::new("local", json!({})).with_provider_call_id("call-1"),
+        )],
         ModelStopReason::ToolUse,
     )
 }
@@ -151,10 +153,10 @@ async fn a_three_attempt_wrapper_completes_a_rate_limited_second_round() {
     let options = TurnRunOptions::new(ModelRef::new("host-model"))
         .with_preparer(Arc::new(CountingPreparer(preparations.clone())))
         .with_observer(Arc::new(move |event| {
-        if let RunEvent::BlocksCommitted { blocks, .. } = event {
-            sink.lock().unwrap().extend_from_slice(blocks);
-        }
-    }));
+            if let RunEvent::BlocksCommitted { blocks, .. } = event {
+                sink.lock().unwrap().extend_from_slice(blocks);
+            }
+        }));
     let out = runner
         .run(
             TurnId::new("retry-loop"),

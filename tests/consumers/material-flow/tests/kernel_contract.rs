@@ -22,7 +22,10 @@ fn response(tool: &str) -> ModelResponse {
     ModelResponse {
         items: vec![
             ModelItem::text("selected output"),
-            ModelItem::tool_call(ToolCallDraft::new(tool, json!({"query":"same"})).with_provider_call_id("provider-new")),
+            ModelItem::tool_call(
+                ToolCallDraft::new(tool, json!({"query":"same"}))
+                    .with_provider_call_id("provider-new"),
+            ),
         ],
     }
 }

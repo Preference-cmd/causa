@@ -30,14 +30,11 @@ fn id(label: &str) -> BlockId {
 }
 
 fn block(label: &str, content: BlockContent, source: Option<&str>) -> ContextBlock {
-    ContextBlock::new(
-        id(label),
-        content,
-        match source {
-            Some(s) => BlockMeta::default().with_source(s),
-            None => BlockMeta::default(),
-        },
-    )
+    ContextBlock::new(id(label), content, {
+        let mut meta = BlockMeta::default();
+        meta.source = source.map(String::from);
+        meta
+    })
 }
 
 fn text(label: &str, text: &str, source: Option<&str>) -> ContextBlock {

@@ -837,9 +837,10 @@ fn sealed_block(source: Option<&str>, format: &str, item: Value) -> ContextBlock
     ContextBlock::new(
         next_id(),
         BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(format, item))]),
-        match source {
-            Some(s) => BlockMeta::default().with_source(s),
-            None => BlockMeta::default(),
+        {
+            let mut meta = BlockMeta::default();
+            meta.source = source.map(String::from);
+            meta
         },
     )
 }
@@ -893,9 +894,10 @@ fn text_block(source: Option<&str>, text: &str) -> ContextBlock {
     ContextBlock::new(
         next_id(),
         BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        match source {
-            Some(s) => BlockMeta::default().with_source(s),
-            None => BlockMeta::default(),
+        {
+            let mut meta = BlockMeta::default();
+            meta.source = source.map(String::from);
+            meta
         },
     )
 }

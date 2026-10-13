@@ -6,9 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use causa::kernel::{
-    BlockContent, BlockMeta, CacheDirective, CallControl, ContentPart, Context, ContextBlock,
-    GenerationOptions, InvocationId, ModelGateway, ModelRef, ModelRequest, RoundId, StreamDelta,
-    TextPayload, ToolSurface, TurnId,
+    BlockContent, BlockMeta, CallControl, ContentPart, Context, ContextBlock, GenerationOptions,
+    InvocationId, ModelGateway, ModelRef, ModelRequest, RoundId, StreamDelta, TextPayload, TurnId,
 };
 use causa::providers::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway, StreamLimits,
@@ -38,17 +37,17 @@ async fn facade_runtime_receives_borrowed_delta_before_the_real_http_terminal() 
         ),
         Arc::new(ToolExecutor::new(vec![], ToolExecutorOptions::default()).unwrap()),
     );
-    let options = TurnRunOptions::new(ModelRef::new("fixture"))
-        .with_observer(Arc::new(move |event| {
-        if let RunEvent::ModelDelta {
-            delta: StreamDelta::TextDelta { delta },
-            ..
-        } = event
-        {
-            assert_eq!(delta, "preview");
-            release.send(()).unwrap();
-        }
-    }));
+    let options =
+        TurnRunOptions::new(ModelRef::new("fixture")).with_observer(Arc::new(move |event| {
+            if let RunEvent::ModelDelta {
+                delta: StreamDelta::TextDelta { delta },
+                ..
+            } = event
+            {
+                assert_eq!(delta, "preview");
+                release.send(()).unwrap();
+            }
+        }));
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
         runner.run_streaming(

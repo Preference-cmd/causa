@@ -100,6 +100,7 @@ dependencies = [
 name = "causa-provider-streaming-consumer"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "causa",
  "futures-util",
  "serde_json",

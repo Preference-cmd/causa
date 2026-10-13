@@ -68,10 +68,10 @@ async fn all_builtin_gateways_observe_http_text_before_terminal_and_commit_only_
         };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = seen.clone();
+        let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
         // The Anthropic leg requires an explicit output limit.
-        let mut options = TurnRunOptions::new(ModelRef::new("fixture"))
-            .with_generation(GenerationOptions::default().with_max_tokens(1024));
-        options = options.with_observer(Arc::new(move |event| match event {
+        options.generation.max_tokens = Some(1024);
+        options.observer = Some(Arc::new(move |event| match event {
             RunEvent::ModelDelta {
                 invocation_id,
                 delta: StreamDelta::TextDelta { delta },
@@ -167,7 +167,7 @@ async fn terminal_tool_executes_once_with_round_identity_and_provider_id_then_ne
     let observed = calls.clone();
     let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let released_in_observer = released.clone();
-    options = options.with_observer(Arc::new(move |event| match event {
+    options.observer = Some(Arc::new(move |event| match event {
         RunEvent::ModelDelta {
             invocation_id,
             delta:
@@ -303,7 +303,7 @@ async fn observer_cancelled_partial_second_round_preserves_completed_first_round
     let token = CancellationToken::new();
     let cancel = token.clone();
     let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
-    options = options.with_observer(Arc::new(move |event| {
+    options.observer = Some(Arc::new(move |event| {
         if let RunEvent::ModelDelta {
             invocation_id,
             delta: StreamDelta::ToolCallDelta { .. },
@@ -353,7 +353,7 @@ async fn cancellation_after_declaration_commit_returns_complete_pending_tool_bat
     let token = CancellationToken::new();
     let cancel = token.clone();
     let mut options = TurnRunOptions::new(ModelRef::new("fixture"));
-    options = options.with_observer(Arc::new(move |event| {
+    options.observer = Some(Arc::new(move |event| {
         if let RunEvent::BlocksCommitted { blocks, .. } = event
             && blocks
                 .iter()
