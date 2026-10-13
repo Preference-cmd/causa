@@ -11,7 +11,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -22,7 +22,7 @@ jobs:
       - run: cargo fmt --manifest-path tests/consumers/provider-streaming/Cargo.toml --all --check
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +34,7 @@ jobs:
       - run: cargo clippy --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -51,7 +51,7 @@ jobs:
   msrv:
     # MSRV 1.96 is the declared floor (workspace rust-version); check
     # compiles everything without needing the full test run.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -65,7 +65,7 @@ jobs:
   dependency-directions:
     # Architectural layering is machine-enforced, not
     # left to review.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -77,7 +77,7 @@ jobs:
         uses: bnjbvr/cargo-machete@v0.9.2
 
   release-checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

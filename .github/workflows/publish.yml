@@ -27,7 +27,7 @@ jobs:
 
   publish:
     needs: checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Creating the GitHub release needs write access; nothing else here does.
     permissions:
       contents: write

@@ -17,6 +17,8 @@ adapters or data converters.
 - CI runs on Linux only. The workspace has no platform-specific code, and
   the macOS jobs repeated the Linux results while waiting on scarce runners,
   which blocked a release upload.
+- Workflows name the runner image `ubuntu-26.04` instead of `ubuntu-latest`,
+  so the image changes only when the workflow does.
 
 ## [0.0.4] - 2026-10-13
 
