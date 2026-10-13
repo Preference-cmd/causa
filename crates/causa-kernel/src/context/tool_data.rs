@@ -57,11 +57,14 @@ pub enum ToolResultStatus {
 #[non_exhaustive]
 pub struct ToolOutputMeta {
     /// Wall-clock duration of the execution, if measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     /// Estimated token count of the output body before truncation, when known.
     /// This does not include result notes or media.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_tokens: Option<usize>,
     /// Free-form JSON for tool- or driver-specific annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<serde_json::Value>,
 }
 
@@ -88,8 +91,10 @@ pub struct ToolOutput {
     /// Whether and how the content was shortened.
     pub truncation: Truncation,
     /// Optional observability metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<ToolOutputMeta>,
     /// Reference to the full output in an artifact store, if spilled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<ArtifactRef>,
 }
 impl ToolOutput {

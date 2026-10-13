@@ -120,3 +120,19 @@ fn a_field_this_version_does_not_know_is_ignored() {
         assert_eq!(a.meta().source, b.meta().source);
     }
 }
+
+#[test]
+fn an_unset_optional_field_is_left_out_and_null_still_reads() {
+    let mut meta = ToolOutputMeta::default();
+    meta.duration_ms = Some(12);
+    assert_eq!(
+        serde_json::to_value(&meta).unwrap(),
+        json!({"duration_ms": 12})
+    );
+    // Records written before this rule spelled an unset field as null.
+    let old = json!({"content": "plain", "truncation": "none", "meta": null, "artifact": null});
+    assert_eq!(
+        serde_json::from_value::<ToolOutput>(old).unwrap(),
+        ToolOutput::new(json!("plain"))
+    );
+}

@@ -140,9 +140,7 @@
         "value": {
           "call_block_id": "00000000-0000-0000-0000-000000000005",
           "output": {
-            "artifact": null,
             "content": "plain",
-            "meta": null,
             "truncation": "none"
           },
           "status": "unknown_outcome"

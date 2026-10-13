@@ -25,6 +25,11 @@ adapters or data converters.
   `TurnInterruption::MaxModelRounds { limit, .. }`. A test that compared an
   error with a constructed variant uses `matches!` instead.
 
+- `ToolOutput` and `ToolOutputMeta` leave an unset optional field out of
+  the serialized form instead of writing `null`, like the rest of the
+  context vocabulary. Reading accepts both, so stored contexts still load;
+  a consumer that compares serialized text sees the difference.
+
 ### Changed
 
 - The `Tool` port now states its requirements: `execute` must not block the
