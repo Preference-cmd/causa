@@ -38,6 +38,7 @@ export default defineConfig({
         { label: 'Concepts', slug: 'concepts' },
         { label: 'Editing turn context', slug: 'context-editing' },
         { label: 'Streaming', slug: 'streaming' },
+        { label: 'Interrupted runs', slug: 'interrupted-runs' },
         { label: 'Crates', slug: 'crates' },
         { label: 'Examples', slug: 'examples' },
         { label: 'Status & changelog', slug: 'status' },

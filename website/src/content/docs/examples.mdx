@@ -33,6 +33,7 @@ for an application that uses the `causa` facade directly.
 | `conversation_persistence` | save/import `Context` JSON and explicitly run again | `cargo run --example conversation_persistence -p causa-runtime` |
 | `streaming_print` | streaming deltas through an optional borrowed `RunEvent` observer | `cargo run --example streaming_print -p causa-runtime` |
 | `approval_processor` | approval awaited inside a batch processor | `cargo run --example approval_processor -p causa-runtime` |
+| `interrupted_batch` | close the tool batch an interrupted run hands back, then run again | `cargo run --example interrupted_batch -p causa-runtime` |
 | `tool_processors` | ordered tool processors for deduplication and policy | `cargo run --example tool_processors -p causa-runtime` |
 | `media_feedback` | host media/artifact storage and example-local output budgeting; only `MediaRef` rides the facts | `cargo run --example media_feedback -p causa-runtime` |
 

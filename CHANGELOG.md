@@ -46,6 +46,9 @@ adapters or data converters.
 
 ### Added
 
+- An interrupted runs guide on the website and the offline
+  `interrupted_batch` example: what batch each interruption returns and how
+  a host answers the pending calls and commits it.
 - `ToolBatch::validate_complete` checks the batch invariants and that every
   entry has a result, returning `BatchError::Incomplete` otherwise.
 

@@ -1,0 +1,118 @@
+---
+title: Interrupted runs
+description: What an interrupted run returns and how to close a tool batch it left open.
+---
+
+A run that does not complete returns `TurnResult::Interrupted` with a typed
+cause. It still returns everything it committed: `TurnOutcome.context` holds
+all material up to the stop. Nothing is rolled back and nothing is hidden.
+
+Most interruptions leave the context ready for another run: a model call that
+failed, the round limit, a refusal, an output cut off at the token limit. One
+case needs work from your code first.
+
+## When a batch comes back
+
+The runner commits the model's tool calls before any tool runs. If the run
+stops between that commit and the commit of the results, the context holds
+calls without results, and `TurnOutcome.uncommitted_tool_batch` is `Some`.
+The protocol renderers refuse a context in that state, so the next request
+cannot be built until every call has a result or is removed.
+
+The batch tells you how far the run got:
+
+| Run stopped at | Cause | Batch |
+|---|---|---|
+| The tool-call limit | `MaxToolCalls` | every call pending, nothing started |
+| A stop seen before tools were dispatched | `Cancelled`, `DeadlineExceeded` | every call pending, nothing started |
+| A stop or failure while tools were running | `Cancelled`, `DeadlineExceeded`, `ToolProcessingFailed` | mixed: finished calls have their result, started calls have `unknown_outcome`, calls that never started are pending |
+| A failure while validating or committing results | `ToolResultValidationFailed`, `ToolCommitFailed` | every call has a result, none is committed |
+
+`ToolBatch::results()` are the calls that have a result, `calls()` the ones
+still pending. A stop seen after every tool returned and every after
+processor ran does not appear in this table: those results are committed and
+no batch is returned.
+
+An `UnknownToolOutcome` interruption is also different. The batch was
+committed in full, including the result marked `unknown_outcome`, and the run
+stopped so that your application decides whether to continue.
+
+## Closing a batch
+
+Answer every pending call, then append all results of the batch:
+
+```rust
+fn close_batch(
+    context: &mut Context,
+    mut batch: ToolBatch,
+    reason: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Pending calls sit after the completed ones; resolving the first pending
+    // entry moves it into the completed prefix.
+    while let Some(entry) = batch.calls().first() {
+        let call_block_id = entry.call().call_block_id;
+        batch
+            .resolve_at(
+                batch.completed_len(),
+                new_block_id(),
+                ToolResultPayload::new(
+                    call_block_id,
+                    ToolResultStatus::Cancelled,
+                    ToolOutput::new(json!({"error": reason})),
+                ),
+            )
+            .map_err(|rejected| rejected.error)?;
+    }
+    let results = batch.into_results().map_err(|(error, _batch)| error)?;
+    validate_tool_result_append(context.blocks(), &results)?;
+    let blocks = results
+        .into_iter()
+        .map(|(id, result)| {
+            ContextBlock::new(id, BlockContent::ToolResult(result), BlockMeta::default())
+        })
+        .collect();
+    context.apply(Vec::new(), blocks)?;
+    Ok(())
+}
+```
+
+This is what the runner does when it commits a batch itself. The
+`interrupted_batch` example runs it end to end:
+
+```sh
+cargo run --example interrupted_batch -p causa-runtime
+```
+
+The status you write is a statement to the model. When nothing started,
+`Cancelled` or `Rejected` with a short reason is accurate, and the model can
+ask again. In a mixed batch the started calls already carry
+`unknown_outcome`: the tool may have had its effect. Keep that status rather
+than replacing it with a failure, and decide in your application whether the
+effect has to be checked before the conversation goes on.
+
+You can instead remove the call blocks with a
+[context edit](/context-editing/). Answering is the safer choice: every
+protocol accepts a call followed by its result, while a history with a call
+taken out may leave provider-side material, such as reasoning produced with
+that call, without its counterpart.
+
+## Keeping batches short
+
+A batch is only mixed when a stop arrives while tools are running, so the
+window is as long as your slowest tool. A tool that starts long work and
+returns a handle at once keeps that window small: the model receives the
+handle as an ordinary result and asks for the status with a second tool when
+it needs it. The runner never polls or waits for background work on its own,
+and your application owns the work behind the handle, including stopping it.
+
+A tool that follows the [requirements on tools](/concepts/) (never block the
+thread, return promptly once its control is stopped) also keeps the
+interruption prompt, because a stop takes effect at the tool's next yield
+point.
+
+## What stays yours
+
+Causa does not decide what an interrupted call means. Whether to answer or
+remove a call, whether to tell the user, and whether an external effect must
+be verified are application decisions. Closing a batch does not make an
+external tool run exactly once.

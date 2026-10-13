@@ -37,7 +37,8 @@ the runner commits results atomically only after successful processing and
 validation. An unknown outcome is committed and stops further model rounds.
 A stop first seen after every tool returned and every after processor finished
 does not discard that work: the results are committed, then the run returns
-the cancellation or deadline with no uncommitted batch.
+the cancellation or deadline with no uncommitted batch. [Interrupted
+runs](/interrupted-runs/) covers the batch an earlier stop hands back.
 
 The calls of one batch run concurrently on the caller's task. Nothing is
 spawned, the calls are not parallel, and their number is not bounded. This

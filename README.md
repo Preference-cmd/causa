@@ -134,6 +134,7 @@ Run these from the repository root using
 | `conversation_persistence` | `causa-runtime` | Save and reload caller-owned context | Offline |
 | `streaming_print` | `causa-runtime` | Observe deltas as a turn runs | Offline |
 | `approval_processor` | `causa-runtime` | Await approval inside a tool processor | Offline |
+| `interrupted_batch` | `causa-runtime` | Close the tool batch an interrupted run hands back | Offline |
 | `tool_processors` | `causa-runtime` | Compose tool processors | Offline |
 | `media_feedback` | `causa-runtime` | Carry tool-produced media references into the next round | Offline |
 | `quickstart` | `causa-provider` | A model turn with a local tool | `ANTHROPIC_API_KEY` |
@@ -177,7 +178,9 @@ version.
 
 Sessions, history, input admission, persistence and subagent orchestration
 belong to your application. An interrupted run returns its uncommitted tool
-batch and the cause, and your code decides what to do with it. Rebuilding
+batch and the cause, and your code decides what to do with it; the
+[interrupted runs guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/interrupted-runs.mdx)
+shows how to close such a batch. Rebuilding
 context does not make an external tool run exactly once.
 
 ## Contributing
