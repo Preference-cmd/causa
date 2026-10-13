@@ -135,7 +135,12 @@ impl Tool for Echo {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new("echo", "echo", json!({"type":"object"}))
     }
-    async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.calls.lock().unwrap().push(call.clone());
         ToolResultPayload::new(
             call.call_block_id,

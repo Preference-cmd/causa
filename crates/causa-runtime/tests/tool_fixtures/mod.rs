@@ -70,7 +70,12 @@ impl Tool for NamedTool {
     fn definition(&self) -> ToolDefinition {
         definition(&self.name.lock().unwrap())
     }
-    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.count.fetch_add(1, Ordering::SeqCst);
         let mut result = result(
             call,
@@ -122,6 +127,7 @@ impl DynamicToolSource for Source {
         &self,
         call: &ToolCallContext,
         _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(result(

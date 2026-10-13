@@ -79,7 +79,12 @@ impl Tool for CountingTool {
         ToolDefinition::new("local", "host tool", json!({"type":"object"}))
     }
 
-    async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _: &CallControl,
+        _store: Option<&dyn causa::kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.executions.fetch_add(1, Ordering::SeqCst);
         ToolResultPayload::new(
             call.call_block_id,

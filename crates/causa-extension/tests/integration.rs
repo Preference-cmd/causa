@@ -215,7 +215,7 @@ async fn invoke_executes_and_returns_text_content() {
     let (source, server) = served(false, false).await;
     let mut call = call_context("mcp_srv_echo", serde_json::json!({"a": 1}));
     call.result_notes.push(TextPayload::new("incoming note"));
-    let outcome = source.invoke(&call, &ctrl()).await.expect("invoke");
+    let outcome = source.invoke(&call, &ctrl(), None).await.expect("invoke");
     assert_eq!(outcome.status, ToolResultStatus::Succeeded);
     assert_eq!(outcome.output.content, serde_json::json!("echo: {\"a\":1}"));
     assert_eq!(outcome.call_block_id, call.call_block_id);
@@ -227,7 +227,10 @@ async fn invoke_executes_and_returns_text_content() {
 async fn invoke_rejects_names_outside_the_namespace() {
     let (source, server) = served(false, false).await;
     let call = call_context("other_server_tool", serde_json::json!({}));
-    let err = source.invoke(&call, &ctrl()).await.expect_err("unknown");
+    let err = source
+        .invoke(&call, &ctrl(), None)
+        .await
+        .expect_err("unknown");
     assert!(matches!(err, ToolExecutionError::UnknownTool(_)));
     server.cancel().await.expect("server stop");
 }
@@ -236,7 +239,7 @@ async fn invoke_rejects_names_outside_the_namespace() {
 async fn is_error_results_map_to_failed_outcomes() {
     let (source, server) = served(true, false).await;
     let call = call_context("mcp_srv_echo", serde_json::json!({"x": 1}));
-    let outcome = source.invoke(&call, &ctrl()).await.expect("invoke");
+    let outcome = source.invoke(&call, &ctrl(), None).await.expect("invoke");
     assert_eq!(outcome.status, ToolResultStatus::Failed);
     assert!(
         outcome
@@ -256,7 +259,7 @@ async fn call_deadline_maps_to_timed_out() {
     let call = call_context("mcp_srv_echo", serde_json::json!({}));
     let control = ctrl().with_timeout(Duration::from_millis(200));
     let err = source
-        .invoke(&call, &control)
+        .invoke(&call, &control, None)
         .await
         .expect_err("deadline must fire");
     assert!(matches!(err, ToolExecutionError::TimedOut));
@@ -269,7 +272,7 @@ async fn cancellation_maps_to_cancelled() {
     let call = call_context("mcp_srv_echo", serde_json::json!({}));
     let token = CancellationToken::new();
     let control = CallControl::new(token.clone(), None).with_timeout(Duration::from_secs(30));
-    let task = tokio::spawn(async move { source.invoke(&call, &control).await });
+    let task = tokio::spawn(async move { source.invoke(&call, &control, None).await });
     tokio::time::sleep(Duration::from_millis(100)).await;
     token.cancel();
     let err = task.await.unwrap().expect_err("cancel must fire");
@@ -352,6 +355,7 @@ impl DynamicToolSource for BrokenSource {
         &self,
         call: &ToolCallContext,
         _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Err(ToolExecutionError::Unavailable(format!(
             "fixture outage: {}",
@@ -371,6 +375,7 @@ fn echo_static_tool() -> Arc<dyn causa_kernel::Tool> {
             &self,
             ctx: &ToolCallContext,
             _control: &CallControl,
+            _store: Option<&dyn causa_kernel::ArtifactStore>,
         ) -> ToolResultPayload {
             ToolResultPayload::new(
                 ctx.call_block_id,
@@ -676,7 +681,7 @@ async fn http_transport_lists_and_invokes() {
 
     let call = call_context("mcp_http_echo", serde_json::json!({"via": "http"}));
     let outcome = source
-        .invoke(&call, &ctrl())
+        .invoke(&call, &ctrl(), None)
         .await
         .expect("invoke over http");
     assert_eq!(outcome.status, ToolResultStatus::Succeeded);
@@ -786,7 +791,7 @@ async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
     let call = call_context("mcp_srv_render_image", json!({}));
 
     // Without a store: the deterministic placeholder text, no media.
-    let out = source.invoke(&call, &ctrl()).await.unwrap();
+    let out = source.invoke(&call, &ctrl(), None).await.unwrap();
     assert!(out.media.is_empty());
     assert!(
         out.output
@@ -800,7 +805,7 @@ async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
         hint: std::sync::Mutex::new(None),
     };
     let out = source
-        .invoke_with_store(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
+        .invoke(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
         .await
         .unwrap();
     assert_eq!(out.media, vec![MediaRef::new("image/png", "asset-1")]);

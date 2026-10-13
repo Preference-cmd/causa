@@ -109,7 +109,12 @@ impl Tool for CancelsOnStart {
     fn definition(&self) -> ToolDefinition {
         definition("cancel")
     }
-    async fn execute(&self, _call: &ToolCallContext, control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        _call: &ToolCallContext,
+        control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.0.fetch_add(1, Ordering::SeqCst);
         control.cancellation_token().cancel();
         std::future::pending().await
@@ -186,7 +191,12 @@ impl Tool for WaitTool {
     fn definition(&self) -> ToolDefinition {
         definition(self.name)
     }
-    async fn execute(&self, _call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        _call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.count.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_one();
         std::future::pending().await
@@ -347,7 +357,12 @@ impl Tool for WrongResult {
     fn definition(&self) -> ToolDefinition {
         definition("wrong")
     }
-    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.entered.notify_one();
         self.release.acquire().await.unwrap().forget();
         let mut result = result(
@@ -465,7 +480,12 @@ impl Tool for CancelWhenDropped {
     fn definition(&self) -> ToolDefinition {
         definition("drop")
     }
-    async fn execute(&self, _call: &ToolCallContext, control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        _call: &ToolCallContext,
+        control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         let _guard = CancelOnDrop(control.cancellation_token().clone());
         self.0.notify_one();
         std::future::pending().await

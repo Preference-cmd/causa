@@ -8,7 +8,7 @@ use causa_kernel::{
 
 /// A single dynamic-source tool exposed through the plain [`Tool`]
 /// interface. The bridge routes `execute` to
-/// [`DynamicToolSource::invoke_with_store`] (the source de-namespaces the
+/// [`DynamicToolSource::invoke`] (the source de-namespaces the
 /// call; the host's artifact store is forwarded for media ingest) and
 /// maps invoke errors onto structured results: a timeout or cancellation
 /// is `UnknownOutcome` (the call may have run server-side), an
@@ -39,17 +39,13 @@ impl Tool for ToolBridge {
         self.definition.clone()
     }
 
-    async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolResultPayload {
-        self.execute_with_store(ctx, control, None).await
-    }
-
-    async fn execute_with_store(
+    async fn execute(
         &self,
         ctx: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
     ) -> ToolResultPayload {
-        match self.source.invoke_with_store(ctx, control, store).await {
+        match self.source.invoke(ctx, control, store).await {
             Ok(result) => result,
             Err(e) => ToolResultPayload::new(
                 ctx.call_block_id,
@@ -93,6 +89,7 @@ mod tests {
             &self,
             call: &ToolCallContext,
             _control: &CallControl,
+            _store: Option<&dyn causa_kernel::ArtifactStore>,
         ) -> Result<ToolResultPayload, ToolExecutionError> {
             match &self.0 {
                 Some(e) => Err(e.clone()),
@@ -125,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn success_passes_through() {
-        let result = bridge(None).execute(&call(), &ctrl()).await;
+        let result = bridge(None).execute(&call(), &ctrl(), None).await;
         assert_eq!(result.status, ToolResultStatus::Succeeded);
         assert_eq!(result.output.content, serde_json::json!({"k": "v"}));
     }
@@ -138,8 +135,8 @@ mod tests {
         let bridge = bridge(None);
         let control = ctrl();
         let (a, b) = tokio::join!(
-            bridge.execute(&first, &control),
-            bridge.execute(&second, &control),
+            bridge.execute(&first, &control, None),
+            bridge.execute(&second, &control, None),
         );
         assert_eq!(a.call_block_id, first.call_block_id);
         assert_eq!(b.call_block_id, second.call_block_id);
@@ -171,7 +168,9 @@ mod tests {
             ),
         ];
         for (error, expected) in cases {
-            let result = bridge(Some(error.clone())).execute(&call(), &ctrl()).await;
+            let result = bridge(Some(error.clone()))
+                .execute(&call(), &ctrl(), None)
+                .await;
             assert_eq!(result.status, expected, "mapping for {error}");
             assert!(
                 result

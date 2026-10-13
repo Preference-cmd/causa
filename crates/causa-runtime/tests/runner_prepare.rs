@@ -266,7 +266,12 @@ impl Tool for DriftingTool {
         }
         definition
     }
-    async fn execute(&self, _: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        _: &ToolCallContext,
+        _: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         panic!("catalog failure cannot execute")
     }
 }

@@ -42,7 +42,12 @@ impl Tool for ReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new("read", "read a file", json!({"type": "object"}))
     }
-    async fn execute(&self, ctx: &ToolCallContext, _c: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        ctx: &ToolCallContext,
+        _c: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         ToolResultPayload::new(
             ctx.call_block_id,
             ToolResultStatus::Succeeded,

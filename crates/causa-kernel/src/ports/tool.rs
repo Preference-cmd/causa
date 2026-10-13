@@ -161,18 +161,14 @@ pub trait Tool: Send + Sync {
     /// The model-facing [`ToolDefinition`] for this tool.
     fn definition(&self) -> ToolDefinition;
     /// Runs one call under the call's [`CallControl`], returning the
-    /// recorded result.
-    async fn execute(&self, ctx: &ToolCallContext, control: &CallControl) -> ToolResultPayload;
-    /// Extension point for tools that persist artifacts: receives the host's
-    /// [`ArtifactStore`] when one is configured (`None` otherwise). The
-    /// default ignores the store and delegates to [`Tool::execute`].
-    async fn execute_with_store(
+    /// recorded result. `store` is the host's [`ArtifactStore`] when one is
+    /// configured: a tool that produces media or oversized output persists
+    /// the bytes there and returns a reference; a tool that does not need
+    /// storage ignores it.
+    async fn execute(
         &self,
         ctx: &ToolCallContext,
         control: &CallControl,
         store: Option<&dyn ArtifactStore>,
-    ) -> ToolResultPayload {
-        let _ = store;
-        self.execute(ctx, control).await
-    }
+    ) -> ToolResultPayload;
 }

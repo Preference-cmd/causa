@@ -35,9 +35,8 @@ async fn execute_inner(
     }
     // Construct the port future inside the catch as well: manually implemented
     // async-trait signatures can panic before they return a future.
-    let future =
-        std::panic::AssertUnwindSafe(async { tool.execute_with_store(call, control, store).await })
-            .catch_unwind();
+    let future = std::panic::AssertUnwindSafe(async { tool.execute(call, control, store).await })
+        .catch_unwind();
     let result = match control.deadline() {
         Some(deadline) => match tokio::time::timeout_at(deadline.into(), future).await {
             Ok(result) => result,

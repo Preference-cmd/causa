@@ -62,6 +62,7 @@ impl Tool for RenderChart {
         &self,
         ctx: &ToolCallContext,
         _c: &causa_kernel::CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> ToolResultPayload {
         let bytes = b"fake-png-bytes".to_vec();
         let artifact = self

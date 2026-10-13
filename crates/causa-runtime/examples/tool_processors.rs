@@ -71,7 +71,12 @@ impl Tool for Search {
             serde_json::json!({"type": "object"}),
         )
     }
-    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        ctx: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         ToolResultPayload::new(
             ctx.call_block_id,
             ToolResultStatus::Succeeded,

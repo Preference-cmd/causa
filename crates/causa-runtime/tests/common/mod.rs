@@ -93,7 +93,12 @@ impl Tool for EchoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new("echo", "echo", serde_json::json!({"type":"object"}))
     }
-    async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         ToolResultPayload::new(
             call.call_block_id,
             ToolResultStatus::Succeeded,

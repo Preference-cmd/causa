@@ -69,6 +69,7 @@ impl Tool for ReadFile {
         &self,
         ctx: &ToolCallContext,
         _control: &causa_kernel::CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> ToolResultPayload {
         ToolResultPayload::new(
             ctx.call_block_id,

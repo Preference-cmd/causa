@@ -12,7 +12,12 @@ impl Tool for LocalTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new("local", "Host-owned tool", json!({"type":"object"}))
     }
-    async fn execute(&self, call: &ToolCallContext, _: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _: &CallControl,
+        _store: Option<&dyn causa::kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         ToolResultPayload::new(
             call.call_block_id,
             ToolResultStatus::Succeeded,

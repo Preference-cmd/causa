@@ -295,14 +295,6 @@ impl DynamicToolSource for McpToolSource {
         &self,
         call: &ToolCallContext,
         control: &CallControl,
-    ) -> Result<ToolResultPayload, ToolExecutionError> {
-        Self::invoke_inner(self, call, control, None).await
-    }
-
-    async fn invoke_with_store(
-        &self,
-        call: &ToolCallContext,
-        control: &CallControl,
         store: Option<&dyn ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Self::invoke_inner(self, call, control, store).await

@@ -181,13 +181,6 @@ impl DynamicToolSource for MediaSource {
     }
     async fn invoke(
         &self,
-        _call: &ToolCallContext,
-        _control: &CallControl,
-    ) -> Result<ToolResultPayload, ToolExecutionError> {
-        panic!("store-aware path required")
-    }
-    async fn invoke_with_store(
-        &self,
         call: &ToolCallContext,
         _control: &CallControl,
         store: Option<&dyn ArtifactStore>,
@@ -273,7 +266,12 @@ impl Tool for DescribedTool {
     fn definition(&self) -> ToolDefinition {
         self.0.lock().unwrap().clone()
     }
-    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         result(
             call,
             ToolResultStatus::Succeeded,

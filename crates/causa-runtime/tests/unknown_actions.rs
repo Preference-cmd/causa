@@ -24,7 +24,12 @@ impl Tool for StatusTool {
     fn definition(&self) -> ToolDefinition {
         definition(self.name)
     }
-    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.count.fetch_add(1, Ordering::SeqCst);
         result(
             call,
@@ -206,10 +211,15 @@ impl Tool for Alias {
         definition.name = "alias".into();
         definition
     }
-    async fn execute(&self, call: &ToolCallContext, control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         let mut translated = call.clone();
         translated.input.tool_name = self.0.definition().name;
-        self.0.execute(&translated, control).await
+        self.0.execute(&translated, control, None).await
     }
 }
 #[tokio::test]
@@ -237,7 +247,12 @@ impl Tool for Slow {
     fn definition(&self) -> ToolDefinition {
         definition("slow")
     }
-    async fn execute(&self, _call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        _call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         std::future::pending().await
     }
 }
@@ -305,7 +320,12 @@ impl Tool for Panics {
     fn definition(&self) -> ToolDefinition {
         definition("panic")
     }
-    async fn execute(&self, _call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        _call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         panic!("tool panic fixture")
     }
 }

@@ -49,6 +49,7 @@ impl DynamicToolSource for RacingSource {
         &self,
         call: &ToolCallContext,
         _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Ok(result(
             call,
@@ -313,6 +314,7 @@ impl DynamicToolSource for CancelThenFail {
         &self,
         _call: &ToolCallContext,
         _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         unreachable!()
     }

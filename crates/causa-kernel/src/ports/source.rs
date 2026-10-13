@@ -42,27 +42,17 @@ pub trait DynamicToolSource: Send + Sync {
     /// names outside their namespace). Sources return the recorded result
     /// only — handling `UnknownOutcome` belongs to the execution consumer,
     /// not source vocabulary.
+    ///
+    /// `store` is the host's artifact store when one is configured. A source
+    /// whose tools produce images persists the bytes there and attaches
+    /// [`crate::context::block::MediaRef`]s to the result's media instead of
+    /// degrading them to text; a source that never produces media ignores it.
     async fn invoke(
         &self,
         call: &ToolCallContext,
         control: &CallControl,
-    ) -> Result<ToolResultPayload, ToolExecutionError>;
-
-    /// Execute one call with the host's artifact store available for
-    /// media ingest: a source whose tools produce images can persist the
-    /// bytes via `store` and attach [`crate::context::block::MediaRef`]s
-    /// to the result's `ToolResultPayload.media` instead of degrading
-    /// them to text. Additive with a delegating default, so sources that
-    /// never produce media keep their existing `invoke` only.
-    async fn invoke_with_store(
-        &self,
-        call: &ToolCallContext,
-        control: &CallControl,
         store: Option<&dyn crate::ports::tool::ArtifactStore>,
-    ) -> Result<ToolResultPayload, ToolExecutionError> {
-        let _ = store;
-        Self::invoke(self, call, control).await
-    }
+    ) -> Result<ToolResultPayload, ToolExecutionError>;
 }
 
 /// Listing failure — the catalog as a whole is unusable right now.

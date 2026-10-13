@@ -167,7 +167,12 @@ impl Tool for JobTool {
         )
     }
 
-    async fn execute(&self, call: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         let action = call.input.arguments["action"].as_str().unwrap_or_default();
         let handle = call.input.arguments["handle"].as_str();
         let output = match action {

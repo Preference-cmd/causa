@@ -107,9 +107,14 @@ impl Tool for CountingTool {
     fn definition(&self) -> ToolDefinition {
         EchoTool.definition()
     }
-    async fn execute(&self, c: &ToolCallContext, k: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        c: &ToolCallContext,
+        k: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         self.0.fetch_add(1, Ordering::SeqCst);
-        EchoTool.execute(c, k).await
+        EchoTool.execute(c, k, None).await
     }
 }
 #[test]
@@ -450,8 +455,13 @@ impl Tool for UnknownTool {
     fn definition(&self) -> ToolDefinition {
         EchoTool.definition()
     }
-    async fn execute(&self, c: &ToolCallContext, k: &CallControl) -> ToolResultPayload {
-        let mut r = EchoTool.execute(c, k).await;
+    async fn execute(
+        &self,
+        c: &ToolCallContext,
+        k: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
+        let mut r = EchoTool.execute(c, k, None).await;
         r.status = ToolResultStatus::UnknownOutcome;
         r
     }

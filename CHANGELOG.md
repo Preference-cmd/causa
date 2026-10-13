@@ -14,6 +14,14 @@ adapters or data converters.
 
 ### Breaking
 
+- `Tool` and `DynamicToolSource` each have one entry method. `Tool::execute`
+  and `DynamicToolSource::invoke` take the host's artifact store as a third
+  parameter, `store: Option<&dyn ArtifactStore>`; `execute_with_store` and
+  `invoke_with_store` are removed. Migration: add the parameter to every
+  implementation (a tool that stores nothing ignores it), rename an
+  overridden `_with_store` method to the plain name, and pass `None` or the
+  store when calling a tool directly. A direct call to `invoke` used to drop
+  the store without saying so; it can no longer be left out.
 - Reasoning settings are sent as the host wrote them; Causa no longer checks,
   maps or derives them.
   - `ReasoningEffort` is removed and `GenerationOptions::reasoning_effort` is

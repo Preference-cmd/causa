@@ -47,7 +47,12 @@ impl Tool for WordCount {
         )
     }
 
-    async fn execute(&self, ctx: &ToolCallContext, _control: &CallControl) -> ToolResultPayload {
+    async fn execute(
+        &self,
+        ctx: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
         let text = ctx
             .input
             .arguments
