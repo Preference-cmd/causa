@@ -65,10 +65,23 @@ cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features r
 cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check                   # CI fails otherwise; run `cargo fmt --all` first
+cargo +1.96.0 check --workspace --all-targets          # MSRV
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
+
+# The consumers are separate workspaces: the workspace-wide commands above do
+# not reach them, and CI checks each one on its own.
+cargo fmt --manifest-path tests/consumers/material-flow/Cargo.toml --all --check
+cargo fmt --manifest-path tests/consumers/provider-streaming/Cargo.toml --all --check
+cargo clippy --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --all-targets --locked -- -D warnings
+cargo clippy --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked -- -D warnings
+cargo +1.96.0 check --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --all-targets --locked
+cargo +1.96.0 check --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked
+
 bash .github/scripts/check-dependency-directions.sh   # layering guard, same as CI
 python3 .github/scripts/check-module-layout.py        # library source layout
 python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
 python3 -m unittest discover -s .github/scripts -p 'test_release.py'
+# CI also runs cargo-machete for unused dependencies; install it to run locally.
 
 # Feature-matrix checks (required when touching Cargo.toml / lib.rs / features):
 cargo check -p causa
