@@ -156,6 +156,25 @@ pub trait ArtifactStore: Send + Sync {
 /// live outside the kernel; the driver's executor dispatches them. A tool
 /// returns only its recorded result. Handling unknown outcomes and retaining
 /// output belong to the execution consumer, not tool declarations.
+///
+/// # Requirements on `execute`
+///
+/// An executor may poll every call of one batch on a single task, with
+/// nothing spawned. An implementation therefore:
+///
+/// - must not block the thread. Blocking or CPU-heavy work runs on a
+///   blocking thread (for example `tokio::task::spawn_blocking`) and the
+///   tool awaits it;
+/// - must return promptly once its [`CallControl`] is cancelled or past its
+///   deadline.
+///
+/// For a tool that meets both, a stop takes effect at its next yield point.
+/// A tool that holds the thread also holds its sibling calls and the
+/// executor's own stop and timeout checks, so nothing is guaranteed for it:
+/// not cancellation, not the deadline, not a per-call timeout.
+///
+/// Calls of one batch are concurrent, not parallel, and their number is not
+/// bounded. A tool that needs a limit shares a semaphore across its calls.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// The model-facing [`ToolDefinition`] for this tool.

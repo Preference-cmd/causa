@@ -25,6 +25,14 @@ adapters or data converters.
   `TurnInterruption::MaxModelRounds { limit, .. }`. A test that compared an
   error with a constructed variant uses `matches!` instead.
 
+### Changed
+
+- The `Tool` port now states its requirements: `execute` must not block the
+  thread and must return promptly once its control is stopped. Calls of one
+  batch are concurrent, not parallel, and unbounded. Dispatch itself is
+  unchanged; a tool that blocks the thread was never stopped by cancellation
+  or a timeout, and tests now pin that.
+
 ### Added
 
 - `ToolBatch::validate_complete` checks the batch invariants and that every

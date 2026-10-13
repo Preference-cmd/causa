@@ -421,3 +421,74 @@ async fn zero_local_timeout_does_not_poll_an_immediately_ready_uncooperative_too
     assert_eq!(statuses(&batch), vec![ToolResultStatus::UnknownOutcome]);
     assert!(!parent.is_cancelled());
 }
+
+/// A tool that breaks the port's requirement: it holds the thread instead of
+/// yielding, and never looks at its control.
+struct Blocking(Duration);
+#[async_trait]
+impl Tool for Blocking {
+    fn definition(&self) -> ToolDefinition {
+        definition("blocking")
+    }
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
+        std::thread::sleep(self.0);
+        result(call, ToolResultStatus::Succeeded, json!("late"))
+    }
+}
+
+// The two tests below pin what happens with a tool that blocks the thread.
+// They record the absence of a guarantee, not a behavior to rely on: the
+// runtime observes a stop or a timeout only when the tool yields.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blocking_tool_is_not_stopped_by_cancellation() {
+    let held = Duration::from_millis(300);
+    let parent = control();
+    let executor = executor(
+        vec![Arc::new(Blocking(held))],
+        ToolExecutorOptions::default(),
+    );
+    let binding = executor.bind(invocation(), parent.clone()).await.unwrap();
+    let mut batch = batch(&["blocking"]);
+    let token = parent.cancellation_token().clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        token.cancel();
+    });
+    let started = std::time::Instant::now();
+    // Cancelled 20 ms in, yet the call runs to its end and its result is
+    // accepted: the stop was never polled while the tool held the thread.
+    binding.process(&mut batch).await.unwrap();
+    assert!(started.elapsed() >= held);
+    canceller.join().unwrap();
+    assert!(parent.is_cancelled());
+    assert_eq!(statuses(&batch), [ToolResultStatus::Succeeded]);
+}
+
+#[tokio::test]
+async fn a_blocking_tool_outlives_the_call_timeout() {
+    let held = Duration::from_millis(300);
+    let executor = executor(
+        vec![Arc::new(Blocking(held))],
+        ToolExecutorOptions::default().with_call_timeout(Duration::from_millis(10)),
+    );
+    let mut batch = batch(&["blocking"]);
+    let started = std::time::Instant::now();
+    executor
+        .bind(invocation(), control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+    // The timer cannot fire while the thread is held, and the call is ready
+    // on its first poll, so the late result is taken as a success instead of
+    // the unknown outcome a yielding tool would get.
+    assert!(started.elapsed() >= held);
+    assert_eq!(statuses(&batch), [ToolResultStatus::Succeeded]);
+}

@@ -39,6 +39,20 @@ A stop first seen after every tool returned and every after processor finished
 does not discard that work: the results are committed, then the run returns
 the cancellation or deadline with no uncommitted batch.
 
+The calls of one batch run concurrently on the caller's task. Nothing is
+spawned, the calls are not parallel, and their number is not bounded. This
+puts two requirements on every `Tool`:
+
+- It must not block the thread. Blocking or CPU-heavy work goes through
+  `tokio::task::spawn_blocking` inside the tool.
+- It must return promptly once its `CallControl` is cancelled or past its
+  deadline.
+
+A tool that meets both is stopped at its next yield point. A tool that holds
+the thread also holds its sibling calls and the runtime's own checks, so
+cancellation, the deadline and the per-call timeout are not guaranteed for it.
+A tool that needs a concurrency limit shares a semaphore across its calls.
+
 Six borrowed `RunEvent` observations expose requests, streaming deltas, complete
 outputs, actual block appends and tool-processing entry/return. Observers choose
 what to save; the runner keeps no implicit trace. Typed interruptions retain
