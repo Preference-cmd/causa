@@ -22,10 +22,7 @@ jobs:
       - run: cargo fmt --manifest-path tests/consumers/provider-streaming/Cargo.toml --all --check
 
   clippy:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -37,10 +34,7 @@ jobs:
       - run: cargo clippy --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked -- -D warnings
 
   test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

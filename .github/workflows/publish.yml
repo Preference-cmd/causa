@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Check the exact selected commit, including Linux/macOS and the MSRV.
+  # Check the exact selected commit, including the MSRV.
   checks:
     uses: ./.github/workflows/ci.yml
 

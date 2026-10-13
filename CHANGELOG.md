@@ -12,6 +12,12 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Changed
+
+- CI runs on Linux only. The workspace has no platform-specific code, and
+  the macOS jobs repeated the Linux results while waiting on scarce runners,
+  which blocked a release upload.
+
 ## [0.0.4] - 2026-10-13
 
 Preparation of the public surface for `0.1`: struct-like variants of
