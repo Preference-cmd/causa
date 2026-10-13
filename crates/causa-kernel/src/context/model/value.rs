@@ -146,6 +146,7 @@ impl ModelItem {
 ///
 /// Exhaustive on purpose: conversion to blocks handles every shape, so a new one is a breaking change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelItemContent {
     /// Ordered content parts (text and sealed items) that commit as one
     /// `Parts` block.

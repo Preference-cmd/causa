@@ -213,6 +213,7 @@ impl ModelOutput {
 /// More kinds may be added; a match needs a wildcard arm, and an unknown kind
 /// is best treated like [`Self::Permanent`]: not retried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ModelInvokeErrorKind {
     /// Recoverable failure a retry policy may allow: transport hiccups,

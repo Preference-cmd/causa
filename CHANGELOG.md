@@ -14,6 +14,18 @@ adapters or data converters.
 
 ### Breaking
 
+- Four kernel enums serialize in snake_case, like the rest of the context
+  vocabulary. Two of them are stored in context material, so a context saved
+  by an earlier build that holds a tool result no longer reads; no reader
+  for the old form is provided. Migration: rewrite the strings in stored
+  data, or discard it.
+
+  | type | before | now |
+  |---|---|---|
+  | `ToolResultStatus` (in `ToolResultPayload.status`) | `Succeeded`, `Failed`, `Rejected`, `Cancelled`, `TimedOut`, `UnknownOutcome` | `succeeded`, `failed`, `rejected`, `cancelled`, `timed_out`, `unknown_outcome` |
+  | `ArtifactKind` (in `ArtifactRef.kind`) | `FullOutput`, `PipeCache`, `Binary` | `full_output`, `pipe_cache`, `binary` |
+  | `ModelItemContent` | `{"Parts": …}`, `{"ToolCall": …}` | `{"parts": …}`, `{"tool_call": …}` |
+  | `ModelInvokeErrorKind` | `Transient`, `TimedOut`, `Cancelled`, `Permanent`, `Undecodable`, `InvalidRequest`, `UnknownOutcome` | `transient`, `timed_out`, `cancelled`, `permanent`, `undecodable`, `invalid_request`, `unknown_outcome` |
 - Messages no longer repeat text that is available as a value.
   `TurnInterruption::ModelStopUnrecognized` prints a fixed sentence; the
   provider's stop value, which may be any length and hold control

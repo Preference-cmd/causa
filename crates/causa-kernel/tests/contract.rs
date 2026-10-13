@@ -440,7 +440,7 @@ fn tool_result_media_is_serde_additive_both_ways() {
     // ...and a stored record without the field defaults to empty.
     let old = json!({
         "call_block_id": common::block_id(),
-        "status": "Succeeded",
+        "status": "succeeded",
         "output": {"content": "ok", "truncation": "none", "meta": null, "artifact": null},
     });
     let from_old: ToolResultPayload = serde_json::from_value(old).unwrap();

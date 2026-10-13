@@ -33,6 +33,7 @@ impl<'a> ToolCallId<'a> {
 ///
 /// Exhaustive on purpose: renderers and the runtime decide by status, so a new one is a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolResultStatus {
     /// The tool returned an outcome.
     Succeeded,
@@ -189,6 +190,7 @@ impl ArtifactRef {
 /// What an artifact holds. A label for the host; nothing in the library
 /// decides by it, so further kinds may be added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ArtifactKind {
     /// The complete, untruncated tool output.
