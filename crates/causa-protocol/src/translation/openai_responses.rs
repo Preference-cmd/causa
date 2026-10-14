@@ -51,9 +51,10 @@
 //! - Reasoning output items are kept whole as sealed items in place — `id`,
 //!   `summary`, `encrypted_content` and every other field exactly as returned
 //!   — and additionally contribute their summary texts to the reasoning
-//!   observation, which is display-only. Every other output item type this
-//!   adapter has no vocabulary for is kept the same way, so the turn can be
-//!   echoed back as returned.
+//!   observation, which is display-only; an item without summary text
+//!   contributes its raw `reasoning_text` content parts instead. Every other
+//!   output item type this adapter has no vocabulary for is kept the same
+//!   way, so the turn can be echoed back as returned.
 //! - The request sends `include: ["reasoning.encrypted_content"]` and
 //!   `store: false` by default (as Codex and `pi-ai` do: encrypted reasoning
 //!   is what makes a sealed reasoning item replayable under `store: false` or
@@ -481,16 +482,29 @@ pub fn parse_openai_responses_output(value: &Value) -> Result<ModelOutput, Model
                 });
             }
             Some("reasoning") => {
-                if let Some(summary) = item.get("summary").and_then(Value::as_array) {
-                    for part in summary {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            reasoning_parts.push(text.to_string());
-                        }
-                    }
+                let texts = |key: &str| -> Vec<String> {
+                    item.get(key)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|part| {
+                            key == "summary"
+                                || part.get("type").and_then(Value::as_str)
+                                    == Some("reasoning_text")
+                        })
+                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                        .map(str::to_string)
+                        .collect()
+                };
+                // Raw reasoning is shown only when the server gave no summary.
+                let mut shown = texts("summary");
+                if shown.is_empty() {
+                    shown = texts("content");
                 }
+                reasoning_parts.extend(shown);
                 // The whole item — `id`, `summary`, `encrypted_content` and
                 // any unknown field — is sealed material in place; the
-                // summary texts above are the display-only observation.
+                // texts above are the display-only observation.
                 items.push(context_frame::sealed_item(
                     Protocol::OpenAiResponses,
                     item.clone(),

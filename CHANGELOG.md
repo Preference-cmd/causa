@@ -75,6 +75,19 @@ can keep the request's `tools` unchanged while the set changes.
 - Workflows name the runner image `ubuntu-26.04` instead of `ubuntu-latest`,
   so the image changes only when the workflow does.
 
+### Fixed
+
+- The OpenAI Responses stream decoder accepts a reasoning item that streams
+  its raw reasoning as `reasoning_text` content parts
+  (`response.content_part.added`, `response.reasoning_text.delta` /
+  `.done`), as DeepSeek's Responses API does on every call. Such a stream
+  failed as `Undecodable` before; its deltas are now `ReasoningDelta`, under
+  the same order and identity checks as a message's parts. The reasoning
+  item is still sealed whole for replay.
+- A Responses reasoning item without summary text contributes its
+  `reasoning_text` content to the output's reasoning observation, in the
+  batch and streamed forms alike.
+
 ## [0.0.4] - 2026-10-13
 
 Preparation of the public surface for `0.1`: struct-like variants of

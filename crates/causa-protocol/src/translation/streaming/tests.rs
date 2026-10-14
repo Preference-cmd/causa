@@ -466,6 +466,129 @@ fn streaming_request_options_preserve_existing_fields() {
     );
 }
 
+/// A reasoning item that streams its raw reasoning as `reasoning_text`
+/// content parts, as DeepSeek's Responses API does, then a function call.
+fn raw_reasoning_fixture() -> (Vec<Value>, Value) {
+    let reasoning = json!({"type":"reasoning","id":"rs","status":"completed","content":[{"type":"reasoning_text","text":"6 * 7 = 42."}],"summary":[],"encrypted_content":"opaque"});
+    let call = json!({"type":"function_call","id":"fc","call_id":"c0","name":"unlock","arguments":"{\"code\":42}","status":"completed"});
+    let response = json!({"id":"r1","status":"completed","output":[reasoning,call],"usage":{"input_tokens":9,"output_tokens":5}});
+    let at = |kind: &str, rest: Value| {
+        let mut event = json!({"type":kind,"output_index":0,"item_id":"rs","content_index":0});
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(rest.as_object().unwrap().clone());
+        event
+    };
+    let events = vec![
+        json!({"type":"response.created","response":{"id":"r1","status":"in_progress"}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs","status":"in_progress","content":[],"summary":[],"encrypted_content":"opaque"}}),
+        at(
+            "response.content_part.added",
+            json!({"part":{"type":"reasoning_text","text":""}}),
+        ),
+        at("response.reasoning_text.delta", json!({"delta":"6 * 7"})),
+        at("response.reasoning_text.delta", json!({"delta":" = 42."})),
+        at(
+            "response.reasoning_text.done",
+            json!({"text":"6 * 7 = 42."}),
+        ),
+        at(
+            "response.content_part.done",
+            json!({"part":{"type":"reasoning_text","text":"6 * 7 = 42."}}),
+        ),
+        json!({"type":"response.output_item.done","output_index":0,"item":reasoning}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc","call_id":"c0","name":"unlock","arguments":""}}),
+        json!({"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc","delta":"{\"code\":42}"}),
+        json!({"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc","arguments":"{\"code\":42}"}),
+        json!({"type":"response.output_item.done","output_index":1,"item":call}),
+        json!({"type":"response.completed","response":response}),
+    ];
+    (events, response)
+}
+
+#[test]
+fn responses_raw_reasoning_text_parts_match_full_response() {
+    let (events, response) = raw_reasoning_fixture();
+    let expected = parse_openai_responses_output(&response).unwrap();
+    // The batch form shows the raw text when there is no summary, and keeps
+    // the whole reasoning item sealed for replay.
+    assert_eq!(expected.reasoning.as_ref().unwrap().text, "6 * 7 = 42.");
+    let sealed: Vec<_> = expected
+        .response
+        .items
+        .iter()
+        .filter_map(|item| match &item.content {
+            causa_kernel::ModelItemContent::Parts(parts) => Some(parts),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|part| match part {
+            causa_kernel::ContentPart::Sealed(sealed) => Some(&sealed.item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sealed, [&response["output"][0]]);
+    let deltas = paired(Protocol::OpenAiResponses, &wire(&events), &expected);
+    let reasoning: Vec<_> = deltas
+        .iter()
+        .filter_map(|delta| match delta {
+            StreamDelta::ReasoningDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning, ["6 * 7", " = 42."]);
+    assert_eq!(call_names(output(&deltas)), ["unlock"]);
+}
+
+#[test]
+fn reasoning_text_parts_keep_the_part_rules() {
+    let undecodable = |events: &[Value]| {
+        assert_eq!(
+            fail(Protocol::OpenAiResponses, events),
+            ModelInvokeErrorKind::Undecodable,
+            "{events:#?}"
+        );
+    };
+    // A reasoning_text part on a message.
+    let (mut events, _) = responses_fixture();
+    events[2]["part"]["type"] = json!("reasoning_text");
+    undecodable(&events);
+    // Any other part type on a reasoning item.
+    let (mut events, _) = raw_reasoning_fixture();
+    events[2]["part"]["type"] = json!("output_text");
+    undecodable(&events);
+    // Any content part on a function call.
+    let (mut events, _) = raw_reasoning_fixture();
+    events.insert(
+        9,
+        json!({"type":"response.content_part.added","output_index":1,"item_id":"fc","content_index":0,"part":{"type":"reasoning_text","text":""}}),
+    );
+    undecodable(&events);
+    // A delta before its part opens.
+    let (mut events, _) = raw_reasoning_fixture();
+    events.swap(2, 3);
+    undecodable(&events);
+    // A delta after its part is done.
+    let (mut events, _) = raw_reasoning_fixture();
+    let late = events[4].clone();
+    events.insert(6, late);
+    undecodable(&events);
+    // A second done for the same part.
+    let (mut events, _) = raw_reasoning_fixture();
+    let again = events[5].clone();
+    events.insert(6, again);
+    undecodable(&events);
+    // A part out of content_index order.
+    let (mut events, _) = raw_reasoning_fixture();
+    events[2]["content_index"] = json!(1);
+    undecodable(&events);
+    // A completed part whose type changed.
+    let (mut events, _) = raw_reasoning_fixture();
+    events[6]["part"]["type"] = json!("summary_text");
+    undecodable(&events);
+}
+
 #[test]
 fn duplicate_parts_and_malformed_known_initial_shapes_fail() {
     let (mut events, _) = responses_fixture();

@@ -18,13 +18,12 @@ impl Responses {
                     .get("part")
                     .ok_or_else(|| undecodable("Responses missing part"))?;
                 let part_type = string(part, "type")?;
-                if matches!(part_type, "output_text" | "summary_text" | "refusal") {
+                if matches!(
+                    part_type,
+                    "output_text" | "summary_text" | "reasoning_text" | "refusal"
+                ) {
                     // A part opens empty; some servers omit the empty string.
-                    let field = if part_type == "refusal" {
-                        "refusal"
-                    } else {
-                        "text"
-                    };
+                    let field = text_field(part_type);
                     let initial = match part.get(field) {
                         None | Some(Value::Null) => "",
                         Some(_) => string(part, field)?,
@@ -35,15 +34,25 @@ impl Responses {
                             delta: initial.into(),
                         });
                     }
-                    if !initial.is_empty() && part_type == "summary_text" {
+                    if !initial.is_empty() && matches!(part_type, "summary_text" | "reasoning_text")
+                    {
                         deltas.push(StreamDelta::ReasoningDelta {
                             delta: initial.into(),
                         });
                     }
                 }
                 if kind == "response.content_part.added" {
-                    if item.kind != "message" {
-                        return Err(undecodable("Responses content part for non-message"));
+                    // A reasoning item streams its raw reasoning as
+                    // `reasoning_text` parts; a message never does. Each part
+                    // type thus belongs to one item kind, which the delta and
+                    // done checks below rely on.
+                    let fits = match item.kind.as_str() {
+                        "message" => part_type != "reasoning_text",
+                        "reasoning" => part_type == "reasoning_text",
+                        _ => false,
+                    };
+                    if !fits {
+                        return Err(undecodable("Responses content part for this item kind"));
                     }
                     let i = index(value, "content_index")?;
                     if i != item.parts.len() {
@@ -65,6 +74,7 @@ impl Responses {
             }
             "response.output_text.delta"
             | "response.refusal.delta"
+            | "response.reasoning_text.delta"
             | "response.reasoning_summary_text.delta"
             | "response.function_call_arguments.delta" => {
                 let item = Self::item(&mut self.items, value)?;
@@ -99,23 +109,22 @@ impl Responses {
                     }
                     _ => {
                         let i = index(value, "content_index")?;
-                        let expected = if kind == "response.output_text.delta" {
-                            "output_text"
-                        } else {
-                            "refusal"
-                        };
-                        if item.kind != "message"
-                            || item.parts.get(&i).map(String::as_str) != Some(expected)
+                        let expected = text_part(kind);
+                        if item.parts.get(&i).map(String::as_str) != Some(expected)
                             || item.closed_parts.contains(&i)
                         {
                             return Err(undecodable(
                                 "Responses text delta outside matching open part",
                             ));
                         }
-                        if expected == "output_text" {
-                            deltas.push(StreamDelta::TextDelta {
+                        match expected {
+                            "output_text" => deltas.push(StreamDelta::TextDelta {
                                 delta: delta.into(),
-                            });
+                            }),
+                            "reasoning_text" => deltas.push(StreamDelta::ReasoningDelta {
+                                delta: delta.into(),
+                            }),
+                            _ => {}
                         }
                     }
                 }
@@ -138,6 +147,7 @@ impl Responses {
             }
             "response.output_text.done"
             | "response.refusal.done"
+            | "response.reasoning_text.done"
             | "response.reasoning_summary_text.done" => {
                 let item = Self::item(&mut self.items, value)?;
                 if kind == "response.reasoning_summary_text.done" {
@@ -148,27 +158,14 @@ impl Responses {
                     self.budget.add(string(value, "text")?.len())?;
                 } else {
                     let i = index(value, "content_index")?;
-                    let expected = if kind == "response.output_text.done" {
-                        "output_text"
-                    } else {
-                        "refusal"
-                    };
+                    let expected = text_part(kind);
                     if item.parts.get(&i).map(String::as_str) != Some(expected)
                         || !item.closed_parts.insert(i)
                     {
                         return Err(undecodable("Responses invalid text done order"));
                     }
-                    self.budget.add(
-                        string(
-                            value,
-                            if expected == "output_text" {
-                                "text"
-                            } else {
-                                "refusal"
-                            },
-                        )?
-                        .len(),
-                    )?;
+                    self.budget
+                        .add(string(value, text_field(expected))?.len())?;
                 }
             }
             "response.content_part.done" | "response.reasoning_summary_part.done" => {
@@ -185,15 +182,8 @@ impl Responses {
                         return Err(undecodable("Responses duplicate completed content part"));
                     }
                     let part_type = string(part, "type")?;
-                    if matches!(part_type, "output_text" | "refusal") {
-                        string(
-                            part,
-                            if part_type == "output_text" {
-                                "text"
-                            } else {
-                                "refusal"
-                            },
-                        )?;
+                    if matches!(part_type, "output_text" | "reasoning_text" | "refusal") {
+                        string(part, text_field(part_type))?;
                     }
                     item.closed_parts.insert(i);
                 } else {
@@ -212,5 +202,23 @@ impl Responses {
             _ => unreachable!("content event dispatch"),
         }
         Ok(deltas)
+    }
+}
+
+/// The part type a text delta or done event writes to.
+fn text_part(kind: &str) -> &'static str {
+    match kind {
+        "response.output_text.delta" | "response.output_text.done" => "output_text",
+        "response.reasoning_text.delta" | "response.reasoning_text.done" => "reasoning_text",
+        _ => "refusal",
+    }
+}
+
+/// The field holding a text part's string.
+fn text_field(part_type: &str) -> &'static str {
+    if part_type == "refusal" {
+        "refusal"
+    } else {
+        "text"
     }
 }
