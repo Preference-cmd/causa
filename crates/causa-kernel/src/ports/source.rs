@@ -11,8 +11,9 @@
 use async_trait::async_trait;
 
 use crate::context::tool_data::ToolResultPayload;
+use crate::context::tools::ToolDefinition;
 use crate::ports::control::CallControl;
-use crate::ports::tool::{ToolCallContext, ToolDefinition};
+use crate::ports::tool::ToolCallContext;
 
 /// One external tool catalog. Implementors own their connection, their
 /// naming (see the `mcp_{server_id}_{tool}` namespace convention in

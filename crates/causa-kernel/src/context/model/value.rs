@@ -1,6 +1,6 @@
 //! Fact vocabulary of the model door — what the fact machine validates and
 //! records. The gateway envelope (`ModelOutput`), the transport error, and
-//! request parameters (`ModelRef`, `GenerationOptions`, `ToolSurface`) are
+//! request parameters (`ModelRef`, `GenerationOptions`) are
 //! port vocabulary and live in `crate::ports::gateway`.
 
 use serde::{Deserialize, Serialize};

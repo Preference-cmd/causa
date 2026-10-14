@@ -7,7 +7,8 @@ use super::TurnInterruption;
 use crate::new_block_id;
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, Context, ContextBlock, InvocationId, ModelOutput, ToolBatch,
-    ToolCallContext, ToolResultStatus, validate_tool_result_append,
+    ToolCallContext, ToolChange, ToolResultStatus, ToolSurface, current_tools,
+    validate_tool_result_append,
 };
 
 pub(super) struct ModelCommit {
@@ -110,4 +111,30 @@ pub(super) fn tools(
             error,
         })?;
     Ok(ToolCommit { start, unknown })
+}
+
+/// Appends the change that turns the context's tool state into `surface`,
+/// when they differ. Returns the index of the appended block.
+pub(super) fn tool_change(
+    context: &mut Context,
+    invocation_id: &InvocationId,
+    surface: &ToolSurface,
+) -> Result<Option<usize>, TurnInterruption> {
+    let change = ToolChange::between(&current_tools(context.blocks()), &surface.definitions);
+    if change.is_empty() {
+        return Ok(None);
+    }
+    let start = context.blocks().len();
+    let block = ContextBlock::new(
+        new_block_id(),
+        BlockContent::ToolChange(change),
+        BlockMeta::default(),
+    );
+    context.apply(vec![], vec![block]).map_err(|error| {
+        TurnInterruption::ToolChangeCommitFailed {
+            invocation_id: invocation_id.clone(),
+            error,
+        }
+    })?;
+    Ok(Some(start))
 }

@@ -1,7 +1,9 @@
 //! Protocol rendering, full-response parsing and authentication.
 
 use causa_kernel::{ModelInvokeError, ModelOutput, ModelRequest};
-use causa_protocol::translation::anthropic::{parse_anthropic_response, render_anthropic_messages};
+use causa_protocol::translation::anthropic::{
+    INLINE_TOOLS_BETA, parse_anthropic_response, render_anthropic_messages,
+};
 use causa_protocol::translation::media::MediaSet;
 use causa_protocol::translation::openai_chat::{
     parse_openai_chat_response, render_openai_chat_messages,
@@ -71,7 +73,6 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
         render_anthropic_messages(
             &request.frame,
             media,
-            &request.tool_surface,
             &request.generation,
             &request.model,
             request.cache,
@@ -91,12 +92,18 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
         let builder = builder
             .header("x-api-key", api_key)
             .header("anthropic-version", &self.anthropic_version);
-        if self.beta.is_empty() {
+        // One comma-separated header: the values the host listed, then the
+        // one an enabled render option needs. No model table decides headers.
+        let mut beta = self.beta.clone();
+        if self.render_options.native_tool_changes
+            && !beta.iter().any(|value| value == INLINE_TOOLS_BETA)
+        {
+            beta.push(INLINE_TOOLS_BETA.to_owned());
+        }
+        if beta.is_empty() {
             builder
         } else {
-            // One comma-separated header, exactly the values the host listed;
-            // no model table decides headers.
-            builder.header("anthropic-beta", self.beta.join(","))
+            builder.header("anthropic-beta", beta.join(","))
         }
     }
 
@@ -117,7 +124,6 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
         render_openai_chat_messages(
             &request.frame,
             media,
-            &request.tool_surface,
             &request.generation,
             &request.model,
             request.cache,
@@ -154,7 +160,6 @@ impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
         render_openai_responses_input(
             &request.frame,
             media,
-            &request.tool_surface,
             &request.generation,
             &request.model,
             request.cache,

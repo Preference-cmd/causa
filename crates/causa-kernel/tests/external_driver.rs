@@ -214,10 +214,9 @@ impl ModelGateway for FlakyGateway {
     ) -> Result<ModelOutput, ModelInvokeError> {
         let mut requests = self.requests.lock().unwrap();
         requests.push(format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+            "{:?}|{:?}|{:?}|{:?}|{}",
             request.invocation_id,
             request.model,
-            request.tool_surface,
             request.generation,
             request.cache,
             serde_json::to_string(&request.frame.blocks).unwrap()

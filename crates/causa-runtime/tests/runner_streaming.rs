@@ -92,13 +92,14 @@ async fn streaming_tools_share_material_commit_loop() {
         .run_streaming(TurnId::new("stream"), Context::new(), opts, ctrl())
         .await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
-    assert_eq!(out.context.blocks().len(), 4);
-    assert_eq!(g.requests.lock().unwrap()[1].frame.blocks.len(), 3);
+    // The tool declaration, the call, its result and the answer.
+    assert_eq!(out.context.blocks().len(), 5);
+    assert_eq!(g.requests.lock().unwrap()[1].frame.blocks.len(), 4);
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "request", "delta", "delta", "output", "commit", "ready", "returned", "commit",
-            "request", "delta", "output", "commit"
+            "commit", "request", "delta", "delta", "output", "commit", "ready", "returned",
+            "commit", "request", "delta", "output", "commit"
         ]
     );
     let wire = serde_json::to_string(&out.context).unwrap();
@@ -179,7 +180,8 @@ async fn streaming_observer_cancellation_prevents_done_and_half_tool_execution()
             cause: TurnInterruption::Cancelled { .. }
         }
     ));
-    assert!(out.context.blocks().is_empty());
+    // Only the tool declaration, committed before the request.
+    assert_eq!(out.context.blocks().len(), 1);
     assert!(out.uncommitted_tool_batch.is_none());
 }
 

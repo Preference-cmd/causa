@@ -4,7 +4,7 @@
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelOutput, ModelRef, StreamDelta, TextPayload, ToolSurface,
+    GenerationOptions, ModelOutput, ModelRef, StreamDelta, TextPayload,
 };
 use causa_protocol::Protocol;
 use causa_protocol::translation::anthropic::{parse_anthropic_response, render_anthropic_messages};
@@ -54,7 +54,6 @@ fn anthropic(frame: &ContextFrame) -> Value {
     render_anthropic_messages(
         frame,
         &MediaSet::new(),
-        &ToolSurface::empty(),
         &generation(),
         &ModelRef::new("m"),
         CacheDirective::None,
@@ -67,7 +66,6 @@ fn responses(frame: &ContextFrame) -> Value {
     render_openai_responses_input(
         frame,
         &MediaSet::new(),
-        &ToolSurface::empty(),
         &generation(),
         &ModelRef::new("m"),
         CacheDirective::None,
@@ -80,7 +78,6 @@ fn chat(frame: &ContextFrame, options: &ChatRenderOptions) -> Value {
     render_openai_chat_messages(
         frame,
         &MediaSet::new(),
-        &ToolSurface::empty(),
         &generation(),
         &ModelRef::new("m"),
         CacheDirective::None,

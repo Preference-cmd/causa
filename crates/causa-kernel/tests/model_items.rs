@@ -53,7 +53,7 @@ fn interleaved_items_become_blocks_in_item_order() {
                 other => panic!("unexpected part {other:?}"),
             },
             BlockContent::ToolCall(call) => format!("call:{}", call.tool_name),
-            BlockContent::ToolResult(_) => unreachable!(),
+            BlockContent::ToolResult(_) | BlockContent::ToolChange(_) => unreachable!(),
         })
         .collect();
     assert_eq!(shapes, ["first", "call:a", "second", "call:b", "third"]);

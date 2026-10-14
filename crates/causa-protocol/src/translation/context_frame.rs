@@ -41,6 +41,11 @@
 //!   whether it embeds (Anthropic) or hoists (OpenAI-family) is the
 //!   emitter's call. Non-string tool observations serialize to a string.
 //!
+//! - Tool changes: the first [`ToolChange`] block of a frame declares the
+//!   request-level tool list and never becomes a segment; a later one
+//!   becomes a [`Segment::ToolChange`] only when the renderer places changes
+//!   in place (see [`plan_tools`]), and renders nothing otherwise.
+//!
 //! Emitters then map the ordered [`Segment`] list to per-protocol wire
 //! shapes (message grouping, content block shapes, argument encoding,
 //! error flags). Rendering stays deterministic: the walk is single-pass
@@ -52,7 +57,8 @@ use serde_json::Value;
 
 use causa_kernel::{
     BlockContent, ContentPart, ContextFrame, MediaRef, ModelInvokeError, ModelInvokeErrorKind,
-    ModelItem, ModelItemContent, SealedPart, ToolResultStatus, ToolSurface, WireMeta,
+    ModelItem, ModelItemContent, SealedPart, ToolChange, ToolDefinition, ToolResultStatus,
+    WireMeta, current_tools,
 };
 
 use super::media::MediaSet;
@@ -265,6 +271,9 @@ pub(crate) enum Segment {
         /// payload order.
         media: Vec<ResolvedMedia>,
     },
+    /// A tool change after the frame's declaration, emitted only when the
+    /// renderer places changes in place.
+    ToolChange(ToolChange),
 }
 
 pub(crate) struct NormalizedFrame {
@@ -286,11 +295,13 @@ pub(crate) fn result_text_with_notes(content: &str, notes: &[String]) -> String 
 }
 
 /// Run the shared policy walk over a frame for `protocol`, resolving media
-/// through `media`.
+/// through `media`. `in_place_changes` is [`ToolPlan::in_place`]: whether
+/// tool changes after the declaration become segments.
 pub(crate) fn normalize(
     frame: &ContextFrame,
     media: &MediaSet,
     protocol: Protocol,
+    in_place_changes: bool,
 ) -> NormalizedFrame {
     let blocks = &frame.blocks;
 
@@ -311,6 +322,7 @@ pub(crate) fn normalize(
     }
 
     let mut segments: Vec<Segment> = Vec::new();
+    let mut declared = false;
     for (block_index, block) in blocks.iter().enumerate() {
         // The block's wire fields are visible to this renderer only when
         // they were recorded for its own format.
@@ -399,6 +411,14 @@ pub(crate) fn normalize(
                     media: resolved,
                 });
             }
+            BlockContent::ToolChange(change) => {
+                // The first change is the declaration: it renders as the
+                // request-level tool list, never at its position.
+                if declared && in_place_changes {
+                    segments.push(Segment::ToolChange(change.clone()));
+                }
+                declared = true;
+            }
         }
     }
 
@@ -448,12 +468,11 @@ pub(crate) enum ToolShape {
     OpenAiResponses,
 }
 
-/// Render a [`ToolSurface`] into a protocol's `tools` array entries —
-/// the single home of the name/description/parameters mapping, so the
-/// three renderers cannot drift.
-pub(crate) fn tool_definitions(tool_surface: &ToolSurface, shape: ToolShape) -> Vec<Value> {
-    tool_surface
-        .definitions
+/// Render tool definitions into a protocol's tool entries — the single home
+/// of the name/description/parameters mapping, so the three renderers cannot
+/// drift.
+pub(crate) fn tool_definitions(definitions: &[ToolDefinition], shape: ToolShape) -> Vec<Value> {
+    definitions
         .iter()
         .map(|d| match shape {
             ToolShape::Anthropic => serde_json::json!({
@@ -477,4 +496,76 @@ pub(crate) fn tool_definitions(tool_surface: &ToolSurface, shape: ToolShape) -> 
             }),
         })
         .collect()
+}
+
+/// How a renderer may place a frame's tool changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolPlacement {
+    /// Every change folds into the request-level tool list.
+    Fold,
+    /// Anthropic in-place changes: needs a non-empty declaration.
+    AnthropicInPlace,
+    /// Responses `additional_tools`: only additions of new names.
+    ResponsesAdditive,
+}
+
+/// The request-level tool list of one render, and whether later tool
+/// changes render at their position.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ToolPlan {
+    /// Definitions rendered as the request-level tool list.
+    pub tools: Vec<ToolDefinition>,
+    /// Whether changes after the declaration render in place; when `false`,
+    /// `tools` already holds the frame's current tool state.
+    pub in_place: bool,
+}
+
+/// Decide the request-level tool list for `placement`. In-place placement
+/// keeps the list at the declaration, the frame's first [`ToolChange`], so it
+/// stays value-equal while the set changes; it falls back to the current
+/// tool state when the protocol cannot express the frame's changes in place.
+pub(crate) fn plan_tools(frame: &ContextFrame, placement: ToolPlacement) -> ToolPlan {
+    let fold = || ToolPlan {
+        tools: current_tools(&frame.blocks),
+        in_place: false,
+    };
+    let mut changes = frame
+        .blocks
+        .iter()
+        .filter_map(|block| match block.content() {
+            BlockContent::ToolChange(change) => Some(change),
+            _ => None,
+        });
+    let Some(first) = changes.next() else {
+        return fold();
+    };
+    let mut declaration = Vec::new();
+    first.apply_to(&mut declaration);
+    let expressible = match placement {
+        ToolPlacement::Fold => false,
+        // Anthropic rejects a tool list in which every tool is deferred, and
+        // in-place mode adds a deferred placeholder.
+        ToolPlacement::AnthropicInPlace => !declaration.is_empty(),
+        // `additional_tools` only adds: a removal or a second definition of
+        // a name needs the request-level list rewritten.
+        ToolPlacement::ResponsesAdditive => {
+            let mut names: Vec<&str> = declaration.iter().map(|d| d.name.as_str()).collect();
+            changes.all(|change| {
+                change.removed.is_empty()
+                    && change.added.iter().all(|definition| {
+                        let new = !names.contains(&definition.name.as_str());
+                        names.push(&definition.name);
+                        new
+                    })
+            })
+        }
+    };
+    if expressible {
+        ToolPlan {
+            tools: declaration,
+            in_place: true,
+        }
+    } else {
+        fold()
+    }
 }

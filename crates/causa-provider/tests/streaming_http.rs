@@ -1,8 +1,7 @@
 //! Real chunked HTTP tests: the server holds termination until the consumer acknowledges a delta.
 use causa_kernel::{
     CacheDirective, CallControl, CancellationToken, ContextFrame, GenerationOptions, InvocationId,
-    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, RoundId, StreamDelta, ToolSurface,
-    TurnId,
+    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, RoundId, StreamDelta, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway, StreamLimits,
@@ -533,7 +532,7 @@ async fn decoder_limits_and_ready_ignored_events_preserve_control_fairness() {
 async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoint() {
     use causa_kernel::{
         BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload,
-        ToolDefinition,
+        ToolChange, ToolDefinition,
     };
     use causa_protocol::translation::media::MediaPayload;
     use wiremock::{
@@ -549,11 +548,21 @@ async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoi
         ]),
         BlockMeta::from_source("user"),
     ));
-    req.tool_surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
-        "read",
-        "read something",
-        json!({"type":"object","properties":{"path":{"type":"string"}}}),
-    )]);
+    req.frame.blocks.insert(
+        0,
+        ContextBlock::new(
+            BlockId::new(uuid::Uuid::from_u128(2)),
+            BlockContent::ToolChange(ToolChange::new(
+                vec![ToolDefinition::new(
+                    "read",
+                    "read something",
+                    json!({"type":"object","properties":{"path":{"type":"string"}}}),
+                )],
+                vec![],
+            )),
+            BlockMeta::default(),
+        ),
+    );
     req.cache = CacheDirective::StablePrefix;
     req.generation.temperature = Some(0.25);
     req.generation.max_tokens = Some(123);

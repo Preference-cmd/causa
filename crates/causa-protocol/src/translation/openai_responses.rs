@@ -58,6 +58,14 @@
 //!   `store: false` by default (as Codex and `pi-ai` do: encrypted reasoning
 //!   is what makes a sealed reasoning item replayable under `store: false` or
 //!   zero data retention). [`ResponsesRenderOptions`] changes either.
+//! - Tools: by default `tools` carries the frame's current tool state, the
+//!   fold of its `ToolChange` blocks, so a change rewrites it. With
+//!   [`ResponsesRenderOptions::additional_tools`], `tools` stays at the
+//!   frame's first change (the declaration) and each later change renders at
+//!   its position as an `additional_tools` input item with
+//!   `role: "developer"`, as Codex and `pi-ai` send it. `additional_tools`
+//!   only adds, so a frame in which a later change removes a tool or
+//!   defines a name a second time renders as by default.
 //! - `reasoning_effort` renders as `reasoning.effort`; output limits use
 //!   `max_output_tokens`, including reasoning tokens. The effort is written
 //!   exactly as given and beside any temperature; which values a model
@@ -68,7 +76,7 @@ use serde_json::{Value, json};
 use causa_kernel::{
     CacheDirective, ContentPart, ContextFrame, GenerationOptions, ModelInvokeError,
     ModelInvokeErrorKind, ModelItem, ModelItemContent, ModelOutput, ModelRef, ModelResponse,
-    ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft, ToolSurface,
+    ModelStopReason, ReasoningPayload, TextPayload, ToolCallDraft,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
@@ -92,7 +100,6 @@ const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_content";
 pub fn render_openai_responses_input(
     frame: &ContextFrame,
     media: &MediaSet,
-    tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
     _cache: CacheDirective,
@@ -100,7 +107,16 @@ pub fn render_openai_responses_input(
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_openai(generation)?;
     super::tool_history::validate_frame(frame)?;
-    let normalized = context_frame::normalize(frame, media, Protocol::OpenAiResponses);
+    let tool_plan = context_frame::plan_tools(
+        frame,
+        if options.additional_tools {
+            context_frame::ToolPlacement::ResponsesAdditive
+        } else {
+            context_frame::ToolPlacement::Fold
+        },
+    );
+    let normalized =
+        context_frame::normalize(frame, media, Protocol::OpenAiResponses, tool_plan.in_place);
 
     let mut instructions: Vec<String> = Vec::new();
     let mut items: Vec<Value> = Vec::new();
@@ -233,6 +249,20 @@ pub fn render_openai_responses_input(
                     items.push(json!({"role": "user", "content": parts}));
                 }
             }
+            // Additive placement: the change only adds tools, each under a
+            // name not offered before.
+            Segment::ToolChange(change) => {
+                if !change.added.is_empty() {
+                    items.push(json!({
+                        "type": "additional_tools",
+                        "role": "developer",
+                        "tools": context_frame::tool_definitions(
+                            &change.added,
+                            context_frame::ToolShape::OpenAiResponses,
+                        ),
+                    }));
+                }
+            }
         }
     }
 
@@ -275,9 +305,9 @@ pub fn render_openai_responses_input(
             },
         });
     }
-    if !tool_surface.definitions.is_empty() {
+    if !tool_plan.tools.is_empty() {
         body["tools"] = json!(context_frame::tool_definitions(
-            tool_surface,
+            &tool_plan.tools,
             context_frame::ToolShape::OpenAiResponses
         ));
     }
@@ -524,14 +554,13 @@ mod tests {
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
-        call, frame, media_part, parts, result, result_with_media, text, text_part,
+        call, frame, media_part, parts, result, result_with_media, text, text_part, with_tools,
     };
 
     fn render(frame: &ContextFrame) -> Value {
         render_openai_responses_input(
             frame,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -628,20 +657,19 @@ mod tests {
 
     #[test]
     fn tools_generation_and_byte_determinism() {
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        let surface = vec![ToolDefinition::new(
             "read",
             "read a file",
             json!({"type": "object"}),
-        )]);
+        )];
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
         let generation = GenerationOptions::default()
             .with_temperature(0.5)
             .with_max_tokens(256);
         let v = render_openai_responses_input(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -662,9 +690,8 @@ mod tests {
             }])
         );
         let again = render_openai_responses_input(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -684,7 +711,6 @@ mod tests {
         let v = render_openai_responses_input(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -706,7 +732,6 @@ mod tests {
         let cached = render_openai_responses_input(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::StablePrefix,
@@ -721,7 +746,6 @@ mod tests {
         let e = render_openai_responses_input(
             &frame(vec![]),
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
             CacheDirective::None,
@@ -751,7 +775,6 @@ mod tests {
         let v = render_openai_responses_input(
             &f,
             &resolved("asset-1"),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -782,7 +805,6 @@ mod tests {
         let v = render_openai_responses_input(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -818,7 +840,6 @@ mod tests {
         let v = render_openai_responses_input(
             &f,
             &media,
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,

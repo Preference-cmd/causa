@@ -167,7 +167,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
                         collect(r, &mut refs, &mut seen);
                     }
                 }
-                BlockContent::ToolCall(_) => {}
+                BlockContent::ToolCall(_) | BlockContent::ToolChange(_) => {}
             }
         }
         for r in refs {
@@ -190,9 +190,22 @@ impl KernelHttpGateway<AnthropicGatewayConfig> {
 
     /// Append one extra `anthropic-beta` value for this gateway. Values are
     /// sent as one comma-separated `anthropic-beta` header, in the order
-    /// listed; nothing is sent by default and no model table decides headers.
+    /// listed, followed by the value an enabled option needs; nothing is
+    /// sent by default and no model table decides headers.
     pub fn with_beta(mut self, value: impl Into<String>) -> Self {
         self.config.beta.push(value.into());
+        self
+    }
+
+    /// Render tool changes in place (default `false`).
+    ///
+    /// `tools` stays at the context's first tool change and each later
+    /// change is sent at its position as `tool_removal` / `tool_addition`
+    /// blocks, so a changed tool listing keeps the cached prefix and earlier
+    /// thinking. The gateway adds the `inline-tools-2026-09-15` beta value
+    /// it needs. Off, every request carries the current tools in `tools`.
+    pub fn with_native_tool_changes(mut self, native: bool) -> Self {
+        self.config.render_options.native_tool_changes = native;
         self
     }
 }
@@ -226,6 +239,18 @@ impl KernelHttpGateway<OpenAiResponsesGatewayConfig> {
     /// choice is per gateway value, not per request.
     pub fn with_store(mut self, store: Option<bool>) -> Self {
         self.config.render_options.store = store;
+        self
+    }
+
+    /// Send added tools as `additional_tools` input items (default `false`).
+    ///
+    /// `tools` stays at the context's first tool change and each later
+    /// addition is sent at its position, as Codex does, so the cached prefix
+    /// survives it. A context in which a later change removes a tool or
+    /// redefines one renders with the current tools in `tools`, as with this
+    /// off.
+    pub fn with_additional_tools(mut self, additional_tools: bool) -> Self {
+        self.config.render_options.additional_tools = additional_tools;
         self
     }
 }

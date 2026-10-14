@@ -57,6 +57,20 @@ replayed verbatim by their own renderer. Responses requests send
 each behaviour has a gateway option. Anthropic output schema requests are still
 rejected.
 
+Tool changes are facts in the context. After binding tools, the runner
+appends a `ToolChange` block whenever the bound set differs from the
+context's tool state; the first such block declares the initial set, and
+renderers read the tools from the frame. By default every protocol sends the
+current set in `tools`. Two gateway options keep `tools` unchanged while the
+set changes, so the provider's prompt cache survives:
+`AnthropicMessagesGateway::with_native_tool_changes(true)` renders each later
+change in place as a `system` message (and adds the `inline-tools-2026-09-15`
+beta value), and `OpenAiResponsesGateway::with_additional_tools(true)` renders
+an added tool as an `additional_tools` input item. Responses rewrites `tools`
+when a change removes or redefines a tool, and Chat Completions always does.
+A preparer that replaces blocks keeps the `ToolChange` blocks; a frame whose
+tools do not match the bound set stops the round with `PrepareFailed`.
+
 Full API docs for every crate: [docs.rs/crate/causa](https://docs.rs/causa)
 (built with `all-features`).
 

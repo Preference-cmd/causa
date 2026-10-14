@@ -12,6 +12,61 @@ adapters or data converters.
 
 ## [Unreleased]
 
+Tool changes are facts in the context. The runner records which tools the
+model is offered, and from where, as `ToolChange` blocks; every renderer
+reads the tools from the frame, and Anthropic Messages and OpenAI Responses
+can keep the request's `tools` unchanged while the set changes.
+
+### Breaking
+
+- New block shape `BlockContent::ToolChange(ToolChange)`, serialized as
+  `"shape": "tool_change"`. `ToolChange` and `ToolDefinition` join the
+  stable serialized set; `ToolDefinition` moves into `causa_kernel::context::tools`
+  (the root path `causa_kernel::ToolDefinition` is unchanged).
+
+  Migration: an exhaustive `match` over `BlockContent` adds a
+  `ToolChange` arm. Stored contexts load unchanged.
+
+- `ModelRequest::tool_surface` is removed. The frame is the only source of
+  model-facing tools: the tool state is the fold of the frame's
+  `ToolChange` blocks (`causa_kernel::current_tools`).
+
+  Migration: a host that builds requests itself puts a `ToolChange` holding
+  its tools before the conversation, for example
+  `ToolChange::between(&[], &definitions)`. Code that read
+  `request.tool_surface` reads `current_tools(&request.frame.blocks)`.
+
+- The `render` functions of `causa-protocol` (`anthropic`, `openai_chat`,
+  `openai_responses`) no longer take a tool surface argument.
+
+- The runner appends a `ToolChange` block after binding whenever the bound
+  tools differ from the context's tool state, and reports it in
+  `RunEvent::BlocksCommitted`. A context that starts without tool facts
+  gains the declaration in its first round. A preparer whose frame does not
+  add up to the bound tools stops the round with `PrepareFailed`.
+
+  Migration: a preparer that replaces or filters blocks keeps the
+  `ToolChange` blocks. Code that counted the blocks of a run, or the
+  `BlocksCommitted` events, expects the extra tool facts. A failed append
+  is reported as the new `TurnInterruption::ToolChangeCommitFailed`.
+
+### Added
+
+- `ToolChange::new`, `ToolChange::between`, `ToolChange::apply_to` and
+  `current_tools`.
+- Native tool changes, off by default:
+  `AnthropicMessagesGateway::with_native_tool_changes(true)` keeps `tools`
+  at the declaration plus a deferred placeholder tool, renders each later
+  change in place as a `system` message of `tool_removal` /
+  `tool_addition` blocks, and adds `inline-tools-2026-09-15` to
+  `anthropic-beta` after the host's values.
+  `OpenAiResponsesGateway::with_additional_tools(true)` keeps `tools` at
+  the declaration and renders each later change as an `additional_tools`
+  input item; a change that removes or redefines a tool falls back to
+  rewriting `tools`. Chat Completions always sends the current set.
+- Every renderer rejects a tool change between a tool call and its result,
+  and a change that names a tool twice or with an empty name.
+
 ### Changed
 
 - CI runs on Linux only. The workspace has no platform-specific code, and

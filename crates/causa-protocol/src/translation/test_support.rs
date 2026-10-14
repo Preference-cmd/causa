@@ -8,7 +8,8 @@ use serde_json::Value;
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextFrame, MediaRef,
-    TextPayload, ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
+    TextPayload, ToolCallPayload, ToolChange, ToolDefinition, ToolOutput, ToolResultPayload,
+    ToolResultStatus,
 };
 
 pub(crate) fn label_id(label: &str) -> BlockId {
@@ -103,5 +104,24 @@ pub(crate) fn result_with_media(
 }
 
 pub(crate) fn frame(blocks: Vec<ContextBlock>) -> ContextFrame {
+    ContextFrame { blocks }
+}
+
+/// A tool change block adding `added` after withdrawing `removed`.
+fn tool_change(label: &str, added: Vec<ToolDefinition>, removed: &[&str]) -> ContextBlock {
+    ContextBlock::new(
+        label_id(label),
+        BlockContent::ToolChange(ToolChange::new(
+            added,
+            removed.iter().map(|name| (*name).to_owned()).collect(),
+        )),
+        BlockMeta::default(),
+    )
+}
+
+/// `frame` with a declaration of `tools` in front, so it offers them.
+pub(crate) fn with_tools(frame: &ContextFrame, tools: &[ToolDefinition]) -> ContextFrame {
+    let mut blocks = vec![tool_change("declaration", tools.to_vec(), &[])];
+    blocks.extend(frame.blocks.iter().cloned());
     ContextFrame { blocks }
 }

@@ -5,8 +5,8 @@
 
 use causa_kernel::{
     ArtifactKind, ArtifactRef, BlockContent, BlockId, BlockMeta, ContentPart, Context,
-    ContextBlock, MediaRef, SealedPart, TextPayload, ToolCallPayload, ToolOutput, ToolOutputMeta,
-    ToolResultPayload, ToolResultStatus, Truncation, WireMeta,
+    ContextBlock, MediaRef, SealedPart, TextPayload, ToolCallPayload, ToolChange, ToolDefinition,
+    ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation, WireMeta,
 };
 use serde_json::{Value, json};
 
@@ -52,7 +52,17 @@ fn context() -> Context {
         ToolOutput::new(json!("plain")),
     );
 
+    let change = BlockContent::ToolChange(ToolChange::new(
+        vec![ToolDefinition::new(
+            "read_file",
+            "Read a file.",
+            json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        )],
+        vec!["write_file".into()],
+    ));
+
     Context::from_blocks(vec![
+        ContextBlock::new(id(0), change, full_meta.clone()),
         ContextBlock::new(id(1), parts, full_meta.clone()),
         ContextBlock::new(id(2), call.clone(), full_meta.clone()),
         ContextBlock::new(id(3), BlockContent::ToolResult(full_result), full_meta),
@@ -65,6 +75,11 @@ fn context() -> Context {
         ContextBlock::new(
             id(6),
             BlockContent::ToolResult(bare_result),
+            BlockMeta::default(),
+        ),
+        ContextBlock::new(
+            id(7),
+            BlockContent::ToolChange(ToolChange::default()),
             BlockMeta::default(),
         ),
     ])

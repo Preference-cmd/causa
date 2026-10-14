@@ -377,8 +377,14 @@ fn estimate(context: &Context, round: &RoundInfo<'_>) -> Estimate {
             _ => 0,
         })
         .sum::<usize>();
+    // The tool facts in the context are the round's tools, counted once below.
+    let conversation: Vec<&ContextBlock> = context
+        .blocks()
+        .iter()
+        .filter(|block| !matches!(block.content(), BlockContent::ToolChange(_)))
+        .collect();
     Estimate {
-        blocks: serde_json::to_vec(context.blocks()).unwrap().len(),
+        blocks: serde_json::to_vec(&conversation).unwrap().len(),
         tools: serde_json::to_vec(&round.tool_surface.definitions)
             .unwrap()
             .len(),
@@ -480,13 +486,24 @@ async fn schema_only_threshold_crossing_changes_request_admission_with_identical
                     cause: TurnInterruption::PrepareFailed { .. }
                 }
             ));
-            assert_eq!(outcome.context.blocks(), baseline_blocks);
+            // Only the declaration of the bound tools was appended.
+            assert_eq!(
+                outcome.context.blocks()[..baseline_blocks.len()],
+                baseline_blocks[..]
+            );
+            assert_eq!(outcome.context.blocks().len(), baseline_blocks.len() + 1);
         }
     }
     let requests = admitted_gateway.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].frame.blocks, baseline_blocks);
-    assert_eq!(requests[0].tool_surface, small_tools);
+    assert_eq!(
+        requests[0].frame.blocks[..baseline_blocks.len()],
+        baseline_blocks[..]
+    );
+    assert_eq!(
+        causa::kernel::current_tools(&requests[0].frame.blocks),
+        small_tools.definitions
+    );
     assert_eq!(requests[0].generation, generation);
     assert!(rejected_gateway.requests.lock().unwrap().is_empty());
     let estimates = budget.estimates.lock().unwrap();

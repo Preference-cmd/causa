@@ -9,8 +9,8 @@
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, MediaRef, ModelRef, SealedPart, TextPayload, ToolCallPayload,
-    ToolDefinition, ToolSurface,
+    GenerationOptions, MediaRef, ModelRef, SealedPart, TextPayload, ToolCallPayload, ToolChange,
+    ToolDefinition,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::media::{MediaPayload, MediaSet};
@@ -66,7 +66,6 @@ fn anthropic(frame: &ContextFrame, cache: CacheDirective) -> Value {
     render_anthropic_messages(
         frame,
         &MediaSet::new(),
-        &ToolSurface::empty(),
         &anthropic_generation(),
         &ModelRef::new("claude-test"),
         cache,
@@ -80,12 +79,17 @@ fn anthropic(frame: &ContextFrame, cache: CacheDirective) -> Value {
 fn anthropic_with_tools(
     frame: &ContextFrame,
     cache: CacheDirective,
-    surface: &ToolSurface,
+    tools: &[ToolDefinition],
 ) -> Value {
+    let mut blocks = vec![ContextBlock::new(
+        id("declaration"),
+        BlockContent::ToolChange(ToolChange::new(tools.to_vec(), Vec::new())),
+        BlockMeta::default(),
+    )];
+    blocks.extend(frame.blocks.iter().cloned());
     render_anthropic_messages(
-        frame,
+        &ContextFrame { blocks },
         &MediaSet::new(),
-        surface,
         &anthropic_generation(),
         &ModelRef::new("claude-test"),
         cache,
@@ -98,7 +102,6 @@ fn chat(frame: &ContextFrame) -> Value {
     render_openai_chat_messages(
         frame,
         &MediaSet::new(),
-        &ToolSurface::empty(),
         &GenerationOptions::default(),
         &ModelRef::new("chat-test"),
         CacheDirective::None,
@@ -111,7 +114,6 @@ fn responses(frame: &ContextFrame) -> Value {
     render_openai_responses_input(
         frame,
         &MediaSet::new(),
-        &ToolSurface::empty(),
         &GenerationOptions::default(),
         &ModelRef::new("responses-test"),
         CacheDirective::None,
@@ -350,11 +352,11 @@ fn consecutive_renders_of_one_tool_loop_share_their_prefix() {
     blocks.push(text("a1", "the second file says b", None));
     let round_two = frame(blocks);
 
-    let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+    let surface = vec![ToolDefinition::new(
         "read",
         "read a file",
         json!({"type": "object"}),
-    )]);
+    )];
     let first = anthropic_with_tools(&round_one, CacheDirective::StablePrefix, &surface);
     let second = anthropic_with_tools(&round_two, CacheDirective::StablePrefix, &surface);
 
@@ -477,7 +479,6 @@ fn an_unedited_media_reference_renders_the_same_value_on_every_round() {
         render_anthropic_messages(
             f,
             &media,
-            &ToolSurface::empty(),
             &anthropic_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,
@@ -505,7 +506,6 @@ fn an_unedited_media_reference_renders_the_same_value_on_every_round() {
             render_anthropic_messages(
                 f,
                 &set,
-                &ToolSurface::empty(),
                 &anthropic_generation(),
                 &ModelRef::new("claude-test"),
                 CacheDirective::StablePrefix,

@@ -33,8 +33,19 @@
 //!   the content).
 //! - `GenerationOptions::max_tokens` is required by Anthropic; a `None`
 //!   fails with `InvalidRequest` before HTTP. The adapter sends no default
-//!   ceiling. [`AnthropicRenderOptions`] is reserved for choices only this
-//!   protocol has; it holds none today.
+//!   ceiling. [`AnthropicRenderOptions`] holds the choices only this
+//!   protocol has.
+//! - Tools: by default `tools` carries the frame's current tool state, the
+//!   fold of its `ToolChange` blocks, so a change rewrites it. With
+//!   [`AnthropicRenderOptions::native_tool_changes`], `tools` stays at the
+//!   frame's first change (the declaration), followed by a deferred
+//!   placeholder tool, and each later change renders at its position as a
+//!   `system` message of `tool_removal` and `tool_addition` blocks (inline
+//!   definitions), as `pi-ai` sends them. The request then needs
+//!   [`INLINE_TOOLS_BETA`]. A change must follow a user turn; one that would
+//!   render first or after assistant content is an `InvalidRequest`. An
+//!   empty declaration renders as by default, because the API rejects a
+//!   tool list in which every tool is deferred.
 //! - [`CacheDirective::StablePrefix`] marks three `cache_control`
 //!   breakpoints: the last tool definition, the `system` parameter
 //!   (rendered as a block array so the anchor can attach — Anthropic
@@ -66,7 +77,7 @@ use serde_json::{Value, json};
 use causa_kernel::{
     CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
     ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningPayload, ToolCallDraft,
-    ToolResultStatus, ToolSurface,
+    ToolDefinition, ToolResultStatus,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
@@ -74,28 +85,62 @@ use super::media::MediaSet;
 use super::render_options::AnthropicRenderOptions;
 use crate::Protocol;
 
+/// The `anthropic-beta` value that in-place tool changes need: it covers
+/// `tool_addition` and `tool_removal` blocks, by reference and with inline
+/// definitions.
+pub const INLINE_TOOLS_BETA: &str = "inline-tools-2026-09-15";
+
+/// Name of the deferred placeholder tool sent in in-place mode.
+const DEFERRED_PLACEHOLDER: &str = "__causa_deferred_placeholder__";
+
+/// A deferred tool that is never added, sent last in `tools` in in-place
+/// mode. The API adds hidden prompt scaffolding for tool changes; declaring a
+/// deferred tool from the first request keeps that scaffolding in the cached
+/// prefix, so the first change does not miss the cache (as `pi-ai` reports
+/// and does). The model cannot see or call it.
+fn deferred_placeholder() -> Value {
+    json!({
+        "name": DEFERRED_PLACEHOLDER,
+        "description": "Reserved placeholder. Never available. Never call this.",
+        "input_schema": {"type": "object", "properties": {}},
+        "defer_loading": true,
+    })
+}
+
 /// Render a [`ContextFrame`] into an Anthropic Messages request body.
 ///
 /// The body is complete: `model`, `max_tokens`, `messages`, plus `system`,
 /// `temperature`, `tools` and `output_config` when the inputs call for them,
 /// then the host's extra request fields. Media references resolve through `media`;
 /// unresolvable or non-image references degrade to the shared text
-/// placeholder. `options` is reserved for choices only this protocol has; see
+/// placeholder. `options` holds the choices only this protocol has; see
 /// [`AnthropicRenderOptions`]. Rendering is deterministic — the same frame,
-/// surface, generation, model, media table, cache directive and options
-/// always produce byte-identical JSON.
+/// generation, model, media table, cache directive and options always
+/// produce byte-identical JSON.
 pub fn render_anthropic_messages(
     frame: &ContextFrame,
     media: &MediaSet,
-    tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
     cache: CacheDirective,
-    _options: &AnthropicRenderOptions,
+    options: &AnthropicRenderOptions,
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_anthropic(generation)?;
     super::tool_history::validate_frame(frame)?;
-    let normalized = context_frame::normalize(frame, media, Protocol::AnthropicMessages);
+    let tool_plan = context_frame::plan_tools(
+        frame,
+        if options.native_tool_changes {
+            context_frame::ToolPlacement::AnthropicInPlace
+        } else {
+            context_frame::ToolPlacement::Fold
+        },
+    );
+    let normalized = context_frame::normalize(
+        frame,
+        media,
+        Protocol::AnthropicMessages,
+        tool_plan.in_place,
+    );
 
     // Only the leading system run belongs in the top-level `system`
     // parameter; a system block appended after conversation content renders at
@@ -128,6 +173,12 @@ pub fn render_anthropic_messages(
     // stored item can be any content-block type, so the position is tracked
     // rather than guessed from the block's `type`.
     let mut sealed_blocks: Vec<(usize, usize)> = Vec::new();
+    // Positions of tool change blocks: not the place for the cache anchor
+    // either, and a message holding only them does not end the stable
+    // prefix.
+    let mut change_blocks: Vec<(usize, usize)> = Vec::new();
+    // The tool state the in-place changes apply to, from the declaration on.
+    let mut tools_offered: Vec<ToolDefinition> = tool_plan.tools.clone();
     for segment in conversation {
         match segment {
             Segment::Text {
@@ -231,6 +282,23 @@ pub fn render_anthropic_messages(
                 }
                 append_message(&mut messages, "user", block_json);
             }
+            Segment::ToolChange(change) => {
+                // The API takes a change only after a user turn (tool results
+                // count) or within a system message; the renderer never moves
+                // one there.
+                if !matches!(messages.last(), Some(("user" | "system", _))) {
+                    return Err(ModelInvokeError::new(
+                        ModelInvokeErrorKind::InvalidRequest,
+                        "an Anthropic tool change must follow a user turn",
+                    ));
+                }
+                for block in tool_change_blocks(change, &tools_offered) {
+                    append_message(&mut messages, "system", block);
+                    let message = messages.len() - 1;
+                    change_blocks.push((message, messages[message].1.len() - 1));
+                }
+                change.apply_to(&mut tools_offered);
+            }
         }
     }
 
@@ -253,7 +321,7 @@ pub fn render_anthropic_messages(
             if let Some(last) = system_blocks.last_mut() {
                 last["cache_control"] = json!({"type": "ephemeral"});
             }
-            if let Some(last_block) = anchor_block(&mut messages, &sealed_blocks) {
+            if let Some(last_block) = anchor_block(&mut messages, &sealed_blocks, &change_blocks) {
                 last_block["cache_control"] = json!({"type": "ephemeral"});
             }
         }
@@ -284,9 +352,9 @@ pub fn render_anthropic_messages(
         // join, so the value does not change shape with the cache directive.
         body["system"] = json!(system_blocks);
     }
-    if !tool_surface.definitions.is_empty() {
+    if !tool_plan.tools.is_empty() {
         let mut tools =
-            context_frame::tool_definitions(tool_surface, context_frame::ToolShape::Anthropic);
+            context_frame::tool_definitions(&tool_plan.tools, context_frame::ToolShape::Anthropic);
         match cache {
             CacheDirective::None => {}
             CacheDirective::StablePrefix => {
@@ -294,6 +362,9 @@ pub fn render_anthropic_messages(
                     last_tool["cache_control"] = json!({"type": "ephemeral"});
                 }
             }
+        }
+        if tool_plan.in_place {
+            tools.push(deferred_placeholder());
         }
         body["tools"] = json!(tools);
     }
@@ -318,30 +389,74 @@ pub fn render_anthropic_messages(
 fn anchor_block<'a>(
     messages: &'a mut [(&'static str, Vec<Value>)],
     sealed: &[(usize, usize)],
+    changes: &[(usize, usize)],
 ) -> Option<&'a mut Value> {
-    let last = messages.last()?;
+    // Trailing messages that hold only tool changes are this round's
+    // additions; the stable prefix ends before them.
+    let end = messages
+        .iter()
+        .enumerate()
+        .rposition(|(message_index, message)| {
+            (0..message.1.len()).any(|block| !changes.contains(&(message_index, block)))
+        })?;
+    let last = &messages[end];
     let dispatching = last
         .1
         .iter()
         .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"));
-    let start = if dispatching && messages.len() > 1 {
-        messages.len() - 2
-    } else {
-        messages.len() - 1
-    };
+    let start = if dispatching && end > 0 { end - 1 } else { end };
     for (message_index, message) in messages[..=start].iter_mut().enumerate().rev() {
         let found = message
             .1
             .iter_mut()
             .enumerate()
             .rev()
-            .find(|(block_index, _)| !sealed.contains(&(message_index, *block_index)))
+            .find(|(block_index, _)| {
+                !sealed.contains(&(message_index, *block_index))
+                    && !changes.contains(&(message_index, *block_index))
+            })
             .map(|(_, block)| block);
         if found.is_some() {
             return found;
         }
     }
     None
+}
+
+/// The content blocks of one in-place tool change, applied to `offered`:
+/// a `tool_removal` per withdrawn tool that is offered and not defined again
+/// in the same change (a new definition replaces the old one), then a
+/// `tool_addition` with the inline definition per added tool, as `pi-ai`
+/// renders them.
+fn tool_change_blocks(change: &causa_kernel::ToolChange, offered: &[ToolDefinition]) -> Vec<Value> {
+    let mut blocks: Vec<Value> = change
+        .removed
+        .iter()
+        .filter(|name| offered.iter().any(|definition| &definition.name == *name))
+        .filter(|name| {
+            !change
+                .added
+                .iter()
+                .any(|definition| &definition.name == *name)
+        })
+        .map(|name| {
+            json!({
+                "type": "tool_removal",
+                "tool": {"type": "tool_reference", "name": name},
+            })
+        })
+        .collect();
+    blocks.extend(
+        context_frame::tool_definitions(&change.added, context_frame::ToolShape::Anthropic)
+            .into_iter()
+            .map(|definition| {
+                json!({
+                    "type": "tool_addition",
+                    "tool": {"type": "tool_definition", "definition": definition},
+                })
+            }),
+    );
+    blocks
 }
 
 fn role_name(role: Role) -> &'static str {
@@ -527,7 +642,7 @@ mod tests {
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
-        call, frame, media_part, parts, result, result_with_media, text, text_part,
+        call, frame, media_part, parts, result, result_with_media, text, text_part, with_tools,
     };
 
     /// Anthropic requires `max_tokens`; the renderer tests always supply one.
@@ -539,7 +654,6 @@ mod tests {
         render_anthropic_messages(
             frame,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -666,7 +780,6 @@ mod tests {
         let error = render_anthropic_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("test"),
             CacheDirective::None,
@@ -678,20 +791,19 @@ mod tests {
 
     #[test]
     fn tools_generation_and_byte_determinism() {
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        let surface = vec![ToolDefinition::new(
             "read",
             "read a file",
             json!({"type": "object", "properties": {"path": {"type": "string"}}}),
-        )]);
+        )];
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
         let generation = GenerationOptions::default()
             .with_temperature(0.5)
             .with_max_tokens(4096);
         let v = render_anthropic_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -714,9 +826,8 @@ mod tests {
             .with_temperature(0.5)
             .with_max_tokens(100);
         let v2 = render_anthropic_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -726,9 +837,8 @@ mod tests {
         assert_eq!(v2["max_tokens"], json!(100));
         // byte determinism over the full body
         let again = render_anthropic_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -751,7 +861,6 @@ mod tests {
         render_anthropic_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             generation,
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -820,7 +929,6 @@ mod tests {
         let e = render_anthropic_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("m"),
             CacheDirective::None,
@@ -836,15 +944,14 @@ mod tests {
             text(0, "be terse", Some("system")),
             text(1, "hi", Some("user")),
         ]);
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        let surface = vec![ToolDefinition::new(
             "read",
             "read a file",
             json!({"type": "object"}),
-        )]);
+        )];
         let v = render_anthropic_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -862,15 +969,14 @@ mod tests {
             call(2, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
             result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
         ]);
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        let surface = vec![ToolDefinition::new(
             "read",
             "read a file",
             json!({"type": "object"}),
-        )]);
+        )];
         let v = render_anthropic_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,
@@ -901,7 +1007,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,
@@ -934,7 +1039,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &resolved("asset-1"),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -962,7 +1066,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -987,7 +1090,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &media,
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -1009,7 +1111,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &resolved("asset-1"),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -1045,7 +1146,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &media,
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -1071,7 +1171,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &resolved("unused"),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::None,
@@ -1094,7 +1193,6 @@ mod tests {
         let v = render_anthropic_messages(
             &f,
             &resolved("asset-1"),
-            &ToolSurface::empty(),
             &test_generation(),
             &ModelRef::new("claude-test"),
             CacheDirective::StablePrefix,

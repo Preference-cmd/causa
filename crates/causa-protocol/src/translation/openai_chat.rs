@@ -51,6 +51,9 @@
 //!   off the renderer removes the `reasoning_content` key from its own sealed
 //!   items — skipping an item left empty, like one of another format — and
 //!   changes nothing else. Other sealed message fields always replay.
+//! - Tools: `tools` carries the frame's current tool state, the fold of its
+//!   `ToolChange` blocks. Chat has no wire form for a change at a position,
+//!   so a change rewrites `tools`.
 //! - Output limits use `max_completion_tokens`, including reasoning tokens;
 //!   no default limit is injected. Effort renders as `reasoning_effort`,
 //!   exactly as given and beside any temperature. Which effort values and
@@ -60,7 +63,7 @@ use serde_json::{Value, json};
 
 use causa_kernel::{
     CacheDirective, ContextFrame, GenerationOptions, ModelInvokeError, ModelInvokeErrorKind,
-    ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningPayload, ToolCallDraft, ToolSurface,
+    ModelItem, ModelOutput, ModelRef, ModelResponse, ReasoningPayload, ToolCallDraft,
 };
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
@@ -91,7 +94,6 @@ struct AssistantRun {
 pub fn render_openai_chat_messages(
     frame: &ContextFrame,
     media: &MediaSet,
-    tool_surface: &ToolSurface,
     generation: &GenerationOptions,
     model: &ModelRef,
     _cache: CacheDirective,
@@ -99,7 +101,15 @@ pub fn render_openai_chat_messages(
 ) -> Result<Value, ModelInvokeError> {
     super::generation::validate_openai(generation)?;
     super::tool_history::validate_frame(frame)?;
-    let normalized = context_frame::normalize(frame, media, Protocol::OpenAiChatCompletions);
+    // Chat has no in-place form for a tool change: `tools` always carries
+    // the frame's current tool state.
+    let tool_plan = context_frame::plan_tools(frame, context_frame::ToolPlacement::Fold);
+    let normalized = context_frame::normalize(
+        frame,
+        media,
+        Protocol::OpenAiChatCompletions,
+        tool_plan.in_place,
+    );
 
     // A run of assistant text + tool call segments coalesces into one
     // assistant message; any other segment closes the open run.
@@ -253,6 +263,8 @@ pub fn render_openai_chat_messages(
                     result_media.push(json!({"role": "user", "content": parts}));
                 }
             }
+            // Never emitted under fold placement.
+            Segment::ToolChange(_) => {}
         }
     }
     if let Some(finished) = run.take() {
@@ -292,9 +304,9 @@ pub fn render_openai_chat_messages(
             },
         });
     }
-    if !tool_surface.definitions.is_empty() {
+    if !tool_plan.tools.is_empty() {
         body["tools"] = json!(context_frame::tool_definitions(
-            tool_surface,
+            &tool_plan.tools,
             context_frame::ToolShape::OpenAiChat
         ));
     }
@@ -485,13 +497,13 @@ mod tests {
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
         call, frame, label_id, media_part, parts, result, result_with_media, text, text_part,
+        with_tools,
     };
 
     fn render(frame: &ContextFrame) -> Value {
         render_openai_chat_messages(
             frame,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -627,7 +639,6 @@ mod tests {
         let error = render_openai_chat_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("test"),
             CacheDirective::None,
@@ -639,18 +650,17 @@ mod tests {
 
     #[test]
     fn tools_generation_and_byte_determinism() {
-        let surface = ToolSurface::from_definitions(vec![ToolDefinition::new(
+        let surface = vec![ToolDefinition::new(
             "read",
             "read a file",
             json!({"type": "object"}),
-        )]);
+        )];
         let f = frame(vec![text(0, "hi", Some("user"))]);
 
         let generation = GenerationOptions::default().with_temperature(0.5);
         let v = render_openai_chat_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -673,9 +683,8 @@ mod tests {
             .with_temperature(0.5)
             .with_max_tokens(100);
         let v2 = render_openai_chat_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -684,9 +693,8 @@ mod tests {
         .unwrap();
         assert_eq!(v2["max_completion_tokens"], json!(100));
         let again = render_openai_chat_messages(
-            &f,
+            &with_tools(&f, &surface),
             &MediaSet::new(),
-            &surface,
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -706,7 +714,6 @@ mod tests {
         let v = render_openai_chat_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -728,7 +735,6 @@ mod tests {
         let cached = render_openai_chat_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &generation,
             &ModelRef::new("gpt-test"),
             CacheDirective::StablePrefix,
@@ -743,7 +749,6 @@ mod tests {
         let e = render_openai_chat_messages(
             &frame(vec![]),
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("m"),
             CacheDirective::None,
@@ -777,7 +782,6 @@ mod tests {
         let v = render_openai_chat_messages(
             &f,
             &resolved("asset-1"),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -807,7 +811,6 @@ mod tests {
         let v = render_openai_chat_messages(
             &f,
             &MediaSet::new(),
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -841,7 +844,6 @@ mod tests {
         let v = render_openai_chat_messages(
             &f,
             &media,
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,
@@ -885,7 +887,6 @@ mod tests {
         let v = render_openai_chat_messages(
             &f,
             &media,
-            &ToolSurface::empty(),
             &GenerationOptions::default(),
             &ModelRef::new("gpt-test"),
             CacheDirective::None,

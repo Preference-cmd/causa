@@ -79,10 +79,23 @@ impl ContextPreparer for Summarize {
         _: &CallControl,
     ) -> Result<ContextFrame, PrepareError> {
         if round.invocation_id.round_id == RoundId(1) {
+            // The summary replaces the conversation; the tool facts stay, so
+            // the frame still offers the round's bound tools.
             let length = context.blocks().len();
+            let tool_facts: Vec<ContextBlock> = context
+                .blocks()
+                .iter()
+                .filter(|block| matches!(block.content(), BlockContent::ToolChange(_)))
+                .cloned()
+                .collect();
             context
                 .edit()
-                .replace(0..length, [self.summary.clone(), self.request.clone()])
+                .replace(
+                    0..length,
+                    [self.summary.clone(), self.request.clone()]
+                        .into_iter()
+                        .chain(tool_facts),
+                )
                 .commit()
                 .unwrap();
         }
@@ -184,14 +197,14 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
         &first.context.blocks()[..2],
         &[summary.clone(), input.clone()]
     );
-    assert_eq!(first.context.blocks().len(), 3);
-    assert!(
-        first
-            .context
-            .blocks()
-            .iter()
-            .all(|block| matches!(block.content(), BlockContent::Parts(_)))
-    );
+    // Summary, request, the kept tool declaration, the answer.
+    assert_eq!(first.context.blocks().len(), 4);
+    assert!(first.context.blocks().iter().all(|block| matches!(
+        block.content(),
+        BlockContent::Parts(_) | BlockContent::ToolChange(_)
+    )));
+    let declaration = first.context.blocks()[2].clone();
+    assert!(matches!(declaration.content(), BlockContent::ToolChange(_)));
     let mut second_context = first.context;
     let next_input = text("U2 next request");
     second_context
@@ -211,10 +224,16 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
     assert_eq!(tool.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     let requests = gateway.0.lock().unwrap();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].frame.blocks, saved_frame.blocks);
-    assert_eq!(requests[1].frame.blocks, vec![summary.clone(), input]);
-    assert_eq!(requests[2].frame.blocks.len(), 4);
-    assert_eq!(requests[2].frame.blocks[3], next_input);
+    assert_eq!(
+        requests[0].frame.blocks,
+        [saved_frame.blocks.clone(), vec![declaration.clone()]].concat()
+    );
+    assert_eq!(
+        requests[1].frame.blocks,
+        vec![summary.clone(), input, declaration]
+    );
+    assert_eq!(requests[2].frame.blocks.len(), 5);
+    assert_eq!(requests[2].frame.blocks[4], next_input);
     for request in &requests[1..] {
         assert!(
             request

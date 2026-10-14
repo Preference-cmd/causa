@@ -15,7 +15,8 @@
 //! [`BlockMeta`], [`WireMeta`], [`BlockContent`], [`ContentPart`],
 //! [`TextPayload`], [`MediaRef`], [`SealedPart`], [`ToolCallPayload`],
 //! [`ToolResultPayload`], [`ToolResultStatus`], [`ToolOutput`],
-//! [`ToolOutputMeta`], [`Truncation`], [`ArtifactRef`] and [`ArtifactKind`].
+//! [`ToolOutputMeta`], [`Truncation`], [`ArtifactRef`], [`ArtifactKind`],
+//! [`ToolChange`] and [`ToolDefinition`].
 //! From `0.1.0` a breaking change to one of these forms needs a minor
 //! version. Adding an optional field is not a break: a reader ignores a field
 //! it does not know, and a field missing from an older record reads as unset.
@@ -47,6 +48,7 @@ pub use context::tool_data::{
     ArtifactKind, ArtifactRef, ToolCallId, ToolOutput, ToolOutputMeta, ToolResultPayload,
     ToolResultStatus, Truncation,
 };
+pub use context::tools::{ToolChange, ToolDefinition, current_tools};
 
 // --- ports: behavior seams for external implementors ------------------------
 pub use ports::batch::{
@@ -62,7 +64,7 @@ pub use ports::gateway::{
 pub use ports::prepare::{ContextPreparer, PrepareError, RoundInfo};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
-    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDefinition, ToolSurface,
+    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolSurface,
 };
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.

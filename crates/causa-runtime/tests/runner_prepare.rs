@@ -60,7 +60,8 @@ async fn persistent_inputs_arrive_once_temporary_observations_refresh_and_actual
         .await;
     assert!(matches!(out.result, TurnResult::Completed { .. }));
     assert_eq!(preparer.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(out.context.blocks().len(), 5);
+    // The tool declaration, both inputs, the call and its result, the answer.
+    assert_eq!(out.context.blocks().len(), 6);
     let encoded = serde_json::to_string(&out.context).unwrap();
     assert!(!encoded.contains("temporary environment"));
     assert_eq!(encoded.matches("running input").count(), 1);
@@ -69,15 +70,18 @@ async fn persistent_inputs_arrive_once_temporary_observations_refresh_and_actual
     for (i, request) in requests.iter().enumerate() {
         assert_eq!(configs[i].0, request.invocation_id);
         assert_eq!(configs[i].1, request.model.0);
-        assert_eq!(configs[i].2, request.tool_surface);
+        assert_eq!(
+            configs[i].2.definitions,
+            current_tools(&request.frame.blocks)
+        );
         assert_eq!(configs[i].3, request.generation);
-        assert_eq!(request.tool_surface.definitions[0].name, "echo");
+        assert_eq!(configs[i].2.definitions[0].name, "echo");
     }
     assert_ne!(
         requests[0].frame.blocks[0].id(),
         requests[1].frame.blocks[0].id()
     );
-    assert_eq!(requests[1].frame.blocks.len(), 5);
+    assert_eq!(requests[1].frame.blocks.len(), 6);
 }
 struct EditingFailure {
     cancel: Option<CancellationToken>,
@@ -225,7 +229,7 @@ async fn concrete_budget_changes_actual_request_without_editing_retained_materia
     assert!(
         request_cost(
             &requests[0].frame,
-            &requests[0].tool_surface,
+            &ToolSurface::from_definitions(current_tools(&requests[0].frame.blocks)),
             &requests[0].generation
         ) <= 200
     );

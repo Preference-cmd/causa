@@ -40,10 +40,9 @@ fn request() -> ModelRequest {
 }
 fn fingerprint(request: &ModelRequest) -> String {
     format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+        "{:?}|{:?}|{:?}|{:?}|{}",
         request.invocation_id,
         request.model,
-        request.tool_surface,
         request.generation,
         request.cache,
         serde_json::to_string(&request.frame.blocks).unwrap()

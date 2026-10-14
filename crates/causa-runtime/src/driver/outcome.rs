@@ -100,6 +100,16 @@ pub enum TurnInterruption {
         /// Original typed failure, including any inputs owned by that error.
         error: PrepareError,
     },
+    /// Recording a change in the bound tools failed; the edit's inputs are
+    /// retained.
+    #[error("the tool change could not be committed: {error}")]
+    #[non_exhaustive]
+    ToolChangeCommitFailed {
+        /// The logical invocation associated with this stage.
+        invocation_id: InvocationId,
+        /// Original typed failure, including the change block.
+        error: EditFailure,
+    },
     /// The logical gateway call failed; its original classification is retained.
     #[error("the model call failed: {error}")]
     #[non_exhaustive]

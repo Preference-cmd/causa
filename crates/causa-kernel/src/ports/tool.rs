@@ -1,5 +1,5 @@
 //! Tool behavior — the `Tool` trait and the `ArtifactStore` port, plus the
-//! execution vocabulary they share with drivers: definitions and call
+//! execution vocabulary they share with drivers: the bound surface and call
 //! context. Recorded facts (results, outputs, artifacts) live in
 //! `crate::context::tool_data`; batch dispatch lives in `causa-runtime`'s
 //! executor. A tool returns its recorded result and nothing else —
@@ -12,41 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::context::block::{TextPayload, ToolCallPayload};
 use crate::context::ids::BlockId;
 use crate::context::tool_data::{ArtifactKind, ArtifactRef, ToolResultPayload};
+use crate::context::tools::ToolDefinition;
 use crate::ports::control::CallControl;
 
-/// The model-facing description of one callable tool; renderers map it onto
-/// the protocol's tool entries (name, description, parameter schema).
-///
-/// Serializable for logs and tests; the serialized form is not part of the
-/// stable set and may change in any release.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct ToolDefinition {
-    /// The name the model uses to invoke the tool.
-    pub name: String,
-    /// Short summary of what the tool does, shown to the model.
-    pub description: String,
-    /// Schema of the arguments the tool accepts, embedded verbatim in the
-    /// rendered request.
-    pub parameters: serde_json::Value,
-}
-impl ToolDefinition {
-    /// A definition from its name, description and JSON Schema parameters.
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        parameters: serde_json::Value,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            description: description.into(),
-            parameters,
-        }
-    }
-}
-
-/// The tool definitions offered to the model for one invocation; renderers
-/// turn this into the protocol's `tools` array.
+/// The tool definitions bound for one invocation: what the executor can
+/// dispatch this round. A driver records a difference from the context's
+/// tool state as a [`crate::ToolChange`] block, and renderers read the tools
+/// from the frame, never from this value.
 ///
 /// Serializable for logs and tests; the serialized form is not part of the
 /// stable set and may change in any release.

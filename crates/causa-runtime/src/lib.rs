@@ -6,8 +6,14 @@
 //! are explicit per-run choices. Both entry points share the same loop.
 //!
 //! [`ToolExecutor::bind`] fixes the actual tool surface and targets before
-//! preparation. Processing owns controlled collection of started calls;
-//! the runner validates and atomically appends results only after success.
+//! preparation. When the bound tools differ from the context's tool state, the
+//! runner appends one [`causa_kernel::ToolChange`] block (the first round of a
+//! context without tool facts appends the declaration), so the context records
+//! which tools the model saw when. The prepared frame must still add up to the
+//! bound tools; otherwise the round stops with
+//! [`TurnInterruption::PrepareFailed`]. Processing owns controlled collection
+//! of started calls; the runner validates and atomically appends results only
+//! after success.
 //! Unknown results are committed and stop further model rounds.
 //!
 //! # Policy surface
@@ -17,6 +23,7 @@
 //! | Model rounds / tool declarations | [`TurnLimits`]: 10 / 64 |
 //! | Model retries | None; optional [`RetryingGateway`] around the chosen gateway |
 //! | Material preparation | None; use the current context frame |
+//! | Tool changes | Appended to the context after each bind that changes the bound tools; a prepared frame that drops them fails the round |
 //! | Observation | None; an optional synchronous borrowed callback |
 //! | Tool processing | Executor-owned ordered before/after processors |
 //! | Tool dispatch | Every pending call of a batch at once on the caller's task: concurrent, not parallel, unbounded, nothing spawned; panic becomes failed result |
@@ -49,8 +56,9 @@
 //! host
 //!   TurnRunner (causa-runtime), per round:
 //!     ToolExecutor::bind            -> ToolSurface
-//!     ContextPreparer (host, opt.)  -> ContextFrame
-//!     build ModelRequest { invocation_id, frame, model, tool_surface, generation, cache }
+//!     commit ToolChange             when the bound tools differ from the context's
+//!     ContextPreparer (host, opt.)  -> ContextFrame; its tool state must equal the surface
+//!     build ModelRequest { invocation_id, frame, model, generation, cache }
 //!     ModelGateway::invoke | stream                      <- contract, causa-kernel
 //!       [optional] retry wrapper (causa-runtime)         same request each attempt; waits
 //!                                                        retry_delay or backs off; never

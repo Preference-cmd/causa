@@ -11,7 +11,7 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
     GenerationOptions, ModelInvokeErrorKind, ModelOutput, ModelRef, SealedPart, StreamDelta,
-    TextPayload, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface, WireMeta,
+    TextPayload, ToolOutput, ToolResultPayload, ToolResultStatus, WireMeta,
 };
 use causa_protocol::Protocol;
 use causa_protocol::translation::anthropic::{parse_anthropic_response, render_anthropic_messages};
@@ -65,14 +65,12 @@ fn render(
     frame: &ContextFrame,
 ) -> Result<Value, causa_kernel::ModelInvokeError> {
     let media = MediaSet::new();
-    let surface = ToolSurface::empty();
     let generation = GenerationOptions::default().with_max_tokens(1024);
     let model = ModelRef::new("m");
     match protocol {
         Protocol::AnthropicMessages => render_anthropic_messages(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             CacheDirective::None,
@@ -81,7 +79,6 @@ fn render(
         Protocol::OpenAiChatCompletions => render_openai_chat_messages(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             CacheDirective::None,
@@ -90,7 +87,6 @@ fn render(
         Protocol::OpenAiResponses => render_openai_responses_input(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             CacheDirective::None,

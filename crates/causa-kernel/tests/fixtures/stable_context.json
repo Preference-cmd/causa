@@ -2,6 +2,41 @@
   "blocks": [
     {
       "content": {
+        "shape": "tool_change",
+        "value": {
+          "added": [
+            {
+              "description": "Read a file.",
+              "name": "read_file",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          ],
+          "removed": [
+            "write_file"
+          ]
+        }
+      },
+      "id": "00000000-0000-0000-0000-000000000000",
+      "meta": {
+        "provider_call_id": "call_1",
+        "source": "user",
+        "wire": {
+          "fields": {
+            "index": 0
+          },
+          "format": "anthropic"
+        }
+      }
+    },
+    {
+      "content": {
         "shape": "parts",
         "value": [
           {
@@ -147,6 +182,14 @@
         }
       },
       "id": "00000000-0000-0000-0000-000000000006",
+      "meta": {}
+    },
+    {
+      "content": {
+        "shape": "tool_change",
+        "value": {}
+      },
+      "id": "00000000-0000-0000-0000-000000000007",
       "meta": {}
     }
   ]

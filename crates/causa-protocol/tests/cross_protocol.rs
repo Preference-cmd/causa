@@ -13,7 +13,7 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame,
     EditFailure, GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason,
-    TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface,
+    TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus,
     validate_tool_result_append,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
@@ -172,14 +172,12 @@ fn scenario_frame() -> ContextFrame {
 
 fn render(frame: &ContextFrame) -> (Value, Value, Value) {
     let model = ModelRef::new("test-model");
-    let surface = ToolSurface::empty();
     let generation = GenerationOptions::default().with_max_tokens(1024);
     let media = causa_protocol::translation::media::MediaSet::new();
     (
         render_anthropic_messages(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             causa_kernel::CacheDirective::None,
@@ -189,7 +187,6 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
         render_openai_chat_messages(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             causa_kernel::CacheDirective::None,
@@ -199,7 +196,6 @@ fn render(frame: &ContextFrame) -> (Value, Value, Value) {
         render_openai_responses_input(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             causa_kernel::CacheDirective::None,
@@ -248,12 +244,10 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let mut media = MediaSet::new();
     media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
     let model = ModelRef::new("test-model");
-    let surface = ToolSurface::empty();
     let generation = GenerationOptions::default().with_max_tokens(1024);
     let anthropic = render_anthropic_messages(
         &frame,
         &media,
-        &surface,
         &generation,
         &model,
         causa_kernel::CacheDirective::None,
@@ -263,7 +257,6 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let chat = render_openai_chat_messages(
         &frame,
         &media,
-        &surface,
         &generation,
         &model,
         causa_kernel::CacheDirective::None,
@@ -273,7 +266,6 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let responses = render_openai_responses_input(
         &frame,
         &media,
-        &surface,
         &generation,
         &model,
         causa_kernel::CacheDirective::None,

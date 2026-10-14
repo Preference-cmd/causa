@@ -1,10 +1,17 @@
 //! Prepare request material using the invocation's already-bound tool surface.
+//!
+//! The bound tools reach the model through the frame: the runner records a
+//! difference as a `ToolChange` block before preparation, and a prepared
+//! frame must still add up to the bound tools.
 
 use super::TurnInterruption;
 use super::model::{control_cause, stopped};
 use crate::TurnRunOptions;
 use crate::control::wait_for_stop;
-use causa_kernel::{CallControl, Context, InvocationId, ModelRequest, RoundInfo, ToolSurface};
+use causa_kernel::{
+    CallControl, Context, InvocationId, ModelRequest, PrepareError, RoundInfo, ToolChange,
+    ToolSurface, current_tools,
+};
 
 // TurnInterruption intentionally owns failed inputs for caller recovery.
 pub(super) async fn prepare(
@@ -31,16 +38,28 @@ pub(super) async fn prepare(
         if let Some(cause) = stopped(control, Some(invocation_id)) {
             return Err(cause);
         }
-        prepared.map_err(|error| TurnInterruption::PrepareFailed {
+        let frame = prepared.map_err(|error| TurnInterruption::PrepareFailed {
             invocation_id: invocation_id.clone(),
             error,
-        })?
+        })?;
+        // The frame is what renders, tools included: a frame that dropped or
+        // altered the context's tool changes would offer the model other
+        // tools than the ones this round can execute.
+        if !ToolChange::between(&current_tools(&frame.blocks), &tool_surface.definitions).is_empty()
+        {
+            return Err(TurnInterruption::PrepareFailed {
+                invocation_id: invocation_id.clone(),
+                error: PrepareError::new(
+                    "the prepared frame's tool changes do not add up to the round's bound tools",
+                ),
+            });
+        }
+        frame
     } else {
         context.frame()
     };
     Ok({
         let mut request = ModelRequest::new(invocation_id.clone(), frame, options.model.clone());
-        request.tool_surface = tool_surface.clone();
         request.generation = options.generation.clone();
         request.cache = options.cache;
         request

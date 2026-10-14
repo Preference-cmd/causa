@@ -2,7 +2,7 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, Context, ContextBlock,
     ContextFrame, GenerationOptions, MediaRef, ModelInvokeErrorKind, ModelRef, TextPayload,
-    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus, ToolSurface,
+    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa_protocol::translation::render_options::{
     AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
@@ -48,7 +48,6 @@ fn text(value: u128, source: &str) -> ContextBlock {
 }
 fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::ModelInvokeError> {
     let media = MediaSet::new();
-    let surface = ToolSurface::empty();
     // Anthropic requires `max_tokens`; the renderer tests always supply one.
     let generation = GenerationOptions::default().with_max_tokens(1024);
     let model = ModelRef::new("test");
@@ -56,7 +55,6 @@ fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::
         0 => anthropic::render_anthropic_messages(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             CacheDirective::None,
@@ -65,7 +63,6 @@ fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::
         1 => openai_chat::render_openai_chat_messages(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             CacheDirective::None,
@@ -74,7 +71,6 @@ fn render(protocol: usize, frame: &ContextFrame) -> Result<Value, causa_kernel::
         _ => openai_responses::render_openai_responses_input(
             frame,
             &media,
-            &surface,
             &generation,
             &model,
             CacheDirective::None,

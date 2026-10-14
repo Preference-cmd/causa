@@ -239,7 +239,7 @@ async fn terminal_tool_executes_once_with_round_identity_and_provider_id_then_ne
         declaration.meta().provider_call_id.as_deref(),
         Some("call_wire")
     );
-    assert_eq!(outcome.context.blocks().len(), 4);
+    assert_eq!(outcome.context.blocks().len(), 5);
     assert!(outcome.uncommitted_tool_batch.is_none());
     server.finish();
     let requests = server.requests.lock().unwrap();
@@ -264,7 +264,7 @@ async fn stream_error_missing_terminal_and_truncated_tool_leave_original_context
     ] {
         let mut server = Server::start(vec![Round::immediate(body)]);
         let original = input();
-        let saved = serde_json::to_value(&original).unwrap();
+        let saved = original.blocks().to_vec();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let outcome = runner(
             Arc::new(
@@ -293,7 +293,14 @@ async fn stream_error_missing_terminal_and_truncated_tool_leave_original_context
         };
         assert_eq!(invocation_id, invocation(0));
         assert_eq!(error.kind, kind);
-        assert_eq!(serde_json::to_value(outcome.context).unwrap(), saved);
+        // The original material plus only the declaration of the bound tools.
+        let blocks = outcome.context.blocks();
+        assert_eq!(blocks[..saved.len()], saved[..]);
+        assert_eq!(blocks.len(), saved.len() + 1);
+        assert!(matches!(
+            blocks[saved.len()].content(),
+            BlockContent::ToolChange(_)
+        ));
         assert!(calls.lock().unwrap().is_empty());
         assert!(outcome.uncommitted_tool_batch.is_none());
         server.finish();
@@ -342,7 +349,7 @@ async fn observer_cancelled_partial_second_round_preserves_completed_first_round
         matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::Cancelled { invocation_id: Some(ref id), .. } } if id == &invocation(1))
     );
     assert_eq!(calls.lock().unwrap().len(), 1);
-    assert_eq!(outcome.context.blocks().len(), 3);
+    assert_eq!(outcome.context.blocks().len(), 4);
     assert!(
         outcome
             .context
@@ -392,7 +399,7 @@ async fn cancellation_after_declaration_commit_returns_complete_pending_tool_bat
             cause: TurnInterruption::Cancelled { .. }
         }
     ));
-    assert_eq!(outcome.context.blocks().len(), 2);
+    assert_eq!(outcome.context.blocks().len(), 3);
     assert!(calls.lock().unwrap().is_empty());
     assert_eq!(outcome.uncommitted_tool_batch.unwrap().calls().len(), 1);
     server.finish();
@@ -424,7 +431,7 @@ async fn failed_later_round_preserves_completed_tool_material_and_original_block
         matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::ModelCallFailed { invocation_id, error, .. } } if invocation_id == invocation(1) && error.kind == ModelInvokeErrorKind::UnknownOutcome)
     );
     assert_eq!(outcome.context.blocks()[0], first);
-    assert_eq!(outcome.context.blocks().len(), 3);
+    assert_eq!(outcome.context.blocks().len(), 4);
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert!(outcome.uncommitted_tool_batch.is_none());
     server.finish();
@@ -458,7 +465,7 @@ async fn unknown_tool_result_commits_and_stops_without_another_model_round() {
         matches!(outcome.result, TurnResult::Interrupted { cause: TurnInterruption::UnknownToolOutcome { invocation_id, .. } } if invocation_id == invocation(0))
     );
     assert_eq!(calls.lock().unwrap().len(), 1);
-    assert_eq!(outcome.context.blocks().len(), 3);
+    assert_eq!(outcome.context.blocks().len(), 4);
     assert!(outcome.uncommitted_tool_batch.is_none());
     server.finish();
     assert_eq!(server.requests.lock().unwrap().len(), 1);

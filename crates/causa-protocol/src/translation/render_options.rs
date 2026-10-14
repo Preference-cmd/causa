@@ -14,12 +14,21 @@
 
 /// Anthropic Messages render options.
 ///
-/// There are none at present. Settings of the `thinking` object, including
-/// `block_binding`, are part of the object the host sends in
+/// Settings of the `thinking` object, including `block_binding`, are not
+/// here: they are part of the object the host sends in
 /// `GenerationOptions::extra_body`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub struct AnthropicRenderOptions {}
+pub struct AnthropicRenderOptions {
+    /// Render tool changes in place (default `false`). `tools` stays at the
+    /// frame's declaration followed by a deferred placeholder tool, and each
+    /// later change renders at its position as a `system` message of
+    /// `tool_removal` and `tool_addition` blocks, so a change keeps the cached
+    /// prefix. The API needs the `inline-tools-2026-09-15` beta for it, which
+    /// the gateway adds. Off, `tools` carries the current tool state and a
+    /// change rewrites it.
+    pub native_tool_changes: bool,
+}
 
 /// OpenAI Responses render options.
 ///
@@ -38,6 +47,12 @@ pub struct ResponsesRenderOptions {
     /// `Some(false)`). The host owns the data-retention choice this
     /// represents.
     pub store: Option<bool>,
+    /// Render added tools in place (default `false`). `tools` stays at the
+    /// frame's declaration and each later change renders at its position as
+    /// an `additional_tools` input item, so an addition keeps the cached
+    /// prefix. A frame with a removal or a second definition of one name
+    /// renders as if this were off: `tools` carries the current tool state.
+    pub additional_tools: bool,
 }
 
 impl Default for ResponsesRenderOptions {
@@ -45,6 +60,7 @@ impl Default for ResponsesRenderOptions {
         Self {
             include_encrypted_reasoning: true,
             store: Some(false),
+            additional_tools: false,
         }
     }
 }

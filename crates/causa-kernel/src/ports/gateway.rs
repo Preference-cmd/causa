@@ -14,7 +14,6 @@ use crate::context::ids::InvocationId;
 use crate::context::material::ContextFrame;
 use crate::context::model::{ModelResponse, ModelStopReason};
 use crate::ports::control::CallControl;
-use crate::ports::tool::ToolSurface;
 
 /// Opaque model identifier handed to the gateway. The kernel never parses
 /// it; resolution is the gateway's job.
@@ -359,8 +358,6 @@ pub struct ModelRequest {
     pub frame: ContextFrame,
     /// Which model to invoke.
     pub model: ModelRef,
-    /// The [`ToolSurface`] offered alongside the frame.
-    pub tool_surface: ToolSurface,
     /// The [`GenerationOptions`] governing sampling.
     pub generation: GenerationOptions,
     /// The prompt-cache instruction the translation face renders. Invariant
@@ -368,13 +365,13 @@ pub struct ModelRequest {
     pub cache: CacheDirective,
 }
 impl ModelRequest {
-    /// A request with no tools, default generation options and no cache directive.
+    /// A request with default generation options and no cache directive. The
+    /// tools offered are the frame's [`crate::ToolChange`] blocks.
     pub fn new(invocation_id: InvocationId, frame: ContextFrame, model: ModelRef) -> Self {
         Self {
             invocation_id,
             frame,
             model,
-            tool_surface: ToolSurface::empty(),
             generation: GenerationOptions::default(),
             cache: CacheDirective::None,
         }

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ids::BlockId;
 use crate::context::tool_data::ToolResultPayload;
+use crate::context::tools::ToolChange;
 
 /// Envelope provenance. Fields are serde-additive so older records
 /// without them still deserialize.
@@ -181,8 +182,9 @@ impl MediaRef {
     }
 }
 
-/// The content shape of a block. Three shapes: one message's ordered
-/// parts (any role), a tool call, a tool result.
+/// The content shape of a block. Four shapes: one message's ordered
+/// parts (any role), a tool call, a tool result, a change to the offered
+/// tools.
 ///
 /// Exhaustive on purpose: a renderer must handle every shape, so a new one is
 /// a breaking change that should stop downstream code from compiling.
@@ -199,6 +201,9 @@ pub enum BlockContent {
     /// The recorded outcome of a prior call, paired by
     /// `ToolResultPayload::call_block_id`.
     ToolResult(ToolResultPayload),
+    /// The tools offered to the model change from this position on. The
+    /// first one in a context declares the initial set.
+    ToolChange(ToolChange),
 }
 
 /// One content atom inside a [`BlockContent::Parts`] block: ordered,

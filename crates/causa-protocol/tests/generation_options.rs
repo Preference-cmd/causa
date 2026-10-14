@@ -2,7 +2,7 @@
 //! reasoning effort and extra request fields are written as the host gave them.
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelRef, TextPayload, ToolSurface,
+    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelRef, TextPayload,
 };
 use causa_protocol::translation::render_options::{
     AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
@@ -30,7 +30,6 @@ fn render_chat(
     render_openai_chat_messages(
         &frame(),
         &MediaSet::new(),
-        &ToolSurface::empty(),
         generation,
         &ModelRef::new("configured-model"),
         CacheDirective::None,
@@ -45,7 +44,6 @@ fn render_responses(
     render_openai_responses_input(
         &frame(),
         &MediaSet::new(),
-        &ToolSurface::empty(),
         generation,
         &ModelRef::new("configured-model"),
         CacheDirective::None,
@@ -60,7 +58,6 @@ fn render_anthropic(
     render_anthropic_messages(
         &frame(),
         &MediaSet::new(),
-        &ToolSurface::empty(),
         generation,
         &ModelRef::new("configured-model"),
         CacheDirective::None,

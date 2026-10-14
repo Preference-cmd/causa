@@ -56,6 +56,23 @@ impl TurnRunner {
             if let Some(cause) = stopped(control, Some(&invocation_id)) {
                 return interrupted(cause, None);
             }
+            // The context records which tools the model is offered: a
+            // difference from the bound tools is appended before preparation,
+            // after the user turn or the tool results that end the context.
+            match commit::tool_change(context, &invocation_id, bound.surface()) {
+                Ok(Some(start)) => notify(
+                    options,
+                    RunEvent::BlocksCommitted {
+                        invocation_id: &invocation_id,
+                        blocks: &context.blocks()[start..],
+                    },
+                ),
+                Ok(None) => {}
+                Err(cause) => return interrupted(cause, None),
+            }
+            if let Some(cause) = stopped(control, Some(&invocation_id)) {
+                return interrupted(cause, None);
+            }
             let request =
                 match request::prepare(context, &invocation_id, bound.surface(), options, control)
                     .await

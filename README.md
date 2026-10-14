@@ -104,6 +104,13 @@ it, and settings only one protocol has go in `extra_body`. Provider reasoning
 items are kept whole and replayed, so a thinking-enabled tool loop runs on
 all three protocols.
 
+The tools offered to the model are facts in the context too: the runner
+appends a `ToolChange` block when the bound tools change. Each gateway sends
+the current set in `tools` by default; the Anthropic and Responses gateways
+can instead keep `tools` fixed and render the change in place
+(`with_native_tool_changes`, `with_additional_tools`), so a tool list change
+does not miss the prompt cache.
+
 See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
 for events and limits, and the
 [crate guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/crates.mdx)

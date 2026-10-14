@@ -194,7 +194,8 @@ async fn limits_count_declarations_and_return_new_batch() {
             ..
         }
     ));
-    assert_eq!(out.context.blocks().len(), 2);
+    // The tool declaration and the two calls.
+    assert_eq!(out.context.blocks().len(), 3);
     assert_eq!(out.uncommitted_tool_batch.unwrap().calls().len(), 2);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
@@ -214,7 +215,7 @@ async fn model_round_limit_stops_before_another_binding_or_request() {
         TurnInterruption::MaxModelRounds { limit: 1, .. }
     ));
     assert_eq!(gateway.recorded.lock().unwrap().len(), 1);
-    assert_eq!(out.context.blocks().len(), 2);
+    assert_eq!(out.context.blocks().len(), 3);
     assert!(out.uncommitted_tool_batch.is_none());
 }
 #[tokio::test]
@@ -391,8 +392,9 @@ async fn tool_commit_failure_returns_complete_batch_and_actual_edit_input() {
         batch.results()[0].call().input.arguments,
         json!({"original":true})
     );
-    assert_eq!(out.context.blocks().len(), 2);
-    assert_eq!(observed.lock().unwrap().len(), 1);
+    // The tool declaration and the call; the colliding result is not added.
+    assert_eq!(out.context.blocks().len(), 3);
+    assert_eq!(observed.lock().unwrap().len(), 2);
     assert!(!token.is_cancelled());
 }
 
@@ -448,7 +450,7 @@ async fn processor_error_is_selected_before_returned_callback_cancels() {
         }
     ));
     assert_eq!(out.uncommitted_tool_batch.unwrap().calls().len(), 1);
-    assert_eq!(out.context.blocks().len(), 1);
+    assert_eq!(out.context.blocks().len(), 2);
 }
 
 struct UnknownTool;
@@ -499,6 +501,8 @@ async fn observer_cancellation_respects_each_commit_boundary() {
                         .any(|b| matches!(b.content(), BlockContent::ToolResult(_)))
                     {
                         "result"
+                    } else if is_tool_change(blocks) {
+                        "tools"
                     } else {
                         "declaration"
                     }
@@ -535,12 +539,13 @@ async fn observer_cancellation_respects_each_commit_boundary() {
         );
         assert_eq!(
             out.context.blocks().len(),
+            // The tool declaration comes first in every case.
             match stage {
-                "request" | "output" => 0,
+                "request" | "output" => 1,
                 // A batch that came back fully processed is committed before
                 // the stop is honored.
-                "returned" | "result" => 2,
-                _ => 1,
+                "returned" | "result" => 3,
+                _ => 2,
             }
         );
         assert_eq!(
@@ -584,7 +589,7 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
                 cancel.cancel()
             }
             RunEvent::BlocksCommitted { blocks, .. }
-                if stop == ModelStopReason::EndTurn
+                if (stop == ModelStopReason::EndTurn && !is_tool_change(blocks))
                     || blocks
                         .iter()
                         .any(|b| matches!(b.content(), BlockContent::ToolResult(_))) =>
@@ -624,7 +629,7 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
                     cause(&out),
                     TurnInterruption::UnknownToolOutcome { .. }
                 ));
-                assert_eq!(out.context.blocks().len(), 2);
+                assert_eq!(out.context.blocks().len(), 3);
             }
         }
         assert!(out.uncommitted_tool_batch.is_none());
@@ -640,7 +645,7 @@ async fn terminal_results_survive_observer_cancellation_and_unknown_is_not_retur
         cause(&out),
         TurnInterruption::UnknownToolOutcome { .. }
     ));
-    assert_eq!(out.context.blocks().len(), 2);
+    assert_eq!(out.context.blocks().len(), 3);
 }
 
 #[tokio::test]
@@ -651,7 +656,7 @@ async fn tool_limit_is_selected_before_declaration_commit_callback_cancels() {
     let mut opts = options();
     opts.limits.max_tool_calls = 0;
     opts.observer = Some(Arc::new(move |e| match e {
-        RunEvent::BlocksCommitted { .. } => cancel.cancel(),
+        RunEvent::BlocksCommitted { blocks, .. } if !is_tool_change(blocks) => cancel.cancel(),
         RunEvent::ToolBatchReady { .. } | RunEvent::ToolBatchReturned { .. } => {
             panic!("over-limit declarations cannot enter processing")
         }
@@ -674,7 +679,7 @@ async fn tool_limit_is_selected_before_declaration_commit_callback_cancels() {
             ..
         }
     ));
-    assert_eq!(out.context.blocks().len(), 1);
+    assert_eq!(out.context.blocks().len(), 2);
     assert_eq!(out.uncommitted_tool_batch.unwrap().calls().len(), 1);
 }
 
@@ -855,4 +860,11 @@ async fn with_no_after_processors_a_batch_whose_tools_returned_is_committed() {
     assert!(out.uncommitted_tool_batch.is_none());
     assert_eq!(result_blocks(&out), 1);
     assert_eq!(gateway.recorded.lock().unwrap().len(), 1);
+}
+
+/// Whether a commit is the runner's record of a tool change.
+fn is_tool_change(blocks: &[ContextBlock]) -> bool {
+    blocks
+        .iter()
+        .all(|block| matches!(block.content(), BlockContent::ToolChange(_)))
 }

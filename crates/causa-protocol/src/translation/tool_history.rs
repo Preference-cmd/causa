@@ -52,6 +52,28 @@ pub(super) fn validate_frame(frame: &ContextFrame) -> Result<(), ModelInvokeErro
                     ));
                 }
             }
+            BlockContent::ToolChange(change) => {
+                // A change inside an open exchange would separate a call from
+                // its result on the wire; no protocol accepts that.
+                if declarations
+                    .iter()
+                    .any(|declaration| !completed.contains(declaration))
+                {
+                    return Err(invalid(
+                        "a tool change cannot sit between a tool call and its result",
+                    ));
+                }
+                let mut names = HashSet::new();
+                if change
+                    .added
+                    .iter()
+                    .any(|definition| definition.name.is_empty() || !names.insert(&definition.name))
+                {
+                    return Err(invalid(
+                        "a tool change adds each tool once, under a nonempty name",
+                    ));
+                }
+            }
             BlockContent::Parts(parts) => {
                 // A sealed part is model output; outside assistant position
                 // no renderer can place it.
