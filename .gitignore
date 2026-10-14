@@ -26,6 +26,7 @@ __pycache__/
 AGENTS.local.md
 CLAUDE.local.md
 .claude/
+.seecode/
 
 # ----- Editor / OS -----
 .vscode/*
