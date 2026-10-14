@@ -8,7 +8,10 @@ use causa_kernel::{
     TextPayload, ToolChange, ToolDefinition, TurnId,
 };
 use causa_protocol::translation::anthropic::INLINE_TOOLS_BETA;
-use causa_provider::{AnthropicMessagesGateway, OpenAiResponsesGateway};
+use causa_provider::{
+    AnthropicMessagesGateway, AnthropicRenderOptions, OpenAiResponsesGateway,
+    ResponsesRenderOptions,
+};
 use serde_json::{Value, json};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -159,4 +162,61 @@ async fn responses_additional_tools_keep_tools_and_add_an_input_item() {
             assert!(items.is_empty());
         }
     }
+}
+
+#[tokio::test]
+async fn anthropic_with_render_options_native_changes_sends_native_shape_and_beta() {
+    let answer = json!({"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"});
+    let server = answering(answer).await;
+
+    let mut options = AnthropicRenderOptions::default();
+    options.native_tool_changes = true;
+
+    AnthropicMessagesGateway::new(KEY)
+        .with_base_url(format!("{}/v1", server.uri()))
+        .with_render_options(options)
+        .invoke(&request(), &control())
+        .await
+        .unwrap();
+
+    let req = only_request(&server).await;
+    assert_eq!(beta(&req), Some(INLINE_TOOLS_BETA));
+
+    let body: Value = req.body_json().unwrap();
+    assert_eq!(
+        tool_names(&body["tools"]),
+        ["read", "__causa_deferred_placeholder__"]
+    );
+    let last = body["messages"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["role"], "system");
+    assert_eq!(last["content"][0]["type"], "tool_addition");
+}
+
+#[tokio::test]
+async fn responses_with_render_options_additional_tools_sends_input_item() {
+    let answer = json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]});
+    let server = answering(answer).await;
+
+    let mut options = ResponsesRenderOptions::default();
+    options.additional_tools = true;
+
+    OpenAiResponsesGateway::new(KEY)
+        .with_base_url(format!("{}/v1", server.uri()))
+        .with_render_options(options)
+        .invoke(&request(), &control())
+        .await
+        .unwrap();
+
+    let body: Value = only_request(&server).await.body_json().unwrap();
+    let items: Vec<&Value> = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "additional_tools")
+        .collect();
+
+    assert_eq!(tool_names(&body["tools"]), ["read"]);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["role"], "developer");
+    assert_eq!(tool_names(&items[0]["tools"]), ["write"]);
 }

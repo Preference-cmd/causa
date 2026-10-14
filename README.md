@@ -109,7 +109,9 @@ appends a `ToolChange` block when the bound tools change. Each gateway sends
 the current set in `tools` by default; the Anthropic and Responses gateways
 can instead keep `tools` fixed and render the change in place
 (`with_native_tool_changes`, `with_additional_tools`), so a tool list change
-does not miss the prompt cache.
+does not miss the prompt cache. Render options can be loaded from host
+configuration via serde and applied with `with_render_options`; the host
+decides which servers and models receive which options.
 
 See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
 for events and limits, and the

@@ -52,6 +52,12 @@ can keep the request's `tools` unchanged while the set changes.
 
 ### Added
 
+- The three render option types (`AnthropicRenderOptions`,
+  `ResponsesRenderOptions`, `ChatRenderOptions`) deserialize from host
+  configuration: a missing field takes its default, an unknown field
+  (including another protocol's setting) is an error, and a null `store`
+  omits the field. Each gateway gains `with_render_options` to replace all
+  options at once, and `causa-provider` re-exports the three types.
 - `ToolChange::new`, `ToolChange::between`, `ToolChange::apply_to` and
   `current_tools`.
 - Native tool changes, off by default:

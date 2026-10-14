@@ -13,6 +13,9 @@ use causa_kernel::{
     ModelRequest,
 };
 use causa_protocol::translation::media::MediaSet;
+use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 use causa_protocol::translation::streaming::{
     StreamDecoder, StreamLimits, configure_stream_request,
 };
@@ -197,6 +200,17 @@ impl KernelHttpGateway<AnthropicGatewayConfig> {
         self
     }
 
+    /// Replace every render option at once, including any set earlier with
+    /// the per-option setters (a later call wins either way). Wire
+    /// consequences follow from the options: `native_tool_changes` still adds
+    /// `inline-tools-2026-09-15` to `anthropic-beta`. The value usually comes
+    /// from host configuration, as which servers and models support an option
+    /// is the host's to decide.
+    pub fn with_render_options(mut self, options: AnthropicRenderOptions) -> Self {
+        self.config.render_options = options;
+        self
+    }
+
     /// Render tool changes in place (default `false`).
     ///
     /// `tools` stays at the context's first tool change and each later
@@ -204,6 +218,9 @@ impl KernelHttpGateway<AnthropicGatewayConfig> {
     /// blocks, so a changed tool listing keeps the cached prefix and earlier
     /// thinking. The gateway adds the `inline-tools-2026-09-15` beta value
     /// it needs. Off, every request carries the current tools in `tools`.
+    /// Enable only for a server known to support it: a server without support
+    /// may reject the request, or ignore the change so the model never sees
+    /// the added tool.
     pub fn with_native_tool_changes(mut self, native: bool) -> Self {
         self.config.render_options.native_tool_changes = native;
         self
@@ -211,6 +228,16 @@ impl KernelHttpGateway<AnthropicGatewayConfig> {
 }
 
 impl KernelHttpGateway<OpenAiChatGatewayConfig> {
+    /// Replace every render option at once, including any set earlier with
+    /// the per-option setters (a later call wins either way). Wire
+    /// consequences follow from the options. The value usually comes from host
+    /// configuration, as which servers and models support an option is the
+    /// host's to decide.
+    pub fn with_render_options(mut self, options: ChatRenderOptions) -> Self {
+        self.config.render_options = options;
+        self
+    }
+
     /// Replay sealed `reasoning_content` message-level items (default `true`).
     ///
     /// DeepSeek requires `reasoning_content` back on every request that
@@ -224,6 +251,16 @@ impl KernelHttpGateway<OpenAiChatGatewayConfig> {
 }
 
 impl KernelHttpGateway<OpenAiResponsesGatewayConfig> {
+    /// Replace every render option at once, including any set earlier with
+    /// the per-option setters (a later call wins either way). Wire
+    /// consequences follow from the options. The value usually comes from host
+    /// configuration, as which servers and models support an option is the
+    /// host's to decide.
+    pub fn with_render_options(mut self, options: ResponsesRenderOptions) -> Self {
+        self.config.render_options = options;
+        self
+    }
+
     /// Send `include: ["reasoning.encrypted_content"]` (default `true`).
     ///
     /// Without it a reasoning item cannot be meaningfully replayed under
@@ -248,7 +285,9 @@ impl KernelHttpGateway<OpenAiResponsesGatewayConfig> {
     /// addition is sent at its position, as Codex does, so the cached prefix
     /// survives it. A context in which a later change removes a tool or
     /// redefines one renders with the current tools in `tools`, as with this
-    /// off.
+    /// off. Enable only for a server known to support it: a server without
+    /// support may reject the request, or ignore the change so the model never
+    /// sees the added tool.
     pub fn with_additional_tools(mut self, additional_tools: bool) -> Self {
         self.config.render_options.additional_tools = additional_tools;
         self

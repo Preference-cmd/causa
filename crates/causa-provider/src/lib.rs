@@ -49,9 +49,10 @@
 //! Anthropic,
 //! [`KernelHttpGateway::with_encrypted_reasoning`] and
 //! [`KernelHttpGateway::with_store`] for Responses, and
-//! [`KernelHttpGateway::with_reasoning_content_replay`] for Chat. They apply
-//! to the gateway value, not to one request; the defaults are documented on
-//! each option type.
+//! [`KernelHttpGateway::with_reasoning_content_replay`] for Chat. They can
+//! also be replaced at once with [`KernelHttpGateway::with_render_options`].
+//! They apply to the gateway value, not to one request; the defaults are
+//! documented on each option type.
 //!
 //! # Streaming
 //!
@@ -118,6 +119,11 @@ pub use kernel_gateway::{
     OpenAiResponsesGatewayConfig,
 };
 pub use media::MediaResolver;
+
+/// Per-protocol render options for gateway configuration.
+pub use causa_protocol::translation::render_options::{
+    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+};
 
 /// Resource limits for the transport-free streaming decoder.
 pub use causa_protocol::translation::streaming::StreamLimits;

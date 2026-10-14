@@ -70,6 +70,9 @@ an added tool as an `additional_tools` input item. Responses rewrites `tools`
 when a change removes or redefines a tool, and Chat Completions always does.
 A preparer that replaces blocks keeps the `ToolChange` blocks; a frame whose
 tools do not match the bound set stops the round with `PrepareFailed`.
+Render options can be loaded from host configuration via serde and set on the
+gateway at once with `with_render_options`; the host decides which servers
+and models receive which options.
 
 Full API docs for every crate: [docs.rs/crate/causa](https://docs.rs/causa)
 (built with `all-features`).
