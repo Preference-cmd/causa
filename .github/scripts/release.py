@@ -122,7 +122,8 @@ def unpublished(version, commit):
 
 def publish(version):
     require(os.environ.get("GITHUB_ACTIONS") == "true", "Upload only through the Publish workflow")
-    require(bool(os.environ.get("CARGO_REGISTRY_TOKEN")), "Missing CARGO_REGISTRY_TOKEN secret of the crates-io environment")
+    require(bool(os.environ.get("CARGO_REGISTRY_TOKEN")),
+            "Missing CARGO_REGISTRY_TOKEN from the Trusted Publishing exchange")
     require(not run("git", "status", "--porcelain"), "Release checkout must be clean")
     commit = run("git", "rev-parse", "HEAD")
     require(run("git", "rev-parse", f"refs/tags/v{version}^{{commit}}") == commit,

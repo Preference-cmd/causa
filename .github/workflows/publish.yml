@@ -72,12 +72,14 @@ jobs:
   publish:
     needs: [plan, tag]
     runs-on: ubuntu-26.04
-    # The environment requires a reviewer and holds CARGO_REGISTRY_TOKEN, so
-    # the token is readable only after the upload is approved.
+    # The environment requires a reviewer. crates.io trusts this workflow file
+    # only in this environment, so no upload token exists before approval.
     environment: crates-io
-    # Creating the GitHub release needs write access.
+    # Creating the GitHub release needs write access; the OIDC token is
+    # exchanged for a short-lived crates.io token.
     permissions:
       contents: write
+      id-token: write
     concurrency:
       group: crates-io-publish
       cancel-in-progress: false
@@ -89,9 +91,14 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Trusted Publishing: the token expires after 30 minutes and is revoked
+      # when the job ends.
+      - name: Exchange the workflow identity for a crates.io token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
       - name: Publish missing versions from the release commit
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: python3 .github/scripts/release.py publish --version "$RELEASE_VERSION"
       - name: Create the GitHub release from the changelog entry
         env:

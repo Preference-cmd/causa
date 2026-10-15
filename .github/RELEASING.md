@@ -53,23 +53,22 @@ dry-runs for the first release.
 
 ## Publishing credentials
 
-- Log in to crates.io and verify the account email address.
-- For releases of the six existing crates, create a short-lived API token
-  with only `publish-update`, scoped to `causa`, `causa-kernel`, `causa-runtime`,
-  `causa-protocol`, `causa-provider` and `causa-extension`. Creating a new crate
-  additionally needs `publish-new`.
-- Store it as the secret `CARGO_REGISTRY_TOKEN` of the `crates-io` environment
-  (Settings → Environments), not as a repository secret. The environment
-  requires a reviewer, so only an approved upload job can read the token, and
-  the workflow injects it only into the upload step.
-- Create the environment with its required reviewer before the first release
-  through this workflow: a job that names a missing environment creates it
-  without protection.
-- Trusted Publishing can replace the token: each crate is configured for this
-  repository, `publish.yml` and the `crates-io` environment, the upload job
-  gets `id-token: write` and exchanges it with
-  `rust-lang/crates-io-auth-action`. Switch when the token next needs
-  replacing.
+Uploads use crates.io Trusted Publishing; the repository stores no token.
+
+- In Settings → Environments, create `crates-io` with a required reviewer
+  before the first release through this workflow: a job that names a
+  missing environment creates it without protection.
+- On crates.io, in each of the six crates' Settings → Trusted Publishing,
+  add a GitHub configuration: owner `Preference-cmd`, repository `causa`,
+  workflow `publish.yml`, environment `crates-io`. Renaming the workflow file
+  or the environment breaks the upload until all six are updated.
+- The upload job exchanges its OIDC identity through
+  `rust-lang/crates-io-auth-action` for a token that expires after 30 minutes
+  and is revoked when the job ends. The approval comes first, so no token
+  exists before the upload is approved.
+- Trusted Publishing works only for a crate that already exists. A new crate
+  is first published with an API token scoped to it with `publish-new`, then
+  configured as above, and the token is revoked.
 
 ## Release
 
@@ -88,7 +87,7 @@ dry-runs for the first release.
    consumer using `causa = "0.0.4"` in default, kernel-only and full modes.
 
 Uploads run only in this workflow, from `main` or a `v*` tag. The helpers
-refuse to run outside GitHub Actions, and refuse missing tokens, a tag on
+refuse to run outside GitHub Actions, and refuse a missing token, a tag on
 another commit, dirty checkouts and unfinished release notes. Once the tag
 names an earlier commit, later pushes at the same version release nothing.
 
