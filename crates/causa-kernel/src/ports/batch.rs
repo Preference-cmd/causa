@@ -52,6 +52,14 @@ impl ToolCallEntry {
 }
 
 /// One tool batch with a completed prefix and pending suffix.
+///
+/// Each result joins the end of the completed prefix as it is resolved, so
+/// the prefix is in resolution order: with concurrent dispatch, the order the
+/// calls completed in, not the order the model declared them in. That order
+/// is what [`ToolBatch::into_results`] returns and what a runner commits. To
+/// keep declaration order instead, sort [`ToolBatch::results_mut`] by
+/// [`ProcessorContext::declaration_order`] in a processor that runs after
+/// dispatch.
 #[derive(Debug)]
 pub struct ToolBatch {
     entries: Vec<ToolCallEntry>,
@@ -249,7 +257,8 @@ pub struct ProcessorContext<'a> {
     pub turn_id: &'a TurnId,
     /// Model round that declared this batch.
     pub round_id: RoundId,
-    /// Original declaration order, represented by stable block IDs.
+    /// Original declaration order, represented by stable block IDs. The batch's
+    /// own entry order changes as results are resolved; this does not.
     pub declaration_order: &'a [BlockId],
     /// Cooperative cancellation and deadline control.
     pub control: &'a CallControl,

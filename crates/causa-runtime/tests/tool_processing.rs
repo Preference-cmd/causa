@@ -586,3 +586,87 @@ async fn original_out_of_bounds_rejection_cannot_be_reopened() {
     ));
     assert_eq!(tool.count.load(Ordering::SeqCst), 0);
 }
+struct WaitsFor(Arc<Notify>);
+#[async_trait]
+impl Tool for WaitsFor {
+    fn definition(&self) -> ToolDefinition {
+        definition("waits")
+    }
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn ArtifactStore>,
+    ) -> ToolResultPayload {
+        self.0.notified().await;
+        result(call, ToolResultStatus::Succeeded, json!("waited"))
+    }
+}
+struct Signals(Arc<Notify>);
+#[async_trait]
+impl Tool for Signals {
+    fn definition(&self) -> ToolDefinition {
+        definition("signals")
+    }
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        _control: &CallControl,
+        _store: Option<&dyn ArtifactStore>,
+    ) -> ToolResultPayload {
+        self.0.notify_one();
+        result(call, ToolResultStatus::Succeeded, json!("signalled"))
+    }
+}
+struct DeclarationOrder;
+#[async_trait]
+impl ToolBatchProcessor for DeclarationOrder {
+    async fn process(
+        &self,
+        batch: &mut ToolBatch,
+        context: &ProcessorContext<'_>,
+    ) -> Result<(), ProcessorError> {
+        batch.results_mut().sort_by_key(|entry| {
+            context
+                .declaration_order
+                .iter()
+                .position(|id| *id == entry.call().call_block_id)
+        });
+        Ok(())
+    }
+}
+fn result_names(batch: &ToolBatch) -> Vec<String> {
+    batch
+        .results()
+        .iter()
+        .map(|entry| entry.call().input.tool_name.clone())
+        .collect()
+}
+#[tokio::test]
+async fn results_are_in_completion_order_unless_an_after_processor_restores_declarations() {
+    for (after, expected) in [
+        (vec![], ["signals", "waits"]),
+        (
+            vec![Arc::new(DeclarationOrder) as Arc<dyn ToolBatchProcessor>],
+            ["waits", "signals"],
+        ),
+    ] {
+        let notify = Arc::new(Notify::new());
+        let executor = executor(
+            vec![
+                Arc::new(WaitsFor(notify.clone())),
+                Arc::new(Signals(notify)),
+            ],
+            ToolExecutorOptions::default().with_after(after),
+        );
+        let mut batch = batch(&["waits", "signals"]);
+        executor
+            .bind(invocation(), control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap();
+        assert_eq!(result_names(&batch), expected);
+    }
+}

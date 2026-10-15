@@ -40,6 +40,13 @@ does not discard that work: the results are committed, then the run returns
 the cancellation or deadline with no uncommitted batch. [Interrupted
 runs](/interrupted-runs/) covers the batch an earlier stop hands back.
 
+Results are committed in the order they arrived: calls resolved before
+execution (an unbound name, or a before processor's result) first, then the
+rest as they completed, which need not be the order the model declared them
+in. An after processor that sorts
+`ToolBatch::results_mut` by `ProcessorContext::declaration_order` commits
+them in declaration order instead; the `tool_processors` example does this.
+
 The calls of one batch run concurrently on the caller's task. Nothing is
 spawned, the calls are not parallel, and their number is not bounded. This
 puts two requirements on every `Tool`:
