@@ -20,6 +20,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::anthropic::INLINE_TOOLS_BETA;
+
 /// Anthropic Messages render options.
 ///
 /// Configuration, not context: see the module docs for what the serialized form
@@ -36,12 +38,28 @@ pub struct AnthropicRenderOptions {
     /// frame's declaration followed by a deferred placeholder tool, and each
     /// later change renders at its position as a `system` message of
     /// `tool_removal` and `tool_addition` blocks, so a change keeps the cached
-    /// prefix. The API needs the `inline-tools-2026-09-15` beta for it, which
-    /// the gateway adds. Off, `tools` carries the current tool state and a
-    /// change rewrites it. Enable only for a server known to support it: a
-    /// server without support may reject the request, or ignore the change so
-    /// the model never sees the added tool.
+    /// prefix. The API needs the [`INLINE_TOOLS_BETA`] beta for it (reported by
+    /// [`Self::beta_values`]), which the gateway adds. Off, `tools` carries the
+    /// current tool state and a change rewrites it. Enable only for a server
+    /// known to support it: a server without support may reject the request, or
+    /// ignore the change so the model never sees the added tool.
     pub native_tool_changes: bool,
+}
+
+impl AnthropicRenderOptions {
+    /// Values for the `anthropic-beta` header required by the enabled options.
+    ///
+    /// A request rendered with these options is only valid when the HTTP
+    /// request carries each returned value. The `causa-provider` gateway adds
+    /// them to its `anthropic-beta` header; a host that sends requests itself
+    /// must add them.
+    pub fn beta_values(&self) -> Vec<&'static str> {
+        let mut values = Vec::new();
+        if self.native_tool_changes {
+            values.push(INLINE_TOOLS_BETA);
+        }
+        values
+    }
 }
 
 /// OpenAI Responses render options.
@@ -219,5 +237,16 @@ mod tests {
         let false_store: ResponsesRenderOptions =
             serde_json::from_str(r#"{"store": false}"#).unwrap();
         assert_eq!(false_store.store, Some(false));
+    }
+
+    #[test]
+    fn anthropic_beta_values_reflect_enabled_options() {
+        let default_options = AnthropicRenderOptions::default();
+        assert!(default_options.beta_values().is_empty());
+
+        let native_options = AnthropicRenderOptions {
+            native_tool_changes: true,
+        };
+        assert_eq!(native_options.beta_values(), [INLINE_TOOLS_BETA]);
     }
 }

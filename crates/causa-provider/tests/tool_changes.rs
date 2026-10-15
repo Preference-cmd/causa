@@ -107,7 +107,17 @@ async fn anthropic_native_changes_keep_tools_and_add_the_beta_after_host_values(
     let body: Value = folded.body_json().unwrap();
     assert_eq!(tool_names(&body["tools"]), ["read", "write"]);
 
-    for host in [vec!["context-1m-2025-08-07"], vec![INLINE_TOOLS_BETA]] {
+    for (host, expected) in [
+        (
+            vec!["context-1m-2025-08-07"],
+            format!("context-1m-2025-08-07,{INLINE_TOOLS_BETA}"),
+        ),
+        (vec![INLINE_TOOLS_BETA], INLINE_TOOLS_BETA.to_owned()),
+        (
+            vec!["context-1m-2025-08-07", INLINE_TOOLS_BETA],
+            format!("context-1m-2025-08-07,{INLINE_TOOLS_BETA}"),
+        ),
+    ] {
         let server = answering(answer.clone()).await;
         let mut gateway = AnthropicMessagesGateway::new(KEY)
             .with_base_url(format!("{}/v1", server.uri()))
@@ -117,11 +127,6 @@ async fn anthropic_native_changes_keep_tools_and_add_the_beta_after_host_values(
         }
         gateway.invoke(&request(), &control()).await.unwrap();
         let native = only_request(&server).await;
-        let expected = if host[0] == INLINE_TOOLS_BETA {
-            INLINE_TOOLS_BETA.to_owned()
-        } else {
-            format!("{},{INLINE_TOOLS_BETA}", host[0])
-        };
         assert_eq!(beta(&native), Some(expected.as_str()));
         let body: Value = native.body_json().unwrap();
         assert_eq!(

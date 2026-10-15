@@ -52,6 +52,10 @@ can keep the request's `tools` unchanged while the set changes.
 
 ### Added
 
+- `AnthropicRenderOptions::beta_values` returns the `anthropic-beta` values
+  its enabled options need (such as `inline-tools-2026-09-15` for
+  `native_tool_changes`), allowing the gateway to decorate requests without
+  per-option logic.
 - The three render option types (`AnthropicRenderOptions`,
   `ResponsesRenderOptions`, `ChatRenderOptions`) deserialize from host
   configuration: a missing field takes its default, an unknown field

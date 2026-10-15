@@ -1,9 +1,7 @@
 //! Protocol rendering, full-response parsing and authentication.
 
 use causa_kernel::{ModelInvokeError, ModelOutput, ModelRequest};
-use causa_protocol::translation::anthropic::{
-    INLINE_TOOLS_BETA, parse_anthropic_response, render_anthropic_messages,
-};
+use causa_protocol::translation::anthropic::{parse_anthropic_response, render_anthropic_messages};
 use causa_protocol::translation::media::MediaSet;
 use causa_protocol::translation::openai_chat::{
     parse_openai_chat_response, render_openai_chat_messages,
@@ -93,12 +91,12 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
             .header("x-api-key", api_key)
             .header("anthropic-version", &self.anthropic_version);
         // One comma-separated header: the values the host listed, then the
-        // one an enabled render option needs. No model table decides headers.
+        // values the enabled render options need. No model table decides headers.
         let mut beta = self.beta.clone();
-        if self.render_options.native_tool_changes
-            && !beta.iter().any(|value| value == INLINE_TOOLS_BETA)
-        {
-            beta.push(INLINE_TOOLS_BETA.to_owned());
+        for value in self.render_options.beta_values() {
+            if !beta.iter().any(|existing| existing == value) {
+                beta.push(value.to_owned());
+            }
         }
         if beta.is_empty() {
             builder
