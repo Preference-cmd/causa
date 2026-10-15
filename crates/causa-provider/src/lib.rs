@@ -45,10 +45,11 @@
 //!
 //! The renderer-specific choices live in
 //! [`causa_protocol::translation::render_options`] and are hosted by the
-//! matching gateway configuration: [`KernelHttpGateway::with_beta`] for
-//! Anthropic,
-//! [`KernelHttpGateway::with_encrypted_reasoning`] and
-//! [`KernelHttpGateway::with_store`] for Responses, and
+//! matching gateway configuration:
+//! [`KernelHttpGateway::with_native_tool_changes`] for Anthropic,
+//! [`KernelHttpGateway::with_encrypted_reasoning`],
+//! [`KernelHttpGateway::with_store`] and
+//! [`KernelHttpGateway::with_additional_tools`] for Responses, and
 //! [`KernelHttpGateway::with_reasoning_content_replay`] for Chat. They can
 //! also be replaced at once with [`KernelHttpGateway::with_render_options`].
 //! They apply to the gateway value, not to one request; the defaults are
