@@ -101,10 +101,14 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
 
     /// Replace the HTTP client with one configured by the host.
     ///
-    /// The default client disables redirects and retries. A supplied client's
-    /// transport policies remain host-owned: disable both for the same
-    /// single-request guarantee. Cancellation and deadlines remain enforced
-    /// independently of the supplied client's timeout settings.
+    /// The default client disables redirects and retries, and configures a
+    /// connect timeout and idle read timeout without a total timeout. A supplied
+    /// client's transport policies remain host-owned: disable both for the same
+    /// single-request guarantee. Note that a supplied client configured with its
+    /// own `.timeout(...)` reintroduces a total request cap that cuts off long
+    /// streaming or generation turns; total duration belongs to the
+    /// [`CallControl`] deadline instead. Cancellation and deadlines remain
+    /// enforced independently of the supplied client's timeout settings.
     pub fn with_http_client(mut self, http: Client) -> Self {
         self.core = self.core.with_http_client(http);
         self

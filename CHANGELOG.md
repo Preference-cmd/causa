@@ -75,6 +75,12 @@ can keep the request's `tools` unchanged while the set changes.
 
 ### Changed
 
+- The default HTTP client replaces its 120-second total timeout with a
+  300-second idle read timeout, keeping the 10-second connect timeout. Reads
+  reset the idle timer on every chunk, allowing long streaming turns and
+  generation calls to complete while still detecting stalled connections.
+  Total invocation duration remains governed by the `CallControl` deadline;
+  there is no public API change.
 - CI runs on Linux only. The workspace has no platform-specific code, and
   the macOS jobs repeated the Linux results while waiting on scarce runners,
   which blocked a release upload.

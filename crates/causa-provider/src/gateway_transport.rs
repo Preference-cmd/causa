@@ -57,10 +57,12 @@ use serde_json::Value;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Baseline transport timeouts for the default client (connect 10s,
-/// total 120s). A per-request attempt deadline replaces the total timeout
-/// when present; the connect baseline always applies.
+/// read idle 300s). The idle timeout resets after each successful read,
+/// preventing a connection from hanging indefinitely while allowing long
+/// streaming or generation turns to complete. Total call duration is governed
+/// by the caller's [`CallControl`] deadline, not a static HTTP timeout.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Endpoint + HTTP client bundle shared by the per-protocol gateways.
 #[derive(Debug, Clone)]
@@ -97,18 +99,25 @@ impl GatewayCore {
     }
 }
 
-/// Default shared client: baseline connect + total timeouts so a gateway
-/// without an attempt deadline cannot hang forever on a stalled
-/// connection. Hosts with different baselines inject their own client
-/// through `GatewayCore::with_http_client`.
-fn default_client() -> Client {
+/// Build a client with custom connect and idle-read timeouts.
+fn client_with_timeouts(connect: Duration, read_idle: Duration) -> Client {
     Client::builder()
-        .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
-        .timeout(DEFAULT_TOTAL_TIMEOUT)
+        .connect_timeout(connect)
+        .read_timeout(read_idle)
         .retry(reqwest::retry::never())
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("static client configuration is valid")
+}
+
+/// Default shared client: baseline connect + read-idle timeouts so a gateway
+/// without an attempt deadline cannot hang forever on a stalled
+/// connection while allowing healthy long responses to complete. Total call
+/// duration belongs to the caller's [`CallControl`] deadline. Hosts with
+/// different baselines inject their own client through
+/// `GatewayCore::with_http_client`.
+fn default_client() -> Client {
+    client_with_timeouts(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_IDLE_TIMEOUT)
 }
 
 /// Send a prepared POST under the attempt's control plane: pre-cancel
@@ -125,6 +134,7 @@ pub(crate) async fn send_with_control(
 
 /// A fully buffered response: the status and headers classification reads,
 /// plus the bounded body the protocol parser consumes.
+#[derive(Debug)]
 pub(crate) struct BufferedResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
@@ -383,6 +393,7 @@ pub(crate) async fn send_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use causa_kernel::CancellationToken;
     use reqwest::header::{HeaderName, HeaderValue};
     use std::time::SystemTime;
 
@@ -574,5 +585,130 @@ mod tests {
             "chat",
         );
         assert_eq!(error2.message, "chat error 500");
+    }
+
+    async fn read_request_head(socket: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut head = Vec::new();
+        loop {
+            let mut b = [0u8];
+            if socket.read(&mut b).await.unwrap() == 0 {
+                break;
+            }
+            head.push(b[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+    }
+
+    async fn write_chunk(socket: &mut tokio::net::TcpStream, chunk: &str) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let frame = format!("{:x}\r\n{chunk}\r\n", chunk.len());
+        socket.write_all(frame.as_bytes()).await?;
+        socket.flush().await
+    }
+
+    #[tokio::test]
+    async fn trickling_stream_longer_than_idle_timeout_completes_successfully() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request_head(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            for i in 0..12 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                write_chunk(&mut socket, &format!("data: chunk {i}\n\n"))
+                    .await
+                    .unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let client = client_with_timeouts(Duration::from_secs(2), Duration::from_millis(200));
+        let control = CallControl::new(CancellationToken::new(), None);
+        let response = send_with_control(client.post(format!("http://{addr}/test")), &control)
+            .await
+            .expect("stream trickling within idle timeout must complete");
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body.matches("data: chunk ").count(), 12);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_stalled_longer_than_idle_timeout_fails_as_timed_out() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request_head(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        });
+
+        let client = client_with_timeouts(Duration::from_secs(2), Duration::from_millis(200));
+        let control = CallControl::new(CancellationToken::new(), None);
+        let error = send_with_control(client.post(format!("http://{addr}/test")), &control)
+            .await
+            .expect_err("stalled stream must time out");
+
+        assert_eq!(error.kind, ModelInvokeErrorKind::TimedOut);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn call_control_deadline_shorter_than_trickling_stream_fails_at_deadline() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request_head(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            for i in 0..12 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if write_chunk(&mut socket, &format!("data: chunk {i}\n\n"))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+        });
+
+        let client = client_with_timeouts(Duration::from_secs(2), Duration::from_millis(200));
+        let control = CallControl::new(CancellationToken::new(), None)
+            .with_timeout(Duration::from_millis(150));
+        let error = send_with_control(client.post(format!("http://{addr}/test")), &control)
+            .await
+            .expect_err("call control deadline must abort trickling stream");
+
+        assert_eq!(error.kind, ModelInvokeErrorKind::TimedOut);
+        assert_eq!(error.message, "model invocation deadline exceeded");
+        server.abort();
     }
 }

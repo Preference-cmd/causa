@@ -68,8 +68,13 @@
 //! Cancellation and deadlines apply during establishment and body processing;
 //! parsing one complete JSON event is synchronous. Dropping the stream or
 //! accepting a terminal releases the local HTTP response. Default clients
-//! disable retries and redirects; host-injected clients retain their policies.
-//! Session history, event delivery, display and persistence remain host-owned.
+//! configure a 10-second connect timeout and a 300-second idle read timeout
+//! that resets after each successful read, without a total request timeout:
+//! long turns continue uninterrupted while stalled connections time out, and
+//! total duration is governed by the [`causa_kernel::CallControl`] deadline.
+//! Default clients disable retries and redirects; host-injected clients retain
+//! their policies. Session history, event delivery, display and persistence
+//! remain host-owned.
 //!
 //! # Retries
 //!
