@@ -11,17 +11,20 @@ separate decision. A new version must follow the latest dated CHANGELOG entry.
 
 - **Until 0.1.0 is released**, every release bumps the patch number, breaking
   ones included: in `0.0.x` any release may be incompatible with the one
-  before, and Cargo's `"0.0.3"` constraint does not select `0.0.4`. The GitHub
-  release is titled `v0.0.4 — Experimental` and marked as a pre-release.
+  before, and Cargo's `"0.0.3"` constraint does not select `0.0.4`.
 - **From 0.1.0**, a break of the public API or of the stable serialized set
   (`Context` and every type it contains) needs a minor bump, `0.1.z` to
   `0.2.0`. A patch release only fixes or adds without breaking, so a
-  `"0.1"` constraint picks it up. The GitHub release is titled `v0.1.0` and
-  is not a pre-release.
+  `"0.1"` constraint picks it up.
 
 The switch happens in the commit that prepares 0.1.0, which also rewrites the
 version wording of the README, the top of CHANGELOG, the website's status and
 index pages and `AGENTS.md`.
+
+On GitHub, only a minor release (`v0.1.0`, `v0.2.0`) is a regular release,
+titled with its tag. Every `0.0.x` release and every patch between minor
+releases (`v0.1.1`) is a pre-release titled `v0.1.1 — Experimental`, so the
+latest regular release is always the latest minor version.
 
 ## Prepare a version
 

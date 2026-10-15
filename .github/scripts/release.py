@@ -49,8 +49,9 @@ def require_version(version):
 
 
 def experimental(version):
-    """0.0.x releases are experimental: any of them may break the previous one."""
-    return version.startswith("0.0.")
+    """Only a 0.y.0 version is a regular release; 0.0.x and the 0.y.z patches
+    between minor versions are experimental pre-releases."""
+    return not re.fullmatch(r"0\.[1-9][0-9]*\.0", version)
 
 
 def numbers(version):

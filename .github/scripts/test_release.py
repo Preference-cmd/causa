@@ -95,8 +95,10 @@ class ReleaseTests(unittest.TestCase):
         for version in ("0.0.1", "0.0.12", "0.1.0", "0.2.3", "0.10.0"):
             with self.subTest(version=version):
                 release.require_version(version)
-        self.assertTrue(release.experimental("0.0.5"))
-        self.assertFalse(release.experimental("0.1.0"))
+        for version in ("0.0.5", "0.1.1", "0.2.10"):
+            self.assertTrue(release.experimental(version), version)
+        for version in ("0.1.0", "0.10.0"):
+            self.assertFalse(release.experimental(version), version)
 
     def test_version_outside_the_release_series_is_refused_before_cargo(self):
         with patch.object(release, "run") as run:
