@@ -189,6 +189,74 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 release.notes(version)
 
+    def release_tree(self, unreleased="### Breaking\n\n- A change.\n"):
+        files = {
+            "CHANGELOG.md": f"# Changelog\n\n## [Unreleased]\n\n{unreleased}\n"
+                            "## [0.0.2] - 2026-10-02\n\nSecond.\n\n## [0.0.1] - 2026-09-16\n\nFirst.\n",
+            "Cargo.toml": '[workspace.package]\nversion = "0.0.2"\nrust-version = "1.96"\n\n'
+                          '[workspace.dependencies]\nother = { version = "0.0.2" }\n',
+            "crates/causa/Cargo.toml": '[dependencies]\n'
+                                       'causa-kernel = { path = "../causa-kernel", version = "0.0.2" }\n'
+                                       'causa-runtime = { path = "../causa-runtime", version = "0.0.2", optional = true }\n'
+                                       'serde = { version = "0.0.2" }\n',
+            "README.md": "> **Experimental 0.0.2.** See the [notes](https://x/blob/v0.0.2/CHANGELOG.md"
+                         "#002---2026-10-02).\n\ncargo add causa@0.0.2\n\n"
+                         'Cargo does not upgrade `"0.0.1"` to `0.0.2`. Not 0.0.20, 10.0.2 or 1.96.0.\n',
+        }
+        for name in release.INSTALL_DOCS[1:]:
+            files[name] = "`causa = \"0.0.2\"`\n"
+        for name, text in files.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text(text)
+        return files
+
+    def test_prepare_moves_versions_changelog_and_install_docs(self):
+        self.release_tree()
+        with patch.object(release, "run") as cargo, patch.object(release, "workspace") as check:
+            release.prepare("0.0.3", "2026-10-14")
+        check.assert_called_once_with("0.0.3")
+        self.assertEqual([call.args[:3] for call in cargo.call_args_list],
+                         [("cargo", "update", "--workspace")])
+        read = lambda name: (self.root / name).read_text()
+        self.assertIn("## [Unreleased]\n\n## [0.0.3] - 2026-10-14\n\n### Breaking\n\n- A change.\n\n"
+                      "## [0.0.2] - 2026-10-02", read("CHANGELOG.md"))
+        self.assertEqual(read("Cargo.toml"), '[workspace.package]\nversion = "0.0.3"\nrust-version = "1.96"\n\n'
+                                             '[workspace.dependencies]\nother = { version = "0.0.2" }\n')
+        self.assertEqual(read("crates/causa/Cargo.toml"),
+                         '[dependencies]\ncausa-kernel = { path = "../causa-kernel", version = "0.0.3" }\n'
+                         'causa-runtime = { path = "../causa-runtime", version = "0.0.3", optional = true }\n'
+                         'serde = { version = "0.0.2" }\n')
+        self.assertEqual(read("README.md"),
+                         "> **Experimental 0.0.3.** See the [notes](https://x/blob/v0.0.3/CHANGELOG.md"
+                         "#003---2026-10-14).\n\ncargo add causa@0.0.3\n\n"
+                         'Cargo does not upgrade `"0.0.2"` to `0.0.3`. Not 0.0.20, 10.0.2 or 1.96.0.\n')
+        for name in release.INSTALL_DOCS[1:]:
+            self.assertEqual(read(name), "`causa = \"0.0.3\"`\n")
+
+    def test_prepare_refuses_before_writing_anything(self):
+        cases = {
+            "empty unreleased notes": ({"unreleased": ""}, "0.0.3", "2026-10-14"),
+            "already dated version": ({}, "0.0.2", "2026-10-14"),
+            "nonexperimental version": ({}, "0.1.0", "2026-10-14"),
+            "malformed date": ({}, "0.0.3", "14.10.2026"),
+        }
+        for label, (tree, version, date) in cases.items():
+            with self.subTest(label):
+                files = self.release_tree(**tree)
+                with patch.object(release, "run") as cargo, self.assertRaises(ValueError):
+                    release.prepare(version, date)
+                cargo.assert_not_called()
+                for name, text in files.items():
+                    self.assertEqual((self.root / name).read_text(), text, name)
+
+    def test_prepare_refuses_a_workspace_behind_the_latest_entry(self):
+        files = self.release_tree()
+        (self.root / "Cargo.toml").write_text(files["Cargo.toml"].replace("0.0.2", "0.0.1"))
+        with patch.object(release, "run") as cargo, self.assertRaisesRegex(ValueError, "workspace version"):
+            release.prepare("0.0.3", "2026-10-14")
+        cargo.assert_not_called()
+        self.assertEqual((self.root / "CHANGELOG.md").read_text(), files["CHANGELOG.md"])
+
     def github(self, lookup):
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/tags/v0.0.1"}
         self.enterContext(patch.dict(os.environ, environment, clear=True))

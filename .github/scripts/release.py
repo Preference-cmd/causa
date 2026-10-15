@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Validate the experimental crate family, resume a tagged manual release and
-create its GitHub release."""
+"""Prepare, validate and resume a release of the experimental crate family,
+and create its GitHub release."""
 
 import argparse
+import datetime
 import io
 import json
 import os
@@ -21,6 +22,16 @@ FAMILY = {
     "causa-provider", "causa-extension",
 }
 USER_AGENT = "Causa-release (https://github.com/Preference-cmd/causa)"
+# Every version number in these files names the current release, except the
+# one before it in an "upgrade from" sentence; both move up together.
+# `website/src/content/docs/status.mdx` describes each release in prose and is
+# written by hand.
+INSTALL_DOCS = (
+    "README.md", "crates/causa/src/lib.rs",
+    "website/src/content/docs/index.mdx", "website/src/content/docs/crates.mdx",
+    "website/src/content/docs/examples.mdx", "website/src/content/docs/getting-started.mdx",
+)
+DATED_ENTRY = r"^## \[([0-9.]+)\] - \d{4}-\d{2}-\d{2}$"
 
 
 def require(condition, message):
@@ -32,9 +43,13 @@ def run(*args):
     return subprocess.check_output(args, cwd=ROOT, text=True).strip()
 
 
-def workspace(version):
+def require_version(version):
     require(re.fullmatch(r"0\.0\.[1-9][0-9]*", version),
             "This workflow only releases experimental 0.0.x versions (x >= 1)")
+
+
+def workspace(version):
+    require_version(version)
     metadata = json.loads(run("cargo", "metadata", "--no-deps", "--locked", "--format-version=1"))
     packages = [p for p in metadata["packages"] if p["id"] in metadata["workspace_members"]]
     require({p["name"] for p in packages} == FAMILY, "Unexpected workspace release set")
@@ -155,13 +170,83 @@ def github_release(version):
     print(f"Created GitHub release {tag}")
 
 
+def finalize_changelog(changelog, version, date):
+    """Date the unreleased notes as `version` and open an empty Unreleased section."""
+    require(not re.search(rf"^## \[{re.escape(version)}\]", changelog, re.M),
+            f"CHANGELOG already has an entry for {version}")
+    heading = re.search(r"^## \[Unreleased\]$", changelog, re.M)
+    require(heading, "CHANGELOG has no [Unreleased] section")
+    rest = changelog[heading.end():]
+    following = re.search(r"^## ", rest, re.M)
+    require((rest[:following.start()] if following else rest).strip(),
+            "The [Unreleased] section is empty; there is nothing to release")
+    return changelog[:heading.end()] + f"\n\n## [{version}] - {date}" + rest
+
+
+def bump_manifest(text, current, version):
+    """Move the workspace version and the family dependency requirements."""
+    family = "|".join(map(re.escape, sorted(FAMILY)))
+    pattern = rf'^(version = |(?:{family}) = \{{.*\bversion = )"{re.escape(current)}"'
+    return re.sub(pattern, rf'\1"{version}"', text, flags=re.M)
+
+
+def shift_versions(text, previous, current, version, date):
+    """Name `version` where the text named `current`, and `current` where it
+    named `previous`, including the link anchor of the current release notes."""
+    def anchor(number):
+        return number.replace(".", "")
+    text = re.sub(rf"#{anchor(current)}---\d{{4}}-\d{{2}}-\d{{2}}", f"#{anchor(version)}---{date}", text)
+    moves = {current: version}
+    if previous:
+        moves[previous] = current
+    pattern = rf"(?<![\d.])({'|'.join(map(re.escape, moves))})(?!\d|\.\d)"
+    return re.sub(pattern, lambda match: moves[match.group(1)], text)
+
+
+def prepare(version, date):
+    """Move the manifests, lockfiles, CHANGELOG and install docs to `version`.
+
+    Nothing is committed: the diff is for review. Every file is rewritten in
+    memory first, so a refusal leaves the checkout untouched.
+    """
+    require_version(version)
+    require(re.fullmatch(r"\d{4}-\d{2}-\d{2}", date), "The release date must be YYYY-MM-DD")
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    released = re.findall(DATED_ENTRY, changelog, re.M)
+    require(released, "CHANGELOG has no dated release to move from")
+    current, previous = released[0], (released[1] if len(released) > 1 else None)
+    edits = {ROOT / "CHANGELOG.md": finalize_changelog(changelog, version, date)}
+    for path in [ROOT / "Cargo.toml", *sorted((ROOT / "crates").glob("*/Cargo.toml"))]:
+        edits[path] = bump_manifest(path.read_text(), current, version)
+    require(edits[ROOT / "Cargo.toml"] != (ROOT / "Cargo.toml").read_text(),
+            f"The workspace version is not {current}, the latest dated CHANGELOG entry")
+    for name in INSTALL_DOCS:
+        path = ROOT / name
+        edits[path] = shift_versions(path.read_text(), previous, current, version, date)
+    for path, text in edits.items():
+        path.write_text(text)
+    # The consumer workspaces depend on the crates by path; their lockfiles
+    # record the version too, and CI builds them with --locked.
+    for manifest in [ROOT / "Cargo.toml", *sorted((ROOT / "tests/consumers").glob("*/Cargo.toml"))]:
+        run("cargo", "update", "--workspace", "--manifest-path", str(manifest))
+    workspace(version)
+    print(f"Prepared {version} from {current}. Rewrite website/src/content/docs/status.mdx "
+          "for this release by hand, then review the whole diff before committing.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "packages", "publish", "notes", "github-release"))
+    parser.add_argument("command",
+                        choices=("prepare", "check", "packages", "publish", "notes", "github-release"))
     parser.add_argument("--version", required=True)
+    parser.add_argument("--date", default=datetime.date.today().isoformat(),
+                        help="release date for prepare (default: today)")
     args = parser.parse_args()
     if args.command == "notes":
         sys.stdout.write(notes(args.version))
+        return
+    if args.command == "prepare":
+        prepare(args.version, args.date)
         return
     metadata, packages = workspace(args.version)
     if args.command == "packages":

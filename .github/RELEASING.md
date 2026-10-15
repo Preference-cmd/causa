@@ -7,13 +7,18 @@ The Publish workflow currently accepts only experimental `0.0.x` versions with a
 
 ## Prepare a version
 
-1. Set `workspace.package.version` and every family dependency (including
-   dev-dependencies) to the same version; update Cargo.lock. Keep the README,
-   facade examples and website installation instructions in sync.
-2. Record breaking API/wire changes and migration instructions. In `0.0.x`,
+1. Record breaking API/wire changes and migration instructions under
+   `## [Unreleased]` in CHANGELOG. In `0.0.x`,
    patch releases may be incompatible; Cargo's `"0.0.3"` constraint does not
    automatically select `0.0.4`. There is no separate checkpoint schema version
    or automatic reader for the removed context/session formats.
+2. Run `python3 .github/scripts/release.py prepare --version 0.0.4`. It dates
+   the Unreleased notes as the release entry and opens an empty Unreleased
+   section; sets `workspace.package.version` and every family dependency
+   (including dev-dependencies) to the new version; refreshes the workspace
+   and consumer lockfiles; and moves the version numbers in the README, the
+   facade crate docs and the website installation pages. It commits nothing.
+   Rewrite `website/src/content/docs/status.mdx` for the release by hand.
 3. Keep each crate's two license symlinks pointing to the root license texts.
    Cargo flattens these into ordinary files in the published archives.
 4. Run the checks below and review the complete diff. Preserve any unrelated
