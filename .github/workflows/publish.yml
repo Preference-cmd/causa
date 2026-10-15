@@ -1,58 +1,99 @@
 name: Publish
 
+# A push to main releases the workspace version when CHANGELOG has its dated
+# entry and the vVERSION tag is missing or already names the pushed commit.
+# CI and the package preflight run first, the tag is created here, and the
+# upload waits for approval in the crates-io environment. Dispatching on a
+# release commit (or its tag) resumes an interrupted release.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      version:
-        description: Experimental version shared by all six crates
-        required: true
-        default: '0.0.4'
-        type: string
-      publish:
-        description: Upload to crates.io (requires the matching vVERSION tag)
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
-concurrency:
-  group: crates-io-publish
-  cancel-in-progress: false
-
 jobs:
-  # Check the exact selected commit, including the MSRV.
+  plan:
+    runs-on: ubuntu-26.04
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: plan
+        run: python3 .github/scripts/release.py plan
+
+  # Check the exact release commit, including the MSRV. A dispatch from any
+  # other branch never tags or uploads.
   checks:
+    needs: plan
+    if: >-
+      needs.plan.outputs.release == 'true' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     uses: ./.github/workflows/ci.yml
 
-  publish:
-    needs: checks
+  preflight:
+    needs: [plan, checks]
     runs-on: ubuntu-26.04
-    # Creating the GitHub release needs write access; nothing else here does.
+    env:
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check release version and family dependencies
+        run: python3 .github/scripts/release.py check --version "$RELEASE_VERSION"
+      - name: Verify every package together
+        run: cargo publish --workspace --dry-run --locked --registry crates-io
+      - name: Check packaged licenses and README files
+        run: python3 .github/scripts/release.py packages --version "$RELEASE_VERSION"
+
+  tag:
+    needs: [plan, preflight]
+    runs-on: ubuntu-26.04
+    # Pushing the tag needs write access. A tag pushed with the workflow token
+    # starts no other workflow, so the release continues in this run.
     permissions:
       contents: write
+    concurrency:
+      group: crates-io-publish
+      cancel-in-progress: false
     env:
-      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag the release commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 .github/scripts/release.py tag --version "$RELEASE_VERSION"
+
+  publish:
+    needs: [plan, tag]
+    runs-on: ubuntu-26.04
+    # The environment requires a reviewer and holds CARGO_REGISTRY_TOKEN, so
+    # the token is readable only after the upload is approved.
+    environment: crates-io
+    # Creating the GitHub release needs write access.
+    permissions:
+      contents: write
+    concurrency:
+      group: crates-io-publish
+      cancel-in-progress: false
+    env:
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      - name: Check release version and family dependencies
-        run: python3 .github/scripts/release.py check --version "$RELEASE_VERSION"
-      - name: Verify every package together (also works before the first publish)
-        run: cargo publish --workspace --dry-run --locked --registry crates-io
-      - name: Check packaged licenses and README files
-        run: python3 .github/scripts/release.py packages --version "$RELEASE_VERSION"
-      - name: Publish missing versions from the release tag
-        if: inputs.publish
+      - name: Publish missing versions from the release commit
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: python3 .github/scripts/release.py publish --version "$RELEASE_VERSION"
       - name: Create the GitHub release from the changelog entry
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/release.py github-release --version "$RELEASE_VERSION"

@@ -43,9 +43,10 @@ cargo publish --workspace --dry-run --locked --registry crates-io
 python3 .github/scripts/release.py packages --version 0.0.4
 ```
 
-Use the actual version in these commands. Before committing, the local
-dry-run can use `--allow-dirty`; the publishing workflow requires a clean
-checkout. A workspace dry-run builds all six packaged crates against a
+Use the actual version in these commands. The release workflow repeats them
+on the pushed commit; running them first catches a failure before the push.
+Before committing, the local dry-run can use `--allow-dirty`; the publishing
+workflow requires a clean checkout. A workspace dry-run builds all six packaged crates against a
 temporary registry, even before their dependencies exist on crates.io.
 It does not upload anything. Do not replace it with separate per-crate
 dry-runs for the first release.
@@ -56,42 +57,53 @@ dry-runs for the first release.
 - For releases of the six existing crates, create a short-lived API token
   with only `publish-update`, scoped to `causa`, `causa-kernel`, `causa-runtime`,
   `causa-protocol`, `causa-provider` and `causa-extension`. Creating a new crate
-  additionally needs `publish-new`. Add it to the repository secret
-  `CARGO_REGISTRY_TOKEN`; the workflow injects it only into the upload step.
-- The current crates.io Trusted Publishing setup requires an existing crate.
-  After the first release, each crate can be configured for the same
-  repository and publishing workflow, then the bootstrap token can be retired.
+  additionally needs `publish-new`.
+- Store it as the secret `CARGO_REGISTRY_TOKEN` of the `crates-io` environment
+  (Settings → Environments), not as a repository secret. The environment
+  requires a reviewer, so only an approved upload job can read the token, and
+  the workflow injects it only into the upload step.
+- Create the environment with its required reviewer before the first release
+  through this workflow: a job that names a missing environment creates it
+  without protection.
+- Trusted Publishing can replace the token: each crate is configured for this
+  repository, `publish.yml` and the `crates-io` environment, the upload job
+  gets `id-token: write` and exchanges it with
+  `rust-lang/crates-io-auth-action`. Switch when the token next needs
+  replacing.
 
-## Manual release
+## Release
 
-1. Finalize `## [0.0.4] - YYYY-MM-DD` in CHANGELOG and change the README/site
-   status from “preparing” to “experimental release”. Commit the reviewed
-   release changes and push them. CI must pass on that commit.
-2. In GitHub Actions, run **Publish** on that commit's branch with its version
-   and `publish` unchecked. This repeats CI and the complete package preflight.
-3. Tag the same release commit `v0.0.4` and push the tag after approving the
-   artifacts. Do not move a tag used for an upload.
-4. Run **Publish** again, select the matching tag, enter `0.0.4`, and check
-   `publish`. The workflow reruns CI for the selected commit before upload.
-   After the upload it creates the GitHub release `v0.0.4 — Experimental`
-   as a pre-release, with the dated CHANGELOG entry as its notes.
-5. Check all six crates.io pages and docs.rs builds, then compile an external
+1. Push the reviewed release commit from “Prepare a version” to `main`.
+2. The **Publish** workflow runs on every push to `main`. Its `plan` job reads
+   the workspace version and releases it only when CHANGELOG has the dated
+   entry and the `v0.0.4` tag is missing or already names this commit; any
+   other push stops there. A release reruns CI and the complete package
+   preflight on the pushed commit, then tags it `v0.0.4` (annotated). A tag
+   used for a release never moves; the workflow refuses to retag.
+3. The upload waits for approval in the `crates-io` environment. Review the
+   preflight output, then approve. The workflow publishes the missing crates
+   and creates the GitHub release `v0.0.4 — Experimental` as a pre-release,
+   with the dated CHANGELOG entry as its notes.
+4. Check all six crates.io pages and docs.rs builds, then compile an external
    consumer using `causa = "0.0.4"` in default, kernel-only and full modes.
 
-Actual uploads run only in this manually dispatched workflow. The default
-is preflight-only. The upload helper refuses missing tokens, wrong tags,
-dirty checkouts and unfinished release notes.
+Uploads run only in this workflow, from `main` or a `v*` tag. The helpers
+refuse to run outside GitHub Actions, and refuse missing tokens, a tag on
+another commit, dirty checkouts and unfinished release notes. Once the tag
+names an earlier commit, later pushes at the same version release nothing.
 
 ## Partial release recovery
 
-Rerun the same workflow from the same tag. Before uploading anything, the
-helper checks all six exact versions. It skips an existing version only if
-its published VCS metadata identifies this clean commit; yanked versions,
-different commits, malformed archives and registry errors stop the release.
-Cargo publishes the remaining packages in dependency order and waits for
-index visibility. If all six already exist from the tag, the upload is a no-op.
-The GitHub release is created only when the tag has none; an existing release
-is left as it is, so edit its notes on GitHub or delete it before a rerun.
+Rerun the failed jobs of the same run, or dispatch **Publish** on the `v0.0.4`
+tag. The tag step is a no-op when the tag already names the commit. Before
+uploading anything, the helper checks all six exact versions. It skips an
+existing version only if its published VCS metadata identifies this clean
+commit; yanked versions, different commits, malformed archives and registry
+errors stop the release. Cargo publishes the remaining packages in dependency
+order and waits for index visibility. If all six already exist from the tag,
+the upload is a no-op. The GitHub release is created only when the tag has
+none; an existing release is left as it is, so edit its notes on GitHub or
+delete it before a rerun.
 
 This check uses the package's recorded VCS metadata; it is a retry guard,
 not a cryptographic source attestation. A failed upload may already have

@@ -18,7 +18,7 @@ crates/causa-protocol      # wire-protocol translation, transport-free
 crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)
 tests/consumers/           # separate workspaces that use the public facade
-.github/workflows/         # ci.yml, website.yml, publish.yml (manual dispatch only)
+.github/workflows/         # ci.yml, website.yml, publish.yml (release on push to main, upload on approval)
 .github/scripts/           # layering guard, layout guard, release.py and their tests
 .github/RELEASING.md       # release checklist — never `cargo publish` by hand
 website/                   # Astro Starlight docs site (its own pnpm project)

@@ -86,6 +86,12 @@ def check_packages(metadata, packages):
         print(f"Verified archive: {stem}")
 
 
+def dated_entry(changelog, version):
+    """Find the heading of the dated CHANGELOG entry for `version`, if any."""
+    return next((heading for heading in re.finditer(DATED_ENTRY, changelog, re.M)
+                 if heading.group(1) == version), None)
+
+
 def fetch(url):
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=60) as response:
@@ -115,16 +121,14 @@ def unpublished(version, commit):
 
 
 def publish(version):
-    require(os.environ.get("GITHUB_ACTIONS") == "true", "Upload only through the manual Publish workflow")
-    require(os.environ.get("GITHUB_REF") == f"refs/tags/v{version}",
-            f"Select the v{version} tag for an actual upload")
-    require(bool(os.environ.get("CARGO_REGISTRY_TOKEN")), "Missing CARGO_REGISTRY_TOKEN repository secret")
+    require(os.environ.get("GITHUB_ACTIONS") == "true", "Upload only through the Publish workflow")
+    require(bool(os.environ.get("CARGO_REGISTRY_TOKEN")), "Missing CARGO_REGISTRY_TOKEN secret of the crates-io environment")
     require(not run("git", "status", "--porcelain"), "Release checkout must be clean")
     commit = run("git", "rev-parse", "HEAD")
     require(run("git", "rev-parse", f"refs/tags/v{version}^{{commit}}") == commit,
             "Release tag and checkout differ")
     changelog = (ROOT / "CHANGELOG.md").read_text()
-    require(re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.M),
+    require(dated_entry(changelog, version),
             "Finalize the dated CHANGELOG release entry before tagging")
     remaining = unpublished(version, commit)
     if not remaining:
@@ -141,7 +145,7 @@ def publish(version):
 def notes(version):
     """Return the CHANGELOG section of one dated release, without its heading."""
     changelog = (ROOT / "CHANGELOG.md").read_text()
-    heading = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.M)
+    heading = dated_entry(changelog, version)
     require(heading, f"CHANGELOG has no dated entry for {version}")
     rest = changelog[heading.end():]
     following = re.search(r"^## ", rest, re.M)
@@ -152,10 +156,10 @@ def notes(version):
 
 def github_release(version):
     """Create the GitHub release for an uploaded version; a rerun changes nothing."""
-    require(os.environ.get("GITHUB_ACTIONS") == "true", "Create releases only through the manual Publish workflow")
-    require(os.environ.get("GITHUB_REF") == f"refs/tags/v{version}",
-            f"Select the v{version} tag to create its release")
+    require(os.environ.get("GITHUB_ACTIONS") == "true", "Create releases only through the Publish workflow")
     tag = f"v{version}"
+    require(run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}") == run("git", "rev-parse", "HEAD"),
+            "Release tag and checkout differ")
     body = notes(version)
     existing = subprocess.run(["gh", "release", "view", tag], cwd=ROOT, capture_output=True, text=True)
     if existing.returncode == 0:
@@ -168,6 +172,50 @@ def github_release(version):
          "--title", f"{tag} — Experimental", "--notes-file", "-"],
         cwd=ROOT, input=body, text=True, check=True)
     print(f"Created GitHub release {tag}")
+
+
+def remote_tag(version):
+    """Return the commit the remote vVERSION tag points at, or None."""
+    tag = f"refs/tags/v{version}"
+    listing = run("git", "ls-remote", "origin", tag, f"{tag}^{{}}")
+    refs = {name: commit for commit, name in (line.split("\t") for line in listing.splitlines())}
+    # An annotated tag lists its object and, peeled, the commit it names.
+    return refs.get(f"{tag}^{{}}", refs.get(tag))
+
+
+def plan():
+    """Decide whether this commit releases the workspace version.
+
+    It does when CHANGELOG has the version's dated entry and the remote tag is
+    missing or already names this commit (a rerun). Once the tag names an
+    earlier commit, later commits at the same version release nothing.
+    """
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    if not dated_entry(changelog, version):
+        return version, False, f"CHANGELOG has no dated entry for {version}"
+    tagged = remote_tag(version)
+    if tagged is None:
+        return version, True, f"Releasing {version}: v{version} is not tagged yet"
+    if tagged == run("git", "rev-parse", "HEAD"):
+        return version, True, f"Resuming {version}: v{version} already names this commit"
+    return version, False, f"{version} was released from {tagged[:12]}"
+
+
+def tag(version):
+    """Tag this commit vVERSION on the remote; a rerun on the same commit changes nothing."""
+    require_version(version)
+    require(os.environ.get("GITHUB_ACTIONS") == "true", "Tag releases only through the Publish workflow")
+    require(not run("git", "status", "--porcelain"), "Release checkout must be clean")
+    commit = run("git", "rev-parse", "HEAD")
+    tagged = remote_tag(version)
+    if tagged is not None:
+        require(tagged == commit, f"v{version} already names {tagged}; a tag used for a release never moves")
+        print(f"v{version} already names this commit")
+        return
+    run("git", "tag", "--annotate", f"v{version}", "--message", f"Causa v{version} experimental release", commit)
+    run("git", "push", "origin", f"refs/tags/v{version}")
+    print(f"Tagged {commit} as v{version}")
 
 
 def finalize_changelog(changelog, version, date):
@@ -236,17 +284,29 @@ def prepare(version, date):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command",
-                        choices=("prepare", "check", "packages", "publish", "notes", "github-release"))
-    parser.add_argument("--version", required=True)
+    parser.add_argument("command", choices=(
+        "prepare", "check", "packages", "plan", "tag", "publish", "notes", "github-release"))
+    parser.add_argument("--version")
     parser.add_argument("--date", default=datetime.date.today().isoformat(),
                         help="release date for prepare (default: today)")
     args = parser.parse_args()
+    if args.command == "plan":
+        version, release, reason = plan()
+        print(reason)
+        if "GITHUB_OUTPUT" in os.environ:
+            with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                output.write(f"version={version}\nrelease={str(release).lower()}\n")
+        return
+    if not args.version:
+        parser.error(f"{args.command} requires --version")
     if args.command == "notes":
         sys.stdout.write(notes(args.version))
         return
     if args.command == "prepare":
         prepare(args.version, args.date)
+        return
+    if args.command == "tag":
+        tag(args.version)
         return
     metadata, packages = workspace(args.version)
     if args.command == "packages":
