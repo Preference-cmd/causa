@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Prepare, validate and resume a release of the experimental crate family,
-and create its GitHub release."""
+"""Prepare, validate and resume a release of the crate family, and create its
+GitHub release."""
 
 import argparse
 import datetime
@@ -44,8 +44,17 @@ def run(*args):
 
 
 def require_version(version):
-    require(re.fullmatch(r"0\.0\.[1-9][0-9]*", version),
-            "This workflow only releases experimental 0.0.x versions (x >= 1)")
+    require(re.fullmatch(r"0\.(0\.[1-9][0-9]*|[1-9][0-9]*\.(0|[1-9][0-9]*))", version),
+            "This workflow releases 0.0.x (x >= 1) and 0.y.z (y >= 1) versions; 1.0 is a separate decision")
+
+
+def experimental(version):
+    """0.0.x releases are experimental: any of them may break the previous one."""
+    return version.startswith("0.0.")
+
+
+def numbers(version):
+    return tuple(map(int, version.split(".")))
 
 
 def workspace(version):
@@ -168,9 +177,9 @@ def github_release(version):
         return
     require("release not found" in existing.stderr.lower(),
             f"Could not look up release {tag}: {existing.stderr.strip()}")
+    label = ["--prerelease", "--title", f"{tag} — Experimental"] if experimental(version) else ["--title", tag]
     subprocess.run(
-        ["gh", "release", "create", tag, "--verify-tag", "--prerelease",
-         "--title", f"{tag} — Experimental", "--notes-file", "-"],
+        ["gh", "release", "create", tag, "--verify-tag", *label, "--notes-file", "-"],
         cwd=ROOT, input=body, text=True, check=True)
     print(f"Created GitHub release {tag}")
 
@@ -214,7 +223,8 @@ def tag(version):
         require(tagged == commit, f"v{version} already names {tagged}; a tag used for a release never moves")
         print(f"v{version} already names this commit")
         return
-    run("git", "tag", "--annotate", f"v{version}", "--message", f"Causa v{version} experimental release", commit)
+    kind = "experimental release" if experimental(version) else "release"
+    run("git", "tag", "--annotate", f"v{version}", "--message", f"Causa v{version} {kind}", commit)
     run("git", "push", "origin", f"refs/tags/v{version}")
     print(f"Tagged {commit} as v{version}")
 
@@ -264,6 +274,7 @@ def prepare(version, date):
     released = re.findall(DATED_ENTRY, changelog, re.M)
     require(released, "CHANGELOG has no dated release to move from")
     current, previous = released[0], (released[1] if len(released) > 1 else None)
+    require(numbers(version) > numbers(current), f"{version} does not follow the latest release {current}")
     edits = {ROOT / "CHANGELOG.md": finalize_changelog(changelog, version, date)}
     for path in [ROOT / "Cargo.toml", *sorted((ROOT / "crates").glob("*/Cargo.toml"))]:
         edits[path] = bump_manifest(path.read_text(), current, version)

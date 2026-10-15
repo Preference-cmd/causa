@@ -91,9 +91,16 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.workspace(VERSION)
 
-    def test_nonexperimental_version_is_refused_before_cargo(self):
+    def test_release_series_accepts_0_0_x_and_0_y_z(self):
+        for version in ("0.0.1", "0.0.12", "0.1.0", "0.2.3", "0.10.0"):
+            with self.subTest(version=version):
+                release.require_version(version)
+        self.assertTrue(release.experimental("0.0.5"))
+        self.assertFalse(release.experimental("0.1.0"))
+
+    def test_version_outside_the_release_series_is_refused_before_cargo(self):
         with patch.object(release, "run") as run:
-            for version in ("0.1.0", "0.0.0", "0.0.01", "0.0.1;echo bad"):
+            for version in ("0.0.0", "0.0.01", "0.01.0", "0.1.01", "1.0.0", "0.0.1;echo bad"):
                 with self.subTest(version=version), self.assertRaises(ValueError):
                     release.workspace(version)
             run.assert_not_called()
@@ -236,7 +243,7 @@ class ReleaseTests(unittest.TestCase):
         cases = {
             "empty unreleased notes": ({"unreleased": ""}, "0.0.3", "2026-10-14"),
             "already dated version": ({}, "0.0.2", "2026-10-14"),
-            "nonexperimental version": ({}, "0.1.0", "2026-10-14"),
+            "1.0 version": ({}, "1.0.0", "2026-10-14"),
             "malformed date": ({}, "0.0.3", "14.10.2026"),
         }
         for label, (tree, version, date) in cases.items():
@@ -247,6 +254,23 @@ class ReleaseTests(unittest.TestCase):
                 cargo.assert_not_called()
                 for name, text in files.items():
                     self.assertEqual((self.root / name).read_text(), text, name)
+
+    def test_prepare_moves_to_0_1_and_refuses_to_go_back(self):
+        self.release_tree()
+        with patch.object(release, "run"), patch.object(release, "workspace"):
+            release.prepare("0.1.0", "2026-10-20")
+        read = lambda name: (self.root / name).read_text()
+        self.assertIn("## [Unreleased]\n\n## [0.1.0] - 2026-10-20\n", read("CHANGELOG.md"))
+        self.assertIn('version = "0.1.0"', read("Cargo.toml"))
+        self.assertIn("blob/v0.1.0/CHANGELOG.md#010---2026-10-20", read("README.md"))
+        (self.root / "CHANGELOG.md").write_text(read("CHANGELOG.md").replace(
+            "## [Unreleased]\n", "## [Unreleased]\n\n- Later.\n"))
+        files = {name: read(name) for name in ("CHANGELOG.md", "Cargo.toml", "README.md")}
+        with patch.object(release, "run") as cargo, self.assertRaisesRegex(ValueError, "does not follow"):
+            release.prepare("0.0.3", "2026-10-21")
+        cargo.assert_not_called()
+        for name, text in files.items():
+            self.assertEqual(read(name), text, name)
 
     def test_prepare_refuses_a_workspace_behind_the_latest_entry(self):
         files = self.release_tree()
@@ -271,6 +295,14 @@ class ReleaseTests(unittest.TestCase):
             ["gh", "release", "create", "v0.0.1", "--verify-tag", "--prerelease",
              "--title", "v0.0.1 — Experimental", "--notes-file", "-"],
             cwd=self.root, input="First.\n", text=True, check=True)
+
+    def test_a_0_1_release_is_not_marked_experimental(self):
+        gh = self.github(release.subprocess.CompletedProcess([], 1, "", "release not found\n"))
+        (self.root / "CHANGELOG.md").write_text("## [0.1.0] - 2026-10-20\n\nFirst stable series.\n")
+        release.github_release("0.1.0")
+        gh.assert_called_with(
+            ["gh", "release", "create", "v0.1.0", "--verify-tag", "--title", "v0.1.0", "--notes-file", "-"],
+            cwd=self.root, input="First stable series.\n", text=True, check=True)
 
     def test_existing_github_release_is_left_alone(self):
         gh = self.github(release.subprocess.CompletedProcess([], 0, "v0.0.1", ""))

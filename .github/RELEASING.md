@@ -1,17 +1,34 @@
-# Experimental releases
+# Releases
 
-Publish all six crates at the same `0.0.x` version. Most users depend only
-on `causa`; Cargo resolves its layer dependencies. Session management and
+Publish all six crates at one shared version. Most users depend only on
+`causa`; Cargo resolves its layer dependencies. Session management and
 subagent orchestration belong to applications; they are not Causa release gates.
-The Publish workflow currently accepts only experimental `0.0.x` versions with a nonzero patch number.
+
+## Version rules
+
+The Publish workflow accepts `0.0.x` (x ≥ 1) and `0.y.z` (y ≥ 1); 1.0 is a
+separate decision. A new version must follow the latest dated CHANGELOG entry.
+
+- **Until 0.1.0 is released**, every release bumps the patch number, breaking
+  ones included: in `0.0.x` any release may be incompatible with the one
+  before, and Cargo's `"0.0.3"` constraint does not select `0.0.4`. The GitHub
+  release is titled `v0.0.4 — Experimental` and marked as a pre-release.
+- **From 0.1.0**, a break of the public API or of the stable serialized set
+  (`Context` and every type it contains) needs a minor bump, `0.1.z` to
+  `0.2.0`. A patch release only fixes or adds without breaking, so a
+  `"0.1"` constraint picks it up. The GitHub release is titled `v0.1.0` and
+  is not a pre-release.
+
+The switch happens in the commit that prepares 0.1.0, which also rewrites the
+version wording of the README, the top of CHANGELOG, the website's status and
+index pages and `AGENTS.md`.
 
 ## Prepare a version
 
 1. Record breaking API/wire changes and migration instructions under
-   `## [Unreleased]` in CHANGELOG. In `0.0.x`,
-   patch releases may be incompatible; Cargo's `"0.0.3"` constraint does not
-   automatically select `0.0.4`. There is no separate checkpoint schema version
-   or automatic reader for the removed context/session formats.
+   `## [Unreleased]` in CHANGELOG, and choose the version by the rules above.
+   There is no separate checkpoint schema version or automatic reader for the
+   removed context/session formats.
 2. Run `python3 .github/scripts/release.py prepare --version 0.0.4`. It dates
    the Unreleased notes as the release entry and opens an empty Unreleased
    section; sets `workspace.package.version` and every family dependency
@@ -81,8 +98,8 @@ Uploads use crates.io Trusted Publishing; the repository stores no token.
    used for a release never moves; the workflow refuses to retag.
 3. The upload waits for approval in the `crates-io` environment. Review the
    preflight output, then approve. The workflow publishes the missing crates
-   and creates the GitHub release `v0.0.4 — Experimental` as a pre-release,
-   with the dated CHANGELOG entry as its notes.
+   and creates the GitHub release, labelled by the version rules above, with
+   the dated CHANGELOG entry as its notes.
 4. Check all six crates.io pages and docs.rs builds, then compile an external
    consumer using `causa = "0.0.4"` in default, kernel-only and full modes.
 
