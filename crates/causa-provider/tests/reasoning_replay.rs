@@ -5,8 +5,8 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, ContextBlock,
     ContextFrame, GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelOutput,
-    ModelRef, ModelRequest, RoundId, SealedPart, StreamDelta, TextPayload, ToolOutput,
-    ToolResultPayload, ToolResultStatus, TurnId,
+    ModelRef, ModelRequest, Role, RoundId, SealedPart, StreamDelta, ToolOutput, ToolResultPayload,
+    ToolResultStatus, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -33,11 +33,7 @@ fn control() -> CallControl {
 }
 
 fn user_block() -> ContextBlock {
-    ContextBlock::new(
-        BlockId::new(uuid::Uuid::from_u128(1)),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta::from_source("user"),
-    )
+    ContextBlock::text(BlockId::new(uuid::Uuid::from_u128(1)), Role::User, "hi")
 }
 
 fn user_frame() -> ContextFrame {
@@ -173,10 +169,13 @@ async fn only_request_body(server: &MockServer) -> Value {
 fn anthropic_sealed(item: Value) -> ContextBlock {
     ContextBlock::new(
         next_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
-            causa_protocol::Protocol::AnthropicMessages.as_str(),
-            item,
-        ))]),
+        BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Sealed(SealedPart::new(
+                causa_protocol::Protocol::AnthropicMessages.as_str(),
+                item,
+            ))],
+        },
         BlockMeta::default(),
     )
 }

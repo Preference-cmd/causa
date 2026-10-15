@@ -689,8 +689,9 @@ fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
     );
     let block = causa_kernel::ContextBlock::new(
         causa_kernel::BlockId::new(uuid::Uuid::from_u128(7)),
-        causa_kernel::BlockContent::Parts(
-            sealed
+        causa_kernel::BlockContent::Message {
+            role: causa_kernel::Role::Assistant,
+            parts: sealed
                 .iter()
                 .map(|item| {
                     causa_kernel::ContentPart::Sealed(causa_kernel::SealedPart::new(
@@ -699,18 +700,16 @@ fn unknown_anthropic_block_extensions_are_retained_as_sealed_items() {
                     ))
                 })
                 .collect(),
-        ),
+        },
         causa_kernel::BlockMeta::default(),
     );
     let rendered = crate::translation::anthropic::render_anthropic_messages(
         &causa_kernel::ContextFrame {
             blocks: vec![
-                causa_kernel::ContextBlock::new(
+                causa_kernel::ContextBlock::text(
                     causa_kernel::BlockId::new(uuid::Uuid::from_u128(1)),
-                    causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
-                        causa_kernel::TextPayload::new("hi"),
-                    )]),
-                    causa_kernel::BlockMeta::from_source("user"),
+                    causa_kernel::Role::User,
+                    "hi",
                 ),
                 block,
             ],

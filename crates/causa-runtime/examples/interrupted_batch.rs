@@ -9,11 +9,10 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    BlockContent, BlockMeta, CallControl, ContentPart, Context, ContextBlock, ModelGateway,
-    ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest,
-    ModelResponse, ModelStopReason, TextPayload, Tool, ToolBatch, ToolCallContext, ToolCallDraft,
-    ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
-    validate_tool_result_append,
+    BlockContent, BlockMeta, CallControl, Context, ContextBlock, ModelGateway, ModelInvokeError,
+    ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelStopReason, Role, Tool, ToolBatch, ToolCallContext, ToolCallDraft, ToolDefinition,
+    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId, validate_tool_result_append,
 };
 use causa_runtime::{
     ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnLimits, TurnResult, TurnRunOptions,
@@ -133,12 +132,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut context = Context::new();
     context.apply(
         Vec::new(),
-        vec![ContextBlock::new(
+        vec![ContextBlock::text(
             new_block_id(),
-            BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
-                "Read both files.",
-            ))]),
-            BlockMeta::from_source("user"),
+            Role::User,
+            "Read both files.",
         )],
     )?;
 

@@ -3,7 +3,7 @@
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, EditError, Replacement,
-    TextPayload,
+    Role,
 };
 use std::ops::Range;
 
@@ -12,15 +12,18 @@ fn id(n: u128) -> BlockId {
 }
 
 fn text_block(n: u128, text: &str) -> ContextBlock {
-    ContextBlock::new(
-        id(n),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta::default(),
-    )
+    ContextBlock::text(id(n), Role::User, text)
 }
 
 fn empty_parts_block(n: u128) -> ContextBlock {
-    ContextBlock::new(id(n), BlockContent::Parts(Vec::new()), BlockMeta::default())
+    ContextBlock::new(
+        id(n),
+        BlockContent::Message {
+            role: Role::User,
+            parts: Vec::new(),
+        },
+        BlockMeta::default(),
+    )
 }
 
 fn context(blocks: Vec<ContextBlock>) -> Context {
@@ -35,7 +38,7 @@ fn labels_slice(blocks: &[ContextBlock]) -> Vec<String> {
     blocks
         .iter()
         .map(|block| match block.content() {
-            BlockContent::Parts(parts) => match parts.as_slice() {
+            BlockContent::Message { parts, .. } => match parts.as_slice() {
                 [ContentPart::Text(text)] => text.0.clone(),
                 [] => "<empty-parts>".to_owned(),
                 other => panic!("unexpected parts: {other:?}"),
@@ -291,7 +294,7 @@ fn invalid_ranges_are_checked_even_when_a_later_operation_covers_them() {
 fn reusing_an_id_after_removal_requires_the_original_content_and_metadata() {
     let original = ContextBlock::new(
         id(2),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("A"))]),
+        BlockContent::text(Role::User, "A"),
         BlockMeta::from_source("kept-source"),
     );
     let mut ctx = context(vec![
@@ -325,7 +328,7 @@ fn reusing_an_id_after_removal_requires_the_original_content_and_metadata() {
     ]);
     let changed_same_id = ContextBlock::new(
         id(2),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("changed"))]),
+        BlockContent::text(Role::User, "changed"),
         original.meta().clone(),
     );
     let failure = ctx
@@ -385,7 +388,7 @@ fn ineffective_material_is_ignored_but_duplicate_final_ids_fail_atomically() {
     assert_eq!(failure.replacements[0].with, vec![duplicate_a, duplicate_b]);
     assert_eq!(labels(&ctx), ["I", "A", "U"]);
 
-    // Explicitly fresh identities are accepted; an empty Parts block remains a
+    // Explicitly fresh identities are accepted; an empty Message block remains a
     // real member and is distinct from deleting the range.
     let mut ctx = context(base());
     ctx.apply(
@@ -441,14 +444,14 @@ fn moved_payloads_keep_their_string_allocations_during_successful_apply() {
 
     let retained = ContextBlock::new(
         id(1),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload(retained_text))]),
+        BlockContent::text(Role::User, retained_text),
         BlockMeta::default(),
     );
     let replaced = text_block(2, "remove me");
     let mut ctx = context(vec![retained, replaced]);
     let incoming = ContextBlock::new(
         id(3),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload(replacement_text))]),
+        BlockContent::text(Role::User, replacement_text),
         BlockMeta::default(),
     );
 
@@ -456,7 +459,7 @@ fn moved_payloads_keep_their_string_allocations_during_successful_apply() {
         .unwrap();
 
     let get_ptr = |block: &ContextBlock| match block.content() {
-        BlockContent::Parts(parts) => match &parts[0] {
+        BlockContent::Message { parts, .. } => match &parts[0] {
             ContentPart::Text(text) => text.0.as_ptr(),
             other => panic!("unexpected part: {other:?}"),
         },
@@ -625,7 +628,7 @@ fn exhaustive_three_operation_batches_match_an_independent_slot_gap_oracle() {
 fn tagged_block(n: u128, text: &str, source: &str) -> ContextBlock {
     ContextBlock::new(
         id(n),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
+        BlockContent::text(Role::User, text),
         BlockMeta::default()
             .with_source(source.to_owned())
             .with_provider_call_id(format!("provider-{n}")),

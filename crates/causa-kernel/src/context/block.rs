@@ -2,12 +2,13 @@
 //!
 //! A ContextBlock is a typed fact with three orthogonal axes:
 //! identity (id), content (BlockContent), and envelope
-//! provenance (BlockMeta). Provider-specific role assignment (system /
-//! user / assistant / tool) is the renderer's job, not the kernel's.
+//! provenance (BlockMeta). Who produced a message (system, user or
+//! assistant) is a kernel fact recorded on message content as a [`Role`];
+//! `BlockMeta::source` is provenance only and does not affect rendering.
 //!
-//! Content vocabulary is **Parts**: one
+//! Content vocabulary is **Message**: one
 //! logical message's mixed content commits as one block of ordered
-//! [`ContentPart`]s — the block is the fact atom (identity and envelope),
+//! [`ContentPart`]s with its [`Role`] — the block is the fact atom (identity and envelope),
 //! and the part is the content
 //! atom (ordered, identity-free, shares the envelope). Media enters as
 //! a [`MediaRef`] — a cheap durable reference; bytes never enter facts,
@@ -22,6 +23,22 @@ use crate::context::ids::BlockId;
 use crate::context::tool_data::ToolResultPayload;
 use crate::context::tools::ToolChange;
 
+/// The speaker of a conversation message.
+///
+/// Exhaustive on purpose: a renderer must be total over the role vocabulary, so
+/// a new variant is a breaking change that should stop downstream code from
+/// compiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Instructions or background context provided to the model.
+    System,
+    /// Input from the human user or external caller.
+    User,
+    /// Output produced by the model.
+    Assistant,
+}
+
 /// Envelope provenance. Fields are serde-additive so older records
 /// without them still deserialize.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +48,9 @@ pub struct BlockMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_call_id: Option<String>,
 
-    /// Origin tag (e.g. "user", "provider:gpt-4o", "host"). Optional.
+    /// Origin tag (e.g. "user", "provider:gpt-4o", "host"). Optional provenance
+    /// only: no renderer, validator, or runtime reads it and it does not affect
+    /// rendering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 
@@ -43,6 +62,8 @@ pub struct BlockMeta {
 }
 impl BlockMeta {
     /// Metadata naming only where the block came from, such as `"user"`.
+    /// Provenance only: no renderer, validator, or runtime reads it and it does
+    /// not affect rendering.
     pub fn from_source(source: impl Into<String>) -> Self {
         Self {
             source: Some(source.into()),
@@ -56,7 +77,8 @@ impl BlockMeta {
         self
     }
 
-    /// Sets the origin tag.
+    /// Sets the origin tag. Provenance only: no renderer, validator, or runtime
+    /// reads it and it does not affect rendering.
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
         self
@@ -143,6 +165,12 @@ impl ContextBlock {
         Self { id, content, meta }
     }
 
+    /// Constructs a text message block with the given identity, role, and text content,
+    /// using default metadata.
+    pub fn text(id: BlockId, role: Role, text: impl Into<String>) -> Self {
+        Self::new(id, BlockContent::text(role, text), BlockMeta::default())
+    }
+
     /// Returns this block's stable identity.
     pub const fn id(&self) -> BlockId {
         self.id
@@ -191,11 +219,17 @@ impl MediaRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", content = "value", rename_all = "snake_case")]
 pub enum BlockContent {
-    /// One logical message's ordered content parts (text and media
-    /// references) — atomic at the block: identity, one
-    /// content identity; execution pairing is enforced by specialized append
-    /// operations rather than by importing arbitrary facts.
-    Parts(Vec<ContentPart>),
+    /// One logical message's ordered content parts (text, media
+    /// references, or sealed wire items) and the role that produced them —
+    /// atomic at the block: one identity, one content identity; execution
+    /// pairing is enforced by specialized append operations rather than by
+    /// importing arbitrary facts.
+    Message {
+        /// Speaker role for this message.
+        role: Role,
+        /// Ordered content parts.
+        parts: Vec<ContentPart>,
+    },
     /// A model-issued tool invocation.
     ToolCall(ToolCallPayload),
     /// The recorded outcome of a prior call, paired by
@@ -206,7 +240,17 @@ pub enum BlockContent {
     ToolChange(ToolChange),
 }
 
-/// One content atom inside a [`BlockContent::Parts`] block: ordered,
+impl BlockContent {
+    /// Constructs a [`BlockContent::Message`] containing a single [`ContentPart::Text`].
+    pub fn text(role: Role, text: impl Into<String>) -> Self {
+        Self::Message {
+            role,
+            parts: vec![ContentPart::Text(TextPayload::new(text))],
+        }
+    }
+}
+
+/// One content atom inside a [`BlockContent::Message`] block: ordered,
 /// identity-free, sharing the block's envelope. New modalities arrive
 /// as new variants (additive); media bytes stay out of facts forever.
 ///

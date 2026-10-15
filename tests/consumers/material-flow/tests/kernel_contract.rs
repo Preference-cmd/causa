@@ -1,10 +1,9 @@
 //! C1: kernel-only material driver using the public facade.
 
 use causa::kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, EditError,
-    ModelBlockError, ModelItem, ModelResponse, ModelStopReason, TextPayload, ToolBatch,
-    ToolCallContext, ToolCallDraft, ToolOutput, ToolResultError, ToolResultPayload,
-    ToolResultStatus, validate_tool_result_append,
+    BlockContent, BlockId, BlockMeta, Context, ContextBlock, EditError, ModelBlockError, ModelItem,
+    ModelResponse, ModelStopReason, Role, TextPayload, ToolBatch, ToolCallContext, ToolCallDraft,
+    ToolOutput, ToolResultError, ToolResultPayload, ToolResultStatus, validate_tool_result_append,
 };
 use serde_json::json;
 
@@ -12,11 +11,7 @@ fn id(value: u128) -> BlockId {
     BlockId::new(uuid::Uuid::from_u128(value))
 }
 fn text(value: u128, content: &str) -> ContextBlock {
-    ContextBlock::new(
-        id(value),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(content))]),
-        BlockMeta::default(),
-    )
+    ContextBlock::text(id(value), Role::User, content)
 }
 fn response(tool: &str) -> ModelResponse {
     ModelResponse {

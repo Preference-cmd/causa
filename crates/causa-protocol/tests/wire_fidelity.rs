@@ -10,7 +10,7 @@
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelInvokeErrorKind, ModelOutput, ModelRef, SealedPart, StreamDelta,
+    GenerationOptions, ModelInvokeErrorKind, ModelOutput, ModelRef, Role, SealedPart, StreamDelta,
     TextPayload, ToolOutput, ToolResultPayload, ToolResultStatus, WireMeta,
 };
 use causa_protocol::Protocol;
@@ -44,11 +44,7 @@ fn next_id() -> BlockId {
 }
 
 fn user_block(text: &str) -> ContextBlock {
-    ContextBlock::new(
-        next_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta::from_source("user"),
-    )
+    ContextBlock::text(next_id(), Role::User, text)
 }
 
 fn parse(protocol: Protocol, body: &Value) -> ModelOutput {
@@ -662,14 +658,21 @@ fn without_wire(block: &ContextBlock) -> ContextBlock {
 
 fn without_sealed(block: &ContextBlock) -> Option<ContextBlock> {
     match block.content() {
-        BlockContent::Parts(parts) => {
+        BlockContent::Message { role, parts } => {
             let kept: Vec<ContentPart> = parts
                 .iter()
                 .filter(|p| !matches!(p, ContentPart::Sealed(_)))
                 .cloned()
                 .collect();
             (!kept.is_empty()).then(|| {
-                ContextBlock::new(block.id(), BlockContent::Parts(kept), block.meta().clone())
+                ContextBlock::new(
+                    block.id(),
+                    BlockContent::Message {
+                        role: *role,
+                        parts: kept,
+                    },
+                    block.meta().clone(),
+                )
             })
         }
         _ => Some(block.clone()),
@@ -681,7 +684,7 @@ fn blocks_of_another_format_render_from_facts_without_error() {
     for (source, blocks) in parsed_blocks() {
         assert!(
             blocks.iter().any(|b| b.meta().wire.is_some()
-                || matches!(b.content(), BlockContent::Parts(p) if p.iter().any(|p| matches!(p, ContentPart::Sealed(_))))),
+                || matches!(b.content(), BlockContent::Message { parts, .. } if parts.iter().any(|p| matches!(p, ContentPart::Sealed(_))))),
             "{source} fixture carries wire material"
         );
         for target in ALL.into_iter().filter(|target| *target != source) {
@@ -780,19 +783,19 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
         .find(|b| {
             matches!(
                 b.content(),
-                BlockContent::Parts(parts)
+                BlockContent::Message { parts, .. }
                     if parts.len() == 2
                         && parts.iter().all(|p| matches!(p, ContentPart::Text(_)))
             )
         })
         .expect("the fixture holds one two-part message block");
-    let BlockContent::Parts(parts) = message.content() else {
+    let BlockContent::Message { parts, .. } = message.content() else {
         panic!("message block");
     };
     assert_eq!(parts.len(), 2);
     let edited = ContextBlock::new(
         next_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("edited"))]),
+        BlockContent::text(Role::Assistant, "edited"),
         message.meta().clone(),
     );
     let rendered = assistant_items(
@@ -807,10 +810,13 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
     // Anthropic: fields apply only to a block of exactly one text part.
     let two_parts = ContextBlock::new(
         next_id(),
-        BlockContent::Parts(vec![
-            ContentPart::Text(TextPayload::new("a")),
-            ContentPart::Text(TextPayload::new("b")),
-        ]),
+        BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![
+                ContentPart::Text(TextPayload::new("a")),
+                ContentPart::Text(TextPayload::new("b")),
+            ],
+        },
         BlockMeta::default().with_wire(WireMeta::new(
             "anthropic_messages",
             json!({"type": "text", "x_unknown": 1}),
@@ -829,34 +835,33 @@ fn a_part_count_that_no_longer_matches_the_recorded_slots_renders_from_facts() {
     );
 }
 
-fn sealed_block(source: Option<&str>, format: &str, item: Value) -> ContextBlock {
+fn sealed_block(role: Role, format: &str, item: Value) -> ContextBlock {
     ContextBlock::new(
         next_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(format, item))]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.source = source.map(String::from);
-            meta
+        BlockContent::Message {
+            role,
+            parts: vec![ContentPart::Sealed(SealedPart::new(format, item))],
         },
+        BlockMeta::default(),
     )
 }
 
 #[test]
 fn sealed_part_outside_assistant_position_is_an_invalid_request() {
     for protocol in ALL {
-        for source in ["user", "system", "inject:note"] {
+        for role in [Role::User, Role::System] {
             for format in [protocol.as_str(), "some_other_format"] {
                 let frame = ContextFrame {
                     blocks: vec![
                         user_block("hi"),
-                        sealed_block(Some(source), format, json!({"reasoning_content": "x"})),
+                        sealed_block(role, format, json!({"reasoning_content": "x"})),
                     ],
                 };
                 let error = render(protocol, &frame).unwrap_err();
                 assert_eq!(
                     error.kind,
                     ModelInvokeErrorKind::InvalidRequest,
-                    "{protocol} {source} {format}"
+                    "{protocol} {role:?} {format}"
                 );
             }
         }
@@ -867,35 +872,38 @@ fn sealed_part_outside_assistant_position_is_an_invalid_request() {
 fn sealed_part_of_another_format_in_assistant_position_is_skipped() {
     for protocol in ALL {
         let other = ALL.into_iter().find(|p| *p != protocol).unwrap();
-        for source in [None, Some("assistant")] {
-            let with_sealed = ContextFrame {
-                blocks: vec![
-                    user_block("hi"),
-                    sealed_block(source, other.as_str(), json!({"reasoning_content": "x"})),
-                ],
-            };
-            let without = ContextFrame {
-                blocks: vec![user_block("hi")],
-            };
-            assert_eq!(
-                render(protocol, &with_sealed).unwrap(),
-                render(protocol, &without).unwrap(),
-                "{protocol} skips {other} sealed items"
-            );
-        }
+        let with_sealed = ContextFrame {
+            blocks: vec![
+                user_block("hi"),
+                sealed_block(
+                    Role::Assistant,
+                    other.as_str(),
+                    json!({"reasoning_content": "x"}),
+                ),
+            ],
+        };
+        let without = ContextFrame {
+            blocks: vec![user_block("hi")],
+        };
+        assert_eq!(
+            render(protocol, &with_sealed).unwrap(),
+            render(protocol, &without).unwrap(),
+            "{protocol} skips {other} sealed items"
+        );
     }
 }
 
 fn text_block(source: Option<&str>, text: &str) -> ContextBlock {
-    ContextBlock::new(
-        next_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        {
-            let mut meta = BlockMeta::default();
-            meta.source = source.map(String::from);
-            meta
-        },
-    )
+    let role = match source {
+        Some("system") => Role::System,
+        Some("assistant") | None => Role::Assistant,
+        _ => Role::User,
+    };
+    ContextBlock::new(next_id(), BlockContent::text(role, text), {
+        let mut meta = BlockMeta::default();
+        meta.source = source.map(String::from);
+        meta
+    })
 }
 
 #[test]
@@ -905,13 +913,13 @@ fn chat_sealed_object_seeds_the_message_and_the_first_one_wins() {
         blocks: vec![
             user_block("hi"),
             sealed_block(
-                None,
+                Role::Assistant,
                 chat.as_str(),
                 json!({"content": null, "reasoning_content": "first"}),
             ),
             text_block(None, "a"),
             sealed_block(
-                None,
+                Role::Assistant,
                 chat.as_str(),
                 json!({"reasoning_content": "second", "other": 1}),
             ),

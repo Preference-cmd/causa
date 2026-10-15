@@ -1,9 +1,8 @@
 //! `with_base_url` appends the protocol path and nothing else: the base URL
 //! carries its own version segment.
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, Context,
-    ContextBlock, GenerationOptions, InvocationId, ModelGateway, ModelRef, ModelRequest, RoundId,
-    TextPayload, TurnId,
+    BlockId, CallControl, CancellationToken, Context, ContextBlock, GenerationOptions,
+    InvocationId, ModelGateway, ModelRef, ModelRequest, Role, RoundId, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -11,11 +10,7 @@ use causa_provider::{
 use wiremock::MockServer;
 
 fn request() -> ModelRequest {
-    let block = ContextBlock::new(
-        BlockId::new(uuid::Uuid::from_u128(1)),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta::from_source("user"),
-    );
+    let block = ContextBlock::text(BlockId::new(uuid::Uuid::from_u128(1)), Role::User, "hi");
     {
         let mut request = ModelRequest::new(
             InvocationId {

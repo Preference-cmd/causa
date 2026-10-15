@@ -12,7 +12,7 @@
 //!
 //! A host stores context, so the serialized form of [`Context`] and of every
 //! type it contains is the stable set: [`ContextBlock`], [`BlockId`],
-//! [`BlockMeta`], [`WireMeta`], [`BlockContent`], [`ContentPart`],
+//! [`BlockMeta`], [`WireMeta`], [`BlockContent`], [`Role`], [`ContentPart`],
 //! [`TextPayload`], [`MediaRef`], [`SealedPart`], [`ToolCallPayload`],
 //! [`ToolResultPayload`], [`ToolResultStatus`], [`ToolOutput`],
 //! [`ToolOutputMeta`], [`Truncation`], [`ArtifactRef`], [`ArtifactKind`],
@@ -33,7 +33,7 @@ mod ports;
 
 // --- context: the external rule interface ------------------------------------
 pub use context::block::{
-    BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, SealedPart, TextPayload,
+    BlockContent, BlockMeta, ContentPart, ContextBlock, MediaRef, Role, SealedPart, TextPayload,
     ToolCallPayload, WireMeta,
 };
 pub use context::ids::{BlockId, InvocationId, RoundId, TurnId};

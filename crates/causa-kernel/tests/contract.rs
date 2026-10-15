@@ -5,8 +5,8 @@ mod common;
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, EditError, MediaRef,
     ModelBlockError, ModelItem, ModelItemContent, ModelResponse, ModelStopReason, ModelUsage,
-    ReasoningPayload, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultError,
-    ToolResultPayload, ToolResultStatus, validate_tool_result_append,
+    ReasoningPayload, Role, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput,
+    ToolResultError, ToolResultPayload, ToolResultStatus, validate_tool_result_append,
 };
 use serde_json::json;
 
@@ -115,7 +115,7 @@ fn conversion_binds_text_then_calls_preserving_provider_ids_names_and_arguments(
     assert_eq!(blocks.iter().map(ContextBlock::id).collect::<Vec<_>>(), ids);
     assert_eq!(
         blocks[0].content(),
-        &BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(value.text()))])
+        &BlockContent::text(Role::Assistant, value.text())
     );
     assert!(
         matches!(blocks[1].content(), BlockContent::ToolCall(call) if call.tool_name == " echo " && call.arguments == json!({"a":1}))
@@ -389,10 +389,8 @@ fn content_is_first_class_with_three_shapes() {
         ContextBlock::new(common::block_id(), content, BlockMeta::default())
     };
 
-    let text = make(BlockContent::Parts(vec![ContentPart::Text(
-        TextPayload::new("any role"),
-    )]));
-    assert!(matches!(text.content(), BlockContent::Parts(_)));
+    let text = make(BlockContent::text(Role::User, "any role"));
+    assert!(matches!(text.content(), BlockContent::Message { .. }));
 
     let call = make(BlockContent::ToolCall(ToolCallPayload::new(
         "echo",
@@ -438,4 +436,21 @@ fn tool_result_media_is_serde_additive_both_ways() {
     let from_old: ToolResultPayload = serde_json::from_value(old).unwrap();
     assert!(from_old.media.is_empty());
     assert!(from_old.notes.is_empty());
+}
+
+#[test]
+fn block_content_and_context_block_text_helpers_equal_long_form() {
+    let id = common::block_id();
+    for role in [Role::System, Role::User, Role::Assistant] {
+        let content_helper = BlockContent::text(role, "hello world");
+        let content_long = BlockContent::Message {
+            role,
+            parts: vec![ContentPart::Text(TextPayload::new("hello world"))],
+        };
+        assert_eq!(content_helper, content_long);
+
+        let block_helper = ContextBlock::text(id, role, "hello world");
+        let block_long = ContextBlock::new(id, content_long, BlockMeta::default());
+        assert_eq!(block_helper, block_long);
+    }
 }

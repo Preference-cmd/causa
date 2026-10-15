@@ -6,8 +6,9 @@ use causa::kernel::{
     BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, Context,
     ContextBlock, ContextFrame, ContextPreparer, GenerationOptions, MediaRef, ModelGateway,
     ModelInvokeError, ModelInvokeErrorKind, ModelItem, ModelOutput, ModelRef, ModelRequest,
-    ModelResponse, ModelStopReason, PrepareError, RoundInfo, TextPayload, Tool, ToolCallContext,
-    ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ModelResponse, ModelStopReason, PrepareError, Role, RoundInfo, TextPayload, Tool,
+    ToolCallContext, ToolCallDraft, ToolDefinition, ToolOutput, ToolResultPayload,
+    ToolResultStatus,
 };
 use causa::runtime::{
     ToolExecutor, ToolExecutorOptions, TurnInterruption, TurnResult, TurnRunOptions, TurnRunner,
@@ -22,11 +23,7 @@ fn id(value: u128) -> BlockId {
     BlockId::new(uuid::Uuid::from_u128(value))
 }
 fn text(value: u128, content: &str) -> ContextBlock {
-    ContextBlock::new(
-        id(value),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(content))]),
-        BlockMeta::default(),
-    )
+    ContextBlock::text(id(value), Role::User, content)
 }
 fn output(tool_use: bool) -> ModelOutput {
     ModelOutput::new(
@@ -188,7 +185,7 @@ fn includes_text(request: &ModelRequest, wanted: &str) -> usize {
         .blocks
         .iter()
         .filter(|block| match block.content() {
-            BlockContent::Parts(parts) => parts
+            BlockContent::Message { parts, .. } => parts
                 .iter()
                 .any(|part| matches!(part, ContentPart::Text(value) if value.0 == wanted)),
             _ => false,
@@ -369,7 +366,7 @@ fn estimate(context: &Context, round: &RoundInfo<'_>) -> Estimate {
         .blocks()
         .iter()
         .map(|block| match block.content() {
-            BlockContent::Parts(parts) => parts
+            BlockContent::Message { parts, .. } => parts
                 .iter()
                 .filter(|part| matches!(part, ContentPart::Media(_)))
                 .count(),
@@ -421,10 +418,13 @@ impl ContextPreparer for BudgetPreparer {
 async fn schema_only_threshold_crossing_changes_request_admission_with_identical_blocks() {
     let context = Context::from_blocks(vec![ContextBlock::new(
         id(100),
-        BlockContent::Parts(vec![
-            ContentPart::Text(TextPayload::new("question")),
-            ContentPart::Media(MediaRef::new("image/png", "asset-reference")),
-        ]),
+        BlockContent::Message {
+            role: Role::User,
+            parts: vec![
+                ContentPart::Text(TextPayload::new("question")),
+                ContentPart::Media(MediaRef::new("image/png", "asset-reference")),
+            ],
+        },
         BlockMeta::default(),
     )])
     .unwrap();

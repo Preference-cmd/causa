@@ -2,8 +2,7 @@
 //! between two sets folds back into the second set.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, TextPayload, ToolChange,
-    ToolDefinition, current_tools,
+    BlockContent, BlockId, BlockMeta, ContextBlock, Role, ToolChange, ToolDefinition, current_tools,
 };
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,9 +32,7 @@ fn names(tools: &[ToolDefinition]) -> Vec<&str> {
 fn the_state_folds_every_change_in_order() {
     let blocks = vec![
         change(vec![tool("a", "A"), tool("b", "B")], &[]),
-        block(BlockContent::Parts(vec![ContentPart::Text(
-            TextPayload::new("between"),
-        )])),
+        block(BlockContent::text(Role::User, "between")),
         change(vec![tool("c", "C")], &["a"]),
         // A same-name addition replaces the definition in place.
         change(vec![tool("b", "B2")], &[]),

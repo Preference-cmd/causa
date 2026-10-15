@@ -5,11 +5,11 @@
 use async_trait::async_trait;
 use causa_extension::McpToolSource;
 use causa_kernel::{
-    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, BlockId, BlockMeta,
-    CallControl, CancellationToken, ContentPart, Context, ContextBlock, DynamicToolSource,
-    InvocationId, MediaRef, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef,
-    ModelRequest, ModelResponse, ModelStopReason, RoundId, SourceError, StoreError, TextPayload,
-    ToolBatch, ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, BlockId, CallControl,
+    CancellationToken, Context, ContextBlock, DynamicToolSource, InvocationId, MediaRef,
+    ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
+    ModelStopReason, Role, RoundId, SourceError, StoreError, TextPayload, ToolBatch,
+    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
@@ -556,12 +556,8 @@ async fn kernel_turn_completes_through_the_mcp_source() {
     });
     let runner = TurnRunner::new(gateway, executor);
     let options = TurnRunOptions::new(ModelRef::new("fake")).with_limits(TurnLimits::new(5, 8));
-    let ctx = Context::from_blocks(vec![ContextBlock::new(
-        new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta::from_source("user"),
-    )])
-    .unwrap();
+    let ctx =
+        Context::from_blocks(vec![ContextBlock::text(new_block_id(), Role::User, "hi")]).unwrap();
 
     let out = runner
         .run(

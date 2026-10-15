@@ -2,8 +2,8 @@
 //!
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, Replacement, TextPayload,
-    ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
+    BlockContent, BlockId, BlockMeta, Context, ContextBlock, Replacement, Role, ToolCallPayload,
+    ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use serde_json::json;
 use std::ops::Range;
@@ -13,9 +13,14 @@ fn id(n: u128) -> BlockId {
 }
 
 fn note(id_value: u128, text: &str, source: &str) -> ContextBlock {
+    let role = match source {
+        "system" => Role::System,
+        "assistant" => Role::Assistant,
+        _ => Role::User,
+    };
     ContextBlock::new(
         id(id_value),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
+        BlockContent::text(role, text),
         BlockMeta::from_source(source.to_owned()),
     )
 }
@@ -120,14 +125,14 @@ fn generic_edit_accepts_local_tool_material_without_pairing_or_execution_policy(
 
     // The first result is isolated (its declaration is absent). The next two
     // are multiple results for the same absent declaration. Another result
-    // refers to a Parts block, and the last result precedes its ToolCall
+    // refers to a Message block, and the last result precedes its ToolCall
     // declaration. Generic material editing preserves all these supplied
     // facts in order; it does not execute calls or synthesize missing facts.
     let supplied = vec![
         result(2, id(900), "isolated"),
         result(3, id(901), "first result"),
         result(4, id(901), "second result"),
-        result(5, id(1), "reference points to Parts"),
+        result(5, id(1), "reference points to Message"),
         result(6, id(7), "result appears before declaration"),
         call(7, "later-declared-tool"),
     ];

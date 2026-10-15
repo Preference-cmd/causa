@@ -58,9 +58,14 @@ pub fn parts_block(
     parts: Vec<causa_kernel::ContentPart>,
     source: &str,
 ) -> causa_kernel::ContextBlock {
+    let role = match source {
+        "system" => causa_kernel::Role::System,
+        "assistant" => causa_kernel::Role::Assistant,
+        _ => causa_kernel::Role::User,
+    };
     causa_kernel::ContextBlock::new(
         id,
-        causa_kernel::BlockContent::Parts(parts),
+        causa_kernel::BlockContent::Message { role, parts },
         causa_kernel::BlockMeta::from_source(source.to_owned()),
     )
 }

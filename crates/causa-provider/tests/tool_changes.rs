@@ -3,9 +3,9 @@
 //! host's.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContentPart, ContextBlock,
-    ContextFrame, GenerationOptions, InvocationId, ModelGateway, ModelRef, ModelRequest, RoundId,
-    TextPayload, ToolChange, ToolDefinition, TurnId,
+    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
+    GenerationOptions, InvocationId, ModelGateway, ModelRef, ModelRequest, Role, RoundId,
+    ToolChange, ToolDefinition, TurnId,
 };
 use causa_protocol::translation::anthropic::INLINE_TOOLS_BETA;
 use causa_provider::{
@@ -39,7 +39,7 @@ fn request() -> ModelRequest {
             block(1, added(&["read"]), BlockMeta::default()),
             block(
                 2,
-                BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
+                BlockContent::text(Role::User, "hi"),
                 BlockMeta::from_source("user"),
             ),
             block(3, added(&["write"]), BlockMeta::default()),

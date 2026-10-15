@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
-    GenerationOptions, InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest,
-    ModelStopReason, RoundId, TextPayload, TurnId,
+    BlockId, CallControl, CancellationToken, ContextBlock, ContextFrame, GenerationOptions,
+    InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason,
+    Role, RoundId, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use serde_json::{Value, json};
@@ -25,12 +25,10 @@ fn ctrl(deadline: Option<Instant>) -> CallControl {
 
 fn user_frame() -> ContextFrame {
     ContextFrame {
-        blocks: vec![ContextBlock::new(
+        blocks: vec![ContextBlock::text(
             BlockId::new(uuid::Uuid::from_u128(1)),
-            BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                "hi",
-            ))]),
-            BlockMeta::from_source("user"),
+            Role::User,
+            "hi",
         )],
     }
 }
@@ -399,7 +397,7 @@ async fn invoke_emits_the_agent_http_span() {
 
 // ---- media resolution -----------------------------------------------------------
 
-use causa_kernel::{ContentPart, MediaRef};
+use causa_kernel::{BlockContent, BlockMeta, ContentPart, MediaRef, TextPayload};
 use causa_protocol::translation::media::MediaPayload;
 use causa_provider::MediaResolver;
 use std::collections::HashMap;
@@ -408,10 +406,13 @@ fn media_frame() -> ContextFrame {
     ContextFrame {
         blocks: vec![ContextBlock::new(
             BlockId::new(uuid::Uuid::from_u128(1)),
-            BlockContent::Parts(vec![
-                ContentPart::Text(TextPayload::new("look")),
-                ContentPart::Media(MediaRef::new("image/png", "asset-1")),
-            ]),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-1")),
+                ],
+            },
             BlockMeta::from_source("user"),
         )],
     }

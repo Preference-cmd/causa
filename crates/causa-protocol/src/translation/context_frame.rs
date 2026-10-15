@@ -5,10 +5,9 @@
 //! drift between protocols. The walk applies every renderer-independent
 //! decision exactly once:
 //!
-//! - Wire-role assignment from the `BlockMeta::source` vocabulary (the
-//!   table in the [`super`] docs is public contract).
+//! - Wire-role assignment directly from `BlockContent::Message::role`.
 //! - Empty text is not conversation content: an empty `Text` part is
-//!   dropped, and a Parts block left with nothing renders nothing
+//!   dropped, and a Message block left with nothing renders nothing
 //!   (mirroring the kernel model door's commit policy, which drops only
 //!   zero-length text; the host door can commit them). Whitespace-only text
 //!   is content and is kept verbatim.
@@ -61,25 +60,10 @@ use causa_kernel::{
     WireMeta, current_tools,
 };
 
+pub(crate) use causa_kernel::Role;
+
 use super::media::MediaSet;
 use crate::Protocol;
-
-/// The wire role a text block renders as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Role {
-    System,
-    User,
-    Assistant,
-}
-
-pub(crate) fn text_role(source: Option<&str>) -> Role {
-    match source {
-        None | Some("assistant") => Role::Assistant,
-        Some("system") => Role::System,
-        // "user", "inject[:detail]", unknown open-vocabulary tags
-        Some(_) => Role::User,
-    }
-}
 
 /// One media attachment as the emitters consume it: the walk's single
 /// render-or-degrade decision, applied identically in all protocols.
@@ -255,7 +239,7 @@ pub(crate) enum Segment {
     /// A sealed part of the rendering protocol's own format, in assistant
     /// position; the emitter writes it verbatim.
     Sealed(Value),
-    /// A media part from a Parts block, resolved or degraded.
+    /// A media part from a Message block, resolved or degraded.
     Media {
         role: Role,
         media: ResolvedMedia,
@@ -335,8 +319,8 @@ pub(crate) fn normalize(
                 .map(|wire| wire.fields.clone())
         };
         match block.content() {
-            BlockContent::Parts(parts) => {
-                let role = text_role(block.meta().source.as_deref());
+            BlockContent::Message { role, parts } => {
+                let role = *role;
                 for part in parts {
                     match part {
                         ContentPart::Text(t) => {

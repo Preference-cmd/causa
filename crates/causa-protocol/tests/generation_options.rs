@@ -1,8 +1,8 @@
 //! Pure generation mappings: the adapter's own options are checked, and the
 //! reasoning effort and extra request fields are written as the host gave them.
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelInvokeError, ModelInvokeErrorKind, ModelRef, TextPayload,
+    BlockId, CacheDirective, ContextBlock, ContextFrame, GenerationOptions, ModelInvokeError,
+    ModelInvokeErrorKind, ModelRef, Role,
 };
 use causa_protocol::translation::render_options::{
     AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
@@ -15,10 +15,10 @@ use serde_json::{Value, json};
 
 fn frame() -> ContextFrame {
     ContextFrame {
-        blocks: vec![ContextBlock::new(
+        blocks: vec![ContextBlock::text(
             BlockId::new(uuid::Uuid::from_u128(1)),
-            BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-            BlockMeta::from_source("user"),
+            Role::User,
+            "hi",
         )],
     }
 }

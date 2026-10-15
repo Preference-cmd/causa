@@ -23,11 +23,7 @@ impl ModelGateway for Recorder {
     }
 }
 fn text(value: &str) -> ContextBlock {
-    ContextBlock::new(
-        new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(value))]),
-        BlockMeta::default(),
-    )
+    ContextBlock::text(new_block_id(), Role::User, value)
 }
 
 #[tokio::test]
@@ -201,7 +197,7 @@ async fn summary_removes_old_material_across_rounds_and_runs_without_rewriting_s
     assert_eq!(first.context.blocks().len(), 4);
     assert!(first.context.blocks().iter().all(|block| matches!(
         block.content(),
-        BlockContent::Parts(_) | BlockContent::ToolChange(_)
+        BlockContent::Message { .. } | BlockContent::ToolChange(_)
     )));
     let declaration = first.context.blocks()[2].clone();
     assert!(matches!(declaration.content(), BlockContent::ToolChange(_)));

@@ -4,7 +4,7 @@
 //! request body and back to [`causa_kernel::ModelOutput`]. Transport-free;
 //! the reqwest adapter in `causa-provider` owns HTTP.
 //!
-//! The renderer-independent policy (source vocabulary, empty-text skip,
+//! The renderer-independent policy (role mapping, empty-text skip,
 //! no cross-block text join, tool id pairing, observation stringification) lives in
 //! `super::context_frame`; this module only shapes the Responses wire.
 //!
@@ -568,7 +568,8 @@ mod tests {
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
-        call, frame, media_part, parts, result, result_with_media, text, text_part, with_tools,
+        call, frame, media_part, parts, result, result_with_media, text, text_part,
+        text_with_source, with_tools,
     };
 
     fn render(frame: &ContextFrame) -> Value {
@@ -586,21 +587,21 @@ mod tests {
     // --- rendering ---------------------------------------------------------
 
     #[test]
-    fn source_vocabulary_full_branch_coverage() {
+    fn role_mapping_and_source_independence() {
         let f = frame(vec![
-            text(0, "be terse", Some("system")),
-            text(1, "model said", None),
-            text(2, "user said", Some("user")),
-            text(3, "replayed", Some("assistant")),
-            text(4, "injected", Some("inject:note")),
-            text(5, "unknown tag", Some("provider:gpt-x")),
+            text(0, "be terse", Role::System),
+            text(1, "model said", Role::Assistant),
+            text(2, "user said", Role::User),
+            text(3, "replayed", Role::Assistant),
+            // source set to "system" but role is User: role wins, source ignored
+            text_with_source(4, "user override", Role::User, Some("system")),
+            // source absent and role is User: renders as user
+            text(5, "user no source", Role::User),
         ]);
         let v = render(&f);
         assert_eq!(v["instructions"], json!("be terse"));
         let input = v["input"].as_array().unwrap();
-        // assistant(None) / user / assistant("assistant") /
-        // user("inject:note") / user(unknown): user texts are never joined
-        // across block seams
+        // assistant / user / assistant / user / user: user texts are never joined across block seams
         assert_eq!(input.len(), 5);
         assert_eq!(
             input[0],
@@ -616,11 +617,11 @@ mod tests {
         );
         assert_eq!(
             input[3],
-            json!({"role": "user", "content": [{"type": "input_text", "text": "injected"}]})
+            json!({"role": "user", "content": [{"type": "input_text", "text": "user override"}]})
         );
         assert_eq!(
             input[4],
-            json!({"role": "user", "content": [{"type": "input_text", "text": "unknown tag"}]})
+            json!({"role": "user", "content": [{"type": "input_text", "text": "user no source"}]})
         );
     }
 
@@ -628,7 +629,7 @@ mod tests {
     fn tool_round_trip_pairing_with_flat_call_ids() {
         let fallback_id = call(2, "kc2", None, "list", json!({})).id().0.to_string();
         let f = frame(vec![
-            text(0, "reading now", None),
+            text(0, "reading now", Role::Assistant),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
             call(2, "kc2", None, "list", json!({})),
             result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
@@ -676,7 +677,7 @@ mod tests {
             "read a file",
             json!({"type": "object"}),
         )];
-        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let f = frame(vec![text(0, "hi", Role::User)]);
 
         let generation = GenerationOptions::default()
             .with_temperature(0.5)
@@ -720,7 +721,7 @@ mod tests {
 
     #[test]
     fn output_schema_maps_and_cache_directive_is_a_noop() {
-        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let f = frame(vec![text(0, "hi", Role::User)]);
         let generation = GenerationOptions::default().with_output_schema(json!({"type": "object"}));
         let v = render_openai_responses_input(
             &f,
@@ -784,7 +785,7 @@ mod tests {
         let f = frame(vec![parts(
             0,
             vec![text_part("caption"), media_part("image/png", "asset-1")],
-            Some("user"),
+            Role::User,
         )]);
         let v = render_openai_responses_input(
             &f,
@@ -814,7 +815,7 @@ mod tests {
         let f = frame(vec![parts(
             0,
             vec![media_part("image/png", "missing-asset")],
-            Some("user"),
+            Role::User,
         )]);
         let v = render_openai_responses_input(
             &f,

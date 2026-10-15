@@ -124,7 +124,7 @@ fn pure_conversion_and_atomic_submission_have_distinct_validation_responsibiliti
         .unwrap();
     assert!(matches!(
         context.blocks()[1].content(),
-        BlockContent::Parts(_)
+        BlockContent::Message { .. }
     ));
     assert_eq!(context.blocks()[1].id(), a);
     assert_eq!(context.blocks()[2].id(), b);

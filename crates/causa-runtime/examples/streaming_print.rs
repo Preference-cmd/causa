@@ -18,7 +18,7 @@
 use async_trait::async_trait;
 use causa_kernel::{
     CallControl, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest,
-    ModelResponse, ModelStopReason, StreamDelta, TextPayload, TurnId,
+    ModelResponse, ModelStopReason, StreamDelta, TurnId,
 };
 use causa_runtime::{RunEvent, ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id};
 
@@ -115,12 +115,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut context = causa_kernel::Context::new();
     context
         .edit()
-        .append([causa_kernel::ContextBlock::new(
+        .append([causa_kernel::ContextBlock::text(
             new_block_id(),
-            causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
-                TextPayload::new("Say something about streaming."),
-            )]),
-            causa_kernel::BlockMeta::from_source("user"),
+            causa_kernel::Role::User,
+            "Say something about streaming.",
         )])
         .commit()?;
 

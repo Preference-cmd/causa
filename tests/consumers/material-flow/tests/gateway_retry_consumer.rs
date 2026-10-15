@@ -110,17 +110,13 @@ impl ContextPreparer for CountingPreparer {
 }
 
 fn input() -> ContextBlock {
-    ContextBlock::new(
-        new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("go"))]),
-        BlockMeta::default(),
-    )
+    ContextBlock::text(new_block_id(), Role::User, "go")
 }
 
 fn is_final_answer(block: &ContextBlock) -> bool {
     matches!(
         block.content(),
-        BlockContent::Parts(parts)
+        BlockContent::Message { parts, .. }
             if parts.iter().any(|part| matches!(part, ContentPart::Text(text) if text.0 == "final answer"))
     )
 }

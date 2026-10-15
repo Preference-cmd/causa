@@ -9,9 +9,9 @@
 use std::time::Duration;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
-    GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelRef, ModelRequest, RoundId, TextPayload, TurnId,
+    BlockId, CallControl, CancellationToken, ContextBlock, ContextFrame, GenerationOptions,
+    InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelRef, ModelRequest,
+    Role, RoundId, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -27,12 +27,10 @@ fn request() -> ModelRequest {
                 round_id: RoundId(0),
             },
             ContextFrame {
-                blocks: vec![ContextBlock::new(
+                blocks: vec![ContextBlock::text(
                     BlockId::new(uuid::Uuid::from_u128(1)),
-                    BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                        "hi",
-                    ))]),
-                    BlockMeta::from_source("user"),
+                    Role::User,
+                    "hi",
                 )],
             },
             ModelRef::new("retry-test-model"),

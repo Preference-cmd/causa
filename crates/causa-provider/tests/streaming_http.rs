@@ -1,7 +1,7 @@
 //! Real chunked HTTP tests: the server holds termination until the consumer acknowledges a delta.
 use causa_kernel::{
     CacheDirective, CallControl, CancellationToken, ContextFrame, GenerationOptions, InvocationId,
-    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, RoundId, StreamDelta, TurnId,
+    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, Role, RoundId, StreamDelta, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway, StreamLimits,
@@ -34,12 +34,10 @@ fn request() -> ModelRequest {
                 round_id: RoundId(0),
             },
             ContextFrame {
-                blocks: vec![causa_kernel::ContextBlock::new(
+                blocks: vec![causa_kernel::ContextBlock::text(
                     causa_kernel::BlockId::new(uuid::Uuid::from_u128(100)),
-                    causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
-                        causa_kernel::TextPayload::new("hi"),
-                    )]),
-                    causa_kernel::BlockMeta::from_source("user"),
+                    causa_kernel::Role::User,
+                    "hi",
                 )],
             },
             ModelRef::new("test-model"),
@@ -542,10 +540,13 @@ async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoi
     let mut req = request();
     req.frame.blocks.push(ContextBlock::new(
         BlockId::new(uuid::Uuid::from_u128(1)),
-        BlockContent::Parts(vec![
-            ContentPart::Text(TextPayload::new("look")),
-            ContentPart::Media(MediaRef::new("image/png", "asset")),
-        ]),
+        BlockContent::Message {
+            role: Role::User,
+            parts: vec![
+                ContentPart::Text(TextPayload::new("look")),
+                ContentPart::Media(MediaRef::new("image/png", "asset")),
+            ],
+        },
         BlockMeta::from_source("user"),
     ));
     req.frame.blocks.insert(

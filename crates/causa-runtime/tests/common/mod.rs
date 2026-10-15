@@ -46,11 +46,7 @@ pub fn runner_with(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) ->
     )
 }
 pub fn text_block(text: &str) -> ContextBlock {
-    ContextBlock::new(
-        new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta::from_source("user"),
-    )
+    ContextBlock::text(new_block_id(), Role::User, text)
 }
 pub fn input(text: &str) -> Context {
     Context::from_blocks(vec![text_block(text)]).unwrap()

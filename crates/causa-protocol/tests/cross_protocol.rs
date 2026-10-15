@@ -11,8 +11,8 @@
 //! No session aggregate, hidden history or runtime dependency constructs the frame.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame,
-    EditFailure, GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason,
+    BlockContent, BlockId, BlockMeta, Context, ContextBlock, ContextFrame, EditFailure,
+    GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason, Role,
     TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus,
     validate_tool_result_append,
 };
@@ -59,10 +59,15 @@ impl FixtureAppend for Context {
         text: TextPayload,
         source: &str,
     ) -> Result<(), EditFailure> {
+        let role = match source {
+            "system" => Role::System,
+            "assistant" => Role::Assistant,
+            _ => Role::User,
+        };
         self.edit()
             .append([ContextBlock::new(
                 id,
-                BlockContent::Parts(vec![ContentPart::Text(text)]),
+                BlockContent::text(role, text.0),
                 BlockMeta::from_source(source),
             )])
             .commit()

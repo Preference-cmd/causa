@@ -37,29 +37,32 @@
     },
     {
       "content": {
-        "shape": "parts",
-        "value": [
-          {
-            "part": "text",
-            "value": "hello"
-          },
-          {
-            "part": "media",
-            "value": {
-              "media_type": "image/png",
-              "reference": "asset://1"
-            }
-          },
-          {
-            "part": "sealed",
-            "value": {
-              "format": "anthropic",
-              "item": {
-                "type": "thinking"
+        "shape": "message",
+        "value": {
+          "parts": [
+            {
+              "part": "text",
+              "value": "hello"
+            },
+            {
+              "part": "media",
+              "value": {
+                "media_type": "image/png",
+                "reference": "asset://1"
+              }
+            },
+            {
+              "part": "sealed",
+              "value": {
+                "format": "anthropic",
+                "item": {
+                  "type": "thinking"
+                }
               }
             }
-          }
-        ]
+          ],
+          "role": "user"
+        }
       },
       "id": "00000000-0000-0000-0000-000000000001",
       "meta": {
@@ -145,13 +148,16 @@
     },
     {
       "content": {
-        "shape": "parts",
-        "value": [
-          {
-            "part": "text",
-            "value": "bare"
-          }
-        ]
+        "shape": "message",
+        "value": {
+          "parts": [
+            {
+              "part": "text",
+              "value": "bare"
+            }
+          ],
+          "role": "assistant"
+        }
       },
       "id": "00000000-0000-0000-0000-000000000004",
       "meta": {}
@@ -190,6 +196,22 @@
         "value": {}
       },
       "id": "00000000-0000-0000-0000-000000000007",
+      "meta": {}
+    },
+    {
+      "content": {
+        "shape": "message",
+        "value": {
+          "parts": [
+            {
+              "part": "text",
+              "value": "system instructions"
+            }
+          ],
+          "role": "system"
+        }
+      },
+      "id": "00000000-0000-0000-0000-000000000008",
       "meta": {}
     }
   ]

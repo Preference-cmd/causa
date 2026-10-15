@@ -21,10 +21,10 @@ fn runner(gateway: Arc<dyn ModelGateway>, tools: Vec<Arc<dyn Tool>>) -> TurnRunn
 }
 
 fn input() -> Context {
-    Context::from_blocks(vec![ContextBlock::new(
+    Context::from_blocks(vec![ContextBlock::text(
         new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("original"))]),
-        BlockMeta::from_source("user"),
+        Role::User,
+        "original",
     )])
     .unwrap()
 }

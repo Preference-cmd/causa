@@ -3,10 +3,8 @@
 use std::collections::HashSet;
 
 use causa_kernel::{
-    BlockContent, ContentPart, ContextFrame, ModelInvokeError, ModelInvokeErrorKind,
+    BlockContent, ContentPart, ContextFrame, ModelInvokeError, ModelInvokeErrorKind, Role,
 };
-
-use super::context_frame::{Role, text_role};
 use serde_json::Value;
 
 fn invalid(message: impl Into<String>) -> ModelInvokeError {
@@ -74,10 +72,10 @@ pub(super) fn validate_frame(frame: &ContextFrame) -> Result<(), ModelInvokeErro
                     ));
                 }
             }
-            BlockContent::Parts(parts) => {
+            BlockContent::Message { role, parts } => {
                 // A sealed part is model output; outside assistant position
                 // no renderer can place it.
-                if text_role(block.meta().source.as_deref()) != Role::Assistant
+                if *role != Role::Assistant
                     && parts.iter().any(|p| matches!(p, ContentPart::Sealed(_)))
                 {
                     return Err(invalid(

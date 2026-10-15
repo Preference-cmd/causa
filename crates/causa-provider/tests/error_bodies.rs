@@ -11,9 +11,9 @@
 //!   HTTP error body, and no provider text keeps a control character.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
-    GenerationOptions, InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelRef, ModelRequest, RoundId, StreamDelta, TextPayload, TurnId,
+    BlockId, CallControl, CancellationToken, ContextBlock, ContextFrame, GenerationOptions,
+    InvocationId, ModelGateway, ModelInvokeError, ModelInvokeErrorKind, ModelRef, ModelRequest,
+    Role, RoundId, StreamDelta, TurnId,
 };
 use causa_provider::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
@@ -30,12 +30,10 @@ fn request() -> ModelRequest {
                 round_id: RoundId(0),
             },
             ContextFrame {
-                blocks: vec![ContextBlock::new(
+                blocks: vec![ContextBlock::text(
                     BlockId::new(uuid::Uuid::from_u128(1)),
-                    BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                        "hello",
-                    ))]),
-                    BlockMeta::from_source("user"),
+                    Role::User,
+                    "hello",
                 )],
             },
             ModelRef::new("test-model"),

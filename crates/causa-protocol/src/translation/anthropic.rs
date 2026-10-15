@@ -5,7 +5,7 @@
 //! back to [`causa_kernel::ModelOutput`]. Transport-free — the reqwest
 //! adapter in `causa-provider` owns HTTP.
 //!
-//! The renderer-independent policy (source vocabulary, empty-text skip,
+//! The renderer-independent policy (role mapping, empty-text skip,
 //! no cross-block text join, tool id pairing, observation stringification) lives in
 //! `super::context_frame`; this module only shapes the Anthropic wire.
 //!
@@ -642,7 +642,8 @@ mod tests {
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
-        call, frame, media_part, parts, result, result_with_media, text, text_part, with_tools,
+        call, frame, media_part, parts, result, result_with_media, text, text_part,
+        text_with_source, with_tools,
     };
 
     /// Anthropic requires `max_tokens`; the renderer tests always supply one.
@@ -665,22 +666,21 @@ mod tests {
     // --- rendering ---------------------------------------------------------
 
     #[test]
-    fn source_vocabulary_full_branch_coverage() {
+    fn role_mapping_and_source_independence() {
         let f = frame(vec![
-            text(0, "be terse", Some("system")),
-            text(1, "model said", None),
-            text(2, "user said", Some("user")),
-            text(3, "replayed", Some("assistant")),
-            text(4, "injected", Some("inject:note")),
-            text(5, "bare inject", Some("inject")),
-            text(6, "unknown tag", Some("provider:gpt-x")),
+            text(0, "be terse", Role::System),
+            text(1, "model said", Role::Assistant),
+            text(2, "user said", Role::User),
+            text(3, "replayed", Role::Assistant),
+            // source set to "system" but role is User: role wins, source ignored
+            text_with_source(4, "user override", Role::User, Some("system")),
+            // source absent and role is User: renders as user
+            text(5, "user no source", Role::User),
         ]);
         let v = render(&f);
         // The top-level system parameter is always the block-array form.
         assert_eq!(v["system"], json!([{"type": "text", "text": "be terse"}]));
         let msgs = v["messages"].as_array().unwrap();
-        // assistant(None) / user("user") / assistant("assistant") /
-        // user("inject:note" + "inject" + unknown merged)
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[0]["role"], "assistant");
         assert_eq!(
@@ -695,9 +695,8 @@ mod tests {
         assert_eq!(
             msgs[3]["content"],
             json!([
-                {"type": "text", "text": "injected"},
-                {"type": "text", "text": "bare inject"},
-                {"type": "text", "text": "unknown tag"},
+                {"type": "text", "text": "user override"},
+                {"type": "text", "text": "user no source"},
             ])
         );
     }
@@ -707,10 +706,10 @@ mod tests {
         // The host door can commit empty texts; the renderer mirrors the
         // model door and skips them.
         let f = frame(vec![
-            text(0, "", Some("user")),
-            text(1, "real", Some("user")),
-            text(2, "", Some("system")),
-            text(3, "still here", None),
+            text(0, "", Role::User),
+            text(1, "real", Role::User),
+            text(2, "", Role::System),
+            text(3, "still here", Role::Assistant),
         ]);
         let v = render(&f);
         // the skipped leading empty text must not leave an empty message
@@ -727,7 +726,7 @@ mod tests {
     fn tool_round_trip_pairing_and_consecutive_merge() {
         let fallback_id = call(2, "kc2", None, "list", json!({})).id().0.to_string();
         let f = frame(vec![
-            text(0, "reading now", None),
+            text(0, "reading now", Role::Assistant),
             call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
             call(2, "kc2", None, "list", json!({})),
             result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
@@ -796,7 +795,7 @@ mod tests {
             "read a file",
             json!({"type": "object", "properties": {"path": {"type": "string"}}}),
         )];
-        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let f = frame(vec![text(0, "hi", Role::User)]);
 
         let generation = GenerationOptions::default()
             .with_temperature(0.5)
@@ -857,7 +856,7 @@ mod tests {
         generation: &GenerationOptions,
         options: &AnthropicRenderOptions,
     ) -> Result<Value, ModelInvokeError> {
-        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let f = frame(vec![text(0, "hi", Role::User)]);
         render_anthropic_messages(
             &f,
             &MediaSet::new(),
@@ -941,8 +940,8 @@ mod tests {
     #[test]
     fn cache_none_omits_every_cache_control_key() {
         let f = frame(vec![
-            text(0, "be terse", Some("system")),
-            text(1, "hi", Some("user")),
+            text(0, "be terse", Role::System),
+            text(1, "hi", Role::User),
         ]);
         let surface = vec![ToolDefinition::new(
             "read",
@@ -964,8 +963,8 @@ mod tests {
     #[test]
     fn stable_prefix_marks_tools_system_and_previous_message() {
         let f = frame(vec![
-            text(0, "be terse", Some("system")),
-            text(1, "hi", Some("user")),
+            text(0, "be terse", Role::System),
+            text(1, "hi", Role::User),
             call(2, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
             result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
         ]);
@@ -1003,7 +1002,7 @@ mod tests {
 
     #[test]
     fn stable_prefix_without_dispatch_anchors_the_final_message() {
-        let f = frame(vec![text(0, "hi", Some("user"))]);
+        let f = frame(vec![text(0, "hi", Role::User)]);
         let v = render_anthropic_messages(
             &f,
             &MediaSet::new(),
@@ -1034,7 +1033,7 @@ mod tests {
                 media_part("image/png", "asset-1"),
                 text_part("after"),
             ],
-            Some("user"),
+            Role::User,
         )]);
         let v = render_anthropic_messages(
             &f,
@@ -1061,7 +1060,7 @@ mod tests {
         let f = frame(vec![parts(
             0,
             vec![media_part("image/png", "missing-asset")],
-            Some("user"),
+            Role::User,
         )]);
         let v = render_anthropic_messages(
             &f,
@@ -1083,7 +1082,7 @@ mod tests {
         let f = frame(vec![parts(
             0,
             vec![media_part("application/pdf", "doc-1")],
-            Some("user"),
+            Role::User,
         )]);
         let mut media = MediaSet::new();
         media.insert("doc-1", MediaPayload::new("application/pdf", "AAAA"));
@@ -1105,8 +1104,8 @@ mod tests {
     #[test]
     fn media_in_system_position_degrades_to_placeholder_text() {
         let f = frame(vec![
-            parts(0, vec![media_part("image/png", "asset-1")], Some("system")),
-            text(1, "hi", Some("user")),
+            parts(0, vec![media_part("image/png", "asset-1")], Role::System),
+            text(1, "hi", Role::User),
         ]);
         let v = render_anthropic_messages(
             &f,
@@ -1183,11 +1182,11 @@ mod tests {
     #[test]
     fn stable_prefix_anchor_lands_on_parts_messages() {
         let f = frame(vec![
-            text(0, "hi", Some("user")),
+            text(0, "hi", Role::User),
             parts(
                 1,
                 vec![text_part("see"), media_part("image/png", "asset-1")],
-                Some("user"),
+                Role::User,
             ),
         ]);
         let v = render_anthropic_messages(

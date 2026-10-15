@@ -9,8 +9,8 @@
 
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, MediaRef, ModelRef, SealedPart, TextPayload, ToolCallPayload, ToolChange,
-    ToolDefinition,
+    GenerationOptions, MediaRef, ModelRef, Role, SealedPart, TextPayload, ToolCallPayload,
+    ToolChange, ToolDefinition,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::media::{MediaPayload, MediaSet};
@@ -38,11 +38,12 @@ fn block(label: &str, content: BlockContent, source: Option<&str>) -> ContextBlo
 }
 
 fn text(label: &str, text: &str, source: Option<&str>) -> ContextBlock {
-    block(
-        label,
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        source,
-    )
+    let role = match source {
+        Some("system") => Role::System,
+        Some("assistant") | None => Role::Assistant,
+        _ => Role::User,
+    };
+    block(label, BlockContent::text(role, text), source)
 }
 
 fn call(label: &str, call_id: &str, name: &str) -> ContextBlock {
@@ -187,10 +188,13 @@ fn a_chat_turn_left_with_only_sealed_residue_renders_no_assistant_message() {
         text("u0", "hello", Some("user")),
         block(
             "a-residue",
-            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
-                "openai_chat_completions",
-                json!({"refusal": null, "annotations": []}),
-            ))]),
+            BlockContent::Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::Sealed(SealedPart::new(
+                    "openai_chat_completions",
+                    json!({"refusal": null, "annotations": []}),
+                ))],
+            },
             None,
         ),
         text("a-blank", "  \n", None),
@@ -210,10 +214,13 @@ fn a_chat_turn_left_with_only_sealed_residue_renders_no_assistant_message() {
         text("u0", "hello", Some("user")),
         block(
             "a-residue",
-            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
-                "openai_chat_completions",
-                json!({"content": null, "reasoning_content": "thought"}),
-            ))]),
+            BlockContent::Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::Sealed(SealedPart::new(
+                    "openai_chat_completions",
+                    json!({"content": null, "reasoning_content": "thought"}),
+                ))],
+            },
             None,
         ),
         text("u1", "again", Some("user")),
@@ -411,10 +418,13 @@ fn the_stable_prefix_anchor_skips_a_sealed_item_and_moves_backward() {
         text("u0", "look", Some("user")),
         block(
             "a0",
-            BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
-                "anthropic_messages",
-                json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
-            ))]),
+            BlockContent::Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::Sealed(SealedPart::new(
+                    "anthropic_messages",
+                    json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
+                ))],
+            },
             None,
         ),
     ]);
@@ -467,10 +477,13 @@ fn an_unedited_media_reference_renders_the_same_value_on_every_round() {
     let f = frame(vec![
         block(
             "u0",
-            BlockContent::Parts(vec![
-                ContentPart::Text(TextPayload::new("look")),
-                ContentPart::Media(MediaRef::new("image/png", "asset-1")),
-            ]),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-1")),
+                ],
+            },
             Some("user"),
         ),
         text("u1", "and now?", Some("user")),

@@ -164,7 +164,8 @@ impl ModelItem {
 #[serde(rename_all = "snake_case")]
 pub enum ModelItemContent {
     /// Ordered content parts (text and sealed items) that commit as one
-    /// `Parts` block.
+    /// [`BlockContent::Message`](crate::BlockContent::Message) block with
+    /// [`Role::Assistant`](crate::Role::Assistant).
     Parts(Vec<ContentPart>),
     /// A tool call that commits as one `ToolCall` block.
     ToolCall(ToolCallDraft),

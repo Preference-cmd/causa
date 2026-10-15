@@ -5,8 +5,9 @@
 
 use causa_kernel::{
     ArtifactKind, ArtifactRef, BlockContent, BlockId, BlockMeta, ContentPart, Context,
-    ContextBlock, MediaRef, SealedPart, TextPayload, ToolCallPayload, ToolChange, ToolDefinition,
-    ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation, WireMeta,
+    ContextBlock, MediaRef, Role, SealedPart, TextPayload, ToolCallPayload, ToolChange,
+    ToolDefinition, ToolOutput, ToolOutputMeta, ToolResultPayload, ToolResultStatus, Truncation,
+    WireMeta,
 };
 use serde_json::{Value, json};
 
@@ -22,11 +23,14 @@ fn context() -> Context {
     let full_meta = BlockMeta::from_source("user")
         .with_provider_call_id("call_1")
         .with_wire(WireMeta::new("anthropic", json!({"index": 0})));
-    let parts = BlockContent::Parts(vec![
-        ContentPart::Text(TextPayload::new("hello")),
-        ContentPart::Media(MediaRef::new("image/png", "asset://1")),
-        ContentPart::Sealed(SealedPart::new("anthropic", json!({"type": "thinking"}))),
-    ]);
+    let parts = BlockContent::Message {
+        role: Role::User,
+        parts: vec![
+            ContentPart::Text(TextPayload::new("hello")),
+            ContentPart::Media(MediaRef::new("image/png", "asset://1")),
+            ContentPart::Sealed(SealedPart::new("anthropic", json!({"type": "thinking"}))),
+        ],
+    };
     let call = BlockContent::ToolCall(ToolCallPayload::new("read_file", json!({"path": "a"})));
 
     let mut meta = ToolOutputMeta::default();
@@ -68,7 +72,10 @@ fn context() -> Context {
         ContextBlock::new(id(3), BlockContent::ToolResult(full_result), full_meta),
         ContextBlock::new(
             id(4),
-            BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("bare"))]),
+            BlockContent::Message {
+                role: Role::Assistant,
+                parts: vec![ContentPart::Text(TextPayload::new("bare"))],
+            },
             BlockMeta::default(),
         ),
         ContextBlock::new(id(5), call, BlockMeta::default()),
@@ -80,6 +87,14 @@ fn context() -> Context {
         ContextBlock::new(
             id(7),
             BlockContent::ToolChange(ToolChange::default()),
+            BlockMeta::default(),
+        ),
+        ContextBlock::new(
+            id(8),
+            BlockContent::Message {
+                role: Role::System,
+                parts: vec![ContentPart::Text(TextPayload::new("system instructions"))],
+            },
             BlockMeta::default(),
         ),
     ])

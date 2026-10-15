@@ -19,6 +19,23 @@ can keep the request's `tools` unchanged while the set changes.
 
 ### Breaking
 
+- `BlockContent::Parts(Vec<ContentPart>)` is replaced by
+  `BlockContent::Message { role: Role, parts: Vec<ContentPart> }`, serialized as
+  `"shape": "message"`. Message role is an explicit kernel fact rather than
+  being inferred from `BlockMeta::source`. `BlockMeta::source` becomes
+  provenance only; no renderer, validator, or runtime path reads it.
+  `Role` joins the stable serialized set.
+
+  Migration: exhaustive matches over `BlockContent` replace the `Parts` arm
+  with `Message { role, parts }`. Renderers, frame validation, and tool-history
+  checks read the block's `role`. Stored records using the old shape
+  (`{"shape":"parts","value":[...]}`) must be migrated to
+  `{"shape":"message","value":{"role":...,"parts":[...]}}`. The role for an
+  old record follows what the renderer previously inferred: `source` absent
+  or `"assistant"` → `assistant`, `"system"` → `system`, and anything else
+  (including `"user"`, `"inject"`, or arbitrary tags) → `user`. Causa ships
+  no backward-compatibility reader for the old serialized shape.
+
 - New block shape `BlockContent::ToolChange(ToolChange)`, serialized as
   `"shape": "tool_change"`. `ToolChange` and `ToolDefinition` join the
   stable serialized set; `ToolDefinition` moves into `causa_kernel::context::tools`
@@ -67,6 +84,13 @@ can keep the request's `tools` unchanged while the set changes.
 
 ### Added
 
+- `Role { System, User, Assistant }` represents the role of a message in
+  the context, serialized as `"system"`, `"user"`, or `"assistant"`. It is
+  re-exported from the `causa-kernel` crate root (`causa::kernel::Role`).
+- `BlockContent::text(role: Role, text: impl Into<String>)` and
+  `ContextBlock::text(id: BlockId, role: Role, text: impl Into<String>)`
+  construct single-text-part message blocks with an explicit role, without
+  role-named helper functions.
 - `AnthropicRenderOptions::beta_values` returns the `anthropic-beta` values
   its enabled options need (such as `inline-tools-2026-09-15` for
   `native_tool_changes`), allowing the gateway to decorate requests without

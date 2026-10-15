@@ -9,21 +9,17 @@
 //! (`anthropic`, `openai_chat`, `openai_responses`, sharing one policy
 //! walk in `context_frame`).
 //!
-//! # `BlockMeta::source` vocabulary
+//! # `Role` mapping
 //!
-//! The kernel records `source` verbatim and never interprets it; this
-//! layer is its interpreter. The vocabulary is open — unknown tags fall
-//! back to the user role rather than failing, because renderers must be
-//! total over frames that outlive any single vocabulary revision.
+//! Each message block carries its [`causa_kernel::Role`]; `BlockMeta::source`
+//! is provenance only and is not read by this layer. The three protocols map
+//! roles to wire structures as follows:
 //!
-//! | `BlockMeta::source`       | Rendering semantics                                    |
-//! |---------------------------|--------------------------------------------------------|
-//! | `None`                    | assistant — the model door never stamps `source`        |
-//! | `"assistant"`             | assistant — host-prepared model turn (history replay)   |
-//! | `"system"`                | system — Anthropic/Responses: top-level parameter; Chat: inline message |
-//! | `"user"`                  | user role                                               |
-//! | `"inject"` / `"inject:…"` | user role (rendering policy for injected context)       |
-//! | anything else             | user role (documented open-vocabulary fallback)         |
+//! | `Role`            | Anthropic Messages          | OpenAI Chat Completions     | OpenAI Responses            |
+//! |-------------------|-----------------------------|-----------------------------|-----------------------------|
+//! | `Role::System`    | Leading run -> top-level `system` parameter; subsequent -> inline `system` message | Inline `system` message | Leading run -> top-level `instructions` parameter; subsequent -> inline `system` message |
+//! | `Role::User`      | `user` message              | `user` message              | `user` message              |
+//! | `Role::Assistant` | `assistant` message         | `assistant` message         | `assistant` message         |
 //!
 //! Shared structural policy (applied once in `context_frame`, so the
 //! three renderers cannot drift): zero-length text is skipped

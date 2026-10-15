@@ -5,7 +5,7 @@ mod common;
 
 use causa_kernel::{
     BlockContent, BlockMeta, ContentPart, Context, ContextBlock, ModelBlockError, ModelItem,
-    ModelItemContent, ModelResponse, ModelStopReason, SealedPart, TextPayload, ToolCallDraft,
+    ModelItemContent, ModelResponse, ModelStopReason, Role, SealedPart, TextPayload, ToolCallDraft,
     WireMeta,
 };
 use serde_json::json;
@@ -48,7 +48,7 @@ fn interleaved_items_become_blocks_in_item_order() {
     let shapes: Vec<String> = blocks
         .iter()
         .map(|b| match b.content() {
-            BlockContent::Parts(parts) => match &parts[0] {
+            BlockContent::Message { parts, .. } => match &parts[0] {
                 ContentPart::Text(t) => t.0.clone(),
                 other => panic!("unexpected part {other:?}"),
             },
@@ -103,11 +103,17 @@ fn whitespace_only_text_is_kept_and_zero_length_is_dropped() {
     assert_eq!(blocks.len(), 2);
     assert_eq!(
         blocks[0].content(),
-        &BlockContent::Parts(vec![text_part(" \n\t")])
+        &BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![text_part(" \n\t")],
+        }
     );
     assert_eq!(
         blocks[1].content(),
-        &BlockContent::Parts(vec![text_part("kept")])
+        &BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![text_part("kept")],
+        }
     );
 }
 
@@ -196,7 +202,7 @@ fn stop_reason_pairing_and_tool_checks_use_the_tool_call_items() {
 fn blocks_written_before_the_wire_field_still_load() {
     let old = r#"{
         "id": "00000000-0000-0000-0000-000000000001",
-        "content": {"shape": "parts", "value": [{"part": "text", "value": "hello"}]},
+        "content": {"shape": "message", "value": {"role": "user", "parts": [{"part": "text", "value": "hello"}]}},
         "meta": {"source": "user"}
     }"#;
     let block: ContextBlock = serde_json::from_str(old).unwrap();
@@ -218,7 +224,10 @@ fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
     ));
     let block = ContextBlock::new(
         common::block_id(),
-        BlockContent::Parts(vec![sealed, text_part("hi")]),
+        BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![sealed, text_part("hi")],
+        },
         BlockMeta::default().with_wire(WireMeta::new(
             "anthropic_messages",
             json!({"type": "text", "x": {"a": 1}}),
@@ -245,10 +254,13 @@ fn wire_and_sealed_parts_round_trip_through_a_stored_context() {
 fn sealed_parts_are_edited_and_removed_through_the_existing_context_api() {
     let original = ContextBlock::new(
         common::block_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
-            "anthropic_messages",
-            json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
-        ))]),
+        BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Sealed(SealedPart::new(
+                "anthropic_messages",
+                json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
+            ))],
+        },
         BlockMeta::from_source("assistant"),
     );
     let mut context = Context::from_blocks(vec![original]).unwrap();
@@ -258,10 +270,13 @@ fn sealed_parts_are_edited_and_removed_through_the_existing_context_api() {
     // no new API and no sealed-specific rule is involved.
     let edited = ContextBlock::new(
         common::block_id(),
-        BlockContent::Parts(vec![ContentPart::Sealed(SealedPart::new(
-            "anthropic_messages",
-            json!({"type": "thinking", "thinking": "edited", "signature": "sig"}),
-        ))]),
+        BlockContent::Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Sealed(SealedPart::new(
+                "anthropic_messages",
+                json!({"type": "thinking", "thinking": "edited", "signature": "sig"}),
+            ))],
+        },
         BlockMeta::from_source("assistant"),
     );
     context
@@ -273,7 +288,7 @@ fn sealed_parts_are_edited_and_removed_through_the_existing_context_api() {
     assert_eq!(context.blocks()[0].id(), edited.id());
     assert!(matches!(
         context.blocks()[0].content(),
-        BlockContent::Parts(parts) if matches!(parts.as_slice(), [ContentPart::Sealed(_)])
+        BlockContent::Message { parts, .. } if matches!(parts.as_slice(), [ContentPart::Sealed(_)])
     ));
 
     // Remove the sealed material entirely; nothing else changes.

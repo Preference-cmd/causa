@@ -156,12 +156,10 @@ async fn main() {
 
     let mut ctx = causa_kernel::Context::new();
     ctx.edit()
-        .append([causa_kernel::ContextBlock::new(
+        .append([causa_kernel::ContextBlock::text(
             new_block_id(),
-            causa_kernel::BlockContent::Parts(vec![causa_kernel::ContentPart::Text(
-                TextPayload::new("chart the numbers"),
-            )]),
-            causa_kernel::BlockMeta::from_source("user"),
+            causa_kernel::Role::User,
+            "chart the numbers",
         )])
         .commit()
         .unwrap();

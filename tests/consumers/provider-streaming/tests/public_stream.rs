@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use causa::kernel::{
-    BlockContent, BlockMeta, CallControl, ContentPart, Context, ContextBlock, GenerationOptions,
-    InvocationId, ModelGateway, ModelRef, ModelRequest, RoundId, StreamDelta, TextPayload, TurnId,
+    CallControl, Context, ContextBlock, GenerationOptions, InvocationId, ModelGateway, ModelRef,
+    ModelRequest, Role, RoundId, StreamDelta, TurnId,
 };
 use causa::providers::{
     AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway, StreamLimits,
@@ -16,10 +16,10 @@ use futures_util::StreamExt;
 use support::*;
 
 fn input() -> Context {
-    Context::from_blocks(vec![ContextBlock::new(
+    Context::from_blocks(vec![ContextBlock::text(
         causa::runtime::new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("input"))]),
-        BlockMeta::from_source("user"),
+        Role::User,
+        "input",
     )])
     .unwrap()
 }

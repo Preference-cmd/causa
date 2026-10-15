@@ -5,9 +5,9 @@
 use std::time::{Duration, Instant};
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CallControl, CancellationToken, ContextBlock, ContextFrame,
-    InvocationId, ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason,
-    RoundId, TextPayload, TurnId,
+    BlockId, CallControl, CancellationToken, ContextBlock, ContextFrame, InvocationId,
+    ModelGateway, ModelInvokeErrorKind, ModelRef, ModelRequest, ModelStopReason, Role, RoundId,
+    TurnId,
 };
 use causa_provider::{OpenAiChatCompletionsGateway, OpenAiResponsesGateway};
 use serde_json::{Value, json};
@@ -22,12 +22,10 @@ fn ctrl(deadline: Option<Instant>) -> CallControl {
 
 fn user_frame() -> ContextFrame {
     ContextFrame {
-        blocks: vec![ContextBlock::new(
+        blocks: vec![ContextBlock::text(
             BlockId::new(uuid::Uuid::from_u128(1)),
-            BlockContent::Parts(vec![causa_kernel::ContentPart::Text(TextPayload::new(
-                "hi",
-            ))]),
-            BlockMeta::from_source("user"),
+            Role::User,
+            "hi",
         )],
     }
 }

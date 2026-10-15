@@ -1,7 +1,9 @@
 //! Pure model response validation and block construction.
 
 use super::{ModelItemContent, ModelResponse, ModelStopReason};
-use crate::context::block::{BlockContent, BlockMeta, ContentPart, ContextBlock, ToolCallPayload};
+use crate::context::block::{
+    BlockContent, BlockMeta, ContentPart, ContextBlock, Role, ToolCallPayload,
+};
 use crate::context::ids::BlockId;
 
 /// Why a model response cannot be converted into blocks.
@@ -59,7 +61,7 @@ impl ModelResponse {
     /// Validates and constructs material without changing or consuming inputs.
     ///
     /// One item becomes one block, in item order. A `Parts` item becomes a
-    /// `Parts` block and a tool-call item a `ToolCall` block carrying its
+    /// `Message` block with [`Role::Assistant`] and a tool-call item a `ToolCall` block carrying its
     /// provider identifier. An item's `wire` is copied to the block's
     /// [`BlockMeta::wire`]. Only zero-length text parts are omitted
     /// (whitespace-only text is kept verbatim); a `Parts` item left with no
@@ -116,7 +118,10 @@ impl ModelResponse {
                     }
                     blocks.push(ContextBlock::new(
                         ids.next().expect("identity count validated"),
-                        BlockContent::Parts(parts),
+                        BlockContent::Message {
+                            role: Role::Assistant,
+                            parts,
+                        },
                         BlockMeta {
                             wire: item.wire.clone(),
                             ..BlockMeta::default()

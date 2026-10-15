@@ -70,7 +70,7 @@ fn projection_transforms_never_write_back_into_material() {
         "host.injected",
     ));
     for block in &mut projection.blocks {
-        if let BlockContent::Parts(parts) = block.content() {
+        if let BlockContent::Message { role, parts } = block.content() {
             let mut parts = parts.clone();
             for part in &mut parts {
                 if let ContentPart::Media(media) = part {
@@ -80,7 +80,7 @@ fn projection_transforms_never_write_back_into_material() {
             parts.push(ContentPart::Text(TextPayload::new("rewritten")));
             *block = ContextBlock::new(
                 common::block_id(),
-                BlockContent::Parts(parts),
+                BlockContent::Message { role: *role, parts },
                 block.meta().clone(),
             );
         }

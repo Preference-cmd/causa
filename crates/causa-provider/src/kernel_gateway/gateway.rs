@@ -143,7 +143,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
     }
 
     /// One resolution pass over the request's frame: every media
-    /// reference (Parts blocks and tool results) the injected resolver
+    /// reference (Message blocks and tool results) the injected resolver
     /// serves within the inline ceiling enters the table. Deterministic
     /// — the same frame and asset state produce the same table.
     fn resolve_media(&self, request: &ModelRequest) -> MediaSet {
@@ -162,7 +162,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
                 }
             };
             match block.content() {
-                BlockContent::Parts(parts) => {
+                BlockContent::Message { parts, .. } => {
                     for part in parts {
                         if let ContentPart::Media(r) = part {
                             collect(r, &mut refs, &mut seen);

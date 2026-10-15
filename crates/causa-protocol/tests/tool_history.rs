@@ -1,7 +1,7 @@
 //! Request constraints are separate from the kernel's permissive material edits.
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, Context, ContextBlock,
-    ContextFrame, GenerationOptions, MediaRef, ModelInvokeErrorKind, ModelRef, TextPayload,
+    BlockContent, BlockId, BlockMeta, CacheDirective, Context, ContextBlock, ContextFrame,
+    GenerationOptions, MediaRef, ModelInvokeErrorKind, ModelRef, Role, TextPayload,
     ToolCallPayload, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa_protocol::translation::render_options::{
@@ -40,9 +40,14 @@ fn result(value: u128, declaration: u128, media: bool) -> ContextBlock {
     )
 }
 fn text(value: u128, source: &str) -> ContextBlock {
+    let role = match source {
+        "system" => Role::System,
+        "assistant" => Role::Assistant,
+        _ => Role::User,
+    };
     ContextBlock::new(
         id(value),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("text"))]),
+        BlockContent::text(role, "text"),
         BlockMeta::from_source(source),
     )
 }

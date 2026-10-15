@@ -10,9 +10,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use causa_kernel::{
-    BlockContent, BlockMeta, CallControl, CancellationToken, ContentPart, Context, ContextBlock,
-    GenerationOptions, ModelGateway, ModelRef, TextPayload, Tool, ToolCallContext, ToolDefinition,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    BlockContent, CallControl, CancellationToken, Context, ContextBlock, GenerationOptions,
+    ModelGateway, ModelRef, Role, Tool, ToolCallContext, ToolDefinition, ToolOutput,
+    ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner};
@@ -94,10 +94,10 @@ async fn direct_runner_completes_two_tool_round_trips_over_http() {
         ),
     );
 
-    let context = Context::from_blocks(vec![ContextBlock::new(
+    let context = Context::from_blocks(vec![ContextBlock::text(
         causa_runtime::new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("find files"))]),
-        BlockMeta::from_source("user"),
+        Role::User,
+        "find files",
     )])
     .unwrap();
     // The Anthropic wire requires `max_tokens`; the runner supplies what the

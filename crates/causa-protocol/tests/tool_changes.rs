@@ -3,8 +3,8 @@
 //! the declaration across rounds while the change renders at its position.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelInvokeErrorKind, ModelRef, TextPayload, ToolCallPayload, ToolChange,
+    BlockContent, BlockId, BlockMeta, CacheDirective, ContextBlock, ContextFrame,
+    GenerationOptions, ModelInvokeErrorKind, ModelRef, Role, ToolCallPayload, ToolChange,
     ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
@@ -40,12 +40,13 @@ fn change(label: &str, added: Vec<ToolDefinition>, removed: &[&str]) -> ContextB
 }
 
 fn text(label: &str, text: &str, source: Option<&str>) -> ContextBlock {
+    let role = match source {
+        Some("system") => Role::System,
+        Some("assistant") | None => Role::Assistant,
+        _ => Role::User,
+    };
     let meta = source.map_or_else(BlockMeta::default, BlockMeta::from_source);
-    ContextBlock::new(
-        id(label),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        meta,
-    )
+    ContextBlock::new(id(label), BlockContent::text(role, text), meta)
 }
 
 fn call(label: &str, name: &str) -> ContextBlock {

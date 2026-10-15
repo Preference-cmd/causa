@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextFrame, MediaRef,
+    BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, ContextFrame, MediaRef, Role,
     TextPayload, ToolCallPayload, ToolChange, ToolDefinition, ToolOutput, ToolResultPayload,
     ToolResultStatus,
 };
@@ -38,13 +38,37 @@ pub(crate) fn block(
     )
 }
 
-pub(crate) fn text(seq: u64, text: &str, source: Option<&str>) -> ContextBlock {
-    parts(seq, vec![ContentPart::Text(TextPayload::new(text))], source)
+pub(crate) fn text(seq: u64, text: &str, role: Role) -> ContextBlock {
+    parts(seq, vec![ContentPart::Text(TextPayload::new(text))], role)
 }
 
-/// A Parts block from explicit content parts — the general message shape.
-pub(crate) fn parts(seq: u64, parts: Vec<ContentPart>, source: Option<&str>) -> ContextBlock {
-    block(seq, BlockContent::Parts(parts), source, None)
+pub(crate) fn text_with_source(
+    seq: u64,
+    text: &str,
+    role: Role,
+    source: Option<&str>,
+) -> ContextBlock {
+    parts_with_source(
+        seq,
+        vec![ContentPart::Text(TextPayload::new(text))],
+        role,
+        source,
+    )
+}
+
+/// A Message block from explicit content parts — the general message shape.
+pub(crate) fn parts(seq: u64, parts: Vec<ContentPart>, role: Role) -> ContextBlock {
+    parts_with_source(seq, parts, role, None)
+}
+
+/// A Message block from explicit content parts with explicit provenance.
+pub(crate) fn parts_with_source(
+    seq: u64,
+    parts: Vec<ContentPart>,
+    role: Role,
+    source: Option<&str>,
+) -> ContextBlock {
+    block(seq, BlockContent::Message { role, parts }, source, None)
 }
 
 /// A single-text part convenience over [`parts`].

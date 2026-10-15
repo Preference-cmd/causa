@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use causa_kernel::{
     BlockContent, BlockMeta, CallControl, ContentPart, Context, ContextBlock, MediaRef,
     ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
-    ModelStopReason, TextPayload, TurnId,
+    ModelStopReason, Role, TextPayload, TurnId,
 };
 use causa_runtime::{ToolExecutor, TurnResult, TurnRunOptions, TurnRunner, new_block_id};
 
@@ -35,11 +35,7 @@ impl ModelGateway for AckGateway {
     }
 }
 fn input(text: &str) -> ContextBlock {
-    ContextBlock::new(
-        new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-        BlockMeta::from_source("user"),
-    )
+    ContextBlock::text(new_block_id(), Role::User, text)
 }
 async fn run(
     runner: &TurnRunner,
@@ -74,10 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .edit()
         .append([ContextBlock::new(
             new_block_id(),
-            BlockContent::Parts(vec![
-                ContentPart::Text(TextPayload::new("chart")),
-                ContentPart::Media(MediaRef::new("image/png", "asset-chart")),
-            ]),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("chart")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-chart")),
+                ],
+            },
             BlockMeta::from_source("user"),
         )])
         .commit()?;

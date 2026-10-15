@@ -3,8 +3,8 @@
 //! (with the Chat replay opt-out removing only `reasoning_content`).
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, CacheDirective, ContentPart, ContextBlock, ContextFrame,
-    GenerationOptions, ModelOutput, ModelRef, StreamDelta, TextPayload,
+    BlockId, CacheDirective, ContentPart, ContextBlock, ContextFrame, GenerationOptions,
+    ModelOutput, ModelRef, Role, StreamDelta,
 };
 use causa_protocol::Protocol;
 use causa_protocol::translation::anthropic::{parse_anthropic_response, render_anthropic_messages};
@@ -22,11 +22,7 @@ use causa_protocol::translation::streaming::{StreamDecoder, StreamLimits};
 use serde_json::{Value, json};
 
 fn user_block() -> ContextBlock {
-    ContextBlock::new(
-        BlockId::new(uuid::Uuid::from_u128(1)),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("hi"))]),
-        BlockMeta::from_source("user"),
-    )
+    ContextBlock::text(BlockId::new(uuid::Uuid::from_u128(1)), Role::User, "hi")
 }
 
 /// The frame of the next turn for a parsed output: the user block, the
