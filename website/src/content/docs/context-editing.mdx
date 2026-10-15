@@ -16,33 +16,36 @@ existing `ContextBlock` so its ID, content, and metadata stay together.
 
 ```rust
 use causa::{
-    kernel::{BlockContent, BlockMeta, ContextBlock, ContentPart, TextPayload, Context},
+    kernel::{Context, ContextBlock, Role},
     runtime::new_block_id,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut context = Context::new();
-    for text in ["system note", "old detail one", "old detail two", "old detail three", "recent request"] {
-        context.edit().append([ContextBlock::new(
+    let initial = [
+        ("system note", Role::System),
+        ("old detail one", Role::User),
+        ("old detail two", Role::User),
+        ("old detail three", Role::User),
+        ("recent request", Role::User),
+    ];
+    for (text, role) in initial {
+        context.edit().append([ContextBlock::text(
             new_block_id(),
-            BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(text))]),
-            BlockMeta::default(),
+            role,
+            text,
         )]).commit()?;
     }
 
-    let summary = ContextBlock::new(
+    let summary = ContextBlock::text(
         new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
-            "The user prefers short answers and is building a Rust agent.",
-        ))]),
-        BlockMeta::default(),
+        Role::System,
+        "The user prefers short answers and is building a Rust agent.",
     );
-    let note = ContextBlock::new(
+    let note = ContextBlock::text(
         new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new(
-            "The current request concerns context editing.",
-        ))]),
-        BlockMeta::default(),
+        Role::System,
+        "The current request concerns context editing.",
     );
 
     context
@@ -91,7 +94,7 @@ uncommitted builder discards only that pending edit.
 ## Saving material
 
 `Context` serializes as an object with one required field, `blocks`.
-Loading validates block ID uniqueness. Empty Parts and partial tool material
+Loading validates block ID uniqueness. Empty Message blocks and partial tool material
 are allowed; missing `blocks` and duplicate IDs are rejected. Generic import
 and edit do not require a completed tool exchange. Runner result commits and
 protocol rendering apply their own stricter rules at those boundaries.

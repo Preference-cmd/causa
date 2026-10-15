@@ -52,8 +52,7 @@ Put this in `src/main.rs` to run one model turn through the facade:
 
 ```rust
 use causa::{
-    kernel::{BlockContent, BlockMeta, CallControl, CancellationToken, ContentPart, Context, ContextBlock,
-             ModelRef, TextPayload, TurnId},
+    kernel::{CallControl, CancellationToken, Context, ContextBlock, ModelRef, Role, TurnId},
     providers::AnthropicMessagesGateway,
     runtime::{new_block_id, ToolExecutor, ToolExecutorOptions,
               TurnResult, TurnRunOptions, TurnRunner},
@@ -67,10 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let executor = Arc::new(ToolExecutor::new(Vec::new(), ToolExecutorOptions::default())?);
     let runner = TurnRunner::new(gateway, executor);
-    let context = Context::from_blocks(vec![ContextBlock::new(
+    let context = Context::from_blocks(vec![ContextBlock::text(
         new_block_id(),
-        BlockContent::Parts(vec![ContentPart::Text(TextPayload::new("Say hello in one sentence."))]),
-        BlockMeta::from_source("user"),
+        Role::User,
+        "Say hello in one sentence.",
     )])?;
     let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?));
     let outcome = runner
