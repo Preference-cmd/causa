@@ -12,10 +12,14 @@ adapters or data converters.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-10-15
+
 Tool changes are facts in the context. The runner records which tools the
 model is offered, and from where, as `ToolChange` blocks; every renderer
 reads the tools from the frame, and Anthropic Messages and OpenAI Responses
-can keep the request's `tools` unchanged while the set changes.
+can keep the request's `tools` unchanged while the set changes. A
+message's role is an explicit fact of its block instead of being inferred
+from its source tag.
 
 ### Breaking
 

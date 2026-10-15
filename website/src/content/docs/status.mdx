@@ -5,25 +5,42 @@ description: Where Causa stands and where it's going.
 
 ## Experimental 0.0.x
 
-**0.0.4** prepares the public surface for `0.1`: struct-like variants of
-library-built enums are `#[non_exhaustive]`, the serialized forms held stable
-from `0.1.0` are named, and the tool port states its concurrency
-requirements. It builds on 0.0.3, which added real provider streaming,
-reasoning replay, host-written reasoning settings, an optional retrying
-gateway and classified model-call failures. Session management, history
+**0.0.5** makes tools and message roles facts of the context. The runner
+records which tools the model is offered as `ToolChange` blocks, every renderer
+reads the tools from the frame, and Anthropic Messages and OpenAI Responses can
+keep the request's `tools` unchanged while the set changes. A message block
+carries its `Role` explicitly. Render options load from host configuration, the
+default HTTP client uses an idle read timeout instead of a total one, and the
+Responses decoder accepts streamed raw reasoning text. It builds on 0.0.4,
+which prepared the public surface for `0.1`. Session management, history
 policies and subagent orchestration belong to applications built on Causa.
-This is an experimental release with breaking changes from 0.0.3.
+This is an experimental release with breaking changes from 0.0.4.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Breaking changes and migration notes appear at the top of
-the release notes. Cargo does not automatically upgrade `"0.0.3"` to
-`0.0.4`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
+the release notes. Cargo does not automatically upgrade `"0.0.4"` to
+`0.0.5`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
 version.
+
+## Upgrading from 0.0.4
+
+Update your dependency explicitly to `causa = "0.0.5"`. The changelog lists
+every break with its migration:
+
+| 0.0.4 usage | 0.0.5 replacement |
+| --- | --- |
+| `BlockContent::Parts(parts)` | `BlockContent::Message { role, parts }`; `BlockContent::text(role, text)` for one text part |
+| Message role inferred from `BlockMeta::source` | The block's `role`; `source` is provenance only |
+| Stored `{"shape":"parts",...}` blocks | `{"shape":"message","value":{"role":...,"parts":[...]}}`; no reader for the old form |
+| An exhaustive `match` over `BlockContent` | Also handles `ToolChange` |
+| `ModelRequest::tool_surface`, the protocol `render` tool argument | The frame's `ToolChange` blocks; read them with `current_tools` |
+| A preparer that drops blocks it does not know | Keeps `ToolChange` blocks |
+| `KernelGatewayConfig` methods | The three gateway aliases |
+| Matching `anthropic` / `openai` error prefixes or the span field `provider` | The protocol name and the field `protocol`; prefer `ModelInvokeError::kind` |
 
 ## Upgrading from 0.0.3
 
-Update your dependency explicitly to `causa = "0.0.4"`. The changelog lists
-every break with its migration:
+Move to 0.0.4 usage first, then apply the table above:
 
 | 0.0.3 usage | 0.0.4 replacement |
 | --- | --- |
@@ -33,7 +50,7 @@ every break with its migration:
 
 ## Upgrading from 0.0.2
 
-Move to 0.0.3 usage first, then apply the table above. The changelog lists
+Move to 0.0.3 usage first, then apply the tables above. The changelog lists
 every break with its migration; these are the ones most code meets:
 
 | 0.0.2 usage | 0.0.3 replacement |
@@ -48,7 +65,7 @@ every break with its migration; these are the ones most code meets:
 
 ## Upgrading from 0.0.1
 
-Migrate these boundaries first, then apply the table above:
+Migrate these boundaries first, then apply the tables above:
 
 | 0.0.1 usage | 0.0.2 replacement |
 | --- | --- |
@@ -65,8 +82,8 @@ uncommitted tool batch deliberately. An interrupted external tool may have an
 unknown outcome; recreating context does not guarantee exactly-once execution.
 
 The [getting-started example](/getting-started/) uses the new facade API. The
-[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.4/CHANGELOG.md)
-details the control, conversion, tool-binding and protocol changes.
+[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.5/CHANGELOG.md)
+details the context, tool, control, conversion and protocol changes.
 
 ## Changelog
 
@@ -80,4 +97,4 @@ See
 [AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
 layout, commands (`cargo test --workspace`, clippy, fmt, the layering guard),
 and the [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
-for manual publishing. Conventional Commits, one logical change per commit.
+for the release process. Conventional Commits, one logical change per commit.
