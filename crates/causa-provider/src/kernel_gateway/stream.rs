@@ -16,7 +16,7 @@ const PROGRESS_BUDGET: usize = 32;
 pub(super) async fn establish_stream(
     request: reqwest::RequestBuilder,
     control: &CallControl,
-    provider: &str,
+    protocol: causa_protocol::Protocol,
 ) -> Result<reqwest::Response, ModelInvokeError> {
     let response = send_response(request, control).await?;
     if !response.status().is_success() {
@@ -25,7 +25,7 @@ pub(super) async fn establish_stream(
             buffered.status,
             &buffered.headers,
             &buffered.body,
-            provider,
+            protocol,
         ));
     }
     let is_sse = response

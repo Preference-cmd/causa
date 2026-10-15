@@ -47,7 +47,7 @@ pub struct KernelHttpGateway<C: KernelGatewayConfig> {
 impl<C: KernelGatewayConfig> std::fmt::Debug for KernelHttpGateway<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KernelHttpGateway")
-            .field("provider", &C::PROVIDER)
+            .field("protocol", &C::PROTOCOL.as_str())
             .field("path", &C::PATH)
             .field("media_resolver", &self.media_resolver.is_some())
             .field("max_inline_media_bytes", &self.max_inline_media_bytes)
@@ -305,7 +305,11 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
         request: &ModelRequest,
         control: &CallControl,
     ) -> Result<causa_kernel::ModelStream, ModelInvokeError> {
-        let span = tracing::debug_span!("agent.http", provider = C::PROVIDER, path = C::PATH);
+        let span = tracing::debug_span!(
+            "agent.http",
+            protocol = C::PROTOCOL.as_str(),
+            path = C::PATH
+        );
         async {
             check_control(control)?;
             let decoder = StreamDecoder::new(C::PROTOCOL, self.stream_limits)?;
@@ -317,7 +321,7 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
                 .decorate_request(self.core.post(), &self.api_key)
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .json(&body);
-            let response = establish_stream(req, control, C::PROVIDER).await?;
+            let response = establish_stream(req, control, C::PROTOCOL).await?;
             Ok(model_stream(response, decoder, control.clone()))
         }
         .instrument(span)
@@ -332,7 +336,11 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
         // Observability baseline: ids and names only — never arguments,
         // message bodies, or API keys. The span is entered per poll via
         // `Instrument` so the boxed future stays `Send`.
-        let span = tracing::debug_span!("agent.http", provider = C::PROVIDER, path = C::PATH);
+        let span = tracing::debug_span!(
+            "agent.http",
+            protocol = C::PROTOCOL.as_str(),
+            path = C::PATH
+        );
         async {
             // A frame the renderer rejects never reaches the wire. Media
             // resolves first — the table feeds every renderer branch.
@@ -344,7 +352,7 @@ impl<C: KernelGatewayConfig> ModelGateway for KernelHttpGateway<C> {
                 .decorate_request(self.core.post(), &self.api_key)
                 .json(&body);
             let response = send_with_control(req, control).await?;
-            finish_response(response, C::PROVIDER, |v| self.config.parse(v))
+            finish_response(response, C::PROTOCOL, |v| self.config.parse(v))
         }
         .instrument(span)
         .await

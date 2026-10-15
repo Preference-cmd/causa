@@ -46,6 +46,7 @@ use std::{future::Future, time::Duration};
 use causa_kernel::{
     CallControl, ControlError, ModelInvokeError, ModelInvokeErrorKind, ModelOutput,
 };
+use causa_protocol::Protocol;
 use causa_protocol::translation::error_envelope::{ErrorDetail, reported_error};
 use reqwest::header::HeaderMap;
 use reqwest::{Client, StatusCode};
@@ -208,7 +209,7 @@ fn oversize_error(len: usize) -> ModelInvokeError {
 /// schema failures also surface as `Undecodable`).
 pub(crate) fn finish_response<F>(
     response: BufferedResponse,
-    provider: &str,
+    protocol: Protocol,
     parse: F,
 ) -> Result<ModelOutput, ModelInvokeError>
 where
@@ -219,13 +220,13 @@ where
             response.status,
             &response.headers,
             &response.body,
-            provider,
+            protocol,
         ));
     }
     let value: Value = serde_json::from_str(&response.body).map_err(|e| {
         ModelInvokeError::new(
             ModelInvokeErrorKind::Undecodable,
-            format!("{provider} 2xx response body is not valid JSON: {e}"),
+            format!("{protocol} 2xx response body is not valid JSON: {e}"),
         )
     })?;
     // Some servers report a failure under a success status.
@@ -259,7 +260,7 @@ pub(crate) fn map_status_error(
     status: StatusCode,
     headers: &HeaderMap,
     body: &str,
-    provider: &str,
+    protocol: Protocol,
 ) -> ModelInvokeError {
     let kind = match should_retry(headers) {
         Some(true) => ModelInvokeErrorKind::Transient,
@@ -273,8 +274,8 @@ pub(crate) fn map_status_error(
     };
     let detail = ErrorDetail::read_body(body);
     let message = match &detail.message {
-        Some(msg) => format!("{provider} error {}: {msg}", status.as_u16()),
-        None => format!("{provider} error {}", status.as_u16()),
+        Some(msg) => format!("{protocol} error {}: {msg}", status.as_u16()),
+        None => format!("{protocol} error {}", status.as_u16()),
     };
     let mut error = ModelInvokeError::new(kind, message).with_status(status.as_u16());
     if let Some(code) = detail.code {
@@ -413,7 +414,7 @@ mod tests {
             StatusCode::from_u16(status).expect("valid status"),
             &headers(pairs),
             "{\"error\":{\"message\":\"busy\"}}",
-            "test",
+            Protocol::AnthropicMessages,
         )
         .kind
     }
@@ -487,7 +488,7 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             &headers(&[("retry-after-ms", "1500"), ("retry-after", "9")]),
             "",
-            "test",
+            Protocol::AnthropicMessages,
         );
         assert_eq!(error.retry_delay, Some(Duration::from_millis(1500)));
 
@@ -495,7 +496,7 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             &headers(&[("retry-after-ms", "250.5"), ("retry-after", "9")]),
             "",
-            "test",
+            Protocol::AnthropicMessages,
         );
         let delay = error.retry_delay.expect("fractional milliseconds parse");
         assert!(
@@ -548,7 +549,7 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             &headers(&[("retry-after", "junk")]),
             "",
-            "test",
+            Protocol::AnthropicMessages,
         );
         assert_eq!(error.retry_delay, None);
         assert_eq!(
@@ -563,9 +564,9 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             &HeaderMap::new(),
             "{\"error\":{\"message\":\"slow down\"}}",
-            "anthropic",
+            Protocol::AnthropicMessages,
         );
-        assert_eq!(error.message, "anthropic error 429: slow down");
+        assert_eq!(error.message, "anthropic_messages error 429: slow down");
     }
 
     #[test]
@@ -574,17 +575,17 @@ mod tests {
             StatusCode::BAD_GATEWAY,
             &HeaderMap::new(),
             "<html>502 Bad Gateway</html>",
-            "anthropic",
+            Protocol::AnthropicMessages,
         );
-        assert_eq!(error.message, "anthropic error 502");
+        assert_eq!(error.message, "anthropic_messages error 502");
 
         let error2 = map_status_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             &HeaderMap::new(),
             "{\"status\": \"fail\"}",
-            "chat",
+            Protocol::OpenAiChatCompletions,
         );
-        assert_eq!(error2.message, "chat error 500");
+        assert_eq!(error2.message, "openai_chat_completions error 500");
     }
 
     async fn read_request_head(socket: &mut tokio::net::TcpStream) {

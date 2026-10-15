@@ -57,6 +57,14 @@ can keep the request's `tools` unchanged while the set changes.
   `OpenAiChatCompletionsGateway`, `OpenAiResponsesGateway`). Implementing
   a custom protocol outside the crate is not supported.
 
+- Transport error messages start with the protocol name (`anthropic_messages`,
+  `openai_chat_completions`, `openai_responses`) instead of `anthropic` /
+  `openai`; the `agent.http` span field `provider` is renamed `protocol`.
+
+  Migration: code that matched the old message prefix or span field matches
+  the new ones; prefer `ModelInvokeError::kind`, `status` and `code` over message
+  text.
+
 ### Added
 
 - `AnthropicRenderOptions::beta_values` returns the `anthropic-beta` values

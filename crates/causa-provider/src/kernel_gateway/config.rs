@@ -46,8 +46,6 @@ mod sealed {
         /// Protocol path appended by [`crate::KernelHttpGateway::with_base_url`].
         /// It has no version segment; the base URL supplies one.
         const PATH: &'static str;
-        /// Provider label used in transport errors and tracing spans.
-        const PROVIDER: &'static str;
     }
 }
 
@@ -140,7 +138,6 @@ impl sealed::GatewayProtocol for AnthropicGatewayConfig {
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.anthropic.com/v1/messages";
     const PATH: &'static str = "/messages";
-    const PROVIDER: &'static str = "anthropic";
 }
 
 impl KernelGatewayConfig for AnthropicGatewayConfig {}
@@ -178,7 +175,6 @@ impl sealed::GatewayProtocol for OpenAiChatGatewayConfig {
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.openai.com/v1/chat/completions";
     const PATH: &'static str = "/chat/completions";
-    const PROVIDER: &'static str = "openai";
 }
 
 impl KernelGatewayConfig for OpenAiChatGatewayConfig {}
@@ -216,7 +212,6 @@ impl sealed::GatewayProtocol for OpenAiResponsesGatewayConfig {
 
     const DEFAULT_ENDPOINT: &'static str = "https://api.openai.com/v1/responses";
     const PATH: &'static str = "/responses";
-    const PROVIDER: &'static str = "openai";
 }
 
 impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {}

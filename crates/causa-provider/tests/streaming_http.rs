@@ -738,7 +738,7 @@ async fn bounded_error_bodies_honor_control_and_never_echo_request_material() {
         Ok(_) => panic!("HTTP error accepted"),
     };
     assert_eq!(error.kind, ModelInvokeErrorKind::InvalidRequest);
-    assert_eq!(error.message, "openai error 400");
+    assert_eq!(error.message, "openai_chat_completions error 400");
     assert!(!error.message.contains(secret));
 
     let mut fixture = Fixture::new(

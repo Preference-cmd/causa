@@ -96,10 +96,10 @@
 //!
 //! Non-2xx responses from both `invoke` and `stream` follow one rule: when the
 //! response body contains the documented error envelope (`{"error": {"message": "..."}}`),
-//! the error message is formatted as `"{provider} error {status}: {error.message}"`,
+//! the error message is formatted as `"{protocol} error {status}: {error.message}"`,
 //! with `error.message` truncated to 200 characters (appended with `…` if longer).
 //! When the body is not that envelope, there is no fallback to raw body text and
-//! the message contains the provider label and status only: `"{provider} error {status}"`.
+//! the message contains the protocol name and status only: `"{protocol} error {status}"`.
 //!
 //! The status is also in [`causa_kernel::ModelInvokeError::status`], and the
 //! envelope's `code` (or `type`) in [`causa_kernel::ModelInvokeError::code`]

@@ -2,9 +2,9 @@
 //!
 //! Rule:
 //! - With documented error envelope (`{"error": {"message": "..."}}`), `invoke`
-//!   and `stream` produce the same message: `"{provider} error {status}: {error.message}"`.
+//!   and `stream` produce the same message: `"{protocol} error {status}: {error.message}"`.
 //! - Without that envelope (e.g. HTML or unrecognized JSON), both produce
-//!   `"{provider} error {status}"` with no body text.
+//!   `"{protocol} error {status}"` with no body text.
 //! - The status and the provider's error code are also carried as data, so a
 //!   caller can tell the causes apart without reading the message.
 //! - An error event inside a successful stream is read by the same rule as an
@@ -87,7 +87,7 @@ async fn documented_envelope_produces_identical_messages_on_invoke_and_stream() 
     let stream_err = unwrap_stream_err(anthropic.stream(&request(), &control()).await);
     assert_eq!(
         invoke_err.message,
-        "anthropic error 429: rate limit exceeded: retry later"
+        "anthropic_messages error 429: rate limit exceeded: retry later"
     );
     assert_eq!(stream_err.message, invoke_err.message);
 
@@ -100,7 +100,7 @@ async fn documented_envelope_produces_identical_messages_on_invoke_and_stream() 
     let stream_err = unwrap_stream_err(chat.stream(&request(), &control()).await);
     assert_eq!(
         invoke_err.message,
-        "openai error 429: rate limit exceeded: retry later"
+        "openai_chat_completions error 429: rate limit exceeded: retry later"
     );
     assert_eq!(stream_err.message, invoke_err.message);
 
@@ -113,7 +113,7 @@ async fn documented_envelope_produces_identical_messages_on_invoke_and_stream() 
     let stream_err = unwrap_stream_err(responses.stream(&request(), &control()).await);
     assert_eq!(
         invoke_err.message,
-        "openai error 429: rate limit exceeded: retry later"
+        "openai_responses error 429: rate limit exceeded: retry later"
     );
     assert_eq!(stream_err.message, invoke_err.message);
 }
@@ -138,7 +138,7 @@ async fn non_envelope_body_omits_body_text_on_invoke_and_stream() {
         .await
         .expect_err("expected error");
     let stream_err = unwrap_stream_err(anthropic.stream(&request(), &control()).await);
-    assert_eq!(invoke_err.message, "anthropic error 502");
+    assert_eq!(invoke_err.message, "anthropic_messages error 502");
     assert_eq!(stream_err.message, invoke_err.message);
 
     // 2. Chat
@@ -148,7 +148,7 @@ async fn non_envelope_body_omits_body_text_on_invoke_and_stream() {
         .await
         .expect_err("expected error");
     let stream_err = unwrap_stream_err(chat.stream(&request(), &control()).await);
-    assert_eq!(invoke_err.message, "openai error 502");
+    assert_eq!(invoke_err.message, "openai_chat_completions error 502");
     assert_eq!(stream_err.message, invoke_err.message);
 
     // 3. Responses
@@ -158,7 +158,7 @@ async fn non_envelope_body_omits_body_text_on_invoke_and_stream() {
         .await
         .expect_err("expected error");
     let stream_err = unwrap_stream_err(responses.stream(&request(), &control()).await);
-    assert_eq!(invoke_err.message, "openai error 502");
+    assert_eq!(invoke_err.message, "openai_responses error 502");
     assert_eq!(stream_err.message, invoke_err.message);
 }
 
@@ -246,8 +246,11 @@ async fn a_stream_error_event_reads_like_the_same_envelope_over_http() {
         .invoke(&request(), &control())
         .await
         .expect_err("expected error");
-    assert_eq!(http.message, "openai error 429: slow down");
-    let text = http.message.strip_prefix("openai error 429: ").unwrap();
+    assert_eq!(http.message, "openai_chat_completions error 429: slow down");
+    let text = http
+        .message
+        .strip_prefix("openai_chat_completions error 429: ")
+        .unwrap();
 
     let server = respond(200, "text/event-stream", sse(&envelope)).await;
     let chat = OpenAiChatCompletionsGateway::new("k").with_base_url(format!("{}/v1", server.uri()));
@@ -288,7 +291,7 @@ async fn provider_text_never_keeps_a_control_character() {
     assert_eq!(http.kind, ModelInvokeErrorKind::InvalidRequest);
     assert_eq!(
         http.message,
-        "openai error 400: first line second [2J line tab"
+        "openai_chat_completions error 400: first line second [2J line tab"
     );
 
     let server = respond(200, "text/event-stream", format!("data: {envelope}\n\n")).await;

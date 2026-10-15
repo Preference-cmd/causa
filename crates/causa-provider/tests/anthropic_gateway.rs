@@ -388,8 +388,8 @@ async fn invoke_emits_the_agent_http_span() {
     let text = captured.lock().unwrap().clone();
     assert!(text.contains("agent.http"), "missing agent.http: {text}");
     assert!(
-        text.contains("provider=\"anthropic\""),
-        "missing provider field: {text}"
+        text.contains("protocol=\"anthropic_messages\""),
+        "missing protocol field: {text}"
     );
     assert!(
         text.contains("path=\"/messages\""),
