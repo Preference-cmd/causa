@@ -14,33 +14,66 @@ use causa_protocol::translation::render_options::{
 };
 use serde_json::Value;
 
-/// Protocol-specific rendering, parsing, and auth decoration for a kernel gateway.
+mod sealed {
+    use super::*;
+
+    /// Protocol-specific rendering, parsing, and auth decoration for a kernel gateway.
+    ///
+    /// The per-protocol quirks (endpoint, path, header shape, render/parse)
+    /// are isolated here so the transport loop is written once. `media` is
+    /// the resolution table the gateway built from its injected resolver;
+    /// the config passes it through to the pure renderer.
+    pub trait GatewayProtocol {
+        /// Wire protocol used by the pure streaming decoder.
+        const PROTOCOL: causa_protocol::Protocol;
+        /// Render a kernel request and its resolved media into a wire request body.
+        /// Rejection prevents the gateway from sending an HTTP request.
+        fn render(
+            &self,
+            request: &ModelRequest,
+            media: &MediaSet,
+        ) -> Result<Value, ModelInvokeError>;
+        /// Parse a successful wire response into the kernel's model output.
+        fn parse(&self, value: &Value) -> Result<ModelOutput, ModelInvokeError>;
+        /// Add protocol-specific authentication and version headers to a request.
+        fn decorate_request(
+            &self,
+            builder: reqwest::RequestBuilder,
+            api_key: &str,
+        ) -> reqwest::RequestBuilder;
+        /// Full endpoint URL used unless the host overrides it.
+        const DEFAULT_ENDPOINT: &'static str;
+        /// Protocol path appended by [`crate::KernelHttpGateway::with_base_url`].
+        /// It has no version segment; the base URL supplies one.
+        const PATH: &'static str;
+        /// Provider label used in transport errors and tracing spans.
+        const PROVIDER: &'static str;
+    }
+}
+
+/// Protocol configuration selecting the wire format and transport parameters
+/// for [`crate::KernelHttpGateway`].
 ///
-/// The per-protocol quirks (endpoint, path, header shape, render/parse)
-/// are isolated here so the transport loop is written once. `media` is
-/// the resolution table the gateway built from its injected resolver —
-/// the config passes it through to the pure renderer.
-pub trait KernelGatewayConfig: Clone + Send + Sync + std::fmt::Debug + Default {
-    /// Wire protocol used by the pure streaming decoder.
-    const PROTOCOL: causa_protocol::Protocol;
-    /// Render a kernel request and its resolved media into a wire request body.
-    /// Rejection prevents the gateway from sending an HTTP request.
-    fn render(&self, request: &ModelRequest, media: &MediaSet) -> Result<Value, ModelInvokeError>;
-    /// Parse a successful wire response into the kernel's model output.
-    fn parse(&self, value: &Value) -> Result<ModelOutput, ModelInvokeError>;
-    /// Add protocol-specific authentication and version headers to a request.
-    fn decorate_request(
-        &self,
-        builder: reqwest::RequestBuilder,
-        api_key: &str,
-    ) -> reqwest::RequestBuilder;
-    /// Full endpoint URL used unless the host overrides it.
-    const DEFAULT_ENDPOINT: &'static str;
-    /// Protocol path appended by [`crate::KernelHttpGateway::with_base_url`].
-    /// It has no version segment; the base URL supplies one.
-    const PATH: &'static str;
-    /// Provider label used in transport errors and tracing spans.
-    const PROVIDER: &'static str;
+/// This trait is sealed: it is implemented only by the three built-in
+/// configurations ([`AnthropicGatewayConfig`], [`OpenAiChatGatewayConfig`], and
+/// [`OpenAiResponsesGatewayConfig`]) and cannot be implemented outside this
+/// crate. Callers select a protocol through [`crate::KernelHttpGateway`] or its
+/// aliases ([`crate::AnthropicMessagesGateway`],
+/// [`crate::OpenAiChatCompletionsGateway`], and
+/// [`crate::OpenAiResponsesGateway`]).
+///
+/// ```compile_fail
+/// use causa_provider::KernelGatewayConfig;
+///
+/// #[derive(Clone, Debug, Default)]
+/// struct CustomConfig;
+///
+/// // Cannot be implemented outside causa_provider because the trait is sealed.
+/// impl KernelGatewayConfig for CustomConfig {}
+/// ```
+pub trait KernelGatewayConfig:
+    sealed::GatewayProtocol + Clone + Send + Sync + std::fmt::Debug + Default
+{
 }
 
 /// Anthropic Messages gateway config: the `anthropic-version` header, the
@@ -65,7 +98,7 @@ impl Default for AnthropicGatewayConfig {
     }
 }
 
-impl KernelGatewayConfig for AnthropicGatewayConfig {
+impl sealed::GatewayProtocol for AnthropicGatewayConfig {
     const PROTOCOL: causa_protocol::Protocol = causa_protocol::Protocol::AnthropicMessages;
     fn render(&self, request: &ModelRequest, media: &MediaSet) -> Result<Value, ModelInvokeError> {
         render_anthropic_messages(
@@ -110,13 +143,15 @@ impl KernelGatewayConfig for AnthropicGatewayConfig {
     const PROVIDER: &'static str = "anthropic";
 }
 
+impl KernelGatewayConfig for AnthropicGatewayConfig {}
+
 /// OpenAI Chat Completions gateway config: the Chat-only render options.
 #[derive(Debug, Clone, Default)]
 pub struct OpenAiChatGatewayConfig {
     pub(super) render_options: ChatRenderOptions,
 }
 
-impl KernelGatewayConfig for OpenAiChatGatewayConfig {
+impl sealed::GatewayProtocol for OpenAiChatGatewayConfig {
     const PROTOCOL: causa_protocol::Protocol = causa_protocol::Protocol::OpenAiChatCompletions;
     fn render(&self, request: &ModelRequest, media: &MediaSet) -> Result<Value, ModelInvokeError> {
         render_openai_chat_messages(
@@ -146,13 +181,15 @@ impl KernelGatewayConfig for OpenAiChatGatewayConfig {
     const PROVIDER: &'static str = "openai";
 }
 
+impl KernelGatewayConfig for OpenAiChatGatewayConfig {}
+
 /// OpenAI Responses gateway config: the Responses-only render options.
 #[derive(Debug, Clone, Default)]
 pub struct OpenAiResponsesGatewayConfig {
     pub(super) render_options: ResponsesRenderOptions,
 }
 
-impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
+impl sealed::GatewayProtocol for OpenAiResponsesGatewayConfig {
     const PROTOCOL: causa_protocol::Protocol = causa_protocol::Protocol::OpenAiResponses;
     fn render(&self, request: &ModelRequest, media: &MediaSet) -> Result<Value, ModelInvokeError> {
         render_openai_responses_input(
@@ -181,3 +218,5 @@ impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {
     const PATH: &'static str = "/responses";
     const PROVIDER: &'static str = "openai";
 }
+
+impl KernelGatewayConfig for OpenAiResponsesGatewayConfig {}

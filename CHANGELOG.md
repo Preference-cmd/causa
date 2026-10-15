@@ -50,6 +50,13 @@ can keep the request's `tools` unchanged while the set changes.
   `BlocksCommitted` events, expects the extra tool facts. A failed append
   is reported as the new `TurnInterruption::ToolChangeCommitFailed`.
 
+- `KernelGatewayConfig` is sealed; its methods and constants are no longer
+  public.
+
+  Migration: use the three gateway aliases (`AnthropicMessagesGateway`,
+  `OpenAiChatCompletionsGateway`, `OpenAiResponsesGateway`). Implementing
+  a custom protocol outside the crate is not supported.
+
 ### Added
 
 - `AnthropicRenderOptions::beta_values` returns the `anthropic-beta` values
