@@ -369,12 +369,14 @@ impl McpToolSource {
             match block {
                 ContentBlock::Text(t) => parts.push(t.text),
                 ContentBlock::Image(image) => {
-                    let ingest = Ingest::run(&image.data, &image.mime_type, store, call).await;
+                    let ingest =
+                        Ingest::run(&image.data, &image.mime_type, None, store, call).await;
                     parts.push(ingest.describe("image", &image.mime_type));
                     media.extend(ingest.into_media());
                 }
                 ContentBlock::Audio(audio) => {
-                    let ingest = Ingest::run(&audio.data, &audio.mime_type, store, call).await;
+                    let ingest =
+                        Ingest::run(&audio.data, &audio.mime_type, None, store, call).await;
                     parts.push(ingest.describe("audio", &audio.mime_type));
                     media.extend(ingest.into_media());
                 }
@@ -392,7 +394,8 @@ impl McpToolSource {
                     } => {
                         let mime_type =
                             mime_type.unwrap_or_else(|| "application/octet-stream".to_owned());
-                        let ingest = Ingest::run(&blob, &mime_type, store, call).await;
+                        let name = resource_name_from_uri(&uri);
+                        let ingest = Ingest::run(&blob, &mime_type, name, store, call).await;
                         parts.push(ingest.describe("resource", &format!("{uri} ({mime_type})")));
                         media.extend(ingest.into_media());
                     }
@@ -442,6 +445,7 @@ impl Ingest {
     async fn run(
         data: &str,
         media_type: &str,
+        name: Option<String>,
         store: Option<&dyn ArtifactStore>,
         call: &ToolCallContext,
     ) -> Self {
@@ -458,7 +462,13 @@ impl Ingest {
             ArtifactKind::Binary,
         );
         match store.persist(&bytes, hint).await {
-            Ok(artifact) => Self::Stored(MediaRef::new(media_type, artifact.id)),
+            Ok(artifact) => {
+                let mut media_ref = MediaRef::new(media_type, artifact.id);
+                if let Some(name) = name {
+                    media_ref = media_ref.with_name(name);
+                }
+                Self::Stored(media_ref)
+            }
             Err(_) => Self::Failed,
         }
     }
@@ -492,4 +502,40 @@ fn serialized_field(value: serde_json::Result<serde_json::Value>, key: &str) -> 
         .ok()
         .and_then(|value| value.get(key)?.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// Extracts a file name from a resource URI by stripping query and fragment
+/// components and taking the trailing path segment after the last slash.
+/// Returns `None` if the segment is empty or no slash is present.
+fn resource_name_from_uri(uri: &str) -> Option<String> {
+    let path = match uri.find(['?', '#']) {
+        Some(idx) => &uri[..idx],
+        None => uri,
+    };
+    let idx = path.rfind('/')?;
+    let segment = &path[idx + 1..];
+    (!segment.is_empty()).then(|| segment.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_name_from_uri_extracts_name_or_none() {
+        assert_eq!(
+            resource_name_from_uri("file:///memo.pdf").as_deref(),
+            Some("memo.pdf")
+        );
+        assert_eq!(
+            resource_name_from_uri("https://h/a/b.pdf?x=1#y").as_deref(),
+            Some("b.pdf")
+        );
+        assert_eq!(resource_name_from_uri("mem://"), None);
+        assert_eq!(resource_name_from_uri("file:///memo/"), None);
+        assert_eq!(
+            resource_name_from_uri("https://example.com/dir/?foo=1"),
+            None
+        );
+    }
 }

@@ -25,6 +25,12 @@ adapters or data converters.
 
 ### Added
 
+- `MediaRef` carries an optional model-visible file name (`name`, set with
+  `MediaRef::with_name`). It defaults to `None` and is omitted from
+  serialization when unset, so stored contexts without it read and write
+  unchanged. The media placeholder includes the name when present
+  (`[media: {type} {name} {reference}]`), and `McpToolSource` fills it from
+  the last path segment of a binary resource's URI.
 - `MediaSource::Url` image payloads now render to the wire across all three
   protocols, in both user message position and within tool results: Anthropic
   Messages emits `{"type": "image", "source": {"type": "url", "url": ...}}`,

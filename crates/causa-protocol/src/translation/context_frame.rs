@@ -31,7 +31,8 @@
 //!   position (no protocol accepts assistant- or system-authored input images);
 //!   anything else — missing resolution, non-image type, empty payload,
 //!   unsupported URL scheme, empty URL, or non-user role — degrades to the
-//!   deterministic text placeholder `[media: {type} {reference}]`. The decision
+//!   deterministic text placeholder `[media: {type} {reference}]` (or
+//!   `[media: {type} {name} {reference}]` when named). The decision
 //!   is made once, here, never per-renderer.
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
 //!   the declaration block UUID. Tool results resolve directly through
@@ -87,7 +88,10 @@ pub(crate) enum ResolvedMedia {
 }
 
 fn placeholder_text(r: &MediaRef) -> String {
-    format!("[media: {} {}]", r.media_type, r.reference)
+    match &r.name {
+        Some(name) => format!("[media: {} {} {}]", r.media_type, name, r.reference),
+        None => format!("[media: {} {}]", r.media_type, r.reference),
+    }
 }
 
 /// Check whether a URL has a supported `http` or `https` scheme (case-insensitive

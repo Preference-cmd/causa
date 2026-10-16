@@ -871,7 +871,7 @@ async fn blob_resources_ingest_and_never_reach_the_text() {
     );
     assert_eq!(
         stored.media,
-        vec![MediaRef::new("application/pdf", "asset-1")]
+        vec![MediaRef::new("application/pdf", "asset-1").with_name("memo.pdf")]
     );
     assert_eq!(
         text(&stored),
@@ -893,7 +893,7 @@ async fn blob_resources_without_a_mime_type_are_octet_streams() {
     );
     assert_eq!(
         stored.media,
-        vec![MediaRef::new("application/octet-stream", "asset-1")]
+        vec![MediaRef::new("application/octet-stream", "asset-1").with_name("data.bin")]
     );
     assert!(!text(&stored).contains(PAYLOAD_B64));
 }

@@ -424,6 +424,77 @@ fn url_media_scheme_validation_and_degradation_across_protocols() {
     );
 }
 
+#[test]
+fn named_media_placeholder_degrades_across_protocols() {
+    let frame = ContextFrame {
+        blocks: vec![ContextBlock::new(
+            block_id(),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![ContentPart::Media(
+                    MediaRef::new("application/pdf", "asset-pdf").with_name("memo.pdf"),
+                )],
+            },
+            BlockMeta::from_source("user"),
+        )],
+    };
+
+    let mut media = MediaSet::new();
+    media.insert(
+        "asset-pdf",
+        MediaPayload::url("application/pdf", "https://example.com/memo.pdf"),
+    );
+
+    let model = ModelRef::new("test-model");
+    let generation = GenerationOptions::default().with_max_tokens(1024);
+
+    let anthropic = render_anthropic_messages(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        anthropic["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "[media: application/pdf memo.pdf asset-pdf]"}
+        ])
+    );
+
+    let chat = render_openai_chat_messages(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &ChatRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        chat["messages"][0]["content"],
+        json!("[media: application/pdf memo.pdf asset-pdf]")
+    );
+
+    let responses = render_openai_responses_input(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &ResponsesRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        responses["input"][0]["content"],
+        json!([
+            {"type": "input_text", "text": "[media: application/pdf memo.pdf asset-pdf]"}
+        ])
+    );
+}
+
 // --- shared semantic timeline ------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]

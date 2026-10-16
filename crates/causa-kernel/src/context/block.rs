@@ -198,6 +198,10 @@ pub struct MediaRef {
     /// Host-side asset reference (workspace asset id / content-addressed
     /// hash). The kernel never interprets it; the host's resolver does.
     pub reference: String,
+    /// The model-visible file name; images do not use it; when `None` the
+    /// serialized form is the same as a [`MediaRef`] without the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl MediaRef {
@@ -206,7 +210,14 @@ impl MediaRef {
         Self {
             media_type: media_type.into(),
             reference: reference.into(),
+            name: None,
         }
+    }
+
+    /// Sets the model-visible file name.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 
@@ -288,5 +299,47 @@ impl SealedPart {
             format: format.into(),
             item,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn named_media_ref_round_trips_through_serde() {
+        let media = MediaRef::new("application/pdf", "asset://doc").with_name("memo.pdf");
+        let serialized = serde_json::to_value(&media).expect("serialization succeeds");
+        assert_eq!(
+            serialized,
+            json!({
+                "media_type": "application/pdf",
+                "reference": "asset://doc",
+                "name": "memo.pdf",
+            })
+        );
+        let deserialized: MediaRef =
+            serde_json::from_value(serialized).expect("deserialization succeeds");
+        assert_eq!(deserialized, media);
+        assert_eq!(deserialized.name.as_deref(), Some("memo.pdf"));
+    }
+
+    #[test]
+    fn unnamed_media_ref_serializes_with_no_name_key() {
+        let media = MediaRef::new("image/png", "asset://img");
+        let serialized = serde_json::to_value(&media).expect("serialization succeeds");
+        assert_eq!(
+            serialized,
+            json!({
+                "media_type": "image/png",
+                "reference": "asset://img",
+            })
+        );
+        assert!(!serialized.as_object().unwrap().contains_key("name"));
+        let deserialized: MediaRef =
+            serde_json::from_value(serialized).expect("deserialization succeeds");
+        assert_eq!(deserialized, media);
+        assert_eq!(deserialized.name, None);
     }
 }
