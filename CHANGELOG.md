@@ -12,6 +12,19 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Fixed
+
+- `McpToolSource` no longer writes an embedded binary resource's base64
+  into the tool output text, where it reached the model and the stored
+  context. Binary resources and audio now take the image path: with an
+  artifact store they persist and return as `MediaRef`s (a resource without
+  a MIME type as `application/octet-stream`), and without one they leave a
+  placeholder line naming the content. A store that cannot hold the bytes
+  is reported as `could not be stored` instead of `no media store
+  available`, and content the adapter does not translate is named by its
+  type only. The image placeholder reads `[image: image/png — …]` instead
+  of `[image: image/png mime — …]`.
+
 ## [0.0.5] - 2026-10-15
 
 Tool changes are facts in the context. The runner records which tools the

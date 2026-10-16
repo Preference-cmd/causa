@@ -20,7 +20,7 @@ use causa_runtime::{
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerInfo, Tool,
+    PaginatedRequestParams, ResourceContents, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer, ServiceExt};
 use serde_json::json;
@@ -710,35 +710,59 @@ async fn http_transport_injects_the_static_bearer_token() {
 
 // ---- media ingest ---------------------------------------------------------------
 
-/// A fixture whose one tool returns an image content block.
-#[derive(Clone)]
-struct ImageServer;
+/// Distinctive bytes whose base64 must never appear in observation text.
+const PAYLOAD: &[u8] = b"causa-binary-payload";
+const PAYLOAD_B64: &str = "Y2F1c2EtYmluYXJ5LXBheWxvYWQ=";
 
-impl ServerHandler for ImageServer {
+/// A fixture whose tools each return one kind of binary content block.
+#[derive(Clone)]
+struct MediaServer;
+
+impl ServerHandler for MediaServer {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        Ok(ListToolsResult::with_all_items(vec![Tool::new(
-            "render_image",
-            "returns a tiny png",
-            Arc::new(
-                serde_json::json!({"type": "object"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-        )]))
+        let schema = Arc::new(
+            serde_json::json!({"type": "object"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        Ok(ListToolsResult::with_all_items(
+            [
+                "render_image",
+                "record_audio",
+                "export_pdf",
+                "export_blob",
+                "broken_image",
+            ]
+            .into_iter()
+            .map(|name| Tool::new(name, "returns binary content", schema.clone()))
+            .collect(),
+        ))
     }
 
     async fn call_tool(
         &self,
-        _request: CallToolRequestParams,
+        request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
-        // "AAAA" is valid base64 (3 bytes); the mime marks it a png
-        Ok(CallToolResult::success(vec![ContentBlock::image("AAAA", "image/png")]).into())
+        let block = match request.name.as_ref() {
+            // "AAAA" is valid base64 (3 bytes); the mime marks it a png
+            "render_image" => ContentBlock::image("AAAA", "image/png"),
+            "record_audio" => ContentBlock::audio(PAYLOAD_B64, "audio/wav"),
+            "export_pdf" => ContentBlock::resource(
+                ResourceContents::blob(PAYLOAD_B64, "file:///memo.pdf")
+                    .with_mime_type("application/pdf"),
+            ),
+            "export_blob" => {
+                ContentBlock::resource(ResourceContents::blob(PAYLOAD_B64, "file:///data.bin"))
+            }
+            _ => ContentBlock::image("not base64!", "image/png"),
+        };
+        Ok(CallToolResult::success(vec![block]).into())
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -746,12 +770,12 @@ impl ServerHandler for ImageServer {
     }
 }
 
-async fn served_image() -> (
+async fn served_media() -> (
     McpToolSource,
-    rmcp::service::RunningService<RoleServer, ImageServer>,
+    rmcp::service::RunningService<RoleServer, MediaServer>,
 ) {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-    let server_task = tokio::spawn(async move { ImageServer.serve(server_io).await });
+    let server_task = tokio::spawn(async move { MediaServer.serve(server_io).await });
     let source = McpToolSource::connect_io("srv", client_io)
         .await
         .expect("client connect");
@@ -763,63 +787,122 @@ async fn served_image() -> (
 }
 
 /// One-slot in-memory store: every persist lands as `asset-1`.
+#[derive(Default)]
 struct MemStore {
     hint: std::sync::Mutex<Option<ArtifactHint>>,
+    data: std::sync::Mutex<Option<Vec<u8>>>,
 }
 #[async_trait::async_trait]
 impl ArtifactStore for MemStore {
-    async fn persist(&self, _data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
+    async fn persist(&self, data: &[u8], hint: ArtifactHint) -> Result<ArtifactRef, StoreError> {
         *self.hint.lock().unwrap() = Some(hint);
-        Ok(ArtifactRef::new("asset-1", 3, ArtifactKind::Binary, true))
+        *self.data.lock().unwrap() = Some(data.to_vec());
+        Ok(ArtifactRef::new(
+            "asset-1",
+            data.len(),
+            ArtifactKind::Binary,
+            true,
+        ))
     }
     async fn read(
         &self,
         _id: &str,
         _range: Option<std::ops::Range<u64>>,
     ) -> Result<Vec<u8>, StoreError> {
-        Ok(vec![0, 0, 0])
+        Ok(self.data.lock().unwrap().clone().unwrap_or_default())
     }
+}
+
+/// Invoke `tool` without a store and with one; return both results and the store.
+async fn invoke_both(tool: &str) -> (ToolResultPayload, ToolResultPayload, MemStore) {
+    let (source, _server) = served_media().await;
+    let call = call_context(&format!("mcp_srv_{tool}"), json!({}));
+    let bare = source.invoke(&call, &ctrl(), None).await.unwrap();
+    let store = MemStore::default();
+    let stored = source
+        .invoke(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.hint.lock().unwrap().as_ref().map(|h| h.call_block_id),
+        stored.media.first().map(|_| call.call_block_id),
+        "artifact provenance is keyed by the declaration BlockId"
+    );
+    (bare, stored, store)
+}
+
+fn text(result: &ToolResultPayload) -> String {
+    result.output.content.as_str().unwrap().to_owned()
 }
 
 #[tokio::test]
 async fn image_results_ingest_into_media_references_when_a_store_is_wired() {
-    let (source, _server) = served_image().await;
-    let call = call_context("mcp_srv_render_image", json!({}));
+    let (bare, stored, _store) = invoke_both("render_image").await;
 
     // Without a store: the deterministic placeholder text, no media.
-    let out = source.invoke(&call, &ctrl(), None).await.unwrap();
-    assert!(out.media.is_empty());
-    assert!(
-        out.output
-            .content
-            .to_string()
-            .contains("[image: image/png mime — no media store available]")
-    );
+    assert!(bare.media.is_empty());
+    assert_eq!(text(&bare), "[image: image/png — no media store available]");
 
     // With a store: bytes persisted, reference attached, note names the asset.
-    let store = MemStore {
-        hint: std::sync::Mutex::new(None),
-    };
-    let out = source
-        .invoke(&call, &ctrl(), Some(&store as &dyn ArtifactStore))
-        .await
-        .unwrap();
-    assert_eq!(out.media, vec![MediaRef::new("image/png", "asset-1")]);
+    assert_eq!(stored.media, vec![MediaRef::new("image/png", "asset-1")]);
+    assert_eq!(text(&stored), "[image attached: image/png — asset asset-1]");
+}
+
+#[tokio::test]
+async fn audio_results_ingest_like_images() {
+    let (bare, stored, store) = invoke_both("record_audio").await;
+
+    assert!(bare.media.is_empty());
+    assert_eq!(text(&bare), "[audio: audio/wav — no media store available]");
+
+    assert_eq!(stored.media, vec![MediaRef::new("audio/wav", "asset-1")]);
+    assert_eq!(text(&stored), "[audio attached: audio/wav — asset asset-1]");
+    assert_eq!(store.data.lock().unwrap().as_deref(), Some(PAYLOAD));
+}
+
+#[tokio::test]
+async fn blob_resources_ingest_and_never_reach_the_text() {
+    let (bare, stored, store) = invoke_both("export_pdf").await;
+
+    assert!(bare.media.is_empty());
     assert_eq!(
-        store
-            .hint
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("the image was persisted")
-            .call_block_id,
-        call.call_block_id,
-        "artifact provenance is keyed by the declaration BlockId"
+        text(&bare),
+        "[resource: file:///memo.pdf (application/pdf) — no media store available]"
     );
-    assert!(
-        out.output
-            .content
-            .to_string()
-            .contains("[image attached: image/png — asset asset-1]")
+    assert_eq!(
+        stored.media,
+        vec![MediaRef::new("application/pdf", "asset-1")]
     );
+    assert_eq!(
+        text(&stored),
+        "[resource attached: file:///memo.pdf (application/pdf) — asset asset-1]"
+    );
+    assert_eq!(store.data.lock().unwrap().as_deref(), Some(PAYLOAD));
+    for result in [&bare, &stored] {
+        assert!(!text(result).contains(PAYLOAD_B64));
+    }
+}
+
+#[tokio::test]
+async fn blob_resources_without_a_mime_type_are_octet_streams() {
+    let (bare, stored, _store) = invoke_both("export_blob").await;
+
+    assert_eq!(
+        text(&bare),
+        "[resource: file:///data.bin (application/octet-stream) — no media store available]"
+    );
+    assert_eq!(
+        stored.media,
+        vec![MediaRef::new("application/octet-stream", "asset-1")]
+    );
+    assert!(!text(&stored).contains(PAYLOAD_B64));
+}
+
+#[tokio::test]
+async fn malformed_base64_reports_a_failed_store_not_a_missing_one() {
+    let (_bare, stored, store) = invoke_both("broken_image").await;
+
+    assert!(stored.media.is_empty());
+    assert_eq!(text(&stored), "[image: image/png — could not be stored]");
+    assert!(store.data.lock().unwrap().is_none());
 }

@@ -303,9 +303,9 @@ impl DynamicToolSource for McpToolSource {
 
 impl McpToolSource {
     /// The shared invoke body: `store` is the host's artifact store for
-    /// media ingest — with one, MCP image content is persisted and
-    /// returned as [`MediaRef`]s on the result; without one, images
-    /// degrade to placeholder text.
+    /// media ingest — with one, MCP image, audio and binary resource
+    /// content is persisted and returned as [`MediaRef`]s on the result;
+    /// without one, each degrades to a placeholder line of text.
     async fn invoke_inner(
         &self,
         call: &ToolCallContext,
@@ -357,42 +357,55 @@ impl McpToolSource {
             } => r?,
         };
 
-        // 3. Translate the MCP result: text becomes the observation,
-        //    images persist into the host's store and return as media
-        //    references (placeholder text when no store is wired or the
-        //    ingest fails), and `is_error` results become Failed
-        //    outcomes the model reads.
+        // 3. Translate the MCP result: text becomes the observation;
+        //    images, audio and binary resources persist into the host's
+        //    store and return as media references, with one line of text
+        //    naming each; `is_error` results become Failed outcomes the
+        //    model reads. Bytes never enter the text: without a store, or
+        //    when the ingest fails, only a placeholder line remains.
         let mut parts: Vec<String> = Vec::new();
         let mut media: Vec<MediaRef> = Vec::new();
         for block in result.content {
             match block {
                 ContentBlock::Text(t) => parts.push(t.text),
-                ContentBlock::Image(image) => match Self::ingest_image(&image, store, call).await {
-                    Some(reference) => {
-                        parts.push(format!(
-                            "[image attached: {} — asset {}]",
-                            image.mime_type, reference.reference
-                        ));
-                        media.push(reference);
-                    }
-                    None => parts.push(format!(
-                        "[image: {} mime — no media store available]",
-                        image.mime_type
-                    )),
-                },
-                ContentBlock::Audio(audio) => {
-                    parts.push(format!("[audio: {} mime]", audio.mime_type))
+                ContentBlock::Image(image) => {
+                    let ingest = Ingest::run(&image.data, &image.mime_type, store, call).await;
+                    parts.push(ingest.describe("image", &image.mime_type));
+                    media.extend(ingest.into_media());
                 }
-                ContentBlock::Resource(embedded) => match &embedded.resource {
+                ContentBlock::Audio(audio) => {
+                    let ingest = Ingest::run(&audio.data, &audio.mime_type, store, call).await;
+                    parts.push(ingest.describe("audio", &audio.mime_type));
+                    media.extend(ingest.into_media());
+                }
+                ContentBlock::Resource(embedded) => match embedded.resource {
                     rmcp::model::ResourceContents::TextResourceContents {
                         uri,
                         text: inner,
                         ..
                     } => parts.push(format!("[resource {uri}]\n{inner}")),
-                    other => parts.push(format!("[resource: {other:?}]")),
+                    rmcp::model::ResourceContents::BlobResourceContents {
+                        uri,
+                        mime_type,
+                        blob,
+                        ..
+                    } => {
+                        let mime_type =
+                            mime_type.unwrap_or_else(|| "application/octet-stream".to_owned());
+                        let ingest = Ingest::run(&blob, &mime_type, store, call).await;
+                        parts.push(ingest.describe("resource", &format!("{uri} ({mime_type})")));
+                        media.extend(ingest.into_media());
+                    }
+                    other => parts.push(format!(
+                        "[resource: {} — unsupported contents]",
+                        serialized_field(serde_json::to_value(&other), "uri")
+                    )),
                 },
                 ContentBlock::ResourceLink(link) => parts.push(format!("[link: {}]", link.uri)),
-                other => parts.push(format!("[unhandled content: {other:?}]")),
+                other => parts.push(format!(
+                    "[unsupported content: {}]",
+                    serialized_field(serde_json::to_value(&other), "type")
+                )),
             }
         }
         let text = parts.join("\n");
@@ -410,27 +423,73 @@ impl McpToolSource {
                 .with_media(media),
         )
     }
+}
 
-    /// Decode one MCP image and persist its raw bytes in the host's
-    /// store. Returns the media reference keyed by the store-assigned
-    /// artifact id, or `None` when no store is wired, the base64 is
-    /// malformed, or the persist fails — the deterministic degradation.
-    async fn ingest_image(
-        image: &rmcp::model::ImageContent,
+/// The result of storing one piece of MCP binary content (image, audio or
+/// blob resource) in the host's artifact store.
+enum Ingest {
+    /// Persisted; the reference is keyed by the store-assigned artifact id.
+    Stored(MediaRef),
+    /// No store is wired for this call.
+    NoStore,
+    /// A store is wired, but the base64 is malformed or the persist failed.
+    Failed,
+}
+
+impl Ingest {
+    /// Decode `data` and persist the raw bytes, tagged with the call's
+    /// provenance, as an artifact of `media_type`.
+    async fn run(
+        data: &str,
+        media_type: &str,
         store: Option<&dyn ArtifactStore>,
         call: &ToolCallContext,
-    ) -> Option<MediaRef> {
+    ) -> Self {
         use base64::Engine as _;
-        let store = store?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&image.data)
-            .ok()?;
+        let Some(store) = store else {
+            return Self::NoStore;
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+            return Self::Failed;
+        };
         let hint = ArtifactHint::new(
             call.input.tool_name.clone(),
             call.call_block_id,
             ArtifactKind::Binary,
         );
-        let artifact = store.persist(&bytes, hint).await.ok()?;
-        Some(MediaRef::new(image.mime_type.clone(), artifact.id))
+        match store.persist(&bytes, hint).await {
+            Ok(artifact) => Self::Stored(MediaRef::new(media_type, artifact.id)),
+            Err(_) => Self::Failed,
+        }
     }
+
+    /// The line of observation text standing for the content: `kind` is
+    /// `image`, `audio` or `resource`, and `label` names it (its MIME type,
+    /// plus the uri for a resource).
+    fn describe(&self, kind: &str, label: &str) -> String {
+        match self {
+            Self::Stored(reference) => {
+                format!("[{kind} attached: {label} — asset {}]", reference.reference)
+            }
+            Self::NoStore => format!("[{kind}: {label} — no media store available]"),
+            Self::Failed => format!("[{kind}: {label} — could not be stored]"),
+        }
+    }
+
+    fn into_media(self) -> Option<MediaRef> {
+        match self {
+            Self::Stored(reference) => Some(reference),
+            Self::NoStore | Self::Failed => None,
+        }
+    }
+}
+
+/// One string field of an MCP value this adapter does not translate, read
+/// from its serialized form; `unknown` when absent. Never formats the whole
+/// value, which may carry base64 bytes.
+fn serialized_field(value: serde_json::Result<serde_json::Value>, key: &str) -> String {
+    value
+        .ok()
+        .and_then(|value| value.get(key)?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
