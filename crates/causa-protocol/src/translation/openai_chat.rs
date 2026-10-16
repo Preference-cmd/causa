@@ -38,9 +38,14 @@
 //!   after the result group — one provenance text part naming the call, then the
 //!   images (data-URL `image_url` parts); placeholders degrade to text
 //!   parts in the same message.
-//! - Media parts in user position render as `image_url` content-array
-//!   messages (data URLs); assistant- and system-position media degrade
-//!   to the shared placeholder text (the walk decides).
+//! - One user `Message` block renders as one `role: "user"` message, its
+//!   parts in order: a block that renders to a single text item keeps the
+//!   string `content` form, anything else is a content array of `text` and
+//!   `image_url` (data URL) parts, with a degraded attachment as a `text`
+//!   part. Adjacent user blocks stay separate messages: the block boundary
+//!   is a fact boundary, and Chat accepts consecutive user messages.
+//!   Assistant- and system-position media degrade to the shared placeholder
+//!   text (the walk decides).
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
 //!   emitter, decoded by the shared `super::context_frame` codec);
 //!   parsing rejects a non-JSON arguments string as `Undecodable`.
@@ -116,7 +121,11 @@ pub fn render_openai_chat_messages(
     let mut messages: Vec<Value> = Vec::new();
     let mut run: Option<AssistantRun> = None;
     let mut result_media = Vec::new();
-    for segment in &normalized.segments {
+    let segments = &normalized.segments;
+    let mut next = 0;
+    while next < segments.len() {
+        let segment = &segments[next];
+        next += 1;
         // A whitespace-only assistant text part is omitted from the request
         // (as \`pi-ai\` does); the fact stays in the Context. This is a listed
         // exception to the round-trip property.
@@ -151,40 +160,33 @@ pub fn render_openai_chat_messages(
             } => {
                 messages.push(json!({"role": "system", "content": text}));
             }
+            // One user block renders as one message, its parts in order.
             Segment::Text {
-                role: Role::User,
-                text,
+                role: Role::User, ..
+            }
+            | Segment::Media {
+                role: Role::User, ..
+            } => {
+                let parts = context_frame::user_block_run(segments, next - 1);
+                messages.push(user_message(&segments[next - 1..next - 1 + parts]));
+                next += parts - 1;
+            }
+            Segment::Media {
+                role,
+                media: ResolvedMedia::Placeholder(text),
                 ..
             } => {
-                messages.push(json!({"role": "user", "content": text}));
+                let role = if *role == Role::System {
+                    "system"
+                } else {
+                    "assistant"
+                };
+                messages.push(json!({"role": role, "content": text}));
             }
-            Segment::Media { role, media } => match (role, media) {
-                (Role::System, ResolvedMedia::Placeholder(text)) => {
-                    messages.push(json!({"role": "system", "content": text}));
-                }
-                (Role::Assistant, ResolvedMedia::Placeholder(text)) => {
-                    // closes the open run, then a degraded assistant text
-                    if let Some(finished) = run.take() {
-                        messages.extend(assistant_message(finished));
-                    }
-                    messages.push(json!({"role": "assistant", "content": text}));
-                }
-                (
-                    _,
-                    ResolvedMedia::Image {
-                        media_type,
-                        data_base64,
-                    },
-                ) => {
-                    messages.push(json!({
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": data_url(media_type, data_base64)}}],
-                    }));
-                }
-                (_, ResolvedMedia::Placeholder(text)) => {
-                    messages.push(json!({"role": "user", "content": text}));
-                }
-            },
+            Segment::Media {
+                media: ResolvedMedia::Image { .. },
+                ..
+            } => unreachable!("the walk renders images only in user position"),
             Segment::Text {
                 role: Role::Assistant,
                 text,
@@ -248,18 +250,7 @@ pub fn render_openai_chat_messages(
                         "type": "text",
                         "text": format!("[tool result media for call {wire_id}]"),
                     })];
-                    parts.extend(media.iter().map(|m| match m {
-                        ResolvedMedia::Image {
-                            media_type,
-                            data_base64,
-                        } => json!({
-                            "type": "image_url",
-                            "image_url": {"url": data_url(media_type, data_base64)},
-                        }),
-                        ResolvedMedia::Placeholder(text) => {
-                            json!({"type": "text", "text": text})
-                        }
-                    }));
+                    parts.extend(media.iter().map(attachment_part));
                     result_media.push(json!({"role": "user", "content": parts}));
                 }
             }
@@ -354,9 +345,39 @@ fn without_reasoning_content(item: &Value) -> Option<Value> {
     (!map.is_empty()).then_some(Value::Object(map))
 }
 
-/// The inline data URL for a resolved image payload (`image_url` shape).
-fn data_url(media_type: &str, data_base64: &str) -> String {
-    format!("data:{media_type};base64,{data_base64}")
+/// One user block's text and media segments as one user message. A block
+/// that renders to a single text item keeps the string `content` form;
+/// anything else is a content array in part order.
+fn user_message(parts: &[Segment]) -> Value {
+    let mut items: Vec<Value> = parts
+        .iter()
+        .filter_map(|segment| match segment {
+            Segment::Text { text, .. } => Some(json!({"type": "text", "text": text})),
+            Segment::Media { media, .. } => Some(attachment_part(media)),
+            _ => None,
+        })
+        .collect();
+    if let [item] = items.as_mut_slice()
+        && item["type"] == "text"
+    {
+        return json!({"role": "user", "content": item["text"].take()});
+    }
+    json!({"role": "user", "content": items})
+}
+
+/// One media attachment as a user content item: an `image_url` part with a
+/// data URL, or the placeholder as a `text` part.
+fn attachment_part(media: &ResolvedMedia) -> Value {
+    match media {
+        ResolvedMedia::Image {
+            media_type,
+            data_base64,
+        } => json!({
+            "type": "image_url",
+            "image_url": {"url": format!("data:{media_type};base64,{data_base64}")},
+        }),
+        ResolvedMedia::Placeholder(text) => json!({"type": "text", "text": text}),
+    }
 }
 
 /// Parse an OpenAI Chat Completions response body into a kernel
@@ -777,16 +798,21 @@ mod tests {
     }
 
     #[test]
-    fn image_parts_render_as_image_url_messages() {
-        let f = frame(vec![parts(
-            0,
-            vec![
-                text_part("caption"),
-                media_part("image/png", "asset-1"),
-                text_part("after"),
-            ],
-            Role::User,
-        )]);
+    fn one_user_block_renders_as_one_message() {
+        let f = frame(vec![
+            parts(
+                0,
+                vec![
+                    text_part("caption"),
+                    media_part("image/png", "asset-1"),
+                    text_part("after"),
+                ],
+                Role::User,
+            ),
+            parts(1, vec![text_part("first"), text_part("second")], Role::User),
+            text(2, "alone", Role::User),
+            parts(3, vec![media_part("image/png", "asset-1")], Role::User),
+        ]);
         let v = render_openai_chat_messages(
             &f,
             &resolved("asset-1"),
@@ -796,17 +822,27 @@ mod tests {
             &ChatRenderOptions::default(),
         )
         .unwrap();
-        // part boundaries preserved: each text part is its own message,
-        // the image rides an array-content user message with a data URL
-        let msgs = v["messages"].as_array().unwrap();
-        assert_eq!(msgs[0], json!({"role": "user", "content": "caption"}));
+        // part boundaries are content items inside the block's one message;
+        // adjacent user blocks stay separate messages, and a single text
+        // part keeps the string form
         assert_eq!(
-            msgs[1],
-            json!({"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
-            ]})
+            v["messages"],
+            json!([
+                {"role": "user", "content": [
+                    {"type": "text", "text": "caption"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    {"type": "text", "text": "after"},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "first"},
+                    {"type": "text", "text": "second"},
+                ]},
+                {"role": "user", "content": "alone"},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ]},
+            ])
         );
-        assert_eq!(msgs[2], json!({"role": "user", "content": "after"}));
     }
 
     #[test]

@@ -37,8 +37,13 @@
 //!   their declaration `BlockId`. Renderers first reject incomplete or
 //!   ambiguous exchanges; normalization never invents missing declarations.
 //! - Tool result media travels on the result segment in result order;
-//!   whether it embeds (Anthropic) or hoists (OpenAI-family) is the
+//!   whether it embeds (Anthropic and Responses) or hoists (Chat) is the
 //!   emitter's call. Non-string tool observations serialize to a string.
+//! - Text and media segments carry the index of their source block, so an
+//!   emitter can group one user `Message` block into one wire message
+//!   ([`user_block_run`]). Grouping across blocks is the emitter's call:
+//!   Anthropic merges same-role neighbours because its roles must
+//!   alternate; the OpenAI-family emitters keep each block its own message.
 //!
 //! - Tool changes: the first [`ToolChange`] block of a frame declares the
 //!   request-level tool list and never becomes a segment; a later one
@@ -149,6 +154,7 @@ pub(crate) fn leading_system_len(segments: &[Segment]) -> usize {
                 } | Segment::Media {
                     role: Role::System,
                     media: ResolvedMedia::Placeholder(_),
+                    ..
                 }
             )
         })
@@ -176,6 +182,38 @@ pub(crate) fn same_block_run(segments: &[Segment], from: usize) -> usize {
                 Segment::Text { role: Role::Assistant, origin: o, .. } if o.block == origin.block
             )
         })
+        .count()
+}
+
+/// The frame block a user-position text or media segment came from; `None`
+/// for any other segment.
+fn user_part_block(segment: &Segment) -> Option<usize> {
+    match segment {
+        Segment::Text {
+            role: Role::User,
+            origin,
+            ..
+        } => Some(origin.block),
+        Segment::Media {
+            role: Role::User,
+            block,
+            ..
+        } => Some(*block),
+        _ => None,
+    }
+}
+
+/// Length of the run of user text and media segments from `from` that came
+/// from the same block as `segments[from]`: the parts one user message
+/// carries on a wire that groups by block. `0` when `segments[from]` is not
+/// a user part.
+pub(crate) fn user_block_run(segments: &[Segment], from: usize) -> usize {
+    let Some(block) = segments.get(from).and_then(user_part_block) else {
+        return 0;
+    };
+    segments[from..]
+        .iter()
+        .take_while(|segment| user_part_block(segment) == Some(block))
         .count()
 }
 
@@ -243,6 +281,8 @@ pub(crate) enum Segment {
     Media {
         role: Role,
         media: ResolvedMedia,
+        /// Index of the source block in the frame.
+        block: usize,
     },
     ToolCall(PreparedCall),
     ToolResult {
@@ -346,6 +386,7 @@ pub(crate) fn normalize(
                             segments.push(Segment::Media {
                                 role,
                                 media: resolve_media(r, role, media),
+                                block: block_index,
                             });
                         }
                         ContentPart::Sealed(sealed) => {

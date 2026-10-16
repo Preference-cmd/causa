@@ -12,6 +12,24 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Changed
+
+- On OpenAI Chat Completions and Responses, one user `Message` block now
+  renders as one user message whose content holds its parts in order,
+  instead of one message per part; text and an image from the same block
+  arrive together, as on Anthropic. Adjacent user blocks stay separate
+  messages. On Chat a block that renders to a single text part keeps the
+  string `content` form.
+- On Responses, tool-result media is carried in the result's
+  `function_call_output.output` array (the result text as `input_text`,
+  then each attachment) instead of a user message after it with a
+  `[tool result media for call …]` line. A result without media keeps the
+  string `output`. Every `input_image` now carries `"detail": "auto"`.
+- These change the rendered request, not the serialized `Context` or any
+  Rust API. A stored context that holds user blocks with several parts or
+  tool-result media renders a different prefix once after upgrading, so a
+  provider's prefix cache misses once.
+
 ### Fixed
 
 - `McpToolSource` no longer writes an embedded binary resource's base64

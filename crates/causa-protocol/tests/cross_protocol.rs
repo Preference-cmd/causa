@@ -301,8 +301,9 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
     let response_result = &responses["input"][2];
     assert_eq!(response_result["type"], "function_call_output");
     assert_eq!(response_result["call_id"], "external-call-7");
-    assert_eq!(response_result["output"], expected_notes);
-    assert_eq!(responses["input"][3]["content"][1]["type"], "input_image");
+    assert_eq!(response_result["output"][0]["type"], "input_text");
+    assert_eq!(response_result["output"][0]["text"], expected_notes);
+    assert_eq!(response_result["output"][1]["type"], "input_image");
 
     let stored_result = frame
         .blocks

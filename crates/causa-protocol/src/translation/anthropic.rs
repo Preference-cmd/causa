@@ -160,6 +160,7 @@ pub fn render_anthropic_messages(
             Segment::Media {
                 role: Role::System,
                 media: ResolvedMedia::Placeholder(text),
+                ..
             } => Some(json!({"type": "text", "text": text})),
             _ => None,
         })
@@ -221,7 +222,7 @@ pub fn render_anthropic_messages(
             Segment::Sealed(item) => {
                 sealed_blocks.push(append_sealed(&mut messages, item.clone()));
             }
-            Segment::Media { role, media } => match media {
+            Segment::Media { role, media, .. } => match media {
                 ResolvedMedia::Image {
                     media_type,
                     data_base64,

@@ -14,20 +14,23 @@
 //!   `instructions` parameter (joined with `\n`); a `system` block after
 //!   conversation content renders at its position as an input item, an
 //!   append like any other.
-//! - User/assistant text segments become input messages with typed
-//!   content items (`input_text` / `output_text`); each tool call
-//!   renders as a flat `function_call` item and each tool result as a
-//!   flat `function_call_output` item — the Responses wire pairs
-//!   through `call_id`s, not message roles. There is no `is_error`
+//! - One user `Message` block renders as one user message item whose
+//!   content holds its parts in order: `input_text` for text and
+//!   `input_image` (data URL, `detail: "auto"`) for a resolved image, with a
+//!   degraded attachment as `input_text`. Adjacent user blocks stay
+//!   separate items: the block boundary is a fact boundary. Assistant text
+//!   segments become `output_text` message items; assistant- and
+//!   system-position media degrade to the shared placeholder text (the walk
+//!   decides).
+//! - Each tool call renders as a flat `function_call` item and each tool
+//!   result as a flat `function_call_output` item — the Responses wire
+//!   pairs through `call_id`s, not message roles. There is no `is_error`
 //!   flag on this wire; error information travels in the content.
-//! - Tool-result media **hoists**: `function_call_output` carries no
-//!   images, so each result's attachments render as a user message item
-//!   right after it — one provenance `input_text` naming the call, then
-//!   the images (`input_image` items with data URLs); placeholders
-//!   degrade to `input_text` parts in the same item.
-//! - Media parts in user position render as `input_image` content items
-//!   (data URLs); assistant- and system-position media degrade to the
-//!   shared placeholder text (the walk decides).
+//! - Tool-result media **embeds**: a result without media keeps the string
+//!   `output`; with media, `output` is an array whose first item is the
+//!   result text (with its notes) as `input_text`, followed by one item per
+//!   attachment in payload order — `input_image` as above, or the
+//!   placeholder as `input_text`.
 //! - Function call `arguments` are a JSON *string* on the wire (encoded
 //!   by the emitter, decoded by the shared `super::context_frame`
 //!   codec).
@@ -144,14 +147,29 @@ pub fn render_openai_responses_input(
                 "role": "system",
                 "content": [{"type": "input_text", "text": text}],
             })),
+            // One user block renders as one message item, its parts in order.
             Segment::Text {
-                role: Role::User,
-                text,
-                ..
-            } => items.push(json!({
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}],
-            })),
+                role: Role::User, ..
+            }
+            | Segment::Media {
+                role: Role::User, ..
+            } => {
+                let parts = context_frame::user_block_run(segments, next - 1);
+                items.push(json!({
+                    "role": "user",
+                    "content": segments[next - 1..next - 1 + parts]
+                        .iter()
+                        .filter_map(|segment| match segment {
+                            Segment::Text { text, .. } => {
+                                Some(json!({"type": "input_text", "text": text}))
+                            }
+                            Segment::Media { media, .. } => Some(input_media(media)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                }));
+                next += parts - 1;
+            }
             Segment::Text {
                 role: Role::Assistant,
                 text,
@@ -176,35 +194,25 @@ pub fn render_openai_responses_input(
                 }
             }
             Segment::Sealed(item) => items.push(item.clone()),
-            Segment::Media { role, media } => match (role, media) {
-                (Role::System, ResolvedMedia::Placeholder(text)) if next - 1 < leading => {
-                    instructions.push(text.clone());
-                }
-                (Role::System, ResolvedMedia::Placeholder(text)) => items.push(json!({
+            Segment::Media {
+                role,
+                media: ResolvedMedia::Placeholder(text),
+                ..
+            } => match role {
+                Role::System if next - 1 < leading => instructions.push(text.clone()),
+                Role::System => items.push(json!({
                     "role": "system",
                     "content": [{"type": "input_text", "text": text}],
                 })),
-                (Role::Assistant, ResolvedMedia::Placeholder(text)) => items.push(json!({
+                _ => items.push(json!({
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": text}],
                 })),
-                (
-                    _,
-                    ResolvedMedia::Image {
-                        media_type,
-                        data_base64,
-                    },
-                ) => items.push(json!({
-                    "role": "user",
-                    "content": [
-                        {"type": "input_image", "image_url": data_url(media_type, data_base64)}
-                    ],
-                })),
-                (_, ResolvedMedia::Placeholder(text)) => items.push(json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
-                })),
             },
+            Segment::Media {
+                media: ResolvedMedia::Image { .. },
+                ..
+            } => unreachable!("the walk renders images only in user position"),
             Segment::ToolCall(call) => {
                 let mut item = context_frame::residue_object(call.wire.as_ref());
                 item.entry("type").or_insert_with(|| json!("function_call"));
@@ -222,33 +230,22 @@ pub fn render_openai_responses_input(
                 media,
                 ..
             } => {
+                // A result without media keeps the string form; with media,
+                // `output` is an array: the text first, then one item per
+                // attachment in payload order.
+                let text = context_frame::result_text_with_notes(content, notes);
+                let output = if media.is_empty() {
+                    json!(text)
+                } else {
+                    let mut parts = vec![json!({"type": "input_text", "text": text})];
+                    parts.extend(media.iter().map(input_media));
+                    json!(parts)
+                };
                 items.push(json!({
                     "type": "function_call_output",
                     "call_id": wire_id,
-                    "output": context_frame::result_text_with_notes(content, notes),
+                    "output": output,
                 }));
-                // `function_call_output` carries no images: hoist the
-                // result's media into a user message item right after it,
-                // provenance first, one part per attachment.
-                if !media.is_empty() {
-                    let mut parts = vec![json!({
-                        "type": "input_text",
-                        "text": format!("[tool result media for call {wire_id}]"),
-                    })];
-                    parts.extend(media.iter().map(|m| match m {
-                        ResolvedMedia::Image {
-                            media_type,
-                            data_base64,
-                        } => json!({
-                            "type": "input_image",
-                            "image_url": data_url(media_type, data_base64),
-                        }),
-                        ResolvedMedia::Placeholder(text) => {
-                            json!({"type": "input_text", "text": text})
-                        }
-                    }));
-                    items.push(json!({"role": "user", "content": parts}));
-                }
             }
             // Additive placement: the change only adds tools, each under a
             // name not offered before.
@@ -351,9 +348,20 @@ fn message_from_wire<'a>(
     Some(Value::Object(item))
 }
 
-/// The inline data URL for a resolved image payload (`input_image`).
-fn data_url(media_type: &str, data_base64: &str) -> String {
-    format!("data:{media_type};base64,{data_base64}")
+/// One media attachment as an input content item: an `input_image` with a
+/// data URL and `detail: "auto"`, or the placeholder as `input_text`.
+fn input_media(media: &ResolvedMedia) -> Value {
+    match media {
+        ResolvedMedia::Image {
+            media_type,
+            data_base64,
+        } => json!({
+            "type": "input_image",
+            "image_url": format!("data:{media_type};base64,{data_base64}"),
+            "detail": "auto",
+        }),
+        ResolvedMedia::Placeholder(text) => json!({"type": "input_text", "text": text}),
+    }
 }
 
 /// Parse an OpenAI Responses API response body into a kernel
@@ -781,12 +789,16 @@ mod tests {
     }
 
     #[test]
-    fn image_parts_render_as_input_image_items() {
-        let f = frame(vec![parts(
-            0,
-            vec![text_part("caption"), media_part("image/png", "asset-1")],
-            Role::User,
-        )]);
+    fn one_user_block_renders_as_one_message_item() {
+        let f = frame(vec![
+            parts(
+                0,
+                vec![text_part("caption"), media_part("image/png", "asset-1")],
+                Role::User,
+            ),
+            parts(1, vec![text_part("first"), text_part("second")], Role::User),
+            text(2, "alone", Role::User),
+        ]);
         let v = render_openai_responses_input(
             &f,
             &resolved("asset-1"),
@@ -796,17 +808,21 @@ mod tests {
             &ResponsesRenderOptions::default(),
         )
         .unwrap();
-        // part boundaries preserved: text message, then the image item
-        let items = v["input"].as_array().unwrap();
+        // part boundaries are content items inside the block's one item;
+        // adjacent user blocks stay separate items
         assert_eq!(
-            items[0],
-            json!({"role": "user", "content": [{"type": "input_text", "text": "caption"}]})
-        );
-        assert_eq!(
-            items[1],
-            json!({"role": "user", "content": [
-                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
-            ]})
+            v["input"],
+            json!([
+                {"role": "user", "content": [
+                    {"type": "input_text", "text": "caption"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "auto"},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "input_text", "text": "first"},
+                    {"type": "input_text", "text": "second"},
+                ]},
+                {"role": "user", "content": [{"type": "input_text", "text": "alone"}]},
+            ])
         );
     }
 
@@ -835,11 +851,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_media_hoists_after_the_function_call_output() {
+    fn tool_result_media_embeds_in_the_function_call_output() {
         let f = frame(vec![
             call(0, "kc1", Some("call_1"), "render", json!({})),
+            call(1, "kc2", Some("call_2"), "render", json!({})),
             result_with_media(
-                1,
+                2,
                 "kc1",
                 ToolResultStatus::Succeeded,
                 json!("chart ready"),
@@ -848,10 +865,11 @@ mod tests {
                     MediaRef::new("image/png", "asset-2"),
                 ],
             ),
+            result(3, "kc2", ToolResultStatus::Succeeded, json!("no chart")),
         ]);
         let mut media = MediaSet::new();
         media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
-        // asset-2 unresolved -> placeholder text part in the same item
+        // asset-2 unresolved -> placeholder item in the same output array
         let v = render_openai_responses_input(
             &f,
             &media,
@@ -862,14 +880,19 @@ mod tests {
         )
         .unwrap();
         let items = v["input"].as_array().unwrap();
-        assert_eq!(items[1]["type"], "function_call_output");
+        assert_eq!(items.len(), 4, "no user item follows the results");
         assert_eq!(
             items[2],
-            json!({"role": "user", "content": [
-                {"type": "input_text", "text": "[tool result media for call call_1]"},
-                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+            json!({"type": "function_call_output", "call_id": "call_1", "output": [
+                {"type": "input_text", "text": "chart ready"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "auto"},
                 {"type": "input_text", "text": "[media: image/png asset-2]"},
             ]})
+        );
+        // a result without media keeps the string form
+        assert_eq!(
+            items[3],
+            json!({"type": "function_call_output", "call_id": "call_2", "output": "no chart"})
         );
     }
 
