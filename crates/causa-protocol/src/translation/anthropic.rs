@@ -16,19 +16,21 @@
 //!   block after conversation content renders at its position as a
 //!   `system` message, an append like any other. Media in a leading
 //!   system-role block degrades to its placeholder text in the parameter —
-//!   the parameter carries no image blocks.
+//!   the parameter carries no media blocks.
 //! - Consecutive segments with the same wire role merge into one
 //!   message; Anthropic requires strictly alternating `user` /
 //!   `assistant` roles.
-//! - Resolved `image/*` media parts render as `image` content blocks
-//!   (`base64` source for inline payloads, `url` source for remote URLs)
-//!   inside their role's message; unresolved or non-image media degrades
-//!   to the shared placeholder text.
+//! - Resolved media parts render as `image` content blocks (`image/*`,
+//!   `base64` source for inline payloads, `url` source for remote URLs)
+//!   or `document` content blocks (`application/pdf`, with `title` when
+//!   named) inside user messages; unresolved, unclassified, or unsupported
+//!   media degrades to the shared placeholder text.
 //! - Tool calls render as assistant `tool_use` content blocks with
 //!   `input` as a JSON object; tool results render as `tool_result`
 //!   content blocks in the following user message. Result media embeds
 //!   natively: with attachments the `tool_result` `content` becomes a
-//!   block array (text, then the images); without, it stays a string.
+//!   block array (text, then the images and documents); without, it stays a
+//!   string.
 //!   Any status other than `Succeeded` sets `is_error: true` (the flag
 //!   is Anthropic-only; OpenAI-family wires carry error information in
 //!   the content).
@@ -114,7 +116,7 @@ fn deferred_placeholder() -> Value {
 /// The body is complete: `model`, `max_tokens`, `messages`, plus `system`,
 /// `temperature`, `tools` and `output_config` when the inputs call for them,
 /// then the host's extra request fields. Media references resolve through `media`;
-/// unresolvable or non-image references degrade to the shared text
+/// unresolvable or unsupported references degrade to the shared text
 /// placeholder. `options` holds the choices only this protocol has; see
 /// [`AnthropicRenderOptions`]. Rendering is deterministic — the same frame,
 /// generation, model, media table, cache directive and options always
@@ -224,23 +226,9 @@ pub fn render_anthropic_messages(
             Segment::Sealed(item) => {
                 sealed_blocks.push(append_sealed(&mut messages, item.clone()));
             }
-            Segment::Media { role, media, .. } => match media {
-                ResolvedMedia::Image { media_type, source } => append_message(
-                    &mut messages,
-                    role_name(*role),
-                    image_block(media_type, source),
-                ),
-                ResolvedMedia::Placeholder(text) => {
-                    // A leading system placeholder went into the system
-                    // parameter; one after conversation content stays at its
-                    // position like any other system content.
-                    append_message(
-                        &mut messages,
-                        role_name(*role),
-                        json!({"type": "text", "text": text}),
-                    );
-                }
-            },
+            Segment::Media { role, media, .. } => {
+                append_message(&mut messages, role_name(*role), media_block_json(media));
+            }
             Segment::ToolCall(call) => {
                 let mut block = context_frame::residue_object(call.wire.as_ref());
                 block.entry("type").or_insert_with(|| json!("tool_use"));
@@ -483,11 +471,40 @@ fn image_block(media_type: &str, source: &MediaSource) -> Value {
     })
 }
 
-/// A resolved-or-placeholder attachment as a content block: images embed
-/// inline or as remote URL sources, everything else degrades to its placeholder text.
+/// The `document` content block for a resolved document payload (inline or remote URL).
+fn document_block(media_type: &str, source: &MediaSource, name: Option<&str>) -> Value {
+    let source_json = match source {
+        MediaSource::Inline { data_base64 } => {
+            json!({"type": "base64", "media_type": media_type, "data": data_base64})
+        }
+        MediaSource::Url(url) => {
+            json!({"type": "url", "url": url})
+        }
+    };
+    match name {
+        Some(title) => json!({
+            "type": "document",
+            "source": source_json,
+            "title": title,
+        }),
+        None => json!({
+            "type": "document",
+            "source": source_json,
+        }),
+    }
+}
+
+/// A resolved-or-placeholder attachment as a content block: images and
+/// documents embed inline or as remote URL sources, everything else degrades to
+/// its placeholder text.
 fn media_block_json(media: &ResolvedMedia) -> Value {
     match media {
         ResolvedMedia::Image { media_type, source } => image_block(media_type, source),
+        ResolvedMedia::Document {
+            media_type,
+            source,
+            name,
+        } => document_block(media_type, source, name.as_deref()),
         ResolvedMedia::Placeholder(text) => json!({"type": "text", "text": text}),
     }
 }
@@ -643,7 +660,7 @@ fn append_sealed(messages: &mut Vec<(&'static str, Vec<Value>)>, block: Value) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use causa_kernel::{MediaRef, ModelStopReason, ModelUsage, ToolDefinition};
+    use causa_kernel::{ContentPart, MediaRef, ModelStopReason, ModelUsage, ToolDefinition};
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
@@ -1121,11 +1138,11 @@ mod tests {
     fn non_image_media_degrades_even_when_resolved() {
         let f = frame(vec![parts(
             0,
-            vec![media_part("application/pdf", "doc-1")],
+            vec![media_part("application/zip", "doc-1")],
             Role::User,
         )]);
         let mut media = MediaSet::new();
-        media.insert("doc-1", MediaPayload::inline("application/pdf", "AAAA"));
+        media.insert("doc-1", MediaPayload::inline("application/zip", "AAAA"));
         let v = render_anthropic_messages(
             &f,
             &media,
@@ -1137,7 +1154,55 @@ mod tests {
         .unwrap();
         assert_eq!(
             v["messages"][0]["content"],
-            json!([{"type": "text", "text": "[media: application/pdf doc-1]"}])
+            json!([{"type": "text", "text": "[media: application/zip doc-1]"}])
+        );
+    }
+
+    #[test]
+    fn document_parts_render_as_document_blocks_in_user_position() {
+        let f = frame(vec![parts(
+            0,
+            vec![
+                text_part("caption"),
+                ContentPart::Media(
+                    MediaRef::new("application/pdf", "doc-inline").with_name("spec.pdf"),
+                ),
+                ContentPart::Media(MediaRef::new("application/pdf", "doc-url")),
+            ],
+            Role::User,
+        )]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "doc-inline",
+            MediaPayload::inline("application/pdf", "AAAA"),
+        );
+        media.insert(
+            "doc-url",
+            MediaPayload::url("application/pdf", "https://example.com/guide.pdf"),
+        );
+        let v = render_anthropic_messages(
+            &f,
+            &media,
+            &test_generation(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "caption"},
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"},
+                    "title": "spec.pdf"
+                },
+                {
+                    "type": "document",
+                    "source": {"type": "url", "url": "https://example.com/guide.pdf"}
+                },
+            ])
         );
     }
 
@@ -1197,6 +1262,56 @@ mod tests {
                 {"type": "text", "text": "chart ready"},
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
                 {"type": "text", "text": "[media: image/png asset-2]"},
+            ])
+        );
+    }
+
+    #[test]
+    fn tool_result_document_media_embeds_in_the_tool_result_content() {
+        let f = frame(vec![
+            call(0, "kc1", Some("toolu_a"), "generate_report", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("report ready"),
+                vec![
+                    MediaRef::new("application/pdf", "res-inline"),
+                    MediaRef::new("application/pdf", "res-url").with_name("report.pdf"),
+                ],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "res-inline",
+            MediaPayload::inline("application/pdf", "BBBB"),
+        );
+        media.insert(
+            "res-url",
+            MediaPayload::url("application/pdf", "https://example.com/report.pdf"),
+        );
+        let v = render_anthropic_messages(
+            &f,
+            &media,
+            &test_generation(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][1]["content"][0]["content"],
+            json!([
+                {"type": "text", "text": "report ready"},
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": "BBBB"}
+                },
+                {
+                    "type": "document",
+                    "source": {"type": "url", "url": "https://example.com/report.pdf"},
+                    "title": "report.pdf"
+                },
             ])
         );
     }

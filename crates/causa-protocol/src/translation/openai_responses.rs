@@ -14,6 +14,10 @@
 //!   `instructions` parameter (joined with `\n`); a `system` block after
 //!   conversation content renders at its position as an input item, an
 //!   append like any other.
+//! - Media: Responses emits images only (`image/*`, via `input_image` for
+//!   inline data URLs or remote URLs, `detail: "auto"`). Documents and
+//!   unclassified media types never render and degrade to text placeholders
+//!   (`input_text`).
 //! - One user `Message` block renders as one user message item whose
 //!   content holds its parts in order: `input_text` for text and
 //!   `input_image` (data URL for inline payloads or remote URL,
@@ -214,6 +218,10 @@ pub fn render_openai_responses_input(
                 media: ResolvedMedia::Image { .. },
                 ..
             } => unreachable!("the walk renders images only in user position"),
+            Segment::Media {
+                media: ResolvedMedia::Document { .. },
+                ..
+            } => unreachable!("the capability table never emits documents for openai_responses"),
             Segment::ToolCall(call) => {
                 let mut item = context_frame::residue_object(call.wire.as_ref());
                 item.entry("type").or_insert_with(|| json!("function_call"));
@@ -366,6 +374,9 @@ fn input_media(media: &ResolvedMedia) -> Value {
                 "image_url": image_url,
                 "detail": "auto",
             })
+        }
+        ResolvedMedia::Document { .. } => {
+            unreachable!("the capability table never emits documents for openai_responses")
         }
         ResolvedMedia::Placeholder(text) => json!({"type": "input_text", "text": text}),
     }

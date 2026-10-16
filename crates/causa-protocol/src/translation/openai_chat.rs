@@ -33,6 +33,9 @@
 //!   — `tool_call_id` pairing requires one message per call. There is no
 //!   `is_error` flag on this wire; error information travels in the
 //!   content.
+//! - Media: Chat emits images only (`image/*`, via `image_url` for inline
+//!   data URLs or remote URLs). Documents and unclassified media types never
+//!   render and degrade to text placeholders.
 //! - Tool-result media **hoists**: a tool message cannot carry images,
 //!   so each result's attachments render as a user message immediately
 //!   after the result group — one provenance text part naming the call,
@@ -189,6 +192,10 @@ pub fn render_openai_chat_messages(
                 media: ResolvedMedia::Image { .. },
                 ..
             } => unreachable!("the walk renders images only in user position"),
+            Segment::Media {
+                media: ResolvedMedia::Document { .. },
+                ..
+            } => unreachable!("the capability table never emits documents for openai_chat"),
             Segment::Text {
                 role: Role::Assistant,
                 text,
@@ -382,6 +389,9 @@ fn attachment_part(media: &ResolvedMedia) -> Value {
                 "type": "image_url",
                 "image_url": {"url": url},
             })
+        }
+        ResolvedMedia::Document { .. } => {
+            unreachable!("the capability table never emits documents for openai_chat")
         }
         ResolvedMedia::Placeholder(text) => json!({"type": "text", "text": text}),
     }

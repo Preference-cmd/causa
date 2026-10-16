@@ -11,18 +11,21 @@
 //! render loop. `None` is the single failure shape — the reference then
 //! degrades to the deterministic text placeholder at render time.
 //!
+//! What renders to the wire depends on each protocol's rendering capabilities:
+//! Anthropic emits images (`image/*`) and documents (`application/pdf`) in user
+//! messages and tool results, either as inline bytes or remote http/https URLs;
+//! OpenAI Chat and Responses emit images only (`image/*`), and documents never.
 //! The gateway drops inline payloads beyond its inline ceiling (they degrade
-//! like misses), and the renderers emit only `image/*` (inline bytes or
-//! http/https URLs). Hosts should pre-filter their asset table to the
-//! supported set (`image/png`, `image/jpeg`, `image/gif`, `image/webp`).
+//! like misses).
 //!
 //! # Degradation is not an error
 //!
-//! A reference this resolver cannot serve, a payload of a non-image type,
-//! an empty payload, an unsupported URL scheme, or an inline payload over the
-//! inline ceiling all render as the deterministic text placeholder
-//! `[media: <type> <reference>]`. The request is still sent; nothing is
-//! dropped silently and nothing fails.
+//! A reference this resolver cannot serve, an unclassified or unsupported
+//! media type, an empty payload, an unsupported URL scheme, a non-user
+//! position, or an inline payload over the inline ceiling all render as the
+//! deterministic text placeholder `[media: {type} {reference}]` (or
+//! `[media: {type} {name} {reference}]` when named). The request is still
+//! sent; nothing is dropped silently and nothing fails.
 //!
 //! # The answer must be stable while the context lives
 //!
@@ -54,7 +57,7 @@
 //! only inline payloads; remote URLs are unconstrained by this limit.
 //!
 //! Deliberately not chosen: failing on an unresolved reference (it turns the
-//! legitimate "keep only recent images" use into an error) and a per-gateway
+//! legitimate "keep only recent media" use into an error) and a per-gateway
 //! switch between degrading and failing (configuration nobody asked for).
 //! Detecting a changed answer would need a digest stored in the fact and
 //! could still only end in an error.

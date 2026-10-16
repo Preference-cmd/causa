@@ -26,14 +26,17 @@
 //!   position is a malformed frame, rejected by frame validation before
 //!   the walk runs.
 //! - Media: each [`MediaRef`] resolves through the caller's
-//!   [`MediaSet`]. A resolved `image/*` payload renders inline (for non-empty
-//!   base64 bytes) or via a remote `http` or `https` URL, but only in user
-//!   position (no protocol accepts assistant- or system-authored input images);
-//!   anything else — missing resolution, non-image type, empty payload,
-//!   unsupported URL scheme, empty URL, or non-user role — degrades to the
-//!   deterministic text placeholder `[media: {type} {reference}]` (or
-//!   `[media: {type} {name} {reference}]` when named). The decision
-//!   is made once, here, never per-renderer.
+//!   [`MediaSet`] and is classified into a [`MediaKind`]. What renders to the
+//!   wire is determined by each protocol's rendering capability table:
+//!   Anthropic emits images (`image/*`) and documents (`application/pdf`) in
+//!   user messages and tool results, either inline (for non-empty base64 bytes)
+//!   or via remote `http`/`https` URLs; OpenAI Chat and Responses emit images
+//!   only, and documents never. Anything else — missing resolution,
+//!   unclassified media type, protocol incapable of emitting the kind, empty
+//!   payload, unsupported URL scheme, empty URL, or non-user position —
+//!   degrades to the deterministic text placeholder `[media: {type} {reference}]`
+//!   (or `[media: {type} {name} {reference}]` when named). The decision is made
+//!   once, here, never per-renderer.
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
 //!   the declaration block UUID. Tool results resolve directly through
 //!   their declaration `BlockId`. Renderers first reject incomplete or
@@ -69,20 +72,28 @@ use causa_kernel::{
 
 pub(crate) use causa_kernel::Role;
 
-use super::media::{MediaSet, MediaSource};
+use super::media::{MediaKind, MediaSet, MediaSource};
 use crate::Protocol;
 
 /// One media attachment as the emitters consume it: the walk's single
-/// render-or-degrade decision, applied identically in all protocols.
+/// render-or-degrade decision, applied according to each protocol's
+/// rendering capabilities.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ResolvedMedia {
-    /// A resolved `image/*` payload — renderable inline or via remote URL.
+    /// A resolved image payload — renderable inline or via remote URL.
     Image {
         media_type: String,
         source: MediaSource,
     },
-    /// Deterministic degradation: unresolved reference, non-image type,
-    /// empty payload, unsupported URL scheme, or empty URL. Carries the
+    /// A resolved document payload — renderable inline or via remote URL.
+    Document {
+        media_type: String,
+        source: MediaSource,
+        name: Option<String>,
+    },
+    /// Deterministic degradation: unresolved reference, unclassified type,
+    /// protocol incapable of emitting the kind, empty inline bytes,
+    /// unsupported URL scheme, empty URL, or non-user position. Carries the
     /// final placeholder text.
     Placeholder(String),
 }
@@ -110,39 +121,58 @@ fn is_supported_http_url(url: &str) -> bool {
     false
 }
 
-fn resolve_media(r: &MediaRef, role: Role, media: &MediaSet) -> ResolvedMedia {
-    // Input images render only in user position — no protocol accepts
-    // model-authored (assistant) or system-position input images.
+/// Whether `protocol` can emit media of `kind` and `source`.
+fn emits(protocol: Protocol, kind: MediaKind, source: &MediaSource) -> bool {
+    match (protocol, kind, source) {
+        (
+            Protocol::AnthropicMessages,
+            MediaKind::Image | MediaKind::Document,
+            MediaSource::Inline { .. } | MediaSource::Url(_),
+        ) => true,
+        (
+            Protocol::OpenAiChatCompletions | Protocol::OpenAiResponses,
+            MediaKind::Image,
+            MediaSource::Inline { .. } | MediaSource::Url(_),
+        ) => true,
+        (Protocol::OpenAiChatCompletions | Protocol::OpenAiResponses, MediaKind::Document, _) => {
+            false
+        }
+    }
+}
+
+fn resolve_media(r: &MediaRef, role: Role, media: &MediaSet, protocol: Protocol) -> ResolvedMedia {
+    // Input media renders only in user position — no protocol accepts
+    // model-authored (assistant) or system-position input media.
     // Anything else degrades before the emitters see it.
     if role != Role::User {
         return ResolvedMedia::Placeholder(placeholder_text(r));
     }
-    match media.get(r) {
-        Some(p) => match &p.source {
-            MediaSource::Inline { data_base64 }
-                if p.media_type.starts_with("image/") && !data_base64.is_empty() =>
-            {
-                ResolvedMedia::Image {
-                    media_type: p.media_type.clone(),
-                    source: MediaSource::Inline {
-                        data_base64: data_base64.clone(),
-                    },
-                }
-            }
-            MediaSource::Url(u)
-                if p.media_type.starts_with("image/") && is_supported_http_url(u) =>
-            {
-                ResolvedMedia::Image {
-                    media_type: p.media_type.clone(),
-                    source: MediaSource::Url(u.clone()),
-                }
-            }
-            // not a renderable image: another media type, empty inline bytes,
-            // an unsupported URL scheme, or an empty URL
-            _ => ResolvedMedia::Placeholder(placeholder_text(r)),
+    let Some(payload) = media.get(r) else {
+        return ResolvedMedia::Placeholder(placeholder_text(r));
+    };
+    let Some(kind) = MediaKind::of(&payload.media_type) else {
+        return ResolvedMedia::Placeholder(placeholder_text(r));
+    };
+    if !emits(protocol, kind, &payload.source) {
+        return ResolvedMedia::Placeholder(placeholder_text(r));
+    }
+    let usable = match &payload.source {
+        MediaSource::Inline { data_base64 } => !data_base64.is_empty(),
+        MediaSource::Url(u) => is_supported_http_url(u),
+    };
+    if !usable {
+        return ResolvedMedia::Placeholder(placeholder_text(r));
+    }
+    match kind {
+        MediaKind::Image => ResolvedMedia::Image {
+            media_type: payload.media_type.clone(),
+            source: payload.source.clone(),
         },
-        // not resolved at all
-        _ => ResolvedMedia::Placeholder(placeholder_text(r)),
+        MediaKind::Document => ResolvedMedia::Document {
+            media_type: payload.media_type.clone(),
+            source: payload.source.clone(),
+            name: r.name.clone(),
+        },
     }
 }
 
@@ -424,7 +454,7 @@ pub(crate) fn normalize(
                         ContentPart::Media(r) => {
                             segments.push(Segment::Media {
                                 role,
-                                media: resolve_media(r, role, media),
+                                media: resolve_media(r, role, media, protocol),
                                 block: block_index,
                             });
                         }
@@ -462,7 +492,7 @@ pub(crate) fn normalize(
                 let resolved = result
                     .media
                     .iter()
-                    .map(|r| resolve_media(r, Role::User, media))
+                    .map(|r| resolve_media(r, Role::User, media, protocol))
                     .collect();
                 segments.push(Segment::ToolResult {
                     wire_id: provider_ids

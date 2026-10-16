@@ -192,8 +192,9 @@ impl ContextBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MediaRef {
-    /// IANA media type; only `image/*` renders to the wire, anything else
-    /// degrades to a deterministic text placeholder.
+    /// IANA media type. What renders to the wire depends on the media kind
+    /// and each protocol's rendering capabilities; any unsupported kind or
+    /// type degrades to a deterministic text placeholder.
     pub media_type: String,
     /// Host-side asset reference (workspace asset id / content-addressed
     /// hash). The kernel never interprets it; the host's resolver does.
@@ -262,8 +263,11 @@ impl BlockContent {
 }
 
 /// One content atom inside a [`BlockContent::Message`] block: ordered,
-/// identity-free, sharing the block's envelope. New modalities arrive
-/// as new variants (additive); media bytes stay out of facts forever.
+/// identity-free, sharing the block's envelope. The axis for media modalities
+/// is [`MediaRef::media_type`], decided by the host's resolver and each
+/// protocol's rendering capabilities; new [`ContentPart`] variants are only
+/// for content that is not a run of bytes. Media bytes stay out of facts
+/// forever.
 ///
 /// Exhaustive on purpose, like [`BlockContent`]. A new part is additive only
 /// in the serde sense: stored material written before it still reads. In Rust

@@ -10,7 +10,10 @@
 //!
 //! Media: the host injects a [`MediaResolver`] so the gateway can turn
 //! fact-level references into render payloads (inline bytes or remote URLs);
-//! the kernel never touches bytes.
+//! the kernel never touches bytes. What renders to the wire depends on each
+//! protocol's capability table: Anthropic emits images and PDF documents (in
+//! user messages and tool results, inline or URL); Chat and Responses emit
+//! images only. Anything else degrades to a deterministic text placeholder.
 //!
 //! # Generation options
 //!

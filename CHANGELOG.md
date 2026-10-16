@@ -25,6 +25,14 @@ adapters or data converters.
 
 ### Added
 
+- `MediaKind` classifies media payloads into exhaustive `Image` and `Document`
+  kinds (`MediaKind::of`: case-insensitive, parameters after `;` ignored, so
+  `IMAGE/PNG` and `image/png; x=y` are images and a bare `image/` is not),
+  and Anthropic Messages now renders
+  `application/pdf` payloads as `document` blocks (inline base64 or remote
+  URL, with `title` when named) in user messages and tool results. OpenAI
+  Chat Completions and Responses continue to emit images only, degrading
+  document payloads to deterministic text placeholders.
 - `MediaRef` carries an optional model-visible file name (`name`, set with
   `MediaRef::with_name`). It defaults to `None` and is omitted from
   serialization when unset, so stored contexts without it read and write

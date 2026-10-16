@@ -13,8 +13,8 @@
 use causa_kernel::{
     BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame,
     EditFailure, GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason,
-    Role, TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus,
-    validate_tool_result_append,
+    Role, TextPayload, ToolCallDraft, ToolCallPayload, ToolOutput, ToolResultPayload,
+    ToolResultStatus, validate_tool_result_append,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
 use causa_protocol::translation::media::{MediaPayload, MediaSet};
@@ -332,7 +332,7 @@ fn url_media_scheme_validation_and_degradation_across_protocols() {
                     ContentPart::Media(MediaRef::new("image/png", "scheme-only")),
                     ContentPart::Media(MediaRef::new("image/png", "ftp")),
                     ContentPart::Media(MediaRef::new("image/png", "file")),
-                    ContentPart::Media(MediaRef::new("application/pdf", "pdf")),
+                    ContentPart::Media(MediaRef::new("application/zip", "zip")),
                     ContentPart::Media(MediaRef::new("image/png", "valid-uppercase")),
                 ],
             },
@@ -349,8 +349,8 @@ fn url_media_scheme_validation_and_degradation_across_protocols() {
     );
     media.insert("file", MediaPayload::url("image/png", "file:///a.png"));
     media.insert(
-        "pdf",
-        MediaPayload::url("application/pdf", "https://example.com/doc.pdf"),
+        "zip",
+        MediaPayload::url("application/zip", "https://example.com/doc.zip"),
     );
     media.insert(
         "valid-uppercase",
@@ -376,7 +376,7 @@ fn url_media_scheme_validation_and_degradation_across_protocols() {
             {"type": "text", "text": "[media: image/png scheme-only]"},
             {"type": "text", "text": "[media: image/png ftp]"},
             {"type": "text", "text": "[media: image/png file]"},
-            {"type": "text", "text": "[media: application/pdf pdf]"},
+            {"type": "text", "text": "[media: application/zip zip]"},
             {"type": "image", "source": {"type": "url", "url": "HTTPS://example.com/A.png"}},
         ])
     );
@@ -397,7 +397,7 @@ fn url_media_scheme_validation_and_degradation_across_protocols() {
             {"type": "text", "text": "[media: image/png scheme-only]"},
             {"type": "text", "text": "[media: image/png ftp]"},
             {"type": "text", "text": "[media: image/png file]"},
-            {"type": "text", "text": "[media: application/pdf pdf]"},
+            {"type": "text", "text": "[media: application/zip zip]"},
             {"type": "image_url", "image_url": {"url": "HTTPS://example.com/A.png"}},
         ])
     );
@@ -418,7 +418,7 @@ fn url_media_scheme_validation_and_degradation_across_protocols() {
             {"type": "input_text", "text": "[media: image/png scheme-only]"},
             {"type": "input_text", "text": "[media: image/png ftp]"},
             {"type": "input_text", "text": "[media: image/png file]"},
-            {"type": "input_text", "text": "[media: application/pdf pdf]"},
+            {"type": "input_text", "text": "[media: application/zip zip]"},
             {"type": "input_image", "image_url": "HTTPS://example.com/A.png", "detail": "auto"},
         ])
     );
@@ -432,7 +432,7 @@ fn named_media_placeholder_degrades_across_protocols() {
             BlockContent::Message {
                 role: Role::User,
                 parts: vec![ContentPart::Media(
-                    MediaRef::new("application/pdf", "asset-pdf").with_name("memo.pdf"),
+                    MediaRef::new("application/zip", "asset-zip").with_name("memo.zip"),
                 )],
             },
             BlockMeta::from_source("user"),
@@ -441,8 +441,8 @@ fn named_media_placeholder_degrades_across_protocols() {
 
     let mut media = MediaSet::new();
     media.insert(
-        "asset-pdf",
-        MediaPayload::url("application/pdf", "https://example.com/memo.pdf"),
+        "asset-zip",
+        MediaPayload::url("application/zip", "https://example.com/memo.zip"),
     );
 
     let model = ModelRef::new("test-model");
@@ -460,7 +460,7 @@ fn named_media_placeholder_degrades_across_protocols() {
     assert_eq!(
         anthropic["messages"][0]["content"],
         json!([
-            {"type": "text", "text": "[media: application/pdf memo.pdf asset-pdf]"}
+            {"type": "text", "text": "[media: application/zip memo.zip asset-zip]"}
         ])
     );
 
@@ -475,7 +475,7 @@ fn named_media_placeholder_degrades_across_protocols() {
     .unwrap();
     assert_eq!(
         chat["messages"][0]["content"],
-        json!("[media: application/pdf memo.pdf asset-pdf]")
+        json!("[media: application/zip memo.zip asset-zip]")
     );
 
     let responses = render_openai_responses_input(
@@ -490,7 +490,166 @@ fn named_media_placeholder_degrades_across_protocols() {
     assert_eq!(
         responses["input"][0]["content"],
         json!([
-            {"type": "input_text", "text": "[media: application/pdf memo.pdf asset-pdf]"}
+            {"type": "input_text", "text": "[media: application/zip memo.zip asset-zip]"}
+        ])
+    );
+}
+
+#[test]
+fn document_media_renders_on_anthropic_and_degrades_on_openai() {
+    let call_id = block_id();
+    let frame = ContextFrame {
+        blocks: vec![
+            ContextBlock::new(
+                block_id(),
+                BlockContent::Message {
+                    role: Role::User,
+                    parts: vec![
+                        ContentPart::Text(TextPayload::new("see document")),
+                        ContentPart::Media(
+                            MediaRef::new("application/pdf", "user-doc").with_name("spec.pdf"),
+                        ),
+                        ContentPart::Media(MediaRef::new("application/pdf", "user-url")),
+                    ],
+                },
+                BlockMeta::from_source("user"),
+            ),
+            ContextBlock::new(
+                call_id,
+                BlockContent::ToolCall(ToolCallPayload::new("audit", json!({}))),
+                BlockMeta::from_source("model").with_provider_call_id("call-1"),
+            ),
+            ContextBlock::new(
+                block_id(),
+                BlockContent::ToolResult(
+                    ToolResultPayload::new(
+                        call_id,
+                        ToolResultStatus::Succeeded,
+                        ToolOutput::new(json!("audit complete")),
+                    )
+                    .with_media(vec![
+                        MediaRef::new("application/pdf", "res-inline"),
+                        MediaRef::new("application/pdf", "res-url").with_name("report.pdf"),
+                    ]),
+                ),
+                BlockMeta::from_source("tool"),
+            ),
+        ],
+    };
+
+    let mut media = MediaSet::new();
+    media.insert("user-doc", MediaPayload::inline("application/pdf", "AAAA"));
+    media.insert(
+        "user-url",
+        MediaPayload::url("application/pdf", "https://example.com/guide.pdf"),
+    );
+    media.insert(
+        "res-inline",
+        MediaPayload::inline("application/pdf", "BBBB"),
+    );
+    media.insert(
+        "res-url",
+        MediaPayload::url("application/pdf", "https://example.com/report.pdf"),
+    );
+
+    let model = ModelRef::new("test-model");
+    let generation = GenerationOptions::default().with_max_tokens(1024);
+
+    let anthropic = render_anthropic_messages(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap();
+
+    let anthropic_messages = anthropic["messages"].as_array().unwrap();
+    assert_eq!(
+        anthropic_messages[0]["content"],
+        json!([
+            {"type": "text", "text": "see document"},
+            {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"},
+                "title": "spec.pdf"
+            },
+            {
+                "type": "document",
+                "source": {"type": "url", "url": "https://example.com/guide.pdf"}
+            }
+        ])
+    );
+    assert_eq!(
+        anthropic_messages[2]["content"][0]["content"],
+        json!([
+            {"type": "text", "text": "audit complete"},
+            {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": "BBBB"}
+            },
+            {
+                "type": "document",
+                "source": {"type": "url", "url": "https://example.com/report.pdf"},
+                "title": "report.pdf"
+            }
+        ])
+    );
+
+    let chat = render_openai_chat_messages(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &ChatRenderOptions::default(),
+    )
+    .unwrap();
+
+    let chat_messages = chat["messages"].as_array().unwrap();
+    assert_eq!(
+        chat_messages[0]["content"],
+        json!([
+            {"type": "text", "text": "see document"},
+            {"type": "text", "text": "[media: application/pdf spec.pdf user-doc]"},
+            {"type": "text", "text": "[media: application/pdf user-url]"}
+        ])
+    );
+    assert_eq!(
+        chat_messages[3]["content"],
+        json!([
+            {"type": "text", "text": "[tool result media for call call-1]"},
+            {"type": "text", "text": "[media: application/pdf res-inline]"},
+            {"type": "text", "text": "[media: application/pdf report.pdf res-url]"}
+        ])
+    );
+
+    let responses = render_openai_responses_input(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &ResponsesRenderOptions::default(),
+    )
+    .unwrap();
+
+    let responses_items = responses["input"].as_array().unwrap();
+    assert_eq!(
+        responses_items[0]["content"],
+        json!([
+            {"type": "input_text", "text": "see document"},
+            {"type": "input_text", "text": "[media: application/pdf spec.pdf user-doc]"},
+            {"type": "input_text", "text": "[media: application/pdf user-url]"}
+        ])
+    );
+    assert_eq!(
+        responses_items[2]["output"],
+        json!([
+            {"type": "input_text", "text": "audit complete"},
+            {"type": "input_text", "text": "[media: application/pdf res-inline]"},
+            {"type": "input_text", "text": "[media: application/pdf report.pdf res-url]"}
         ])
     );
 }
