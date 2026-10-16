@@ -492,6 +492,61 @@ async fn oversized_media_degrades_like_a_miss() {
 }
 
 #[tokio::test]
+async fn url_media_ignores_inline_ceiling_while_oversized_inline_degrades() {
+    let server = MockServer::start().await;
+    let huge = "A".repeat(1024);
+    let asset_table: HashMap<String, MediaPayload> = [
+        (
+            "asset-inline".to_string(),
+            MediaPayload::inline("image/png", huge),
+        ),
+        (
+            "asset-url".to_string(),
+            MediaPayload::url("image/png", "https://example.com/photo.png"),
+        ),
+    ]
+    .into();
+
+    let frame = ContextFrame {
+        blocks: vec![ContextBlock::new(
+            BlockId::new(uuid::Uuid::from_u128(1)),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-inline")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-url")),
+                ],
+            },
+            BlockMeta::from_source("user"),
+        )],
+    };
+
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("[media: image/png asset-inline]"))
+        .and(body_string_contains("https://example.com/photo.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server)
+        .with_media_resolver(Arc::new(asset_table))
+        .with_max_inline_media_bytes(1);
+    gw.invoke(&request(frame), &ctrl(None)).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "look"},
+            {"type": "text", "text": "[media: image/png asset-inline]"},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/photo.png"}},
+        ])
+    );
+}
+
+#[tokio::test]
 async fn hash_map_asset_table_resolves_by_reference() {
     // the blanket impl: a plain table IS a MediaResolver
     let table: HashMap<String, MediaPayload> = [(

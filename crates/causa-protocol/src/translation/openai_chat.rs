@@ -35,17 +35,18 @@
 //!   content.
 //! - Tool-result media **hoists**: a tool message cannot carry images,
 //!   so each result's attachments render as a user message immediately
-//!   after the result group — one provenance text part naming the call, then the
-//!   images (data-URL `image_url` parts); placeholders degrade to text
-//!   parts in the same message.
+//!   after the result group — one provenance text part naming the call,
+//!   then the images (`image_url` parts with a data URL for inline
+//!   payloads or a remote URL); placeholders degrade to text parts in
+//!   the same message.
 //! - One user `Message` block renders as one `role: "user"` message, its
 //!   parts in order: a block that renders to a single text item keeps the
 //!   string `content` form, anything else is a content array of `text` and
-//!   `image_url` (data URL) parts, with a degraded attachment as a `text`
-//!   part. Adjacent user blocks stay separate messages: the block boundary
-//!   is a fact boundary, and Chat accepts consecutive user messages.
-//!   Assistant- and system-position media degrade to the shared placeholder
-//!   text (the walk decides).
+//!   `image_url` (data URL for inline payloads or remote URL) parts,
+//!   with a degraded attachment as a `text` part. Adjacent user blocks
+//!   stay separate messages: the block boundary is a fact boundary, and
+//!   Chat accepts consecutive user messages. Assistant- and system-position
+//!   media degrade to the shared placeholder text (the walk decides).
 //! - Tool call arguments are a JSON *string* on the wire (encoded by the
 //!   emitter, decoded by the shared `super::context_frame` codec);
 //!   parsing rejects a non-JSON arguments string as `Undecodable`.
@@ -73,6 +74,7 @@ use causa_kernel::{
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use super::media::MediaSource;
 use super::render_options::ChatRenderOptions;
 use crate::Protocol;
 
@@ -366,16 +368,21 @@ fn user_message(parts: &[Segment]) -> Value {
 }
 
 /// One media attachment as a user content item: an `image_url` part with a
-/// data URL, or the placeholder as a `text` part.
+/// data URL (inline) or remote URL, or the placeholder as a `text` part.
 fn attachment_part(media: &ResolvedMedia) -> Value {
     match media {
-        ResolvedMedia::Image {
-            media_type,
-            data_base64,
-        } => json!({
-            "type": "image_url",
-            "image_url": {"url": format!("data:{media_type};base64,{data_base64}")},
-        }),
+        ResolvedMedia::Image { media_type, source } => {
+            let url = match source {
+                MediaSource::Inline { data_base64 } => {
+                    format!("data:{media_type};base64,{data_base64}")
+                }
+                MediaSource::Url(u) => u.clone(),
+            };
+            json!({
+                "type": "image_url",
+                "image_url": {"url": url},
+            })
+        }
         ResolvedMedia::Placeholder(text) => json!({"type": "text", "text": text}),
     }
 }
@@ -846,6 +853,41 @@ mod tests {
     }
 
     #[test]
+    fn url_image_parts_render_as_image_url_in_user_position() {
+        let f = frame(vec![parts(
+            0,
+            vec![
+                text_part("caption"),
+                media_part("image/png", "asset-1"),
+                text_part("after"),
+            ],
+            Role::User,
+        )]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "asset-1",
+            MediaPayload::url("image/png", "https://example.com/pic.png"),
+        );
+        let v = render_openai_chat_messages(
+            &f,
+            &media,
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+            &ChatRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "caption"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/pic.png"}},
+                {"type": "text", "text": "after"},
+            ])
+        );
+    }
+
+    #[test]
     fn unresolved_media_degrades_to_the_deterministic_placeholder() {
         let f = frame(vec![parts(
             0,
@@ -904,6 +946,44 @@ mod tests {
                 {"type": "text", "text": "[tool result media for call call_1]"},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBBB"}},
+            ])
+        );
+    }
+
+    #[test]
+    fn tool_result_url_media_hoists_into_a_user_message() {
+        let f = frame(vec![
+            call(0, "kc1", Some("call_1"), "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("chart ready"),
+                vec![MediaRef::new("image/png", "asset-1")],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "asset-1",
+            MediaPayload::url("image/png", "https://example.com/chart.png"),
+        );
+        let v = render_openai_chat_messages(
+            &f,
+            &media,
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+            &ChatRenderOptions::default(),
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[2]["role"], "user");
+        assert_eq!(
+            msgs[2]["content"],
+            json!([
+                {"type": "text", "text": "[tool result media for call call_1]"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/chart.png"}},
             ])
         );
     }

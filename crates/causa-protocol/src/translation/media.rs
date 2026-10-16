@@ -3,10 +3,11 @@
 //! this is the only shape media takes on the render path, built by the
 //! gateway's injected resolver (causa-provider) right before translation.
 //!
-//! It renders inline `image/*` to the wire (Anthropic `image` blocks, Chat
-//! `image_url`, Responses `input_image`); any other media type, remote URLs,
-//! and every unresolvable reference degrade to a deterministic text placeholder,
-//! decided once in the shared walk.
+//! It renders `image/*` payloads to the wire (Anthropic `image` blocks, Chat
+//! `image_url`, Responses `input_image`), either as inline base64 bytes or as
+//! remote `http`/`https` URLs; non-image media types, unsupported or empty
+//! URLs, empty payloads, and unresolvable references degrade to a
+//! deterministic text placeholder, decided once in the shared walk.
 
 use std::collections::HashMap;
 
@@ -24,8 +25,10 @@ pub enum MediaSource {
     },
     /// A remote media location addressed by URL.
     ///
-    /// The current renderers do not emit remote URLs; a `Url` payload degrades
-    /// to the deterministic text placeholder `[media: {type} {reference}]`.
+    /// When paired with an `image/*` media type, a URL with an `http` or
+    /// `https` scheme and non-empty remainder renders directly to the wire;
+    /// any other URL, scheme, or media type degrades to the deterministic text
+    /// placeholder `[media: {type} {reference}]`.
     Url(String),
 }
 

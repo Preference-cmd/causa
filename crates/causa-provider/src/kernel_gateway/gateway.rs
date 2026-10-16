@@ -122,6 +122,10 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
     }
 
     /// Override the inline media ceiling, in decoded bytes.
+    ///
+    /// This ceiling constrains inline payloads only ([`MediaSource::Inline`]).
+    /// Remote URLs ([`MediaSource::Url`]) are not constrained by this limit,
+    /// and the gateway never fetches URLs.
     pub fn with_max_inline_media_bytes(mut self, max_bytes: usize) -> Self {
         self.max_inline_media_bytes = max_bytes;
         self

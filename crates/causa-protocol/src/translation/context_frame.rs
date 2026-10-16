@@ -26,12 +26,13 @@
 //!   position is a malformed frame, rejected by frame validation before
 //!   the walk runs.
 //! - Media: each [`MediaRef`] resolves through the caller's
-//!   [`MediaSet`]. A resolved `image/*` payload renders inline, but only
-//!   in user position (no protocol accepts assistant- or system-authored
-//!   input images); anything else — missing resolution, non-image type,
-//!   empty payload, non-user role — degrades to the deterministic text
-//!   placeholder `[media: {type} {reference}]`. The decision is made
-//!   once, here, never per-renderer.
+//!   [`MediaSet`]. A resolved `image/*` payload renders inline (for non-empty
+//!   base64 bytes) or via a remote `http` or `https` URL, but only in user
+//!   position (no protocol accepts assistant- or system-authored input images);
+//!   anything else — missing resolution, non-image type, empty payload,
+//!   unsupported URL scheme, empty URL, or non-user role — degrades to the
+//!   deterministic text placeholder `[media: {type} {reference}]`. The decision
+//!   is made once, here, never per-renderer.
 //! - Tool call ids come from `meta.provider_call_id`, falling back to
 //!   the declaration block UUID. Tool results resolve directly through
 //!   their declaration `BlockId`. Renderers first reject incomplete or
@@ -74,13 +75,14 @@ use crate::Protocol;
 /// render-or-degrade decision, applied identically in all protocols.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ResolvedMedia {
-    /// A resolved `image/*` payload — renderable inline everywhere.
+    /// A resolved `image/*` payload — renderable inline or via remote URL.
     Image {
         media_type: String,
-        data_base64: String,
+        source: MediaSource,
     },
     /// Deterministic degradation: unresolved reference, non-image type,
-    /// or empty payload. Carries the final placeholder text.
+    /// empty payload, unsupported URL scheme, or empty URL. Carries the
+    /// final placeholder text.
     Placeholder(String),
 }
 
@@ -88,10 +90,26 @@ fn placeholder_text(r: &MediaRef) -> String {
     format!("[media: {} {}]", r.media_type, r.reference)
 }
 
+/// Check whether a URL has a supported `http` or `https` scheme (case-insensitive
+/// per RFC 3986) with a non-empty remainder after the `://` separator.
+fn is_supported_http_url(url: &str) -> bool {
+    if let Some(prefix) = url.get(..7)
+        && prefix.eq_ignore_ascii_case("http://")
+    {
+        return url.len() > 7;
+    }
+    if let Some(prefix) = url.get(..8)
+        && prefix.eq_ignore_ascii_case("https://")
+    {
+        return url.len() > 8;
+    }
+    false
+}
+
 fn resolve_media(r: &MediaRef, role: Role, media: &MediaSet) -> ResolvedMedia {
-    // Input images render inline only in user position — no protocol
-    // accepts model-authored (assistant) or system-position input
-    // images. Anything else degrades before the emitters see it.
+    // Input images render only in user position — no protocol accepts
+    // model-authored (assistant) or system-position input images.
+    // Anything else degrades before the emitters see it.
     if role != Role::User {
         return ResolvedMedia::Placeholder(placeholder_text(r));
     }
@@ -102,11 +120,21 @@ fn resolve_media(r: &MediaRef, role: Role, media: &MediaSet) -> ResolvedMedia {
             {
                 ResolvedMedia::Image {
                     media_type: p.media_type.clone(),
-                    data_base64: data_base64.clone(),
+                    source: MediaSource::Inline {
+                        data_base64: data_base64.clone(),
+                    },
                 }
             }
-            // not a renderable inline image: another media type, an empty payload,
-            // or a URL (only inline bytes reach the wire)
+            MediaSource::Url(u)
+                if p.media_type.starts_with("image/") && is_supported_http_url(u) =>
+            {
+                ResolvedMedia::Image {
+                    media_type: p.media_type.clone(),
+                    source: MediaSource::Url(u.clone()),
+                }
+            }
+            // not a renderable image: another media type, empty inline bytes,
+            // an unsupported URL scheme, or an empty URL
             _ => ResolvedMedia::Placeholder(placeholder_text(r)),
         },
         // not resolved at all

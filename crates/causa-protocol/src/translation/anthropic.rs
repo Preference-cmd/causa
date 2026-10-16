@@ -21,8 +21,9 @@
 //!   message; Anthropic requires strictly alternating `user` /
 //!   `assistant` roles.
 //! - Resolved `image/*` media parts render as `image` content blocks
-//!   (`base64` source) inside their role's message; unresolved or
-//!   non-image media degrades to the shared placeholder text.
+//!   (`base64` source for inline payloads, `url` source for remote URLs)
+//!   inside their role's message; unresolved or non-image media degrades
+//!   to the shared placeholder text.
 //! - Tool calls render as assistant `tool_use` content blocks with
 //!   `input` as a JSON object; tool results render as `tool_result`
 //!   content blocks in the following user message. Result media embeds
@@ -82,6 +83,7 @@ use causa_kernel::{
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use super::media::MediaSource;
 use super::render_options::AnthropicRenderOptions;
 use crate::Protocol;
 
@@ -223,13 +225,10 @@ pub fn render_anthropic_messages(
                 sealed_blocks.push(append_sealed(&mut messages, item.clone()));
             }
             Segment::Media { role, media, .. } => match media {
-                ResolvedMedia::Image {
-                    media_type,
-                    data_base64,
-                } => append_message(
+                ResolvedMedia::Image { media_type, source } => append_message(
                     &mut messages,
                     role_name(*role),
-                    image_block(media_type, data_base64),
+                    image_block(media_type, source),
                 ),
                 ResolvedMedia::Placeholder(text) => {
                     // A leading system placeholder went into the system
@@ -468,22 +467,27 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-/// The `image` content block for a resolved inline payload.
-fn image_block(media_type: &str, data_base64: &str) -> Value {
+/// The `image` content block for a resolved image payload (inline or remote URL).
+fn image_block(media_type: &str, source: &MediaSource) -> Value {
+    let source_json = match source {
+        MediaSource::Inline { data_base64 } => {
+            json!({"type": "base64", "media_type": media_type, "data": data_base64})
+        }
+        MediaSource::Url(url) => {
+            json!({"type": "url", "url": url})
+        }
+    };
     json!({
         "type": "image",
-        "source": {"type": "base64", "media_type": media_type, "data": data_base64},
+        "source": source_json,
     })
 }
 
 /// A resolved-or-placeholder attachment as a content block: images embed
-/// inline, everything else degrades to its placeholder text.
+/// inline or as remote URL sources, everything else degrades to its placeholder text.
 fn media_block_json(media: &ResolvedMedia) -> Value {
     match media {
-        ResolvedMedia::Image {
-            media_type,
-            data_base64,
-        } => image_block(media_type, data_base64),
+        ResolvedMedia::Image { media_type, source } => image_block(media_type, source),
         ResolvedMedia::Placeholder(text) => json!({"type": "text", "text": text}),
     }
 }
@@ -1079,6 +1083,41 @@ mod tests {
     }
 
     #[test]
+    fn url_image_parts_render_as_url_image_blocks_in_user_position() {
+        let f = frame(vec![parts(
+            0,
+            vec![
+                text_part("caption"),
+                media_part("image/png", "asset-1"),
+                text_part("after"),
+            ],
+            Role::User,
+        )]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "asset-1",
+            MediaPayload::url("image/png", "https://example.com/pic.png"),
+        );
+        let v = render_anthropic_messages(
+            &f,
+            &media,
+            &test_generation(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "caption"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/pic.png"}},
+                {"type": "text", "text": "after"},
+            ])
+        );
+    }
+
+    #[test]
     fn non_image_media_degrades_even_when_resolved() {
         let f = frame(vec![parts(
             0,
@@ -1158,6 +1197,41 @@ mod tests {
                 {"type": "text", "text": "chart ready"},
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
                 {"type": "text", "text": "[media: image/png asset-2]"},
+            ])
+        );
+    }
+
+    #[test]
+    fn tool_result_url_media_renders_as_url_image_blocks() {
+        let f = frame(vec![
+            call(0, "kc1", Some("toolu_a"), "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("chart ready"),
+                vec![MediaRef::new("image/png", "asset-1")],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "asset-1",
+            MediaPayload::url("image/png", "https://example.com/chart.png"),
+        );
+        let v = render_anthropic_messages(
+            &f,
+            &media,
+            &test_generation(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::None,
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["messages"][1]["content"][0]["content"],
+            json!([
+                {"type": "text", "text": "chart ready"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/chart.png"}},
             ])
         );
     }

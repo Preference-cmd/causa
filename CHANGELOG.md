@@ -17,12 +17,32 @@ adapters or data converters.
 - `MediaPayload::data_base64` is replaced by `source: MediaSource`, where
   `MediaSource` is a new enum with `Inline { data_base64 }` and `Url(String)`
   variants. The old constructor `MediaPayload::new(media_type, data_base64)` is
-  removed. `MediaSource::Url` renders as a deterministic text placeholder
-  `[media: {type} {reference}]` in this version.
+  removed.
 
   Migration: replace `MediaPayload::new(t, b64)` with
   `MediaPayload::inline(t, b64)`. Code reading `payload.data_base64` matches
   `payload.source` (`MediaSource::Inline { data_base64 }`).
+
+### Added
+
+- `MediaSource::Url` image payloads now render to the wire across all three
+  protocols, in both user message position and within tool results: Anthropic
+  Messages emits `{"type": "image", "source": {"type": "url", "url": ...}}`,
+  OpenAI Chat Completions emits `{"type": "image_url", "image_url": {"url":
+  ...}}`, and OpenAI Responses emits `{"type": "input_image", "image_url":
+  ..., "detail": "auto"}`.
+- URL media emission requires an `image/*` media type and an `http` or
+  `https` scheme (case-insensitive per RFC 3986) with a non-empty target
+  after `://`. Non-image media types, empty URLs, and unsupported schemes
+  (`ftp://`, `file:///`, `data:`, etc.) degrade to the deterministic text
+  placeholder `[media: {type} {reference}]`.
+- The gateway's inline media ceiling (`with_max_inline_media_bytes`)
+  constrains only inline payloads; remote URLs are unconstrained, and the
+  gateway never fetches URLs.
+- A `MediaResolver` must return the same URL for the same reference across
+  the lifetime of the context, and the content behind the URL must not
+  mutate. Using content-addressed URLs is strongly recommended, and URLs
+  should serve bytes directly without relying on HTTP redirects.
 
 ### Changed
 

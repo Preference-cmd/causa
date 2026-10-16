@@ -16,12 +16,12 @@
 //!   append like any other.
 //! - One user `Message` block renders as one user message item whose
 //!   content holds its parts in order: `input_text` for text and
-//!   `input_image` (data URL, `detail: "auto"`) for a resolved image, with a
-//!   degraded attachment as `input_text`. Adjacent user blocks stay
-//!   separate items: the block boundary is a fact boundary. Assistant text
-//!   segments become `output_text` message items; assistant- and
-//!   system-position media degrade to the shared placeholder text (the walk
-//!   decides).
+//!   `input_image` (data URL for inline payloads or remote URL,
+//!   `detail: "auto"`) for a resolved image, with a degraded attachment
+//!   as `input_text`. Adjacent user blocks stay separate items: the
+//!   block boundary is a fact boundary. Assistant text segments become
+//!   `output_text` message items; assistant- and system-position media
+//!   degrade to the shared placeholder text (the walk decides).
 //! - Each tool call renders as a flat `function_call` item and each tool
 //!   result as a flat `function_call_output` item — the Responses wire
 //!   pairs through `call_id`s, not message roles. There is no `is_error`
@@ -85,6 +85,7 @@ use causa_kernel::{
 
 use super::context_frame::{self, ResolvedMedia, Role, Segment};
 use super::media::MediaSet;
+use super::media::MediaSource;
 use super::render_options::ResponsesRenderOptions;
 use crate::Protocol;
 
@@ -348,18 +349,24 @@ fn message_from_wire<'a>(
     Some(Value::Object(item))
 }
 
-/// One media attachment as an input content item: an `input_image` with a
-/// data URL and `detail: "auto"`, or the placeholder as `input_text`.
+/// One media attachment as an input content item: an `input_image` with an
+/// image URL (data URL or remote URL) and `detail: "auto"`, or the placeholder
+/// as `input_text`.
 fn input_media(media: &ResolvedMedia) -> Value {
     match media {
-        ResolvedMedia::Image {
-            media_type,
-            data_base64,
-        } => json!({
-            "type": "input_image",
-            "image_url": format!("data:{media_type};base64,{data_base64}"),
-            "detail": "auto",
-        }),
+        ResolvedMedia::Image { media_type, source } => {
+            let image_url = match source {
+                MediaSource::Inline { data_base64 } => {
+                    format!("data:{media_type};base64,{data_base64}")
+                }
+                MediaSource::Url(u) => u.clone(),
+            };
+            json!({
+                "type": "input_image",
+                "image_url": image_url,
+                "detail": "auto",
+            })
+        }
         ResolvedMedia::Placeholder(text) => json!({"type": "input_text", "text": text}),
     }
 }
@@ -827,6 +834,41 @@ mod tests {
     }
 
     #[test]
+    fn url_image_parts_render_as_input_image_in_user_position() {
+        let f = frame(vec![parts(
+            0,
+            vec![
+                text_part("caption"),
+                media_part("image/png", "asset-1"),
+                text_part("after"),
+            ],
+            Role::User,
+        )]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "asset-1",
+            MediaPayload::url("image/png", "https://example.com/pic.png"),
+        );
+        let v = render_openai_responses_input(
+            &f,
+            &media,
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+            &ResponsesRenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["input"][0]["content"],
+            json!([
+                {"type": "input_text", "text": "caption"},
+                {"type": "input_image", "image_url": "https://example.com/pic.png", "detail": "auto"},
+                {"type": "input_text", "text": "after"},
+            ])
+        );
+    }
+
+    #[test]
     fn unresolved_media_degrades_to_the_deterministic_placeholder() {
         let f = frame(vec![parts(
             0,
@@ -893,6 +935,46 @@ mod tests {
         assert_eq!(
             items[3],
             json!({"type": "function_call_output", "call_id": "call_2", "output": "no chart"})
+        );
+    }
+
+    #[test]
+    fn tool_result_url_media_embeds_in_the_function_call_output() {
+        let f = frame(vec![
+            call(0, "kc1", Some("call_1"), "render", json!({})),
+            result_with_media(
+                1,
+                "kc1",
+                ToolResultStatus::Succeeded,
+                json!("chart ready"),
+                vec![MediaRef::new("image/png", "asset-1")],
+            ),
+        ]);
+        let mut media = MediaSet::new();
+        media.insert(
+            "asset-1",
+            MediaPayload::url("image/png", "https://example.com/chart.png"),
+        );
+        let v = render_openai_responses_input(
+            &f,
+            &media,
+            &GenerationOptions::default(),
+            &ModelRef::new("gpt-test"),
+            CacheDirective::None,
+            &ResponsesRenderOptions::default(),
+        )
+        .unwrap();
+        let items = v["input"].as_array().unwrap();
+        assert_eq!(
+            items[1],
+            json!({
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [
+                    {"type": "input_text", "text": "chart ready"},
+                    {"type": "input_image", "image_url": "https://example.com/chart.png", "detail": "auto"},
+                ],
+            })
         );
     }
 

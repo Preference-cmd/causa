@@ -11,12 +11,13 @@
 //! No session aggregate, hidden history or runtime dependency constructs the frame.
 
 use causa_kernel::{
-    BlockContent, BlockId, BlockMeta, Context, ContextBlock, ContextFrame, EditFailure,
-    GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason, Role,
-    TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus,
+    BlockContent, BlockId, BlockMeta, ContentPart, Context, ContextBlock, ContextFrame,
+    EditFailure, GenerationOptions, MediaRef, ModelItem, ModelRef, ModelResponse, ModelStopReason,
+    Role, TextPayload, ToolCallDraft, ToolOutput, ToolResultPayload, ToolResultStatus,
     validate_tool_result_append,
 };
 use causa_protocol::translation::anthropic::render_anthropic_messages;
+use causa_protocol::translation::media::{MediaPayload, MediaSet};
 use causa_protocol::translation::openai_chat::render_openai_chat_messages;
 use causa_protocol::translation::openai_responses::render_openai_responses_input;
 use causa_protocol::translation::render_options::{
@@ -317,6 +318,110 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
         })
         .unwrap();
     assert_eq!(stored_result.output.content, json!({"found": 1}));
+}
+
+#[test]
+fn url_media_scheme_validation_and_degradation_across_protocols() {
+    let frame = ContextFrame {
+        blocks: vec![ContextBlock::new(
+            block_id(),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Media(MediaRef::new("image/png", "empty")),
+                    ContentPart::Media(MediaRef::new("image/png", "scheme-only")),
+                    ContentPart::Media(MediaRef::new("image/png", "ftp")),
+                    ContentPart::Media(MediaRef::new("image/png", "file")),
+                    ContentPart::Media(MediaRef::new("application/pdf", "pdf")),
+                    ContentPart::Media(MediaRef::new("image/png", "valid-uppercase")),
+                ],
+            },
+            BlockMeta::from_source("user"),
+        )],
+    };
+
+    let mut media = MediaSet::new();
+    media.insert("empty", MediaPayload::url("image/png", ""));
+    media.insert("scheme-only", MediaPayload::url("image/png", "https://"));
+    media.insert(
+        "ftp",
+        MediaPayload::url("image/png", "ftp://example.com/a.png"),
+    );
+    media.insert("file", MediaPayload::url("image/png", "file:///a.png"));
+    media.insert(
+        "pdf",
+        MediaPayload::url("application/pdf", "https://example.com/doc.pdf"),
+    );
+    media.insert(
+        "valid-uppercase",
+        MediaPayload::url("image/png", "HTTPS://example.com/A.png"),
+    );
+
+    let model = ModelRef::new("test-model");
+    let generation = GenerationOptions::default().with_max_tokens(1024);
+
+    let anthropic = render_anthropic_messages(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &AnthropicRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        anthropic["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "[media: image/png empty]"},
+            {"type": "text", "text": "[media: image/png scheme-only]"},
+            {"type": "text", "text": "[media: image/png ftp]"},
+            {"type": "text", "text": "[media: image/png file]"},
+            {"type": "text", "text": "[media: application/pdf pdf]"},
+            {"type": "image", "source": {"type": "url", "url": "HTTPS://example.com/A.png"}},
+        ])
+    );
+
+    let chat = render_openai_chat_messages(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &ChatRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        chat["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "[media: image/png empty]"},
+            {"type": "text", "text": "[media: image/png scheme-only]"},
+            {"type": "text", "text": "[media: image/png ftp]"},
+            {"type": "text", "text": "[media: image/png file]"},
+            {"type": "text", "text": "[media: application/pdf pdf]"},
+            {"type": "image_url", "image_url": {"url": "HTTPS://example.com/A.png"}},
+        ])
+    );
+
+    let responses = render_openai_responses_input(
+        &frame,
+        &media,
+        &generation,
+        &model,
+        causa_kernel::CacheDirective::None,
+        &ResponsesRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        responses["input"][0]["content"],
+        json!([
+            {"type": "input_text", "text": "[media: image/png empty]"},
+            {"type": "input_text", "text": "[media: image/png scheme-only]"},
+            {"type": "input_text", "text": "[media: image/png ftp]"},
+            {"type": "input_text", "text": "[media: image/png file]"},
+            {"type": "input_text", "text": "[media: application/pdf pdf]"},
+            {"type": "input_image", "image_url": "HTTPS://example.com/A.png", "detail": "auto"},
+        ])
+    );
 }
 
 // --- shared semantic timeline ------------------------------------------------

@@ -9,8 +9,8 @@
 //! and the `Protocol` discriminator live in `causa-protocol`.
 //!
 //! Media: the host injects a [`MediaResolver`] so the gateway can turn
-//! fact-level references into render payloads; the kernel never
-//! touches bytes.
+//! fact-level references into render payloads (inline bytes or remote URLs);
+//! the kernel never touches bytes.
 //!
 //! # Generation options
 //!

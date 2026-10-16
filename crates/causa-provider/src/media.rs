@@ -12,16 +12,17 @@
 //! degrades to the deterministic text placeholder at render time.
 //!
 //! The gateway drops inline payloads beyond its inline ceiling (they degrade
-//! like misses), and the renderers inline only `image/*`. Hosts should
-//! pre-filter their asset table to the supported set (`image/png`,
-//! `image/jpeg`, `image/gif`, `image/webp`).
+//! like misses), and the renderers emit only `image/*` (inline bytes or
+//! http/https URLs). Hosts should pre-filter their asset table to the
+//! supported set (`image/png`, `image/jpeg`, `image/gif`, `image/webp`).
 //!
 //! # Degradation is not an error
 //!
 //! A reference this resolver cannot serve, a payload of a non-image type,
-//! an empty payload, or one over the inline ceiling all render as the
-//! deterministic text placeholder `[media: <type> <reference>]`. The
-//! request is still sent; nothing is dropped silently and nothing fails.
+//! an empty payload, an unsupported URL scheme, or an inline payload over the
+//! inline ceiling all render as the deterministic text placeholder
+//! `[media: <type> <reference>]`. The request is still sent; nothing is
+//! dropped silently and nothing fails.
 //!
 //! # The answer must be stable while the context lives
 //!
@@ -40,6 +41,17 @@
 //! blocks, or reasoning that silently stops being replayed. Using a content
 //! hash as `MediaRef::reference` rules out one reference mapping to
 //! different bytes, which is why it is the recommended form.
+//!
+//! For remote URLs, the same stability rules apply: the same reference must
+//! answer the same URL throughout the lifetime of the context, and the
+//! content behind that URL must not change. Causa cannot check the remote
+//! content, so using content-addressed URLs is strongly recommended. The
+//! address should return bytes directly and not rely on HTTP redirects (not
+//! all providers follow redirects). The gateway does not fetch URLs; the
+//! provider fetches them on every request. If the provider fails to fetch a
+//! URL, that failure is returned as a request error from the provider: Causa
+//! does not degrade or retry. The gateway's inline media ceiling constrains
+//! only inline payloads; remote URLs are unconstrained by this limit.
 //!
 //! Deliberately not chosen: failing on an unresolved reference (it turns the
 //! legitimate "keep only recent images" use into an error) and a per-gateway
