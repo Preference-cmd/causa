@@ -12,7 +12,7 @@ use causa_kernel::{
     BlockContent, CallControl, ContentPart, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
     ModelRequest,
 };
-use causa_protocol::translation::media::{MediaSet, MediaSource};
+use causa_protocol::translation::media::{MediaKind, MediaSet, MediaSource};
 use causa_protocol::translation::render_options::{
     AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
 };
@@ -22,6 +22,39 @@ use causa_protocol::translation::streaming::{
 use reqwest::Client;
 use std::sync::Arc;
 use tracing::Instrument;
+
+/// Inline media ceilings, one per [`MediaKind`], in decoded bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineMediaCeilings {
+    image: usize,
+    document: usize,
+}
+
+impl Default for InlineMediaCeilings {
+    fn default() -> Self {
+        const DEFAULT_CEILING: usize = 5 * 1024 * 1024;
+        Self {
+            image: DEFAULT_CEILING,
+            document: DEFAULT_CEILING,
+        }
+    }
+}
+
+impl InlineMediaCeilings {
+    fn get(&self, kind: MediaKind) -> usize {
+        match kind {
+            MediaKind::Image => self.image,
+            MediaKind::Document => self.document,
+        }
+    }
+
+    fn set(&mut self, kind: MediaKind, max_bytes: usize) {
+        match kind {
+            MediaKind::Image => self.image = max_bytes,
+            MediaKind::Document => self.document = max_bytes,
+        }
+    }
+}
 
 /// Generic kernel gateway: reqwest transport + the pure translation in
 /// `causa_protocol::translation` composed with the shared error
@@ -36,11 +69,12 @@ pub struct KernelHttpGateway<C: KernelGatewayConfig> {
     api_key: String,
     config: C,
     media_resolver: Option<Arc<dyn MediaResolver>>,
-    /// Inline media ceiling, in decoded bytes (base64 is ~4/3 of this);
-    /// payloads beyond it degrade to placeholders like resolver misses.
-    /// Default: 5 MiB (the documented per-image cap of the strictest of
-    /// the three wires).
-    max_inline_media_bytes: usize,
+    /// Inline media ceilings per kind, in decoded bytes (base64 is ~4/3 of
+    /// this); payloads beyond their kind's ceiling degrade to placeholders
+    /// like resolver misses. Default: 5 MiB for each kind, the documented
+    /// per-image cap of the strictest of the three wires, also used for
+    /// documents so one inline item never exceeds it.
+    inline_media_ceilings: InlineMediaCeilings,
     stream_limits: StreamLimits,
 }
 
@@ -50,7 +84,7 @@ impl<C: KernelGatewayConfig> std::fmt::Debug for KernelHttpGateway<C> {
             .field("protocol", &C::PROTOCOL.as_str())
             .field("path", &C::PATH)
             .field("media_resolver", &self.media_resolver.is_some())
-            .field("max_inline_media_bytes", &self.max_inline_media_bytes)
+            .field("inline_media_ceilings", &self.inline_media_ceilings)
             .field("stream_limits", &self.stream_limits)
             .finish_non_exhaustive()
     }
@@ -63,7 +97,7 @@ impl<C: KernelGatewayConfig> Clone for KernelHttpGateway<C> {
             api_key: self.api_key.clone(),
             config: self.config.clone(),
             media_resolver: self.media_resolver.clone(),
-            max_inline_media_bytes: self.max_inline_media_bytes,
+            inline_media_ceilings: self.inline_media_ceilings,
             stream_limits: self.stream_limits,
         }
     }
@@ -78,7 +112,7 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
             api_key: api_key.into(),
             config: C::default(),
             media_resolver: None,
-            max_inline_media_bytes: 5 * 1024 * 1024,
+            inline_media_ceilings: InlineMediaCeilings::default(),
             stream_limits: StreamLimits::default(),
         }
     }
@@ -121,13 +155,16 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
         self
     }
 
-    /// Override the inline media ceiling, in decoded bytes.
+    /// Override the inline media ceiling for one [`MediaKind`], in decoded
+    /// bytes. Each kind defaults to 5 MiB.
     ///
-    /// This ceiling constrains inline payloads only ([`MediaSource::Inline`]).
-    /// Remote URLs ([`MediaSource::Url`]) are not constrained by this limit,
-    /// and the gateway never fetches URLs.
-    pub fn with_max_inline_media_bytes(mut self, max_bytes: usize) -> Self {
-        self.max_inline_media_bytes = max_bytes;
+    /// The ceiling constrains inline payloads only ([`MediaSource::Inline`]);
+    /// remote URLs ([`MediaSource::Url`]) are neither limited nor fetched. An
+    /// inline payload over its kind's ceiling renders as the placeholder, like
+    /// a resolver miss. The total size of a request is not checked; that is
+    /// the provider's limit.
+    pub fn with_max_inline_media_bytes(mut self, kind: MediaKind, max_bytes: usize) -> Self {
+        self.inline_media_ceilings.set(kind, max_bytes);
         self
     }
 
@@ -185,9 +222,20 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
             if let Some(payload) = resolver.resolve(&r) {
                 let within_ceiling = match &payload.source {
                     MediaSource::Inline { data_base64 } => {
-                        data_base64.len() * 3 / 4 <= self.max_inline_media_bytes
+                        match MediaKind::of(&payload.media_type) {
+                            Some(kind) => {
+                                let ceiling = self.inline_media_ceilings.get(kind);
+                                data_base64.len() * 3 / 4 <= ceiling
+                            }
+                            // An unclassified type can only degrade, and the
+                            // placeholder does not need the payload.
+                            None => false,
+                        }
                     }
-                    // Only inline bytes count toward the ceiling; the gateway never fetches URLs.
+                    // Only inline bytes count toward a ceiling: a URL (or any
+                    // other non-inline source) is never fetched here, and
+                    // whether it renders is the walk's decision.
+                    MediaSource::Url(_) => true,
                     _ => true,
                 };
                 if within_ceiling {

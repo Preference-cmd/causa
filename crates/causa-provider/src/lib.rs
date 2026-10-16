@@ -14,6 +14,12 @@
 //! protocol's capability table: Anthropic emits images and PDF documents (in
 //! user messages and tool results, inline or URL); Chat and Responses emit
 //! images only. Anything else degrades to a deterministic text placeholder.
+//! Inline payloads are bounded by per-kind ceilings configured via
+//! [`KernelHttpGateway::with_max_inline_media_bytes`], defaulting to 5 MiB each
+//! for images and documents, measured on decoded bytes. Unclassified inline
+//! payloads are dropped before rendering. Remote URLs are never fetched or
+//! limited by the gateway, and total request size is not checked here (that
+//! remains the provider's limit).
 //!
 //! # Generation options
 //!
@@ -136,3 +142,6 @@ pub use causa_protocol::translation::render_options::{
 
 /// Resource limits for the transport-free streaming decoder.
 pub use causa_protocol::translation::streaming::StreamLimits;
+
+/// The media kind an inline ceiling applies to.
+pub use causa_protocol::translation::media::MediaKind;

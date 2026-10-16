@@ -15,15 +15,19 @@
 //! Anthropic emits images (`image/*`) and documents (`application/pdf`) in user
 //! messages and tool results, either as inline bytes or remote http/https URLs;
 //! OpenAI Chat and Responses emit images only (`image/*`), and documents never.
-//! The gateway drops inline payloads beyond its inline ceiling (they degrade
-//! like misses).
+//! The gateway limits inline payloads per kind (5 MiB each for images and
+//! documents by default, measured on decoded bytes). An inline payload over
+//! its kind's ceiling, or of an unclassified media type, is left out of the
+//! resolved set and renders as the placeholder below. Remote URLs are never
+//! fetched or limited by the gateway, and the total request size is not
+//! checked (that is the provider's limit).
 //!
 //! # Degradation is not an error
 //!
 //! A reference this resolver cannot serve, an unclassified or unsupported
 //! media type, an empty payload, an unsupported URL scheme, a non-user
-//! position, or an inline payload over the inline ceiling all render as the
-//! deterministic text placeholder `[media: {type} {reference}]` (or
+//! position, or an inline payload over its kind's inline ceiling all render as
+//! the deterministic text placeholder `[media: {type} {reference}]` (or
 //! `[media: {type} {name} {reference}]` when named). The request is still
 //! sent; nothing is dropped silently and nothing fails.
 //!
@@ -53,8 +57,9 @@
 //! all providers follow redirects). The gateway does not fetch URLs; the
 //! provider fetches them on every request. If the provider fails to fetch a
 //! URL, that failure is returned as a request error from the provider: Causa
-//! does not degrade or retry. The gateway's inline media ceiling constrains
-//! only inline payloads; remote URLs are unconstrained by this limit.
+//! does not degrade or retry. The gateway's inline media ceilings constrain
+//! only inline payloads; remote URLs are unconstrained by this limit, and the
+//! gateway never fetches URLs.
 //!
 //! Deliberately not chosen: failing on an unresolved reference (it turns the
 //! legitimate "keep only recent media" use into an error) and a per-gateway

@@ -398,7 +398,7 @@ async fn invoke_emits_the_agent_http_span() {
 // ---- media resolution -----------------------------------------------------------
 
 use causa_kernel::{BlockContent, BlockMeta, ContentPart, MediaRef, TextPayload};
-use causa_protocol::translation::media::{MediaPayload, MediaSource};
+use causa_protocol::translation::media::{MediaKind, MediaPayload, MediaSource};
 use causa_provider::MediaResolver;
 use std::collections::HashMap;
 
@@ -485,7 +485,7 @@ async fn oversized_media_degrades_like_a_miss() {
 
     let gw = gateway(&server)
         .with_media_resolver(Arc::new(asset_table))
-        .with_max_inline_media_bytes(16);
+        .with_max_inline_media_bytes(MediaKind::Image, 16);
     gw.invoke(&request(media_frame()), &ctrl(None))
         .await
         .unwrap();
@@ -531,7 +531,7 @@ async fn url_media_ignores_inline_ceiling_while_oversized_inline_degrades() {
 
     let gw = gateway(&server)
         .with_media_resolver(Arc::new(asset_table))
-        .with_max_inline_media_bytes(1);
+        .with_max_inline_media_bytes(MediaKind::Image, 1);
     gw.invoke(&request(frame), &ctrl(None)).await.unwrap();
 
     let requests = server.received_requests().await.unwrap();
@@ -544,6 +544,161 @@ async fn url_media_ignores_inline_ceiling_while_oversized_inline_degrades() {
             {"type": "image", "source": {"type": "url", "url": "https://example.com/photo.png"}},
         ])
     );
+}
+
+#[tokio::test]
+async fn oversized_document_degrades_while_default_ceiling_image_emits() {
+    let server = MockServer::start().await;
+    let huge_pdf = "A".repeat(1024);
+    let asset_table: HashMap<String, MediaPayload> = [
+        (
+            "asset-doc".to_string(),
+            MediaPayload::inline("application/pdf", huge_pdf),
+        ),
+        (
+            "asset-img".to_string(),
+            MediaPayload::inline("image/png", "AAAA"),
+        ),
+    ]
+    .into();
+
+    let frame = ContextFrame {
+        blocks: vec![ContextBlock::new(
+            BlockId::new(uuid::Uuid::from_u128(1)),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("application/pdf", "asset-doc")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-img")),
+                ],
+            },
+            BlockMeta::from_source("user"),
+        )],
+    };
+
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("[media: application/pdf asset-doc]"))
+        .and(body_string_contains("\"data\":\"AAAA\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server)
+        .with_media_resolver(Arc::new(asset_table))
+        .with_max_inline_media_bytes(MediaKind::Document, 16);
+    gw.invoke(&request(frame), &ctrl(None)).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "look"},
+            {"type": "text", "text": "[media: application/pdf asset-doc]"},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AAAA"
+                }
+            },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn oversized_image_degrades_while_default_ceiling_document_emits() {
+    let server = MockServer::start().await;
+    let huge_img = "A".repeat(1024);
+    let asset_table: HashMap<String, MediaPayload> = [
+        (
+            "asset-img".to_string(),
+            MediaPayload::inline("image/png", huge_img),
+        ),
+        (
+            "asset-doc".to_string(),
+            MediaPayload::inline("application/pdf", "AAAA"),
+        ),
+    ]
+    .into();
+
+    let frame = ContextFrame {
+        blocks: vec![ContextBlock::new(
+            BlockId::new(uuid::Uuid::from_u128(1)),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("image/png", "asset-img")),
+                    ContentPart::Media(MediaRef::new("application/pdf", "asset-doc")),
+                ],
+            },
+            BlockMeta::from_source("user"),
+        )],
+    };
+
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("[media: image/png asset-img]"))
+        .and(body_string_contains("\"data\":\"AAAA\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server)
+        .with_media_resolver(Arc::new(asset_table))
+        .with_max_inline_media_bytes(MediaKind::Image, 16);
+    gw.invoke(&request(frame), &ctrl(None)).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "look"},
+            {"type": "text", "text": "[media: image/png asset-img]"},
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "AAAA"
+                }
+            },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn unclassified_inline_media_degrades_to_placeholder() {
+    let server = MockServer::start().await;
+    let asset_table: HashMap<String, MediaPayload> = [(
+        "asset-zip".to_string(),
+        MediaPayload::inline("application/zip", "AAAA"),
+    )]
+    .into();
+    let frame = ContextFrame {
+        blocks: vec![ContextBlock::new(
+            BlockId::new(uuid::Uuid::from_u128(1)),
+            BlockContent::Message {
+                role: Role::User,
+                parts: vec![
+                    ContentPart::Text(TextPayload::new("look")),
+                    ContentPart::Media(MediaRef::new("application/zip", "asset-zip")),
+                ],
+            },
+            BlockMeta::from_source("user"),
+        )],
+    };
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("[media: application/zip asset-zip]"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()));
+    server.register(mock).await;
+
+    let gw = gateway(&server).with_media_resolver(Arc::new(asset_table));
+    gw.invoke(&request(frame), &ctrl(None)).await.unwrap();
 }
 
 #[tokio::test]

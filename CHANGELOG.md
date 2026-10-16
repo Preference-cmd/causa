@@ -14,6 +14,15 @@ adapters or data converters.
 
 ### Breaking
 
+- `KernelHttpGateway::with_max_inline_media_bytes` takes the media kind it
+  limits: `with_max_inline_media_bytes(kind, max_bytes)`, with `kind` a
+  `MediaKind` (re-exported as `causa_provider::MediaKind`). Images and
+  documents each default to 5 MiB. The single-argument form is removed.
+
+  Migration: replace `with_max_inline_media_bytes(n)` with
+  `with_max_inline_media_bytes(MediaKind::Image, n)`; set the document
+  ceiling with `with_max_inline_media_bytes(MediaKind::Document, n)`.
+
 - `MediaPayload::data_base64` is replaced by `source: MediaSource`, where
   `MediaSource` is a new enum with `Inline { data_base64 }` and `Url(String)`
   variants. The old constructor `MediaPayload::new(media_type, data_base64)` is
@@ -50,8 +59,8 @@ adapters or data converters.
   after `://`. Non-image media types, empty URLs, and unsupported schemes
   (`ftp://`, `file:///`, `data:`, etc.) degrade to the deterministic text
   placeholder `[media: {type} {reference}]`.
-- The gateway's inline media ceiling (`with_max_inline_media_bytes`)
-  constrains only inline payloads; remote URLs are unconstrained, and the
+- The gateway's inline media ceilings (`with_max_inline_media_bytes`)
+  constrain only inline payloads; remote URLs are unconstrained, and the
   gateway never fetches URLs.
 - A `MediaResolver` must return the same URL for the same reference across
   the lifetime of the context, and the content behind the URL must not
