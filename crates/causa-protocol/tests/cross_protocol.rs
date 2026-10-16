@@ -247,7 +247,10 @@ fn tool_result_notes_and_media_render_with_their_own_result() {
 
     let frame = joined_frame(vec![], turn);
     let mut media = MediaSet::new();
-    media.insert("search-image", MediaPayload::new("image/png", "aGVsbG8="));
+    media.insert(
+        "search-image",
+        MediaPayload::inline("image/png", "aGVsbG8="),
+    );
     let model = ModelRef::new("test-model");
     let generation = GenerationOptions::default().with_max_tokens(1024);
     let anthropic = render_anthropic_messages(

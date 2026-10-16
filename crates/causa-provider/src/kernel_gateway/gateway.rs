@@ -12,7 +12,7 @@ use causa_kernel::{
     BlockContent, CallControl, ContentPart, MediaRef, ModelGateway, ModelInvokeError, ModelOutput,
     ModelRequest,
 };
-use causa_protocol::translation::media::MediaSet;
+use causa_protocol::translation::media::{MediaSet, MediaSource};
 use causa_protocol::translation::render_options::{
     AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
 };
@@ -178,10 +178,17 @@ impl<C: KernelGatewayConfig> KernelHttpGateway<C> {
             }
         }
         for r in refs {
-            if let Some(payload) = resolver.resolve(&r)
-                && payload.data_base64.len() * 3 / 4 <= self.max_inline_media_bytes
-            {
-                set.insert(r.reference, payload);
+            if let Some(payload) = resolver.resolve(&r) {
+                let within_ceiling = match &payload.source {
+                    MediaSource::Inline { data_base64 } => {
+                        data_base64.len() * 3 / 4 <= self.max_inline_media_bytes
+                    }
+                    // Only inline bytes count toward the ceiling; the gateway never fetches URLs.
+                    _ => true,
+                };
+                if within_ceiling {
+                    set.insert(r.reference, payload);
+                }
             }
         }
         set

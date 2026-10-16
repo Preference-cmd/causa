@@ -568,7 +568,7 @@ async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoi
     req.generation.temperature = Some(0.25);
     req.generation.max_tokens = Some(123);
     let media: Arc<std::collections::HashMap<String, MediaPayload>> =
-        Arc::new([("asset".into(), MediaPayload::new("image/png", "AAAA"))].into());
+        Arc::new([("asset".into(), MediaPayload::inline("image/png", "AAAA"))].into());
     for index in 0..3 {
         let server = MockServer::start().await;
         let complete = match index {

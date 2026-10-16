@@ -398,7 +398,7 @@ async fn invoke_emits_the_agent_http_span() {
 // ---- media resolution -----------------------------------------------------------
 
 use causa_kernel::{BlockContent, BlockMeta, ContentPart, MediaRef, TextPayload};
-use causa_protocol::translation::media::MediaPayload;
+use causa_protocol::translation::media::{MediaPayload, MediaSource};
 use causa_provider::MediaResolver;
 use std::collections::HashMap;
 
@@ -430,7 +430,7 @@ async fn resolved_media_rides_the_wire_as_image_blocks() {
     let server = MockServer::start().await;
     let asset_table: HashMap<String, MediaPayload> = [(
         "asset-1".to_string(),
-        MediaPayload::new("image/png", "AAAA"),
+        MediaPayload::inline("image/png", "AAAA"),
     )]
     .into();
     let mock = Mock::given(method("POST"))
@@ -472,8 +472,11 @@ async fn oversized_media_degrades_like_a_miss() {
     // payload of 4 MiB decoded bytes exceeds nothing at the default 5 MiB
     // ceiling — so shrink the ceiling instead and watch the big payload go
     let huge = "A".repeat(1024);
-    let asset_table: HashMap<String, MediaPayload> =
-        [("asset-1".to_string(), MediaPayload::new("image/png", huge))].into();
+    let asset_table: HashMap<String, MediaPayload> = [(
+        "asset-1".to_string(),
+        MediaPayload::inline("image/png", huge),
+    )]
+    .into();
     let mock = Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_string_contains("[media: image/png asset-1]"))
@@ -493,10 +496,13 @@ async fn hash_map_asset_table_resolves_by_reference() {
     // the blanket impl: a plain table IS a MediaResolver
     let table: HashMap<String, MediaPayload> = [(
         "asset-1".to_string(),
-        MediaPayload::new("image/png", "AAAA"),
+        MediaPayload::inline("image/png", "AAAA"),
     )]
     .into();
     let payload = MediaResolver::resolve(&table, &MediaRef::new("image/png", "asset-1"));
-    assert_eq!(payload.unwrap().data_base64, "AAAA");
+    match payload.unwrap().source {
+        MediaSource::Inline { data_base64 } => assert_eq!(data_base64, "AAAA"),
+        _ => panic!("expected inline source"),
+    }
     assert!(MediaResolver::resolve(&table, &MediaRef::new("image/png", "nope")).is_none());
 }

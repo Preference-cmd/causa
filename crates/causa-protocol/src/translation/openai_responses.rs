@@ -784,7 +784,7 @@ mod tests {
 
     fn resolved(reference: &str) -> MediaSet {
         let mut m = MediaSet::new();
-        m.insert(reference, MediaPayload::new("image/png", "AAAA"));
+        m.insert(reference, MediaPayload::inline("image/png", "AAAA"));
         m
     }
 
@@ -868,7 +868,7 @@ mod tests {
             result(3, "kc2", ToolResultStatus::Succeeded, json!("no chart")),
         ]);
         let mut media = MediaSet::new();
-        media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
+        media.insert("asset-1", MediaPayload::inline("image/png", "AAAA"));
         // asset-2 unresolved -> placeholder item in the same output array
         let v = render_openai_responses_input(
             &f,

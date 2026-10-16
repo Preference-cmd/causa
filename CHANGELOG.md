@@ -12,6 +12,18 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Breaking
+
+- `MediaPayload::data_base64` is replaced by `source: MediaSource`, where
+  `MediaSource` is a new enum with `Inline { data_base64 }` and `Url(String)`
+  variants. The old constructor `MediaPayload::new(media_type, data_base64)` is
+  removed. `MediaSource::Url` renders as a deterministic text placeholder
+  `[media: {type} {reference}]` in this version.
+
+  Migration: replace `MediaPayload::new(t, b64)` with
+  `MediaPayload::inline(t, b64)`. Code reading `payload.data_base64` matches
+  `payload.source` (`MediaSource::Inline { data_base64 }`).
+
 ### Changed
 
 - On OpenAI Chat Completions and Responses, one user `Message` block now

@@ -793,7 +793,7 @@ mod tests {
 
     fn resolved(reference: &str) -> MediaSet {
         let mut m = MediaSet::new();
-        m.insert(reference, MediaPayload::new("image/png", "AAAA"));
+        m.insert(reference, MediaPayload::inline("image/png", "AAAA"));
         m
     }
 
@@ -883,8 +883,8 @@ mod tests {
             ),
         ]);
         let mut media = MediaSet::new();
-        media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
-        media.insert("asset-2", MediaPayload::new("image/jpeg", "BBBB"));
+        media.insert("asset-1", MediaPayload::inline("image/png", "AAAA"));
+        media.insert("asset-2", MediaPayload::inline("image/jpeg", "BBBB"));
         let v = render_openai_chat_messages(
             &f,
             &media,
@@ -926,8 +926,8 @@ mod tests {
             ),
         ]);
         let mut media = MediaSet::new();
-        media.insert("good", MediaPayload::new("image/png", "AAAA"));
-        media.insert("doc", MediaPayload::new("application/pdf", "BBBB"));
+        media.insert("good", MediaPayload::inline("image/png", "AAAA"));
+        media.insert("doc", MediaPayload::inline("application/pdf", "BBBB"));
         let v = render_openai_chat_messages(
             &f,
             &media,

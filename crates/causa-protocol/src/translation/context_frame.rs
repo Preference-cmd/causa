@@ -67,7 +67,7 @@ use causa_kernel::{
 
 pub(crate) use causa_kernel::Role;
 
-use super::media::MediaSet;
+use super::media::{MediaSet, MediaSource};
 use crate::Protocol;
 
 /// One media attachment as the emitters consume it: the walk's single
@@ -96,13 +96,20 @@ fn resolve_media(r: &MediaRef, role: Role, media: &MediaSet) -> ResolvedMedia {
         return ResolvedMedia::Placeholder(placeholder_text(r));
     }
     match media.get(r) {
-        Some(p) if p.media_type.starts_with("image/") && !p.data_base64.is_empty() => {
-            ResolvedMedia::Image {
-                media_type: p.media_type.clone(),
-                data_base64: p.data_base64.clone(),
+        Some(p) => match &p.source {
+            MediaSource::Inline { data_base64 }
+                if p.media_type.starts_with("image/") && !data_base64.is_empty() =>
+            {
+                ResolvedMedia::Image {
+                    media_type: p.media_type.clone(),
+                    data_base64: data_base64.clone(),
+                }
             }
-        }
-        // resolved but not a renderable image, or not resolved at all
+            // not a renderable inline image: another media type, an empty payload,
+            // or a URL (only inline bytes reach the wire)
+            _ => ResolvedMedia::Placeholder(placeholder_text(r)),
+        },
+        // not resolved at all
         _ => ResolvedMedia::Placeholder(placeholder_text(r)),
     }
 }

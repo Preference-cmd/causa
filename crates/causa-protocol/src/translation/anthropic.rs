@@ -1021,7 +1021,7 @@ mod tests {
 
     fn resolved(reference: &str) -> MediaSet {
         let mut m = MediaSet::new();
-        m.insert(reference, MediaPayload::new("image/png", "AAAA"));
+        m.insert(reference, MediaPayload::inline("image/png", "AAAA"));
         m
     }
 
@@ -1086,7 +1086,7 @@ mod tests {
             Role::User,
         )]);
         let mut media = MediaSet::new();
-        media.insert("doc-1", MediaPayload::new("application/pdf", "AAAA"));
+        media.insert("doc-1", MediaPayload::inline("application/pdf", "AAAA"));
         let v = render_anthropic_messages(
             &f,
             &media,
@@ -1141,7 +1141,7 @@ mod tests {
             ),
         ]);
         let mut media = MediaSet::new();
-        media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
+        media.insert("asset-1", MediaPayload::inline("image/png", "AAAA"));
         // asset-2 deliberately unregistered -> placeholder inside the array
         let v = render_anthropic_messages(
             &f,

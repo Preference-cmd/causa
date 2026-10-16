@@ -1,5 +1,5 @@
 //! The media-resolution seam: host-injected lookup that turns
-//! fact-level [`MediaRef`]s into renderable inline payloads.
+//! fact-level [`MediaRef`]s into renderable payloads.
 //!
 //! The resolver lives provider-side because only the render path needs
 //! bytes; the kernel stays reference-only and the reference frame policy
@@ -11,7 +11,7 @@
 //! render loop. `None` is the single failure shape — the reference then
 //! degrades to the deterministic text placeholder at render time.
 //!
-//! The gateway drops payloads beyond its inline ceiling (they degrade
+//! The gateway drops inline payloads beyond its inline ceiling (they degrade
 //! like misses), and the renderers inline only `image/*`. Hosts should
 //! pre-filter their asset table to the supported set (`image/png`,
 //! `image/jpeg`, `image/gif`, `image/webp`).

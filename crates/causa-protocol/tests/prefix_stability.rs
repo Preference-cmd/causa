@@ -473,7 +473,7 @@ fn strip_cache_control(value: &mut Value) {
 #[test]
 fn an_unedited_media_reference_renders_the_same_value_on_every_round() {
     let mut media = MediaSet::new();
-    media.insert("asset-1", MediaPayload::new("image/png", "AAAA"));
+    media.insert("asset-1", MediaPayload::inline("image/png", "AAAA"));
     let f = frame(vec![
         block(
             "u0",
@@ -512,7 +512,7 @@ fn an_unedited_media_reference_renders_the_same_value_on_every_round() {
     // (the walk inlines every `image/*`; the host pre-filters the rest).
     for set in [MediaSet::new(), {
         let mut unsupported = MediaSet::new();
-        unsupported.insert("asset-1", MediaPayload::new("audio/mpeg", "AAAA"));
+        unsupported.insert("asset-1", MediaPayload::inline("audio/mpeg", "AAAA"));
         unsupported
     }] {
         let degraded = |f: &ContextFrame| {
