@@ -12,6 +12,16 @@ adapters or data converters.
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-10-16
+
+Media payloads reach the model in more forms. A resolved payload is inline
+bytes or a URL, and URL images render on all three protocols; Anthropic
+Messages renders PDF documents, while OpenAI Chat Completions and Responses
+degrade them to text placeholders. Media references can carry a file name,
+and the gateway's inline ceiling is set per media kind. On the OpenAI
+protocols a user message and its tool media now stay whole, and MCP binary
+content no longer leaks into tool output text.
+
 ### Breaking
 
 - `KernelHttpGateway::with_max_inline_media_bytes` takes the media kind it

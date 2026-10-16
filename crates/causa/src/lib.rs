@@ -16,19 +16,19 @@
 //! offline audit or minimal embedding. Choose one dependency declaration:
 //!
 //! ```toml
-//! causa = "0.0.5" # default: runtime + providers
+//! causa = "0.0.6" # default: runtime + providers
 //! ```
 //!
 //! ```toml
-//! causa = { version = "0.0.5", features = ["full"] } # + MCP extensions
+//! causa = { version = "0.0.6", features = ["full"] } # + MCP extensions
 //! ```
 //!
 //! ```toml
-//! causa = { version = "0.0.5", default-features = false } # kernel only
+//! causa = { version = "0.0.6", default-features = false } # kernel only
 //! ```
 //!
 //! ```toml
-//! causa = { version = "0.0.5", default-features = false, features = ["runtime"] }
+//! causa = { version = "0.0.6", default-features = false, features = ["runtime"] }
 //! ```
 //!
 //! The fine-grained crates (`causa-kernel`, `causa-runtime`, …) remain
