@@ -51,10 +51,10 @@ command list below.
 This list mirrors CI; a change is ready when all of it passes.
 
 ```bash
-cargo test --workspace                    # full suite (also builds examples)
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --locked           # full suite (also builds examples)
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check                   # run `cargo fmt --all` first
-cargo +1.96.0 check --workspace --all-targets          # MSRV
+cargo +1.96.0 check --workspace --all-targets --locked # MSRV
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
 
 # The consumers are separate workspaces: the commands above do not reach
@@ -77,10 +77,10 @@ cargo deny check                          # advisories, licenses, sources (deny.
 # CI also runs cargo-machete for unused dependencies; install it to run locally.
 
 # Feature matrix:
-cargo check -p causa
-cargo check -p causa --no-default-features
-cargo check -p causa --features full
-cargo check -p causa-extension --no-default-features
+cargo check -p causa --locked
+cargo check -p causa --no-default-features --locked
+cargo check -p causa --features full --locked
+cargo check -p causa-extension --no-default-features --locked
 ```
 
 Stable toolchain for development, MSRV **1.96**, edition 2024. Do not raise
