@@ -73,6 +73,7 @@ bash .github/scripts/check-dependency-directions.sh   # layering guard
 python3 .github/scripts/check-module-layout.py        # library source layout
 python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
 python3 -m unittest discover -s .github/scripts -p 'test_release.py'
+python3 .github/scripts/check-commit-messages.py range origin/main HEAD  # breaking commits update CHANGELOG.md
 cargo deny check                          # advisories, licenses, sources (deny.toml)
 # CI also runs cargo-machete for unused dependencies; install it to run locally.
 
@@ -82,6 +83,11 @@ cargo check -p causa --no-default-features --locked
 cargo check -p causa --features full --locked
 cargo check -p causa-extension --no-default-features --locked
 ```
+
+Git hooks: `brew install lefthook`, then `lefthook install` once per clone
+(`lefthook.yml`). They run fmt, the layout guard and the commit-message check
+on commit, and clippy with the layering guard on push. They only report
+early; the list above, run by CI, is the gate.
 
 Stable toolchain for development, MSRV **1.96**, edition 2024. Do not raise
 `rust-version` or add a dependency without a reason stated in the commit.
@@ -180,5 +186,9 @@ In shell guards, match the facade as `"causa v"`; bare `causa` also matches
   file is not created. Private submodules re-exported at `foo.rs` keep paths
   flat (`crate::driver::TurnOutcome`); `pub mod` is only for nested surfaces
   (`ports`, `context`).
-- Commits follow Conventional Commits (`feat:`, `fix:`, `refactor!:`,
-  `chore:`, `docs:`), one logical change each.
+- Commits follow Conventional Commits, one logical change each. The title
+  type is one of `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `chore`,
+  `ci` or `build`, with an optional `(scope)`; merge and revert titles are
+  exempt. A breaking commit (`!` before the colon, or a `BREAKING CHANGE:`
+  footer) changes `CHANGELOG.md` in the same push; the commit-msg hook and
+  CI both check it.

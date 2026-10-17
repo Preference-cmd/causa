@@ -100,6 +100,21 @@ jobs:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  breaking-changes:
+    # Backs up the commit-msg hook: a breaking commit in the pushed range
+    # needs a CHANGELOG.md change in the same range.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Breaking commits update CHANGELOG.md
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 .github/scripts/check-commit-messages.py range "$BASE" "$HEAD"
+
   release-checks:
     runs-on: ubuntu-26.04
     timeout-minutes: 30

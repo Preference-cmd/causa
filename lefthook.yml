@@ -1,0 +1,35 @@
+# Local git hooks. Install once with `brew install lefthook` (or any
+# lefthook binary), then run `lefthook install` in the repository root.
+# The hooks run only the fast checks and report early; CI stays the gate
+# and runs the full command list in AGENTS.md.
+
+glob_matcher: doublestar
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: fmt
+      glob: "{crates/**/*.rs,Cargo.toml}"
+      run: cargo fmt --all --check
+    - name: fmt material-flow
+      glob: "tests/consumers/material-flow/**/*.rs"
+      run: cargo fmt --manifest-path tests/consumers/material-flow/Cargo.toml --all --check
+    - name: fmt provider-streaming
+      glob: "tests/consumers/provider-streaming/**/*.rs"
+      run: cargo fmt --manifest-path tests/consumers/provider-streaming/Cargo.toml --all --check
+    - name: module layout
+      glob: "crates/**"
+      run: python3 .github/scripts/check-module-layout.py
+
+commit-msg:
+  jobs:
+    - name: commit message
+      run: python3 .github/scripts/check-commit-messages.py message {1}
+
+pre-push:
+  parallel: true
+  jobs:
+    - name: clippy
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
+    - name: layering
+      run: bash .github/scripts/check-dependency-directions.sh

@@ -93,5 +93,120 @@ class GuardTests(unittest.TestCase):
         self.assertNotEqual(self.dependencies(cargo_error=True).returncode, 0)
 
 
+class CommitMessageTests(unittest.TestCase):
+    """The commit-msg hook and the CI range check share one rule set."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.env = dict(
+            os.environ,
+            GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
+            GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
+            GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+        )
+        self.git("init", "-q", "-b", "main")
+        self.commit("chore: start", {"README.md": "start"})
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", *args], cwd=self.root, env=self.env,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    def stage(self, files):
+        for name, text in files.items():
+            (self.root / name).write_text(text)
+            self.git("add", name)
+
+    def commit(self, message, files):
+        self.stage(files)
+        self.git("commit", "-q", "--no-verify", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def check(self, *args):
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / "check-commit-messages.py"), *args],
+            cwd=self.root, env=self.env, capture_output=True, text=True,
+        )
+
+    def message(self, text, staged=None):
+        self.stage(staged or {})
+        path = self.root / ".git" / "COMMIT_EDITMSG"
+        path.write_text(text)
+        return self.check("message", str(path))
+
+    def test_conventional_titles_pass(self):
+        for title in ["feat: add x", "fix(provider): y", "ci: z", "refactor!: w"]:
+            with self.subTest(title=title):
+                staged = {"CHANGELOG.md": title} if "!" in title else None
+                self.assertEqual(self.message(title + "\n", staged).returncode, 0)
+
+    def test_free_form_title_is_rejected(self):
+        result = self.message("update stuff\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Conventional Commits", result.stderr)
+
+    def test_merge_and_revert_titles_are_exempt(self):
+        for title in ["Merge branch 'x'", 'Revert "feat: add x"']:
+            with self.subTest(title=title):
+                self.assertEqual(self.message(title + "\n").returncode, 0)
+
+    def test_comment_lines_are_ignored(self):
+        text = "# Please enter the commit message\nfeat: add x\n# trailing note\n"
+        self.assertEqual(self.message(text).returncode, 0)
+
+    def test_breaking_title_needs_a_staged_changelog(self):
+        self.stage({"lib.rs": "x"})
+        result = self.message("feat!: drop x\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CHANGELOG.md", result.stderr)
+        self.assertEqual(self.message("feat!: drop x\n", {"CHANGELOG.md": "x"}).returncode, 0)
+
+    def test_breaking_footer_needs_a_staged_changelog(self):
+        text = "feat: drop x\n\nBREAKING CHANGE: x is gone\n"
+        self.assertNotEqual(self.message(text, {"lib.rs": "x"}).returncode, 0)
+
+    def test_amending_a_breaking_commit_keeps_its_changelog(self):
+        self.commit("feat!: drop x", {"CHANGELOG.md": "x", "lib.rs": "x"})
+        self.assertEqual(self.message("feat!: drop x\n", {"lib.rs": "y"}).returncode, 0)
+
+    def test_range_with_breaking_commit_and_no_changelog_fails(self):
+        base = self.git("rev-parse", "HEAD")
+        self.commit("feat!: drop x", {"lib.rs": "x"})
+        head = self.commit("docs: note", {"notes.md": "x"})
+        result = self.check("range", base, head)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("feat!: drop x", result.stderr)
+
+    def test_range_with_changelog_in_a_later_commit_passes(self):
+        base = self.git("rev-parse", "HEAD")
+        self.commit("feat!: drop x", {"lib.rs": "x"})
+        head = self.commit("docs: record the break", {"CHANGELOG.md": "x"})
+        self.assertEqual(self.check("range", base, head).returncode, 0)
+
+    def test_range_reads_the_breaking_footer(self):
+        base = self.git("rev-parse", "HEAD")
+        head = self.commit("feat: drop x\n\nBREAKING CHANGE: x is gone", {"lib.rs": "x"})
+        self.assertNotEqual(self.check("range", base, head).returncode, 0)
+
+    def test_range_ignores_titles_and_merges(self):
+        base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "side")
+        self.commit("update stuff", {"side.md": "x"})
+        self.git("checkout", "-q", "main")
+        self.commit("fix: y", {"main.md": "y"})
+        self.git("merge", "-q", "--no-ff", "--no-verify", "-m", "Merge branch 'side'", "side")
+        head = self.git("rev-parse", "HEAD")
+        self.assertEqual(self.check("range", base, head).returncode, 0)
+
+    def test_unknown_base_checks_head_alone(self):
+        head = self.commit("feat!: drop x", {"lib.rs": "x"})
+        self.assertNotEqual(self.check("range", "0" * 40, head).returncode, 0)
+        head = self.commit("feat!: drop y", {"CHANGELOG.md": "y"})
+        self.assertEqual(self.check("range", "f" * 40, head).returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
