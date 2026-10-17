@@ -73,6 +73,7 @@ bash .github/scripts/check-dependency-directions.sh   # layering guard
 python3 .github/scripts/check-module-layout.py        # library source layout
 python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
 python3 -m unittest discover -s .github/scripts -p 'test_release.py'
+cargo deny check                          # advisories, licenses, sources (deny.toml)
 # CI also runs cargo-machete for unused dependencies; install it to run locally.
 
 # Feature matrix:

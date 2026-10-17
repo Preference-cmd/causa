@@ -1,0 +1,42 @@
+# cargo-deny: security advisories, licenses, duplicate versions and
+# dependency sources for the workspace graph (dev-dependencies included).
+# CI runs `cargo deny check` as its own job.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory fails the check, unmaintained and unsound included; an
+# accepted one goes in `ignore` with the reason beside it.
+ignore = []
+
+[licenses]
+# Measured against the dependency graph: each entry is needed by at least
+# one dependency that offers no license already listed here.
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# The workspace crates carry the repository license and are not checked.
+ignore = true
+
+[bans]
+# Several versions of one crate are common in an async stack; report
+# them without failing.
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between the workspace crates also carry a version, so
+# they are not wildcards.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

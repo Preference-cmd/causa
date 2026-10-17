@@ -76,6 +76,14 @@ jobs:
       - name: Check unused dependencies
         uses: bnjbvr/cargo-machete@v0.9.2
 
+  cargo-deny:
+    # Advisories, licenses, duplicate versions and sources; deny.toml
+    # holds the policy.
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
   release-checks:
     runs-on: ubuntu-26.04
     steps:
