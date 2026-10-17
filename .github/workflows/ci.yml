@@ -6,12 +6,23 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run. Every other run
+# (pushes to main, the call from Publish) gets a group of its own, so
+# none is cancelled or left pending behind another.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   fmt:
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -23,6 +34,7 @@ jobs:
 
   clippy:
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -35,6 +47,7 @@ jobs:
 
   test:
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -52,6 +65,7 @@ jobs:
     # MSRV 1.96 is the declared floor (workspace rust-version); check
     # compiles everything without needing the full test run.
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -66,6 +80,7 @@ jobs:
     # Architectural layering is machine-enforced, not
     # left to review.
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -80,12 +95,14 @@ jobs:
     # Advisories, licenses, duplicate versions and sources; deny.toml
     # holds the policy.
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   release-checks:
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
