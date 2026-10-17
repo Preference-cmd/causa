@@ -1,0 +1,30 @@
+# Weekly version updates, one grouped pull request per ecosystem. Security
+# updates for advisories are separate and follow the repository setting.
+# The consumer workspaces under tests/consumers keep their own lockfiles
+# and are updated by hand together with the root one.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # A compatible release only moves Cargo.lock; the published crates
+    # keep their minimum requirements. A release outside the requirement
+    # widens it and needs review like any dependency change.
+    versioning-strategy: increase-if-necessary
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo:
+        patterns: ["*"]
