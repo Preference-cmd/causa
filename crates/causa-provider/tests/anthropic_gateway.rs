@@ -398,8 +398,7 @@ async fn invoke_emits_the_agent_http_span() {
 // ---- media resolution -----------------------------------------------------------
 
 use causa_kernel::{BlockContent, BlockMeta, ContentPart, MediaRef, TextPayload};
-use causa_protocol::translation::media::{MediaKind, MediaPayload, MediaSource};
-use causa_provider::MediaResolver;
+use causa_provider::{MediaKind, MediaPayload, MediaResolver, MediaSource};
 use std::collections::HashMap;
 
 fn media_frame() -> ContextFrame {

@@ -532,7 +532,7 @@ async fn stream_and_invoke_share_media_tools_cache_generation_headers_and_endpoi
         BlockContent, BlockId, BlockMeta, ContentPart, ContextBlock, MediaRef, TextPayload,
         ToolChange, ToolDefinition,
     };
-    use causa_protocol::translation::media::MediaPayload;
+    use causa_provider::MediaPayload;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{body_partial_json, method},

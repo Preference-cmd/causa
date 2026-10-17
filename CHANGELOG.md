@@ -12,6 +12,12 @@ adapters or data converters.
 
 ## [Unreleased]
 
+### Added
+
+- `causa-provider` re-exports `MediaPayload` and `MediaSource` beside
+  `MediaKind`, so a custom `MediaResolver` no longer needs a direct
+  `causa-protocol` dependency.
+
 ## [0.0.6] - 2026-10-16
 
 Media payloads reach the model in more forms. A resolved payload is inline

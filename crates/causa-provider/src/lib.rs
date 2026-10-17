@@ -143,5 +143,6 @@ pub use causa_protocol::translation::render_options::{
 /// Resource limits for the transport-free streaming decoder.
 pub use causa_protocol::translation::streaming::StreamLimits;
 
-/// The media kind an inline ceiling applies to.
-pub use causa_protocol::translation::media::MediaKind;
+/// Media vocabulary a [`MediaResolver`] answers with, and the kind an
+/// inline ceiling applies to.
+pub use causa_protocol::translation::media::{MediaKind, MediaPayload, MediaSource};

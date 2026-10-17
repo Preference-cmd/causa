@@ -82,10 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // media references resolve to inline payloads at render time. The
     // table is prefetched before the turn; misses degrade to a
     // deterministic text placeholder.
-    let asset_table: std::collections::HashMap<
-        String,
-        causa_protocol::translation::media::MediaPayload,
-    > = std::collections::HashMap::new();
+    let asset_table: std::collections::HashMap<String, causa_provider::MediaPayload> =
+        std::collections::HashMap::new();
     let gateway = Arc::new(
         AnthropicMessagesGateway::new(api_key)
             .with_media_resolver(std::sync::Arc::new(asset_table)),
