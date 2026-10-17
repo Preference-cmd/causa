@@ -14,7 +14,7 @@ use causa_kernel::{
 };
 use causa_protocol::translation::media::{MediaKind, MediaSet, MediaSource};
 use causa_protocol::translation::render_options::{
-    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+    AnthropicRenderOptions, ChatMaxTokensField, ChatRenderOptions, ResponsesRenderOptions,
 };
 use causa_protocol::translation::streaming::{
     StreamDecoder, StreamLimits, configure_stream_request,
@@ -309,6 +309,18 @@ impl KernelHttpGateway<OpenAiChatGatewayConfig> {
     /// value, not per request: a host that needs both holds two gateways.
     pub fn with_reasoning_content_replay(mut self, replay: bool) -> Self {
         self.config.render_options.replay_reasoning_content = replay;
+        self
+    }
+
+    /// Choose the request field that carries the output limit (default
+    /// [`ChatMaxTokensField::MaxCompletionTokens`]).
+    ///
+    /// Only the chosen field is sent. [`ChatMaxTokensField::MaxTokens`] is
+    /// for a server that reads only the older `max_tokens`; a server that
+    /// does not read the chosen field applies no limit and reports no error.
+    /// The choice is per gateway value, not per request.
+    pub fn with_max_tokens_field(mut self, field: ChatMaxTokensField) -> Self {
+        self.config.render_options.max_tokens_field = field;
         self
     }
 }

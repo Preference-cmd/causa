@@ -113,7 +113,8 @@ impl Default for ResponsesRenderOptions {
 /// Configuration, not context: see the module docs for what the serialized form
 /// promises and who decides support.
 ///
-/// `Default` replays sealed `reasoning_content`.
+/// `Default` replays sealed `reasoning_content` and writes the output limit
+/// as `max_completion_tokens`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
@@ -126,12 +127,45 @@ pub struct ChatRenderOptions {
     /// sealed items — dropping an item that carries nothing else — and changes
     /// nothing else. Other sealed message fields still replay.
     pub replay_reasoning_content: bool,
+    /// The request field that carries `GenerationOptions::max_tokens`
+    /// (default [`ChatMaxTokensField::MaxCompletionTokens`]). Only the chosen
+    /// field is written. A server that does not read the chosen field
+    /// applies no limit and reports no error, so the response can run past
+    /// the host's limit.
+    pub max_tokens_field: ChatMaxTokensField,
 }
 
 impl Default for ChatRenderOptions {
     fn default() -> Self {
         Self {
             replay_reasoning_content: true,
+            max_tokens_field: ChatMaxTokensField::default(),
+        }
+    }
+}
+
+/// The Chat Completions request field that carries the output limit.
+///
+/// Serialized as the wire field name. Exhaustive: the Chat renderer is total
+/// over it, so a new variant is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMaxTokensField {
+    /// `max_completion_tokens`, the field OpenAI documents. It counts
+    /// reasoning tokens as well as visible output.
+    #[default]
+    MaxCompletionTokens,
+    /// `max_tokens`, the older name, which OpenAI has deprecated and which
+    /// some compatible servers still read in its place.
+    MaxTokens,
+}
+
+impl ChatMaxTokensField {
+    /// The request field name this value writes.
+    pub fn field_name(self) -> &'static str {
+        match self {
+            Self::MaxCompletionTokens => "max_completion_tokens",
+            Self::MaxTokens => "max_tokens",
         }
     }
 }
@@ -182,7 +216,34 @@ mod tests {
         round_trip(ChatRenderOptions::default());
         round_trip(ChatRenderOptions {
             replay_reasoning_content: false,
+            max_tokens_field: ChatMaxTokensField::MaxTokens,
         });
+    }
+
+    #[test]
+    fn chat_max_tokens_field_uses_the_wire_names() {
+        let chat: ChatRenderOptions =
+            serde_json::from_str(r#"{"max_tokens_field": "max_tokens"}"#).unwrap();
+        assert_eq!(chat.max_tokens_field, ChatMaxTokensField::MaxTokens);
+        assert!(chat.replay_reasoning_content);
+        for field in [
+            ChatMaxTokensField::MaxCompletionTokens,
+            ChatMaxTokensField::MaxTokens,
+        ] {
+            assert_eq!(
+                serde_json::to_value(field).unwrap(),
+                serde_json::Value::from(field.field_name())
+            );
+        }
+
+        let err = serde_json::from_str::<ChatRenderOptions>(
+            r#"{"max_tokens_field": "max_output_tokens"}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown variant `max_output_tokens`")
+        );
     }
 
     #[test]

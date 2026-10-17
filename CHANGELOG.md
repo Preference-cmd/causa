@@ -14,6 +14,13 @@ adapters or data converters.
 
 ### Added
 
+- OpenAI Chat can send the output limit as `max_tokens` instead of
+  `max_completion_tokens`, for servers that read only the older name:
+  `ChatRenderOptions::max_tokens_field` takes a `ChatMaxTokensField`
+  (serialized as the field name), set with
+  `OpenAiChatCompletionsGateway::with_max_tokens_field` or
+  `with_render_options`. Only the chosen field is sent; the default is
+  unchanged.
 - `causa-provider` re-exports `MediaPayload` and `MediaSource` beside
   `MediaKind`, so a custom `MediaResolver` no longer needs a direct
   `causa-protocol` dependency.

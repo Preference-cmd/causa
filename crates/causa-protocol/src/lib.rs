@@ -26,8 +26,9 @@
 //! # Protocol options and wire rendering
 //!
 //! - **Generation options**: OpenAI Chat renders `max_tokens` as
-//!   `max_completion_tokens`, Responses renders it as `max_output_tokens`,
-//!   and Anthropic renders it as `max_tokens`. `None` omits the limit on the
+//!   `max_completion_tokens` (or `max_tokens`, by its render option),
+//!   Responses renders it as `max_output_tokens`, and Anthropic renders it
+//!   as `max_tokens`. `None` omits the limit on the
 //!   two OpenAI wires; Anthropic requires the field, so that renderer rejects
 //!   a missing value before any HTTP.
 //! - **Reasoning effort**: a string, written as the host gave it to OpenAI

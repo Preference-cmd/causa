@@ -64,9 +64,11 @@
 //!   `ToolChange` blocks. Chat has no wire form for a change at a position,
 //!   so a change rewrites `tools`.
 //! - Output limits use `max_completion_tokens`, including reasoning tokens;
-//!   no default limit is injected. Effort renders as `reasoning_effort`,
-//!   exactly as given and beside any temperature. Which effort values and
-//!   tools a model supports is the host's knowledge.
+//!   [`ChatRenderOptions::max_tokens_field`] switches to the older
+//!   `max_tokens` for a server that reads only that, and only the chosen
+//!   field is written. No default limit is injected. Effort renders as
+//!   `reasoning_effort`, exactly as given and beside any temperature. Which
+//!   effort values and tools a model supports is the host's knowledge.
 
 use serde_json::{Value, json};
 
@@ -289,7 +291,7 @@ pub fn render_openai_chat_messages(
         body["temperature"] = json!(temperature);
     }
     if let Some(max_tokens) = generation.max_tokens {
-        body["max_completion_tokens"] = json!(max_tokens);
+        body[options.max_tokens_field.field_name()] = json!(max_tokens);
     }
     if let Some(effort) = &generation.reasoning_effort {
         body["reasoning_effort"] = json!(effort);

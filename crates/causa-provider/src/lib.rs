@@ -137,7 +137,7 @@ pub use media::MediaResolver;
 
 /// Per-protocol render options for gateway configuration.
 pub use causa_protocol::translation::render_options::{
-    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+    AnthropicRenderOptions, ChatMaxTokensField, ChatRenderOptions, ResponsesRenderOptions,
 };
 
 /// Resource limits for the transport-free streaming decoder.

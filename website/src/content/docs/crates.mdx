@@ -46,7 +46,9 @@ the request, an object joining the object the adapter wrote under the same
 key (`reasoning.summary` beside `reasoning.effort`) and any other value the
 adapter wrote being kept. A value the provider refuses comes back as the provider's error. Output
 limits render as `max_completion_tokens`, `max_output_tokens` and
-`max_tokens`, and include reasoning tokens where counted. Anthropic requests
+`max_tokens`, and include reasoning tokens where counted. For a Chat server
+that reads only the older `max_tokens`, `with_max_tokens_field` sends the
+limit under that name instead; only one of the two is sent. Anthropic requests
 must set `max_tokens`; that adapter supplies no default.
 
 Reasoning items that have to be echoed back are stored as sealed parts:

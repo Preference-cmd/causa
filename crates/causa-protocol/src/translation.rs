@@ -65,7 +65,7 @@
 //! Each renderer takes one renderer-specific argument, defined in
 //! [`render_options`]: Anthropic native tool changes, Responses
 //! `include`/`store` and `additional_tools`, and the Chat
-//! `reasoning_content` replay opt-out.
+//! `reasoning_content` replay opt-out and output-limit field.
 
 /// The schema name rendered into OpenAI-family structured-output envelopes
 /// (Chat `response_format.json_schema.name`, Responses `text.format.name`).

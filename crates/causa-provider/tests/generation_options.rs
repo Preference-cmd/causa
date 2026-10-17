@@ -5,7 +5,8 @@ use causa_kernel::{
     StreamDelta, TurnId,
 };
 use causa_provider::{
-    AnthropicMessagesGateway, OpenAiChatCompletionsGateway, OpenAiResponsesGateway,
+    AnthropicMessagesGateway, ChatMaxTokensField, ChatRenderOptions, OpenAiChatCompletionsGateway,
+    OpenAiResponsesGateway,
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -283,4 +284,57 @@ async fn invalid_generation_options_never_send_batch_or_stream_http() {
         }
     }
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn chat_gateway_sends_the_limit_under_the_chosen_field() {
+    let server = MockServer::start().await;
+    let base_url = format!("{}/v1", server.uri());
+    let mut options = ChatRenderOptions::default();
+    options.max_tokens_field = ChatMaxTokensField::MaxTokens;
+    let gateways = [
+        OpenAiChatCompletionsGateway::new("test")
+            .with_base_url(base_url.clone())
+            .with_max_tokens_field(ChatMaxTokensField::MaxTokens),
+        OpenAiChatCompletionsGateway::new("test")
+            .with_base_url(base_url)
+            .with_render_options(options),
+    ];
+    let mut generation = GenerationOptions::default();
+    generation.max_tokens = Some(300);
+    let request = request(generation);
+    let (endpoint, batch_response, stream_response) = fixture(0);
+    for gateway in &gateways {
+        for streaming in [false, true] {
+            server.reset().await;
+            let response = if streaming {
+                ResponseTemplate::new(200)
+                    .set_body_raw(stream_response.as_bytes().to_vec(), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(&batch_response)
+            };
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .and(body_partial_json(json!({"max_tokens": 300})))
+                .respond_with(response)
+                .expect(1)
+                .mount(&server)
+                .await;
+            if streaming {
+                let mut stream = gateway.stream(&request, &control()).await.unwrap();
+                while let Some(delta) = stream.next().await {
+                    assert!(!matches!(delta, StreamDelta::Error { .. }), "{delta:?}");
+                    if matches!(delta, StreamDelta::Done { .. }) {
+                        break;
+                    }
+                }
+            } else {
+                gateway.invoke(&request, &control()).await.unwrap();
+            }
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+            assert!(body.get("max_completion_tokens").is_none());
+        }
+    }
 }

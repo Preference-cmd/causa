@@ -5,7 +5,7 @@ use causa_kernel::{
     ModelInvokeErrorKind, ModelRef, Role,
 };
 use causa_protocol::translation::render_options::{
-    AnthropicRenderOptions, ChatRenderOptions, ResponsesRenderOptions,
+    AnthropicRenderOptions, ChatMaxTokensField, ChatRenderOptions, ResponsesRenderOptions,
 };
 use causa_protocol::translation::{
     anthropic::render_anthropic_messages, media::MediaSet,
@@ -223,6 +223,37 @@ fn a_null_extra_field_is_sent_and_a_null_extra_body_reads_as_empty() {
         serde_json::from_value(json!({"extra_body": {"top_k": 40}})).unwrap();
     assert_eq!(read.extra_body["top_k"], 40);
     assert!(serde_json::from_value::<GenerationOptions>(json!({"extra_body": []})).is_err());
+}
+
+#[test]
+fn chat_writes_the_limit_under_the_chosen_field_only() {
+    let mut options = ChatRenderOptions::default();
+    let limited = GenerationOptions::default().with_max_tokens(LIMIT);
+
+    let body = render_chat(&limited, &options).unwrap();
+    assert_eq!(body["max_completion_tokens"], LIMIT);
+    assert!(body.get("max_tokens").is_none());
+
+    options.max_tokens_field = ChatMaxTokensField::MaxTokens;
+    let body = render_chat(&limited, &options).unwrap();
+    assert_eq!(body["max_tokens"], LIMIT);
+    assert!(body.get("max_completion_tokens").is_none());
+
+    // No limit writes neither field, whichever is chosen.
+    let body = render_chat(&GenerationOptions::default(), &options).unwrap();
+    assert!(body.get("max_tokens").is_none());
+    assert!(body.get("max_completion_tokens").is_none());
+
+    // The chosen field is the adapter's key: an extra value under it loses,
+    // and the other name is merged like any extra key.
+    let mut generation = limited.clone();
+    generation.extra_body.insert("max_tokens".into(), json!(1));
+    generation
+        .extra_body
+        .insert("max_completion_tokens".into(), json!(2));
+    let body = render_chat(&generation, &options).unwrap();
+    assert_eq!(body["max_tokens"], LIMIT);
+    assert_eq!(body["max_completion_tokens"], 2);
 }
 
 #[test]
