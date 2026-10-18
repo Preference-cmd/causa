@@ -81,6 +81,7 @@ export default defineConfig({
                     'guides/stream-output',
                     'guides/interrupted-runs',
                     'guides/media',
+                    'guides/retries-and-observation',
                   ],
                 },
                 'examples',

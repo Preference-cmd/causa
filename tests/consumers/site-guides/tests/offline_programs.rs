@@ -86,3 +86,14 @@ fn media_renders_per_protocol() {
         )
     );
 }
+
+#[test]
+fn retries_and_observation_retries_once_and_reports_each_step() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_retries_and_observation")),
+        "committed: 1 blocks\nrequest: 2 blocks\n  provider: call 1 refused (429)\n  \
+         provider: call 2 answered\noutput: ToolUse\ncommitted: 1 blocks\ntools: 1 calls\n\
+         tools: 1 results\ncommitted: 1 blocks\nrequest: 4 blocks\n  provider: call 3 answered\n\
+         output: EndTurn\ncommitted: 1 blocks\nIt is 09:30.\n"
+    );
+}

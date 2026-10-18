@@ -1,0 +1,118 @@
+---
+title: Retries and observation
+description: Retry failed model calls within limits you set, and watch each step of a run for logs, metrics or a budget.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin retries_and_observation"
+  example="tests/consumers/site-guides/src/bin/retries_and_observation.rs"
+  docs={[
+    'causa-runtime/latest/causa_runtime/struct.RetryingGateway.html',
+    'causa-runtime/latest/causa_runtime/struct.RetryPolicy.html',
+    'causa-runtime/latest/causa_runtime/event/enum.RunEvent.html',
+    'causa-kernel/latest/causa_kernel/enum.ModelInvokeErrorKind.html',
+  ]}
+/>
+
+## What it does
+
+Nothing in Causa retries by default: the first failed model call ends the
+run. `RetryingGateway` wraps any gateway and calls it again when an error
+may pass, such as a rate limit or a server error, within a `RetryPolicy`
+you set. It is itself a gateway, so the runner does not know it is there.
+
+An observer is a function the runner calls at each step of a run: the
+request about to be sent, the model's output, the blocks committed, the tool
+batch before and after it runs. Use it for logs, metrics, a progress display,
+or to stop a run that has spent its budget.
+
+## When to reach for it
+
+Retries: when the provider rate-limits or has outages, which is every
+provider in production. Observation: when you want to see what a run is
+doing while it runs, rather than only its outcome.
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Whether to retry | Wrap the gateway in `RetryingGateway` | A `Transient` error ends the run with `ModelCallFailed` |
+| How many attempts | `RetryPolicy::new(n)`, the first call included; there is no default | — |
+| How long to wait | The backoff starts at 500 ms, doubles, and stops growing at 8 s; set `with_base_delay` and `with_max_delay` | — |
+| A server that asks to wait | It is waited as asked, up to `with_max_server_delay` (60 s unless set); a longer wait fails the call at once | — |
+| A total time limit | Give the run a deadline in its `CallControl`; waits never go past it | A run can retry for as long as the attempts last |
+| Seeing retries | Subscribe to `tracing` at debug level for target `causa_runtime::retry` | Retries are silent: the observer sees one request |
+| What the observer keeps | Copy what you need; events borrow the run's data | — |
+| Slow work in the observer (I/O, locks held long) | Send the data to a channel and do the work elsewhere | The run waits for the observer at every step |
+
+Only `Transient` and `TimedOut` errors are retried. A refused key, an unknown
+model, a request the gateway refused to build or an answer it cannot read
+fail at once, whatever the policy.
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/retries_and_observation.rs" anchor="imports" />
+
+Wrap the gateway. `provider` is any gateway, such as an
+`AnthropicMessagesGateway`:
+
+<Snippet file="src/bin/retries_and_observation.rs" anchor="retry" />
+
+The observer is a synchronous closure over `RunEvent`. Match the events you
+need and ignore the rest; new ones may be added:
+
+<Snippet file="src/bin/retries_and_observation.rs" anchor="observer" />
+
+Set it in the run options:
+
+<Snippet file="src/bin/retries_and_observation.rs" anchor="run" />
+
+In the program, a stand-in provider refuses its first call with a 429. The
+output shows one request and two provider calls: the retry happens inside
+the gateway. The first `committed` line is the tool change the runner
+records before the first request.
+
+## Common questions
+
+**Is a streaming call retried?** Until its first delta arrives, yes. After
+that, never: the delta may already be on the user's screen, so the error
+reaches the runner as it is.
+
+**Are tool calls retried?** No. A failed tool call is a result the model
+reads; it can call the tool again in the next round.
+
+**Can the observer stop the run?** Yes: give it a clone of the run's
+`CancellationToken` and cancel it, for example when the token usage you sum
+from `ModelOutput` events passes a budget. The run returns `Interrupted`
+with the cause `Cancelled` at its next check. Cancelling on a `ModelOutput`
+event stops the run before that output is committed.
+
+**Where is the token usage?** In `output.usage` of each `ModelOutput` event,
+and in the final output of a completed run, when the provider reports it.
+
+**Does the observer see stream deltas?** Yes, as `ModelDelta` events, when
+the run streams. [Stream output](/guides/stream-output/) shows that path.
+
+**Is the retry wrapper the only option?** No. It is an ordinary gateway; a
+policy it does not cover, such as switching to another provider after a
+failure, is a gateway of your own around the built-in ones.
+
+## It's working if
+
+- The program prints one `request: 2 blocks` line followed by two provider
+  calls, the first refused, and ends with `It is 09:30.`
+- In your application, a run survives a rate limit, and the debug log of
+  `causa_runtime::retry` shows each retry with its wait.
+
+## Where it fits
+
+- [Choose a protocol and provider](/guides/choose-a-provider/) — how
+  provider errors are classified.
+- [Handle interrupted runs](/guides/interrupted-runs/) — what to do when a
+  run stops anyway.
+- [Stream output](/guides/stream-output/) — the same observer, with deltas.
