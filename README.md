@@ -3,7 +3,7 @@
   <h3>A minimal context kernel for AI agents</h3>
   <p><em>There is no harness.</em></p>
   <p>
-    <a href="https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/getting-started.mdx">Getting started</a> •
+    <a href="https://causa.inceptae.com/getting-started/">Getting started</a> •
     <a href="#examples">Examples</a> •
     <a href="#architecture">Architecture</a> •
     <a href="https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md">Changelog</a>
@@ -116,9 +116,9 @@ decides which servers and models receive which options. One of them,
 `with_max_tokens_field`, sends the Chat output limit as `max_tokens` for a
 server that reads only that name.
 
-See the [streaming guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/streaming.mdx)
+See the [streaming guide](https://causa.inceptae.com/streaming/)
 for events and limits, and the
-[crate guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/crates.mdx)
+[crate guide](https://causa.inceptae.com/crates/)
 for generation options and reasoning replay.
 
 ### Choose your features
@@ -133,7 +133,7 @@ Choose the dependencies your application needs:
 | `causa = { version = "0.1.0", default-features = false }` | Kernel only |
 | `causa = { version = "0.1.0", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
-See the [crate guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/crates.mdx)
+See the [crate guide](https://causa.inceptae.com/crates/)
 for layer selection.
 
 ## Examples
@@ -152,7 +152,7 @@ Run these from the repository root using
 | `quickstart` | `causa-provider` | A model turn with a local tool | `ANTHROPIC_API_KEY` |
 | `mcp_tools` | `causa-extension` | Connect MCP tool sources | MCP server; default `mcp` feature |
 
-The [example catalog](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/examples.mdx)
+The [example catalog](https://causa.inceptae.com/examples/)
 links to the source. For MCP server launch commands, see the
 [mcp_tools header](https://github.com/Preference-cmd/causa/blob/main/crates/causa-extension/examples/mcp_tools.rs).
 
@@ -172,9 +172,9 @@ provides storage, credentials, tools and the policies it needs.
 | [`causa-extension`](https://docs.rs/causa-extension) | Dynamic tool-source adapters, currently MCP |
 
 All six crates share one release version and can also be used directly.
-Read the [concepts guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/concepts.mdx)
+Read the [concepts guide](https://causa.inceptae.com/concepts/)
 for layer boundaries, the
-[context editing guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/context-editing.mdx)
+[context editing guide](https://causa.inceptae.com/context-editing/)
 for changing retained blocks, and the
 [runtime policy overview](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/src/lib.rs)
 for defaults and component contracts.
@@ -192,7 +192,7 @@ not upgrade `"0.0.7"` to `0.1.0` on its own.
 Sessions, history, input admission, persistence and subagent orchestration
 belong to your application. An interrupted run returns its uncommitted tool
 batch and the cause, and your code decides what to do with it; the
-[interrupted runs guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/interrupted-runs.mdx)
+[interrupted runs guide](https://causa.inceptae.com/interrupted-runs/)
 shows how to close such a batch. Rebuilding
 context does not make an external tool run exactly once.
 
