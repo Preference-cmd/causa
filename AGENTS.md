@@ -18,6 +18,7 @@ crates/causa-protocol      # wire-protocol translation, transport-free
 crates/causa-provider      # reqwest ModelGateway adapters (implies protocol)
 crates/causa-extension     # DynamicToolSource adapters; `mcp` feature (rmcp, on by default)
 tests/consumers/           # separate workspaces that use the public facade
+tests/consumers/site-guides # the Rust code the website shows, compiled by CI
 .github/workflows/         # ci.yml, website.yml, publish.yml (release on push to main, upload on approval)
 .github/scripts/           # layering guard, layout guard, release.py and their tests
 .github/RELEASING.md       # release checklist — never `cargo publish` by hand
@@ -62,12 +63,16 @@ RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --lock
 cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked
 cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --locked
 cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
+cargo test --manifest-path tests/consumers/site-guides/Cargo.toml --locked
 cargo fmt --manifest-path tests/consumers/material-flow/Cargo.toml --all --check
 cargo fmt --manifest-path tests/consumers/provider-streaming/Cargo.toml --all --check
+cargo fmt --manifest-path tests/consumers/site-guides/Cargo.toml --all --check
 cargo clippy --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --all-targets --locked -- -D warnings
 cargo clippy --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked -- -D warnings
+cargo clippy --manifest-path tests/consumers/site-guides/Cargo.toml --all-targets --locked -- -D warnings
 cargo +1.96.0 check --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --all-targets --locked
 cargo +1.96.0 check --manifest-path tests/consumers/provider-streaming/Cargo.toml --all-targets --locked
+cargo +1.96.0 check --manifest-path tests/consumers/site-guides/Cargo.toml --all-targets --locked
 
 bash .github/scripts/check-dependency-directions.sh   # layering guard
 python3 .github/scripts/check-module-layout.py        # library source layout

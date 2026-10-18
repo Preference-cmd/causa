@@ -17,6 +17,9 @@ pre-commit:
     - name: fmt provider-streaming
       glob: "tests/consumers/provider-streaming/**/*.rs"
       run: cargo fmt --manifest-path tests/consumers/provider-streaming/Cargo.toml --all --check
+    - name: fmt site-guides
+      glob: "tests/consumers/site-guides/**/*.rs"
+      run: cargo fmt --manifest-path tests/consumers/site-guides/Cargo.toml --all --check
     - name: module layout
       glob: "crates/**"
       run: python3 .github/scripts/check-module-layout.py

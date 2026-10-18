@@ -1,7 +1,8 @@
-//! The first program from `README.md` and the website's getting-started page,
-//! formatted by rustfmt. It needs a key and a network to run, so the test only
-//! compiles it; change it together with those two copies.
+// The first program on the getting-started page. `README.md` carries a
+// copy; change both together. It needs a key and a network, so CI only
+// compiles it.
 
+// ANCHOR: program
 use causa::{
     kernel::{CallControl, CancellationToken, Context, ContextBlock, ModelRef, Role, TurnId},
     providers::AnthropicMessagesGateway,
@@ -11,7 +12,8 @@ use causa::{
 };
 use std::sync::Arc;
 
-async fn readme_first_program() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Arc::new(AnthropicMessagesGateway::new(std::env::var(
         "ANTHROPIC_API_KEY",
     )?));
@@ -40,8 +42,4 @@ async fn readme_first_program() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-
-#[test]
-fn readme_first_program_compiles() {
-    let _ = readme_first_program;
-}
+// ANCHOR_END: program
