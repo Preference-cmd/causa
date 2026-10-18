@@ -9,10 +9,14 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
+# Inline media payloads in the "Media" program.
+base64 = "0.22"
 causa = { path = "../../../crates/causa", features = ["extension-mcp"] }
 futures-util = "0.3"
 # The in-process MCP server of the "Connect MCP servers" program.
 rmcp = { version = "3.2.0", default-features = false, features = ["server", "transport-async-rw"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Content-hash asset references in the "Media" program.
+sha2 = "0.10"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }

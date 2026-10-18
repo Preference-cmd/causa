@@ -80,6 +80,7 @@ export default defineConfig({
                     'guides/process-tool-calls',
                     'guides/stream-output',
                     'guides/interrupted-runs',
+                    'guides/media',
                   ],
                 },
                 'examples',

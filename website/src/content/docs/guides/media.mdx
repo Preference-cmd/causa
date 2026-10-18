@@ -1,0 +1,142 @@
+---
+title: Media
+description: Send images and PDFs to the model, from the user or from a tool, with the bytes kept in your own store.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin media"
+  example="tests/consumers/site-guides/src/bin/media.rs"
+  docs={[
+    'causa-kernel/latest/causa_kernel/struct.MediaRef.html',
+    'causa-kernel/latest/causa_kernel/trait.ArtifactStore.html',
+    'causa-provider/latest/causa_provider/media/trait.MediaResolver.html',
+    'causa-provider/latest/causa_provider/struct.MediaPayload.html',
+  ]}
+/>
+
+## What it does
+
+The context never holds media bytes. An image or a PDF is a `MediaRef`: a
+media type and a reference, such as a content hash, that your application
+chose. The bytes stay in your asset store. When a gateway builds a request,
+it asks your `MediaResolver` for the payload of each reference and puts it
+on the wire, inline or as a URL.
+
+Media enters the context in two places: as a part of a user message, and
+attached to a tool result. A tool stores its bytes through the
+`ArtifactStore` it is given, and returns the reference with its result.
+
+What each protocol can carry:
+
+| | Anthropic Messages | Chat Completions | Responses |
+|---|---|---|---|
+| Image in a user message | yes | yes | yes |
+| Image from a tool | in the tool result | in a user message after the tool message | in the function call output |
+| PDF | yes, as a document | no | no |
+
+Anything a protocol cannot carry is sent as a line of text instead, such as
+`[media: application/pdf report.pdf sha256-82952bb9e32344c6]`, and the request
+still goes out.
+
+## When to reach for it
+
+When users send images or documents, or a tool produces them: a chart, a
+screenshot, a page of a scanned file.
+
+## Before you start
+
+The program hashes and encodes the bytes itself:
+
+```bash
+cargo add sha2@0.10 base64@0.22
+```
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| The reference | A hash of the content | One reference could come to mean other bytes; see the next row |
+| What a reference resolves to | The same payload for as long as any context holding it is sent | A changed answer rewrites a message the provider already saw: the prompt cache is lost from there on, and Anthropic refuses requests with thinking blocks after it |
+| Where the resolver reads from | Memory only; load the assets of a conversation before its run | The resolver is synchronous and is called for every reference in every request |
+| A tool's bytes | Set `ToolExecutorOptions::artifact_store`, and persist through the `store` argument | `store` is `None`; MCP images become a line of text |
+| Large files | Keep each inline payload under 5 MiB, or raise the limit with `with_max_inline_media_bytes` | A larger payload is sent as the text placeholder |
+| Files the provider can download | Return `MediaPayload::url`, with an address that serves the bytes directly, without a redirect | — |
+| Old media in a long conversation | Return `None` for references you no longer want to send; they become text placeholders | Every image in the context is sent with every request |
+| PDFs on Chat or Responses | Extract the text yourself and send it as text | The model sees only the placeholder line |
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/media.rs" anchor="imports" />
+
+One asset table serves both sides: tools write to it as an `ArtifactStore`,
+and gateways read from it as a `MediaResolver`. References are content
+hashes:
+
+<Snippet file="src/bin/media.rs" anchor="assets" />
+
+A tool stores its bytes through the `store` argument and attaches the
+reference to its result:
+
+<Snippet file="src/bin/media.rs" anchor="tool" />
+
+The store reaches the tool through the executor's options:
+
+<Snippet file="src/bin/media.rs" anchor="executor" />
+
+A file from the user goes into the same table, and its reference into the
+message. A name is shown to the model for documents:
+
+<Snippet file="src/bin/media.rs" anchor="user_media" />
+
+Give each gateway the resolver:
+
+<Snippet file="src/bin/media.rs" anchor="resolver" />
+
+In the program, a first turn with a scripted model draws the chart; then the
+same context goes through the three gateways to a local server, and the
+program prints the parts of each request. The table above comes from that
+output.
+
+## Common questions
+
+**What does the stored context hold?** The media type, the reference and the
+name, nothing else. Saving the context does not save the bytes: keep your
+asset store alongside it.
+
+**What happens if the resolver has no answer?** The reference is sent as the
+text placeholder. A missing asset is not an error, which is what lets you
+stop sending old media.
+
+**Can the model return images?** Not through the built-in gateways: they
+read text, tool calls and reasoning from the model's answer.
+
+**Does the gateway download URLs?** No. The provider fetches them, on every
+request that carries them; a failed fetch comes back as the provider's
+error.
+
+**What about media in assistant or system messages?** Only user messages and
+tool results carry media. In any other position, the reference is sent as
+the placeholder.
+
+## It's working if
+
+- The program prints an `image` inside Anthropic's `tool_result` and a
+  `document` in its last user message, an `image_url` in a Chat user
+  message, and placeholder lines for the PDF on Chat and Responses.
+- In your application, the provider describes the image, and the saved
+  context holds references, never base64.
+
+## Where it fits
+
+- [Write a tool](/guides/write-a-tool/) — the `store` argument of a tool.
+- [Connect MCP servers](/guides/connect-mcp-servers/) — MCP images go to
+  the same store.
+- [Choose a protocol and provider](/guides/choose-a-provider/) — what else
+  differs between the three protocols.
+- The [`media_feedback`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/examples/media_feedback.rs)
+  example, which also moves long tool output to the store.

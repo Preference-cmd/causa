@@ -70,3 +70,19 @@ fn process_tool_calls_asks_and_keeps_declaration_order() {
          I could read one of the two notes.\n"
     );
 }
+
+#[test]
+fn media_renders_per_protocol() {
+    let placeholder = "[media: application/pdf report.pdf sha256-82952bb9e32344c6]";
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_media")),
+        format!(
+            "Anthropic Messages:\n  user[text]\n  assistant[tool_use]\n  user[tool_result[text, image]]\n  \
+             assistant[text]\n  user[text, document]\n\
+             Chat Completions:\n  user[text]\n  assistant\n  tool[text]\n  user[text, image_url]\n  \
+             assistant[text]\n  user[text, text {placeholder}]\n\
+             Responses:\n  user[input_text]\n  function_call\n  function_call_output[input_text, input_image]\n  \
+             assistant[output_text]\n  user[input_text, input_text {placeholder}]\n"
+        )
+    );
+}
