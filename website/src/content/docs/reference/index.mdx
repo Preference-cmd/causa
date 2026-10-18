@@ -1,19 +1,30 @@
 ---
 title: How to read this reference
-description: What the API reference covers, and how it divides the work with docs.rs.
+description: Where the API reference lives, and the few pages this site adds to docs.rs.
 ---
 
-The guides show how to do something with Causa. This reference states what
-each part of the public API is: what it guarantees, its defaults and options,
-how it fails, and whether a change to it would break your code. It is
-organized by crate, in the order the [layering](/concepts/layering/) builds
-them.
+The guides show how to do something with Causa. The API itself, every
+type, method, field and its documentation, is on docs.rs, generated from
+the same release:
 
-Signatures are not repeated here. Each page links its items to
-[docs.rs](https://docs.rs/causa), which is generated from the same release
-and has every method and field.
+| Crate | API documentation | Start with |
+|---|---|---|
+| `causa` | [docs.rs/causa](https://docs.rs/causa) | the facade's features and re-exports |
+| `causa-kernel` | [docs.rs/causa-kernel](https://docs.rs/causa-kernel) | the crate docs: the layer contract and the stable serialized forms |
+| `causa-runtime` | [docs.rs/causa-runtime](https://docs.rs/causa-runtime) | the crate docs: the policy surface, every default and where to change it |
+| `causa-protocol` | [docs.rs/causa-protocol](https://docs.rs/causa-protocol) | the crate docs: protocol options and how each protocol is rendered |
+| `causa-provider` | [docs.rs/causa-provider](https://docs.rs/causa-provider) | the three gateways |
+| `causa-extension` | [docs.rs/causa-extension](https://docs.rs/causa-extension) | `mcp::McpToolSource` |
+
+This site adds only what does not fit one item on docs.rs:
 
 - [Crates and features](/reference/crates/) — the six crates and how to
   select them.
 - [Versioning and stability](/reference/versioning/) — what 0.1 promises and
   how to upgrade.
+- [Protocol options](/reference/provider/protocol-options/) — reasoning,
+  output limits and other per-protocol settings.
+- [Stream limits](/reference/provider/stream-limits/) — the limits on a
+  provider stream and their defaults.
+- [Stream decoding](/reference/protocol/stream-decoding/) — decoding a
+  provider stream without the HTTP gateways.

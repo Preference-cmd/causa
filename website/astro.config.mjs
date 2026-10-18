@@ -96,6 +96,18 @@ export default defineConfig({
                   label: 'Overview',
                   items: ['reference', 'reference/crates', 'reference/versioning'],
                 },
+                {
+                  // The API itself is on docs.rs; this site adds the pages below.
+                  label: 'On docs.rs',
+                  items: [
+                    'causa',
+                    'causa-kernel',
+                    'causa-runtime',
+                    'causa-protocol',
+                    'causa-provider',
+                    'causa-extension',
+                  ].map((crate) => ({ label: crate, link: `https://docs.rs/${crate}` })),
+                },
                 { label: 'causa-protocol', items: ['reference/protocol/stream-decoding'] },
                 {
                   label: 'causa-provider',
