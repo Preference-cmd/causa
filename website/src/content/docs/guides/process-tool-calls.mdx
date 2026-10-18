@@ -1,0 +1,142 @@
+---
+title: Process tool calls
+description: Approve, rewrite or reject tool calls before they run, and edit or reorder their results after.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin process_tool_calls"
+  example="tests/consumers/site-guides/src/bin/process_tool_calls.rs"
+  docs={[
+    'causa-kernel/latest/causa_kernel/trait.ToolBatchProcessor.html',
+    'causa-kernel/latest/causa_kernel/struct.ToolBatch.html',
+    'causa-kernel/latest/causa_kernel/struct.ProcessorContext.html',
+    'causa-runtime/latest/causa_runtime/executor/struct.ToolExecutorOptions.html',
+  ]}
+/>
+
+## What it does
+
+The calls a model makes in one round form a batch. Before the executor runs
+them, the batch passes through your *before* processors, in order; after
+every call has a result, it passes through your *after* processors. A
+processor is a `ToolBatchProcessor`: an async function that gets the batch
+mutably.
+
+The same processors see every call, whether the tool is yours or comes from
+an MCP server.
+
+## When to reach for it
+
+- Ask a person before a call runs.
+- Refuse calls by a rule: a path outside a directory, a command not on a
+  list.
+- Change arguments, such as capping a limit, and tell the model why.
+- Shorten or redact results before they enter the context.
+- Record results in the order the model declared the calls.
+
+## Before you start
+
+The program waits for its approver over a channel, which needs the tokio
+`sync` feature:
+
+```bash
+cargo add tokio@1 --features macros,rt,sync
+```
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| A call that must not run | In a before processor, resolve it with a `Rejected` result | The tool runs |
+| Arguments that need changing | In a before processor, edit `input_mut()` and explain with `push_note` | The tool gets the model's arguments |
+| Waiting for a person | Await the answer in the before processor; the whole batch waits | — |
+| The approver goes away | Treat a missing answer as a no | — |
+| Large or sensitive output | In an after processor, edit `output_mut()` | The whole output enters the context |
+| The order of results | Sort `results_mut()` by `ctx.declaration_order` in an after processor | Results are recorded as they finished: calls resolved by a before processor first, then the rest in completion order |
+
+What each phase may change is checked after every processor:
+
+| | Before | After |
+|---|---|---|
+| Edit the arguments of a pending call | yes | no |
+| Resolve a call with a result | yes | no |
+| Edit outputs and media | yes, of the calls it resolved | yes |
+| Add notes | yes | yes |
+| Reorder results | yes | yes |
+| Remove notes, change a status, add or drop calls | no | no |
+
+A processor that breaks one of these rules, or returns a `ProcessorError`
+because it cannot finish, stops the run with `ToolProcessingFailed`; the
+batch is handed back in the outcome.
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/process_tool_calls.rs" anchor="imports" />
+
+The approval processor sends each pending call to an approver and waits for
+the answer. A refused call gets a `Rejected` result, which removes it from
+the calls left to run:
+
+<Snippet file="src/bin/process_tool_calls.rs" anchor="approval" />
+
+The approver is whatever your application uses to ask: a terminal prompt, a
+button in a web page, a message in a chat. Here a task answers by rule:
+
+<Snippet file="src/bin/process_tool_calls.rs" anchor="approver" />
+
+The second processor restores the order the model declared the calls in:
+
+<Snippet file="src/bin/process_tool_calls.rs" anchor="order" />
+
+Both go into the executor's options:
+
+<Snippet file="src/bin/process_tool_calls.rs" anchor="executor" />
+
+In the program, a scripted model asks for `todo.txt` and `secret.txt` in one
+round. Only the first is allowed, so the second is rejected before any tool
+runs and is recorded first; the after processor puts it back in second
+place.
+
+## Common questions
+
+**Does a rejected call end the run?** No. A rejection is a result like any
+other: the model reads it in the next round and can answer without the tool.
+
+**What does the model see from a note?** Notes render with the result they
+belong to. A note added before the call runs is placed ahead of the notes
+the tool returns.
+
+**What happens if the run is cancelled while a before processor waits?** The
+executor stops waiting, and the run returns `Interrupted` with the cause
+`Cancelled`. No call of the batch has run, and the batch is handed back in
+the outcome.
+
+**Can a processor see earlier rounds?** It gets the batch and a
+`ProcessorContext`: the turn, the round, the declaration order and the run's
+`CallControl`. Anything else it needs, such as a session's earlier
+approvals, it keeps itself.
+
+**Should approval live in the tool instead?** Keep it in a processor. Then
+one rule covers every tool, MCP tools included, and the tools stay free of
+policy.
+
+## It's working if
+
+- The program prints the two questions, the `Succeeded` result, the
+  `Rejected` result, and the model's answer, in that order.
+- In your application, a refused call has a `Rejected` result in the context
+  and its tool never ran.
+
+## Where it fits
+
+- [Write a tool](/guides/write-a-tool/) — the statuses a result can have.
+- [Connect MCP servers](/guides/connect-mcp-servers/) — external tools,
+  which need the same approval.
+- The [`approval_processor`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/examples/approval_processor.rs)
+  and [`tool_processors`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/examples/tool_processors.rs)
+  examples, which also deduplicate calls and cap a limit.

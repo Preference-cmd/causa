@@ -59,3 +59,14 @@ fn prepare_each_request_sends_the_last_two_turns() {
          The context holds 8 blocks.\n"
     );
 }
+
+#[test]
+fn process_tool_calls_asks_and_keeps_declaration_order() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_process_tool_calls")),
+        "allow read_note todo.txt? true\nallow read_note secret.txt? false\n\
+         Succeeded {\"text\":\"Buy milk.\"}\n\
+         Rejected {\"error\":\"the user did not allow this call\"}\n\
+         I could read one of the two notes.\n"
+    );
+}

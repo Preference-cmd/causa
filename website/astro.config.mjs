@@ -77,6 +77,7 @@ export default defineConfig({
                     'guides/save-and-restore',
                     'guides/edit-context',
                     'guides/prepare-each-request',
+                    'guides/process-tool-calls',
                     'guides/stream-output',
                     'guides/interrupted-runs',
                   ],
