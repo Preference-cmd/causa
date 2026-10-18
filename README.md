@@ -10,6 +10,8 @@
   </p>
   <p>
     <a href="https://github.com/Preference-cmd/causa/actions/workflows/ci.yml"><img src="https://github.com/Preference-cmd/causa/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://crates.io/crates/causa"><img src="https://img.shields.io/crates/v/causa" alt="crates.io"></a>
+    <a href="https://docs.rs/causa"><img src="https://img.shields.io/docsrs/causa" alt="docs.rs"></a>
     <a href="https://github.com/Preference-cmd/causa/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.96-blue" alt="MSRV: Rust 1.96"></a>
     <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green" alt="License: MIT OR Apache-2.0"></a>
   </p>
@@ -162,12 +164,12 @@ provides storage, credentials, tools and the policies it needs.
 
 | Crate | Responsibility |
 |---|---|
-| `causa` | Facade and feature selection — the default entry point |
-| `causa-kernel` | Editable context material and contracts for models, preparation and tools |
-| `causa-runtime` | Material-returning turn runner, borrowed observations and bound tool execution |
-| `causa-protocol` | Pure request/response and incremental SSE translation for Anthropic and OpenAI |
-| `causa-provider` | HTTP adapters implementing complete and streaming model gateway calls |
-| `causa-extension` | Dynamic tool-source adapters, currently MCP |
+| [`causa`](https://docs.rs/causa) | Facade and feature selection — the default entry point |
+| [`causa-kernel`](https://docs.rs/causa-kernel) | Editable context material and contracts for models, preparation and tools |
+| [`causa-runtime`](https://docs.rs/causa-runtime) | Material-returning turn runner, borrowed observations and bound tool execution |
+| [`causa-protocol`](https://docs.rs/causa-protocol) | Pure request/response and incremental SSE translation for Anthropic and OpenAI |
+| [`causa-provider`](https://docs.rs/causa-provider) | HTTP adapters implementing complete and streaming model gateway calls |
+| [`causa-extension`](https://docs.rs/causa-extension) | Dynamic tool-source adapters, currently MCP |
 
 All six crates share one release version and can also be used directly.
 Read the [concepts guide](https://github.com/Preference-cmd/causa/blob/main/website/src/content/docs/concepts.mdx)
