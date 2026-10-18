@@ -42,3 +42,11 @@ fn choose_a_provider_sends_one_context_over_three_protocols() {
          /v1/responses authorization max_output_tokens=200 -> Hello from Responses.\n"
     );
 }
+
+#[test]
+fn save_and_restore_continues_the_saved_conversation() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_save_and_restore")),
+        "Message 1 received. (2 blocks saved)\nMessage 2 received. (4 blocks saved)\n"
+    );
+}

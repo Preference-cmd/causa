@@ -1,0 +1,143 @@
+---
+title: Save and restore context
+description: Store a conversation as JSON after each run and load it for the next one, in this process or another.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin save_and_restore"
+  example="tests/consumers/site-guides/src/bin/save_and_restore.rs"
+  docs={[
+    'causa-kernel/latest/causa_kernel/struct.Context.html',
+    'causa-kernel/latest/causa_kernel/struct.ContextBlock.html',
+    'causa-kernel/latest/causa_kernel/struct.MediaRef.html',
+  ]}
+/>
+
+## What it does
+
+A `Context` is plain data: an ordered list of blocks (messages, tool calls,
+tool results, tool changes), with no connection, task or state behind it.
+It implements `Serialize` and `Deserialize`. Save it after a run, load it
+later, append the next user message and run again. Nothing in Causa reads or
+writes storage: where the conversation lives and for how long is your
+application's choice.
+
+Its serialized form is stable: a patch release reads what an earlier one
+wrote, and only a minor release can change it.
+
+## When to reach for it
+
+When a conversation outlives one process: a chat that resumes after a
+restart, a job queue that runs one turn per task, a server that keeps no
+state between requests.
+
+## Before you start
+
+The program uses `serde_json`:
+
+```bash
+cargo add serde_json
+```
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Where to store it | A file, a database column, an object store: anything that keeps bytes | — |
+| The format | JSON. Tool arguments and outputs are arbitrary JSON values, `null` included, which some formats such as TOML cannot hold | — |
+| When to save | After every run, whatever its result; `outcome.context` holds every block the run committed | The blocks since the last save are lost |
+| Two runs of one conversation at once | Let one run at a time load and save a conversation | Both start from the same saved context, and the one that saves last overwrites the other |
+| An interrupted run | Save the context, then handle the batch the run hands back | The calls of that batch are in neither the context nor the file |
+| Images and files | Keep the bytes in your own store, under the reference in each `MediaRef` | The file holds only the reference |
+| A conversation that keeps growing | Drop or summarize old blocks before a run | The runner sends the whole context every round, unless a preparer selects a part |
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/save_and_restore.rs" anchor="imports" />
+
+Save the context as JSON. Writing a new file and renaming it over the old
+one means a crash never leaves half a file:
+
+<Snippet file="src/bin/save_and_restore.rs" anchor="save" />
+
+Load it back; a conversation that has no file yet starts empty. Loading
+fails if the JSON is malformed or two blocks have the same id:
+
+<Snippet file="src/bin/save_and_restore.rs" anchor="load" />
+
+Each run loads the conversation, appends the user's message, runs and saves:
+
+<Snippet file="src/bin/save_and_restore.rs" anchor="turn" />
+
+In the program, each pass of the loop stands for a new process, and a
+scripted model counts the user messages it was sent: two in the second
+run, one of them loaded from the file.
+
+A saved user message looks like this:
+
+```json
+{
+  "blocks": [
+    {
+      "id": "01a14f3e-a408-7591-a35a-25f174375069",
+      "content": {
+        "shape": "message",
+        "value": {
+          "role": "user",
+          "parts": [{ "part": "text", "value": "Hello." }]
+        }
+      },
+      "meta": {}
+    }
+  ]
+}
+```
+
+## Common questions
+
+**Does loading a context run anything?** No. A context is data: loading it
+calls no model and runs no tool, and the tool calls in it stay what they
+were.
+
+**What if my tools changed between runs?** The runner compares the tools in
+the context with the executor's and, if they differ, appends a tool change
+block before calling the model. The saved conversation keeps a record of
+which tools the model had at each point.
+
+**Can I store one row per block?** Yes. `ContextBlock` has the same stable
+form; rebuild the context with `Context::from_blocks`, which checks that the
+ids are unique.
+
+**What does a newer Causa do with an older file?** A patch release reads it
+as it is. A field the reader does not know is ignored, and a field missing
+from an older file reads as unset. A minor release that changes the form
+says how to migrate in the [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md).
+
+**Which other types are stable?** Only `Context` and the types it contains.
+Run results, model output and request options can be written to logs, but
+their form can change in any release.
+
+**Is the model's reasoning saved?** Reasoning that a provider returns in its
+own sealed format is part of the context, so it is saved and sent back to
+that provider in later runs.
+
+## It's working if
+
+- The program prints `Message 1 received.` and then `Message 2 received.`:
+  the second run saw the message the first one saved.
+- In your application, a conversation saved, loaded and saved again
+  without a run is the same JSON.
+
+## Where it fits
+
+- [Edit context](/guides/edit-context/) — drop or replace blocks before the
+  next run.
+- [Handle interrupted runs](/guides/interrupted-runs/) — what to save when a
+  run stops early.
+- [Versioning and stability](/reference/versioning/) — which forms are
+  stable, and what a release can change.
