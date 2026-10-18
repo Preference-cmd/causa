@@ -47,6 +47,10 @@ When a crate, feature or example changes, update the copies together:
 `website/src/content/docs/crates.mdx`. When a CI check changes, update the
 command list below.
 
+Rust code on the website is not written in the pages: each block is read
+at build time from `tests/consumers/site-guides`, which CI compiles. Change
+the code there; the README's first program is the one hand-kept copy.
+
 ## Commands
 
 This list mirrors CI; a change is ready when all of it passes.

@@ -1,14 +1,18 @@
 name: Website
 
+# The pages read their Rust code from tests/consumers/site-guides, so a
+# change there rebuilds the site too.
 on:
   push:
     branches: [main]
     paths:
       - 'website/**'
+      - 'tests/consumers/site-guides/**'
       - '.github/workflows/website.yml'
   pull_request:
     paths:
       - 'website/**'
+      - 'tests/consumers/site-guides/**'
       - '.github/workflows/website.yml'
   workflow_dispatch:
 

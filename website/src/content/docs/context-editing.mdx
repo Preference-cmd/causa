@@ -3,6 +3,8 @@ title: Editing context material
 description: Explicitly replace and append facts in a Context.
 ---
 
+import Snippet from '../../components/Snippet.astro';
+
 `Context` stores an ordered list of context blocks. When your application
 decides that some material should be replaced, use the context edit API to
 prepare the replacement and any new trailing blocks as one atomic change.
@@ -14,50 +16,7 @@ Create each new block with an ID supplied by your application. A changed block
 needs a new ID; when you carry a block forward unchanged, clone or reuse the
 existing `ContextBlock` so its ID, content, and metadata stay together.
 
-```rust
-use causa::{
-    kernel::{Context, ContextBlock, Role},
-    runtime::new_block_id,
-};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut context = Context::new();
-    let initial = [
-        ("system note", Role::System),
-        ("old detail one", Role::User),
-        ("old detail two", Role::User),
-        ("old detail three", Role::User),
-        ("recent request", Role::User),
-    ];
-    for (text, role) in initial {
-        context.edit().append([ContextBlock::text(
-            new_block_id(),
-            role,
-            text,
-        )]).commit()?;
-    }
-
-    let summary = ContextBlock::text(
-        new_block_id(),
-        Role::System,
-        "The user prefers short answers and is building a Rust agent.",
-    );
-    let note = ContextBlock::text(
-        new_block_id(),
-        Role::System,
-        "The current request concerns context editing.",
-    );
-
-    context
-        .edit()
-        .replace(1..4, [summary])
-        .append([note])
-        .commit()?;
-
-    println!("{} blocks", context.blocks().len());
-    Ok(())
-}
-```
+<Snippet file="src/bin/context_editing.rs" anchor="program" />
 
 This example uses the runtime's `new_block_id()` convenience function. A
 kernel-only application supplies its own IDs, for example by wrapping UUIDs in

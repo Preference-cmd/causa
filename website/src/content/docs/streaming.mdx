@@ -3,6 +3,8 @@ title: Streaming
 description: Consume provider increments while preserving complete-output ownership.
 ---
 
+import Snippet from '../../components/Snippet.astro';
+
 ## Choose a consumer
 
 All three built-in gateways implement `ModelGateway::stream()`. Call it directly
@@ -23,35 +25,7 @@ for the run's final state and any uncommitted tool batch.
 Direct consumers inspect every delta themselves. The following helper works
 with a prepared request and control; add `futures-util = "0.3"` to use `StreamExt`:
 
-```rust
-use causa::kernel::{
-    CallControl, ModelGateway, ModelInvokeError, ModelInvokeErrorKind,
-    ModelOutput, ModelRequest, StreamDelta,
-};
-use futures_util::StreamExt;
-
-async fn consume(
-    gateway: &dyn ModelGateway,
-    request: &ModelRequest,
-    control: &CallControl,
-) -> Result<ModelOutput, ModelInvokeError> {
-    let mut stream = gateway.stream(request, control).await?;
-    while let Some(delta) = stream.next().await {
-        match delta {
-            StreamDelta::TextDelta { delta } => print!("{delta}"),
-            StreamDelta::Done { final_output } => return Ok(final_output),
-            // The in-band failure carries the gateway's own error, so a retry
-            // wrapper can see its classification and any server-requested delay.
-            StreamDelta::Error { error } => return Err(error),
-            _ => {}
-        }
-    }
-    Err(ModelInvokeError::new(
-        ModelInvokeErrorKind::UnknownOutcome,
-        "stream ended without a complete output",
-    ))
-}
-```
+<Snippet file="src/streaming.rs" anchor="consume" />
 
 ## Incremental observations and final material
 
