@@ -5,7 +5,7 @@
 
 **Causa** is a minimal context kernel for Rust agents: it holds the facts,
 your code holds the behavior. One Cargo workspace, six crates published at one
-shared `0.0.x` version, with `causa` as the default entry. Dual-licensed
+shared version, with `causa` as the default entry. Dual-licensed
 `MIT OR Apache-2.0`.
 
 ## Layout
@@ -142,10 +142,11 @@ In shell guards, match the facade as `"causa v"`; bare `causa` also matches
   names. `version`, `edition`, `authors`, `license` and `repository` are
   inherited from the workspace. `Cargo.lock` is committed. Each crate ships
   both license files as relative symlinks to the root copies.
-- Before `0.1`, keep no backward compatibility: remove an obsolete
-  implementation or format instead of adapting to it, and record the break
-  and its migration at the top of `CHANGELOG.md`. From `0.1.0`, a wire-serde
-  break needs a minor bump.
+- A break of the public API or of the stable serialized set goes only into
+  a minor release (`0.1.z` to `0.2.0`); a patch release fixes or adds
+  without breaking. A break removes the obsolete implementation or format
+  instead of adapting to it, and records itself and its migration at the top
+  of `CHANGELOG.md`.
 - The stable serialized set is `Context` and every type it contains; the
   list is in the `causa-kernel` crate docs and
   `crates/causa-kernel/tests/stable_context.rs` holds it against a committed

@@ -3,14 +3,32 @@
 All notable changes to the Causa crate family are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-During the experimental `0.0.x` series, patch releases may break Rust API
-and wire-serde compatibility. Breaking changes and migration notes appear
-at the top of each release. Starting with `0.1.0`, breaking wire changes
-(serialized context and tool material) bump the **minor** version.
-Before 0.1, obsolete APIs and formats may be removed without compatibility
-adapters or data converters.
+From `0.1.0`, a break of the public Rust API or of the stable serialized
+set (`Context` and every type it contains) comes only in a minor release
+(`0.1.z` to `0.2.0`), with its migration at the top of that release; patch
+releases fix or add without breaking. A break removes the obsolete API or
+format without a compatibility adapter or data converter. In the earlier
+`0.0.x` series any release could break.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-10-17
+
+The first minor release. The public API and the serialized form of
+`Context` are those of 0.0.7; what changes is the promise. From here a
+breaking change to either needs a minor version, so a `"0.1"` dependency
+picks up every 0.1 patch release and never a break.
+
+### Changed
+
+- Versioning: a break of the public Rust API or of the stable serialized
+  set, listed in the `causa-kernel` crate docs and held against a committed
+  fixture, needs a minor bump. Adding an optional field with a serde
+  default is not a break. Other serializable types (model output, request
+  options, identifiers, error kinds) carry no promise.
+
+  Migration: from 0.0.7, change the dependency to `causa = "0.1"`. No code
+  changes are needed.
 
 ## [0.0.7] - 2026-10-17
 

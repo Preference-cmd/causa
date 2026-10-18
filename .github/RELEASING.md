@@ -9,17 +9,13 @@ subagent orchestration belong to applications; they are not Causa release gates.
 The Publish workflow accepts `0.0.x` (x ≥ 1) and `0.y.z` (y ≥ 1); 1.0 is a
 separate decision. A new version must follow the latest dated CHANGELOG entry.
 
-- **Until 0.1.0 is released**, every release bumps the patch number, breaking
-  ones included: in `0.0.x` any release may be incompatible with the one
-  before, and Cargo's `"0.0.3"` constraint does not select `0.0.4`.
-- **From 0.1.0**, a break of the public API or of the stable serialized set
-  (`Context` and every type it contains) needs a minor bump, `0.1.z` to
-  `0.2.0`. A patch release only fixes or adds without breaking, so a
-  `"0.1"` constraint picks it up.
-
-The switch happens in the commit that prepares 0.1.0, which also rewrites the
-version wording of the README, the top of CHANGELOG, the website's status and
-index pages and `AGENTS.md`.
+- A break of the public API or of the stable serialized set (`Context` and
+  every type it contains) needs a minor bump, `0.1.z` to `0.2.0`. A patch
+  release only fixes or adds without breaking, so a `"0.1"` constraint
+  picks it up.
+- The `0.0.x` series that ended with 0.0.7 bumped the patch number for every
+  release, breaking ones included; Cargo's `"0.0.3"` constraint does not
+  select `0.0.4`.
 
 On GitHub, only a minor release (`v0.1.0`, `v0.2.0`) is a regular release,
 titled with its tag. Every `0.0.x` release and every patch between minor
