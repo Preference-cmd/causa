@@ -73,6 +73,7 @@ export default defineConfig({
                   items: [
                     'guides/write-a-tool',
                     'guides/connect-mcp-servers',
+                    'guides/choose-a-provider',
                     'guides/edit-context',
                     'guides/stream-output',
                     'guides/interrupted-runs',

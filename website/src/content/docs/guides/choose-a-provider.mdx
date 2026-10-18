@@ -1,0 +1,145 @@
+---
+title: Choose a protocol and provider
+description: Pick one of the three gateways, point it at a compatible server, and load its options from your configuration.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin choose_a_provider"
+  example="tests/consumers/site-guides/src/bin/choose_a_provider.rs"
+  docs={[
+    'causa-provider/latest/causa_provider/struct.KernelHttpGateway.html',
+    'causa-kernel/latest/causa_kernel/struct.GenerationOptions.html',
+    'causa-provider/latest/causa_provider/struct.ChatRenderOptions.html',
+    'causa-kernel/latest/causa_kernel/struct.ModelInvokeError.html',
+  ]}
+/>
+
+## What it does
+
+A gateway turns the context into one provider's request format, sends it
+over HTTP and reads the answer back into the context. Causa has one gateway
+per protocol, not per company. Any server that speaks one of the three
+protocols works with a different base URL:
+
+| | Anthropic Messages | OpenAI Chat Completions | OpenAI Responses |
+|---|---|---|---|
+| Gateway | `AnthropicMessagesGateway` | `OpenAiChatCompletionsGateway` | `OpenAiResponsesGateway` |
+| Default endpoint | `api.anthropic.com/v1/messages` | `api.openai.com/v1/chat/completions` | `api.openai.com/v1/responses` |
+| Key sent as | `x-api-key` | `Authorization: Bearer` | `Authorization: Bearer` |
+| Output limit | `max_tokens`, required | `max_completion_tokens`, or `max_tokens` | `max_output_tokens` |
+| Reasoning effort | `output_config.effort` | `reasoning_effort` | `reasoning.effort` |
+| Media | images and PDFs | images | images |
+| Render options | `AnthropicRenderOptions` | `ChatRenderOptions` | `ResponsesRenderOptions` |
+
+The context does not depend on the protocol: the same conversation can go
+to any of the three.
+
+## When to reach for it
+
+Every application that calls a model builds one gateway. Read on when the
+server is not the protocol's own API, when the choice of protocol or model
+comes from configuration, or when a server needs a setting the defaults do
+not send.
+
+## Before you start
+
+The default `causa` features include the three gateways. To read the
+configuration as this guide does, add `serde`:
+
+```bash
+cargo add serde --features derive
+```
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Which protocol | The one the server documents. A server described as "OpenAI-compatible" usually means Chat Completions | — |
+| A server other than the protocol's own API | `with_base_url`, with the URL up to and including its version segment (`https://host/v1`); `with_endpoint` for a URL that does not end in the protocol's path | Requests go to the protocol's own API |
+| The output limit | Set `GenerationOptions::max_tokens` | Anthropic: the gateway refuses with `InvalidRequest` and sends nothing. Chat and Responses: the provider's default applies |
+| A Chat server that reads only `max_tokens` | Set `ChatRenderOptions::max_tokens_field` to `max_tokens` | The server ignores the limit and reports no error |
+| A setting only one server knows, such as Anthropic's `thinking` object | Put it in `GenerationOptions::extra_body` | — |
+| Retries | Wrap the gateway in `RetryingGateway` | A failed call ends the run; no gateway retries on its own |
+| Your own HTTP client (a proxy, other timeouts) | `with_http_client` | The default client: 10-second connect timeout, 300-second idle read timeout, no total timeout, no retries, no redirects |
+
+Two defaults of Responses are worth knowing: `store` is sent as `false`,
+and the encrypted reasoning is requested so the context can send it back.
+Both are in `ResponsesRenderOptions`.
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/choose_a_provider.rs" anchor="imports" />
+
+Describe each endpoint in your configuration. `GenerationOptions` and the
+three render option types implement `Deserialize`, so they can come from the
+same file:
+
+<Snippet file="src/bin/choose_a_provider.rs" anchor="config" />
+
+Build the gateway that the configuration names. The runner takes any
+`Arc<dyn ModelGateway>`, so the rest of the program does not change with
+the protocol:
+
+<Snippet file="src/bin/choose_a_provider.rs" anchor="gateway" />
+
+The model and the generation options go with each run:
+
+<Snippet file="src/bin/choose_a_provider.rs" anchor="run" />
+
+The program reads three configurations, one per protocol. The Chat one
+writes its limit as `max_tokens`:
+
+<Snippet file="src/bin/choose_a_provider.rs" anchor="files" />
+
+In the program, a local server answers like all three APIs, and the program
+prints the path, the header that carried the key and the limit each gateway
+sent.
+
+## Common questions
+
+**Can a conversation move to another protocol?** Yes. Text, tool calls and
+tool results render for any of the three. Reasoning that a provider returned
+in its own sealed format is sent back only to that protocol, and skipped by
+the others.
+
+**Which model IDs can I use?** Any the server accepts. Causa sends the ID as
+given and has no table of models: which options, efforts and tools a model
+supports is for your configuration to know.
+
+**How do I tell a rejected key from an unknown model?** A refused request
+comes back as `ModelInvokeError` with the provider's HTTP status in `status`
+and its error code, when it sent one, in `code`. The `kind` says whether a
+retry can help.
+
+**Can I set render options for one request?** No; they belong to the gateway
+value. Hold a second gateway for the other setting. The HTTP client can be
+shared between them.
+
+**Is the configuration format stable?** The serialized form of
+`GenerationOptions` and the render options follows their field names and
+carries no promise across releases. Keep a test that loads your
+configuration file.
+
+**Can I support a protocol Causa does not have?** Implement `ModelGateway`
+for your own type; the runner accepts it like the built-in ones.
+
+## It's working if
+
+- The program prints three lines, one per protocol, each ending with the
+  server's reply.
+- In your application, a turn completes. A refused request ends the run
+  with `ModelCallFailed`, and its error carries the provider's status and
+  message.
+
+## Where it fits
+
+- [Stream output](/guides/stream-output/) — the same gateways, with the
+  answer as it arrives.
+- [Retries and observation](/guides/retries-and-observation/) — retrying
+  failed calls and watching a run.
+- [Media](/guides/media/) — images and PDFs, and what each protocol accepts.

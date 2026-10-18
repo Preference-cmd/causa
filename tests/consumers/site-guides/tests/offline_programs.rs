@@ -32,3 +32,13 @@ fn connect_mcp_servers_lists_and_calls_the_in_process_tool() {
         "tool: mcp_notes_read_note\nresult: Succeeded \"Buy milk.\"\nThe note says: Buy milk.\n"
     );
 }
+
+#[test]
+fn choose_a_provider_sends_one_context_over_three_protocols() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_choose_a_provider")),
+        "/v1/messages x-api-key max_tokens=200 -> Hello from Anthropic Messages.\n\
+         /v1/chat/completions authorization max_tokens=200 -> Hello from Chat Completions.\n\
+         /v1/responses authorization max_output_tokens=200 -> Hello from Responses.\n"
+    );
+}
