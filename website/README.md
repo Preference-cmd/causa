@@ -93,7 +93,7 @@ Signatures are not copied onto the site; link the docs.rs page instead.
   mark the shown lines with `// ANCHOR: name` / `// ANCHOR_END: name`.
 
   ```mdx
-  <Snippet file="src/bin/context_editing.rs" anchor="program" />
+  <Snippet file="src/bin/context_editing.rs" anchor="edit" />
   ```
 
 - `RunIt` — the box at the top of a guide: the example to run, or the

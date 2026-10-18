@@ -13,15 +13,21 @@ fn run(program: &str) -> String {
 }
 
 #[test]
-fn context_editing_replaces_three_blocks_and_appends_one() {
-    assert_eq!(run(env!("CARGO_BIN_EXE_context_editing")), "4 blocks\n");
+fn context_editing_replaces_three_blocks_and_refuses_a_reused_id() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_context_editing")),
+        "System: Answer briefly.\n\
+         System: Earlier: the user is building a Rust agent that reads notes, and likes short answers.\n\
+         User: Which crate should I use for HTTP?\nSystem: Name one crate.\n3 blocks replaced\n\
+         refused (id reused for other content): 1 block handed back, 4 blocks before and after\n"
+    );
 }
 
 #[test]
 fn write_a_tool_reads_the_note_and_the_model_answers() {
     assert_eq!(
         run(env!("CARGO_BIN_EXE_write_a_tool")),
-        "read_note: Succeeded {\"text\":\"Buy milk.\"}\nThe note says: \"Buy milk.\"\n"
+        "read_note: Succeeded {\"text\":\"Buy milk.\"}\nThe note says: Buy milk.\n"
     );
 }
 

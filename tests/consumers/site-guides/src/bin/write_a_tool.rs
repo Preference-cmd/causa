@@ -110,7 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Arc::new(ScriptedModel(|request: &_| {
         match tool_results(request).last() {
             None => call("read_note", json!({ "name": "todo.txt" })),
-            Some(result) => reply(format!("The note says: {}", result.output.content["text"])),
+            Some(result) => reply(format!(
+                "The note says: {}",
+                result.output.content["text"].as_str().unwrap_or_default()
+            )),
         }
     }));
 

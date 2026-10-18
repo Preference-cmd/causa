@@ -1,77 +1,117 @@
 ---
 title: Edit context
-description: Explicitly replace and append facts in a Context.
+description: Replace, delete and append blocks of a context in one atomic edit, for example to summarize old turns.
 ---
 
-import Snippet from '../../../components/Snippet.astro';
 import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
 
 <RunIt
-  command="cargo add causa@0.1.0"
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin context_editing"
+  example="tests/consumers/site-guides/src/bin/context_editing.rs"
   docs={[
     'causa-kernel/latest/causa_kernel/struct.Context.html',
     'causa-kernel/latest/causa_kernel/struct.ContextEdit.html',
+    'causa-kernel/latest/causa_kernel/struct.EditFailure.html',
   ]}
 />
 
-`Context` stores an ordered list of context blocks. When your application
-decides that some material should be replaced, use the context edit API to
-prepare the replacement and any new trailing blocks as one atomic change.
-The kernel does not choose what to summarize or when to edit.
+## What it does
 
-## Replace a range and append material
+`context.edit()` starts an edit: replacements of ranges of blocks, and
+blocks to append at the end. `commit()` applies all of it, or none of it
+and hands every submitted block back. Causa does not decide what to
+summarize, drop or keep, or when: the edit API only carries out what your
+application decided.
 
-Create each new block with an ID supplied by your application. A changed block
-needs a new ID; when you carry a block forward unchanged, clone or reuse the
-existing `ContextBlock` so its ID, content, and metadata stay together.
+## When to reach for it
 
-<Snippet file="src/bin/context_editing.rs" anchor="program" />
+Between runs, to replace old turns with a summary, drop tool output nobody
+needs, or correct a message. For a change to one request only, leaving the
+context as it is, [prepare the request](/guides/prepare-each-request/)
+instead.
 
-This example uses the runtime's `new_block_id()` convenience function. A
-kernel-only application supplies its own IDs, for example by wrapping UUIDs in
-`BlockId`.
+## Before you start
 
-Ranges use indexes from the original block sequence at the start of the edit;
-earlier replacements do not shift later coordinates. Overlapping replacements
-resolve in declaration order: a later one displaces the whole earlier
-replacement, which does not reappear. An insertion exactly at a replacement's
-right endpoint is adjacent and coexists; an insertion at its start or inside
-it overlaps and is displaced by a later replacement. Appended blocks are added
-after the replacement result, in append order.
+The edit API is in the kernel, which every feature selection includes. This
+guide makes ids with the runner's `new_block_id()`; with
+`--no-default-features`, wrap your own UUIDs in `BlockId::new`.
 
-An empty replacement deletes its range; an empty range inserts at that
-position. Keep an owned copy before editing if you may need the original:
-`context.blocks()[range].to_vec()` copies the selected blocks, including their
-IDs and metadata. Editing does not mutate those copies. Causa does not retain
-deleted blocks as hidden history, so save any material you need before
-replacing or deleting it. A summary block is ordinary material; the caller selects which context to
-retain and supply to a later run.
+## The decisions
 
-## Atomicity
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Ids of new and changed blocks | Give every new block, and every changed one, a new id | Reusing an id for other content refuses the edit with `BlockIdentityMismatch` |
+| Blocks you keep | Leave them in place, or clone the whole `ContextBlock` to move it | — |
+| What the edit removes | Copy it first: `context.blocks()[range].to_vec()` | It is gone; the context keeps no history |
+| Tool calls and their results | Replace or remove them together | The gateway refuses the next request with `InvalidRequest` |
+| Tool changes | Leave `ToolChange` blocks in place | The runner records the tools again before the next request |
+| Model output | Replace whole turns, not parts of one | A rewritten assistant block is a new block: it is sent from its content alone, without the provider fields or reasoning the original carried |
 
-Commit applies the whole edit or leaves the context unchanged. If validation
-fails, the edit failure returns all submitted replacement and appended blocks,
-including inputs from operations displaced by later overlapping edits. The
-caller can inspect or reuse those values. A successful commit returns `()`.
+## Code
 
-A context remains editable after every run, including interrupted runs.
-An empty edit is valid; there is no sealed lifecycle state.
-Creating an edit builder does not change the context, and dropping an
-uncommitted builder discards only that pending edit.
+The imports, for reference:
 
-## Saving material
+<Snippet file="src/bin/context_editing.rs" anchor="imports" />
 
-`Context` serializes as an object with one required field, `blocks`.
-Loading validates block ID uniqueness. Empty Message blocks and partial tool material
-are allowed; missing `blocks` and duplicate IDs are rejected. Generic import
-and edit do not require a completed tool exchange. Runner result commits and
-protocol rendering apply their own stricter rules at those boundaries.
+Replace three blocks with a summary and append a reminder, in one edit.
+Ranges count blocks as they were when the edit started:
 
-`context.frame()` makes an independent, owned `ContextFrame` containing blocks.
-A `ContextPreparer` can edit retained material and return a different frame for
-one request. Preparation failure preserves edits already committed to context.
-Neither value contains a turn ID or execution history.
+<Snippet file="src/bin/context_editing.rs" anchor="edit" />
 
-Loading does not run tools or recover previously deleted blocks. Your application
-owns summaries, history, session coordination and saved copies. Use `into_blocks()`
-to transfer material without copying it.
+An edit that fails changes nothing. The failure carries the reason and every
+block the edit submitted:
+
+<Snippet file="src/bin/context_editing.rs" anchor="refused" />
+
+In the program, the context starts with a system message, three turns and a
+question; after the edit it holds the system message, the summary, the
+question and the reminder.
+
+## Common questions
+
+**How do I delete or insert?** An empty replacement deletes its range; a
+replacement of an empty range, such as `2..2`, inserts at that position.
+
+**What if two replacements overlap?** They resolve in the order you declared
+them: a later one displaces the whole earlier one, which does not come back.
+An insertion at the right end of a replacement is adjacent to it and both
+apply; an insertion at its start or inside it overlaps and is displaced by a
+later replacement. Appended blocks go after the result of all replacements,
+in the order given.
+
+**Do earlier replacements shift later ranges?** No. Every range uses the
+indexes the blocks had when the edit started.
+
+**What does a failed edit hand back?** Every replacement and appended block
+you submitted, including those displaced by a later overlapping
+replacement, in `EditFailure`.
+
+**Can I edit after an interrupted run?** Yes. A context has no closed
+state: it can be edited after every run, an empty edit is valid, and
+dropping an edit without committing it discards only that edit.
+
+**Can I make tool calls without results, or empty messages?** The edit API
+allows both; it only checks ids. The runner and the gateways check their
+own rules when they use the context, so a call without a result has to be
+answered before the next request. [Handle interrupted
+runs](/guides/interrupted-runs/) shows how.
+
+**How do I take the blocks out without copying them?**
+`context.into_blocks()` hands over the vector.
+
+## It's working if
+
+- The program prints four blocks with the summary in second place, then
+  `3 blocks replaced`, then a refused edit with 4 blocks before and after.
+- In your application, a failed `commit()` leaves `context.blocks()`
+  exactly as it was.
+
+## Where it fits
+
+- [Prepare each request](/guides/prepare-each-request/) — choose what one
+  request sends, without editing the context.
+- [Save and restore context](/guides/save-and-restore/) — store the edited
+  context.
+- [Context and ports](/concepts/context-and-ports/) — the kinds of block
+  a context holds.
