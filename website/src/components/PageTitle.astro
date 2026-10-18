@@ -1,0 +1,81 @@
+---
+// Starlight's page title, followed by links to the page as Markdown: one
+// copies it for pasting into an assistant, the other opens the `.md` file
+// that src/pages/[...slug].md.ts builds for every docs page.
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+
+const { id } = Astro.locals.starlightRoute.entry;
+const markdown = id === '404' ? undefined : `/${id}.md`;
+---
+
+<Default />
+{
+  markdown && (
+    <div class="page-actions not-content">
+      <copy-markdown data-src={markdown}>
+        <button type="button">Copy as Markdown</button>
+      </copy-markdown>
+      <a href={markdown}>View as Markdown</a>
+    </div>
+  )
+}
+
+<script>
+  class CopyMarkdown extends HTMLElement {
+    connectedCallback() {
+      const button = this.querySelector('button');
+      const src = this.dataset.src;
+      if (!button || !src) return;
+      const label = button.textContent;
+      button.addEventListener('click', async () => {
+        const text = fetch(src).then((response) => {
+          if (!response.ok) throw new Error(`${src}: ${response.status}`);
+          return response.text();
+        });
+        try {
+          // Safari only allows the write while the click is being handled,
+          // so the fetch goes into the ClipboardItem as a promise.
+          if (typeof ClipboardItem !== 'undefined') {
+            const blob = text.then((value) => new Blob([value], { type: 'text/plain' }));
+            await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+          } else {
+            await navigator.clipboard.writeText(await text);
+          }
+          button.textContent = 'Copied';
+        } catch {
+          button.textContent = 'Copy failed';
+        }
+        setTimeout(() => (button.textContent = label), 2000);
+      });
+    }
+  }
+  customElements.define('copy-markdown', CopyMarkdown);
+</script>
+
+<style>
+  .page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+    margin-top: 0.75rem;
+    font-size: var(--sl-text-sm);
+  }
+  .page-actions button,
+  .page-actions a {
+    color: var(--sl-color-gray-2);
+    text-decoration: none;
+  }
+  .page-actions button {
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.375rem;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+  }
+  .page-actions button:hover,
+  .page-actions a:hover {
+    color: var(--sl-color-white);
+  }
+</style>

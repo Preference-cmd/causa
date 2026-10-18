@@ -4,6 +4,7 @@ import starlight from '@astrojs/starlight';
 import cloudflare from '@astrojs/cloudflare';
 import tailwindcss from '@tailwindcss/vite';
 import starlightSidebarTopics from 'starlight-sidebar-topics';
+import starlightLlmsTxt from 'starlight-llms-txt';
 
 // Docs site: fully prerendered at build time, served by a tiny Worker
 // (static assets + 404/redirect handling). No SSR, no bindings.
@@ -43,6 +44,10 @@ export default defineConfig({
         baseUrl: 'https://github.com/Preference-cmd/causa/edit/main/website/',
       },
       customCss: ['./src/styles/tailwind.css', './src/styles/custom.css'],
+      components: {
+        // Adds the copy-as-Markdown links under every page title.
+        PageTitle: './src/components/PageTitle.astro',
+      },
       plugins: [
         // Two entries with their own sidebars: Guides say how to do
         // something, the API Reference says what each part is.
@@ -89,6 +94,11 @@ export default defineConfig({
           // The splash home page has no sidebar and belongs to neither.
           { exclude: ['/'] },
         ),
+        starlightLlmsTxt({
+          projectName: 'Causa',
+          description:
+            'Causa is a minimal context kernel for Rust agents: the kernel holds messages, tool calls and results as typed facts; the host application owns the loop, storage and policy.',
+        }),
       ],
     }),
   ],
