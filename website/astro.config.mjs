@@ -7,8 +7,7 @@ import tailwindcss from '@tailwindcss/vite';
 // Docs site: fully prerendered at build time, served by a tiny Worker
 // (static assets + 404/redirect handling). No SSR, no bindings.
 export default defineConfig({
-  // TODO: set to the final custom domain, e.g. https://causa.dev
-  site: 'https://causa-site.workers.dev',
+  site: 'https://causa.inceptae.com',
   output: 'static',
   vite: {
     plugins: [tailwindcss()],
