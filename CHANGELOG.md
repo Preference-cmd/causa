@@ -12,6 +12,13 @@ adapters or data converters.
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-10-17
+
+OpenAI Chat Completions can send the output limit under the older
+`max_tokens` name, for servers that ignore `max_completion_tokens`, and a
+custom media resolver no longer needs a direct `causa-protocol` dependency.
+There are no breaking changes from 0.0.6.
+
 ### Added
 
 - OpenAI Chat can send the output limit as `max_tokens` instead of

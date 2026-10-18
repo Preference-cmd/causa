@@ -5,28 +5,34 @@ description: Where Causa stands and where it's going.
 
 ## Experimental 0.0.x
 
-**0.0.6** widens how media reaches the model. A resolved media payload is
-inline bytes or a URL, and URL images render on all three protocols. Anthropic
-Messages renders PDF documents as `document` blocks; OpenAI Chat Completions
-and Responses degrade them to text placeholders. A `MediaRef` can carry a file
-name, and the gateway's inline ceiling is set per media kind. On the OpenAI
-protocols one user block is one message and Responses keeps tool-result media
-inside the result, and MCP binary content no longer leaks into tool output
-text. It builds on 0.0.5, which made tools and message roles facts of the
-context. Session management, history policies and subagent orchestration
-belong to applications built on Causa. This is an experimental release with
-breaking changes from 0.0.5.
+**0.0.7** lets the host choose how OpenAI Chat Completions names the output
+limit. The renderer still sends `max_completion_tokens` by default; a server
+that reads only the older `max_tokens` gets that name instead, set with
+`OpenAiChatCompletionsGateway::with_max_tokens_field` or the
+`max_tokens_field` render option. Only one of the two is ever sent.
+`causa-provider` also re-exports `MediaPayload` and `MediaSource`, so a custom
+media resolver needs no direct `causa-protocol` dependency. It builds on
+0.0.6, which widened how media reaches the model: inline or URL payloads, PDF
+documents on Anthropic Messages, and a per-kind inline ceiling. Session
+management, history policies and subagent orchestration belong to
+applications built on Causa. This experimental release has no breaking
+changes from 0.0.6.
 
 During `0.0.x`, patch releases may break Rust API and serialized-format
 compatibility. Breaking changes and migration notes appear at the top of
-the release notes. Cargo does not automatically upgrade `"0.0.5"` to
-`0.0.6`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
+the release notes. Cargo does not automatically upgrade `"0.0.6"` to
+`0.0.7`. Starting with `0.1.0`, breaking wire-serde changes bump the **minor**
 version.
+
+## Upgrading from 0.0.6
+
+Update your dependency explicitly to `causa = "0.0.7"`. No code changes are
+needed.
 
 ## Upgrading from 0.0.5
 
-Update your dependency explicitly to `causa = "0.0.6"`. The changelog lists
-every break with its migration:
+Update your dependency to `causa = "0.0.7"`. The changelog lists every break
+with its migration; 0.0.7 adds none:
 
 | 0.0.5 usage | 0.0.6 replacement |
 | --- | --- |
@@ -94,7 +100,7 @@ uncommitted tool batch deliberately. An interrupted external tool may have an
 unknown outcome; recreating context does not guarantee exactly-once execution.
 
 The [getting-started example](/getting-started/) uses the new facade API. The
-[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.6/CHANGELOG.md)
+[full changelog](https://github.com/Preference-cmd/causa/blob/v0.0.7/CHANGELOG.md)
 details the context, tool, control, conversion and protocol changes.
 
 ## Changelog
