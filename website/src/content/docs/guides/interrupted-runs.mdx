@@ -4,6 +4,17 @@ description: What an interrupted run returns and how to close a tool batch it le
 ---
 
 import Snippet from '../../../components/Snippet.astro';
+import RunIt from '../../../components/RunIt.astro';
+
+<RunIt
+  command="cargo run --example interrupted_batch -p causa-runtime"
+  example="crates/causa-runtime/examples/interrupted_batch.rs"
+  docs={[
+    'causa-runtime/latest/causa_runtime/driver/enum.TurnResult.html',
+    'causa-runtime/latest/causa_runtime/driver/enum.TurnInterruption.html',
+    'causa-kernel/latest/causa_kernel/struct.ToolBatch.html',
+  ]}
+/>
 
 A run that does not complete returns `TurnResult::Interrupted` with a typed
 cause. It still returns everything it committed: `TurnOutcome.context` holds

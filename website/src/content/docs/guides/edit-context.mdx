@@ -4,6 +4,15 @@ description: Explicitly replace and append facts in a Context.
 ---
 
 import Snippet from '../../../components/Snippet.astro';
+import RunIt from '../../../components/RunIt.astro';
+
+<RunIt
+  command="cargo add causa@0.1.0"
+  docs={[
+    'causa-kernel/latest/causa_kernel/struct.Context.html',
+    'causa-kernel/latest/causa_kernel/struct.ContextEdit.html',
+  ]}
+/>
 
 `Context` stores an ordered list of context blocks. When your application
 decides that some material should be replaced, use the context edit API to

@@ -1,0 +1,61 @@
+---
+// The box at the top of a guide: a command to copy, then where the code
+// lives. A guide with a matching example runs it; any other guide gives the
+// `cargo add` line it needs.
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+  /** Shell command, run from the repository root for an example. */
+  command: string;
+  /** Repository path of the example, e.g. `crates/causa-runtime/examples/streaming_print.rs`. */
+  example?: string;
+  /**
+   * docs.rs pages for the items the guide uses, as paths after
+   * `https://docs.rs/`, e.g. `causa-kernel/latest/causa_kernel/struct.Context.html`.
+   */
+  docs?: string[];
+}
+
+const { command, example, docs = [] } = Astro.props;
+
+// `.../struct.Context.html` reads as `Context`; a module index as its module.
+function docsLabel(path: string): string {
+  const parts = path.split('/');
+  const page = parts[parts.length - 1];
+  if (page === 'index.html') return parts[parts.length - 2];
+  return page.replace(/^[a-z]+\./, '').replace(/\.html$/, '');
+}
+
+const exampleUrl = example && `https://github.com/Preference-cmd/causa/blob/main/${example}`;
+const exampleName = example?.split('/').pop();
+---
+
+<div class="run-it">
+  <Code code={command} lang="bash" title="Run it" />
+  {
+    (exampleUrl || docs.length > 0) && (
+      <p class="run-it-source">
+        {'Source: '}
+        {exampleUrl && <a href={exampleUrl}>{exampleName}</a>}
+        {exampleUrl && docs.length > 0 && ' · '}
+        {docs.length > 0 && 'docs.rs: '}
+        {docs.map((path, i) => (
+          <>
+            {i > 0 && ', '}
+            <a href={`https://docs.rs/${path}`}>
+              <code>{docsLabel(path)}</code>
+            </a>
+          </>
+        ))}
+      </p>
+    )
+  }
+</div>
+
+<style>
+  .run-it-source {
+    margin-top: 0.5rem;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-gray-2);
+  }
+</style>

@@ -4,6 +4,17 @@ description: Consume provider increments while preserving complete-output owners
 ---
 
 import Snippet from '../../../components/Snippet.astro';
+import RunIt from '../../../components/RunIt.astro';
+
+<RunIt
+  command="cargo run --example streaming_print -p causa-runtime"
+  example="crates/causa-runtime/examples/streaming_print.rs"
+  docs={[
+    'causa-kernel/latest/causa_kernel/trait.ModelGateway.html',
+    'causa-runtime/latest/causa_runtime/driver/struct.TurnRunner.html',
+    'causa-runtime/latest/causa_runtime/event/enum.RunEvent.html',
+  ]}
+/>
 
 ## Choose a consumer
 
