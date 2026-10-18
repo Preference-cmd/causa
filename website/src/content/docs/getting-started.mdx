@@ -1,26 +1,35 @@
 ---
 title: Getting started
-description: Add Causa to a Rust project and run your first turn.
+description: Run an example offline, then add Causa to a project and run one turn against a model.
 ---
 
+import RunIt from '../../components/RunIt.astro';
 import Snippet from '../../components/Snippet.astro';
 
-## Add the dependency
+<RunIt
+  command={`git clone https://github.com/Preference-cmd/causa.git
+cd causa
+cargo run --example conversation_persistence -p causa-runtime`}
+  example="crates/causa-runtime/examples/conversation_persistence.rs"
+/>
 
-Causa **0.1.0** is on crates.io and requires Rust **1.96+**. The default
-features bring the kernel, the turn runner and the Anthropic and OpenAI
-adapters:
+## Before you start
 
-```bash
-cargo add causa@0.1.0
-```
+You need Rust **1.96** or later. The first step needs no API key or network
+beyond cloning; the second needs an Anthropic API key.
 
-To leave out the network adapters, or to add the MCP adapters, pick other
-features; [Crates and features](/reference/crates/) lists every selection.
+## Try it offline
 
-## Run one turn in your application
+The command above runs a turn against a scripted model, saves the context
+as JSON, and loads it for the next run. The repository's default branch follows
+development; run `git checkout v0.1.0` first to use the examples of the
+release on crates.io. [Examples](/examples/) lists the others; most run
+offline too.
 
-Use Rust **1.96+** and create an application:
+## Add Causa to a project
+
+Causa **0.1.0** is on crates.io. The default features include the turn
+runner and the Anthropic and OpenAI gateways:
 
 ```bash
 cargo new causa-hello
@@ -29,55 +38,46 @@ cargo add causa@0.1.0
 cargo add tokio@1 --features macros,rt
 ```
 
-Replace `src/main.rs` with the following. All Causa imports come through the
-facade; this example asks a model one question without registering tools.
+To leave out the network gateways, or to add the MCP adapters, choose other
+features; [Crates and features](/reference/crates/) lists every selection.
+
+## Run one turn
+
+Replace `src/main.rs` with:
 
 <Snippet file="src/bin/getting_started.rs" anchor="program" />
 
-Set `ANTHROPIC_API_KEY` in your environment and `ANTHROPIC_MODEL` to a model ID
-available to your account, then run `cargo run`. This makes a real provider
-request and requires network access.
+The program builds a gateway for the Anthropic Messages API, a tool executor
+with no tools, and a runner that uses both. It starts a `Context` with one
+user message and runs one turn. The runner calls the model, and because the
+model asks for no tools, the turn completes after one round; the program
+prints the reply.
 
-## Run the repository examples
-
-The `cargo run --example ... -p ...` commands on this site require the Causa
-repository workspace. Adding `causa` to your application's dependencies does
-not make those examples application targets. From a separate directory:
-
-```bash
-git clone https://github.com/Preference-cmd/causa.git
-cd causa
-```
-
-The default checkout follows development. Run `git checkout v0.1.0` to use
-this release's examples.
-
-With `ANTHROPIC_API_KEY` already set, run this from the repository root:
+Set `ANTHROPIC_API_KEY` to your key and `ANTHROPIC_MODEL` to a model ID your
+account can use, then:
 
 ```bash
-cargo run --example quickstart -p causa-provider
+cargo run
 ```
 
-The `quickstart` example adds a local `Tool` to a provider-backed turn. It lives
-in `causa-provider`, which can use the runtime through a dev-dependency while
-keeping the normal dependency graph layered.
+## It's working if
 
-## No API key? Run offline
+The program prints one sentence from the model and exits.
 
-From the same repository root, these examples use scripted stub gateways and
-run with no network:
+## If it fails
 
-```bash
-cargo run --example conversation_persistence -p causa-runtime
-cargo run --example streaming_print -p causa-runtime
-cargo run --example approval_processor -p causa-runtime
-cargo run --example media_feedback -p causa-runtime
-```
-
-See [Examples](/examples/) for what each one demonstrates.
+- `Error: NotPresent` means one of the two environment variables is not
+  set.
+- `Error: "turn did not complete: …"` carries the cause, such as a rejected
+  key or an unknown model ID.
 
 ## Next steps
 
-- [Concepts](/concepts/context-and-ports/) — the facts / driver / adapter split and the layering rules.
-- [Crates and features](/reference/crates/) — the six crates and the feature matrix.
-- [API Reference](/reference/) — the public types by crate, with links to [docs.rs/causa](https://docs.rs/causa) for every signature.
+- [Why Causa](/why-causa/) — what Causa leaves to your application.
+- The [`quickstart`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-provider/examples/quickstart.rs)
+  example adds a local tool to this turn:
+  `cargo run --example quickstart -p causa-provider` from the repository.
+- [Turns, rounds and tool batches](/concepts/turns-and-batches/) — what the
+  runner does in one run.
+- [API Reference](/reference/) — the public types by crate, with links to
+  [docs.rs/causa](https://docs.rs/causa) for every signature.
