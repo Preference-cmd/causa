@@ -44,8 +44,9 @@ Read a fact here before asserting it — never from memory:
 
 When a crate, feature or example changes, update the copies together:
 `README.md` (crates, features and examples tables) and
-`website/src/content/docs/crates.mdx`. When a CI check changes, update the
-command list below.
+`website/src/content/docs/reference/crates.mdx`. When a public API changes,
+update its page under `website/src/content/docs/reference/`. When a CI check
+changes, update the command list below.
 
 Rust code on the website is not written in the pages: each block is read
 at build time from `tests/consumers/site-guides`, which CI compiles. Change

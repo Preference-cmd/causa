@@ -1,9 +1,9 @@
 ---
-title: Streaming
+title: Stream output
 description: Consume provider increments while preserving complete-output ownership.
 ---
 
-import Snippet from '../../components/Snippet.astro';
+import Snippet from '../../../components/Snippet.astro';
 
 ## Choose a consumer
 
@@ -91,36 +91,10 @@ redirects. If you inject a client with `with_http_client`, its transport
 policies remain yours; disable retries and redirects on that client when you
 require the same single-request behavior.
 
-Use `causa::providers::StreamLimits` with `gateway.with_stream_limits(limits)`
-to choose explicit positive limits:
+Every stream runs under explicit size limits; exceeding one is an
+`Undecodable` error, not a truncated success. See
+[Stream limits](/reference/provider/stream-limits/) for the limits, their
+defaults and how to set them.
 
-| Limit | Default |
-| --- | ---: |
-| Line and SSE event | 32 MiB each |
-| Total consumed wire bytes, including comments and unknown events | 64 MiB |
-| Cumulative output/metadata budget, including terminal snapshots | 16 MiB |
-| Output items/tool declarations | 1,024 |
-| Pending deltas from one event | 4,096 |
-
-Limits bound logical buffers, not total process RSS. JSON values, raw events,
-assembled strings and the final snapshot can coexist; a large Responses
-snapshot needs budget in addition to its earlier deltas. Exceeding a limit is
-an `Undecodable` error, not truncated success. Zero limits are rejected before HTTP.
-
-## Protocol-only decoding and verification
-
-`causa::protocol::translation::streaming::StreamDecoder` is transport-free.
-Feed borrowed byte slices through `decode`, retaining each unconsumed suffix;
-continue draining returned deltas even when that suffix is empty. `finish()`
-checks EOF without inventing a missing terminal. `SseParser` provides the lower
-level byte framing when you do not need provider-specific assembly.
-
-The isolated public consumer runs real local HTTP servers and holds back each
-provider's terminal until the consumer observes text:
-
-```sh
-cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
-```
-
-The path dependency tests the current checkout. A release must separately pass
-the repository's registry-only publication verification.
+To decode a provider stream without the HTTP gateways, see
+[Stream decoding](/reference/protocol/stream-decoding/).

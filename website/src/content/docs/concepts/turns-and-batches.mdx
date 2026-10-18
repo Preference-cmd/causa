@@ -1,21 +1,7 @@
 ---
-title: Concepts
-description: Facts, ports, driver — how Causa is layered and why.
+title: Turns, rounds and tool batches
+description: What the optional runner does in one run, and what it leaves to your application.
 ---
-
-## The kernel carries facts and contracts — nothing else
-
-`causa-kernel` has no I/O, no transport, no policy. It holds:
-
-- **Material** (`context`): `Context` owns ordered blocks and atomic edits;
-  `ContextFrame` is an independent selection for a model request. Neither has a
-  turn lifecycle or execution identity. Media uses durable `MediaRef` values;
-  asset bytes live in the host's store.
-- **Contracts** (`ports`): `ModelGateway`, `ContextPreparer`, `Tool`,
-  `DynamicToolSource`, `ToolBatchProcessor`, `CallControl` and `ArtifactStore`.
-  Third parties can implement or call these without adopting the runtime.
-
-## Optional execution components
 
 `TurnRunner` owns a gateway and `ToolExecutor`. Each call supplies a turn ID,
 context, explicit model, options and control. It returns the editable context
@@ -38,7 +24,7 @@ validation. An unknown outcome is committed and stops further model rounds.
 A stop first seen after every tool returned and every after processor finished
 does not discard that work: the results are committed, then the run returns
 the cancellation or deadline with no uncommitted batch. [Interrupted
-runs](/interrupted-runs/) covers the batch an earlier stop hands back.
+runs](/guides/interrupted-runs/) covers the batch an earlier stop hands back.
 
 Results are committed in the order they arrived: calls resolved before
 execution (an unbound name, or a before processor's result) first, then the
@@ -70,27 +56,5 @@ History, session admission, input queues, budgets, model retries, output policie
 and persistence belong to applications. Build preparation or processors from
 those policies; no built-in session owner or budget strategy is imposed.
 
-See [context editing](/context-editing/) for atomic replacement and append rules.
+See [context editing](/guides/edit-context/) for atomic replacement and append rules.
 
-## Edge crates are adapters, not opinions
-
-```text
-kernel <- protocol <- provider
-kernel <- runtime
-kernel <- extension
-(*, extension) <- causa (facade; depended on by none)
-```
-
-- `causa-protocol` — pure wire-protocol translation (Anthropic / OpenAI Chat /
-  OpenAI Responses). No transport, no driver.
-- `causa-provider` — reqwest `ModelGateway` adapters (implies protocol).
-- `causa-extension` — `DynamicToolSource` adapters (`mcp` feature via the
-  official `rmcp` SDK, client role only).
-- `causa` — the facade. Kernel always on; defaults add the runtime components + providers,
-  `full` adds extensions.
-
-CI checks the family dependency directions and bans known transport packages
-from the kernel. Keeping policy out of facts also requires API review.
-Reference implementations of ports
-(stores, counters, exporters) live in examples or hosts — never in the publish
-set.

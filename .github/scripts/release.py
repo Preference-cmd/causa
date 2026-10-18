@@ -24,11 +24,11 @@ FAMILY = {
 USER_AGENT = "Causa-release (https://github.com/Preference-cmd/causa)"
 # Every version number in these files names the current release, except the
 # one before it in an "upgrade from" sentence; both move up together.
-# `website/src/content/docs/status.mdx` describes each release in prose and is
+# `website/src/content/docs/reference/versioning.mdx` describes each release in prose and is
 # written by hand.
 INSTALL_DOCS = (
     "README.md", "crates/causa/src/lib.rs",
-    "website/src/content/docs/index.mdx", "website/src/content/docs/crates.mdx",
+    "website/src/content/docs/index.mdx", "website/src/content/docs/reference/crates.mdx",
     "website/src/content/docs/examples.mdx", "website/src/content/docs/getting-started.mdx",
 )
 DATED_ENTRY = r"^## \[([0-9.]+)\] - \d{4}-\d{2}-\d{2}$"
@@ -291,7 +291,7 @@ def prepare(version, date):
     for manifest in [ROOT / "Cargo.toml", *sorted((ROOT / "tests/consumers").glob("*/Cargo.toml"))]:
         run("cargo", "update", "--workspace", "--manifest-path", str(manifest))
     workspace(version)
-    print(f"Prepared {version} from {current}. Rewrite website/src/content/docs/status.mdx "
+    print(f"Prepared {version} from {current}. Rewrite website/src/content/docs/reference/versioning.mdx "
           "for this release by hand, then review the whole diff before committing.")
 
 

@@ -36,3 +36,33 @@
 .cta-ghost:hover {
   opacity: 1;
 }
+
+/* Sidebar numbering: groups 1, 2, …, their pages 1.1, 1.2, … The counters
+   follow the configured order, so adding a page renumbers the rest. */
+.sidebar-content ul.top-level {
+  counter-reset: sl-group;
+}
+.sidebar-content ul.top-level > li {
+  counter-increment: sl-group;
+}
+.sidebar-content ul.top-level > li > details > ul {
+  counter-reset: sl-page;
+}
+.sidebar-content ul.top-level > li > details > ul > li {
+  counter-increment: sl-page;
+}
+.sidebar-content ul.top-level > li > details > summary .group-label > span::before,
+.sidebar-content ul.top-level > li > a > span::before {
+  content: counter(sl-group);
+}
+.sidebar-content ul.top-level > li > details > ul > li > a > span::before {
+  content: counter(sl-group) '.' counter(sl-page);
+}
+.sidebar-content ul.top-level span::before {
+  display: inline-block;
+  min-width: 2.25em;
+  font-family: var(--sl-font-mono);
+  font-size: 0.8em;
+  font-weight: 400;
+  opacity: 0.55;
+}

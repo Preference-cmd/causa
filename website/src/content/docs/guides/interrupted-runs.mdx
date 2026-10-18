@@ -1,9 +1,9 @@
 ---
-title: Interrupted runs
+title: Handle interrupted runs
 description: What an interrupted run returns and how to close a tool batch it left open.
 ---
 
-import Snippet from '../../components/Snippet.astro';
+import Snippet from '../../../components/Snippet.astro';
 
 A run that does not complete returns `TurnResult::Interrupted` with a typed
 cause. It still returns everything it committed: `TurnOutcome.context` holds
@@ -60,7 +60,7 @@ than replacing it with a failure, and decide in your application whether the
 effect has to be checked before the conversation goes on.
 
 You can instead remove the call blocks with a
-[context edit](/context-editing/). Answering is the safer choice: every
+[context edit](/guides/edit-context/). Answering is the safer choice: every
 protocol accepts a call followed by its result, while a history with a call
 taken out may leave provider-side material, such as reasoning produced with
 that call, without its counterpart.
@@ -74,7 +74,7 @@ handle as an ordinary result and asks for the status with a second tool when
 it needs it. The runner never polls or waits for background work on its own,
 and your application owns the work behind the handle, including stopping it.
 
-A tool that follows the [requirements on tools](/concepts/) (never block the
+A tool that follows the [requirements on tools](/concepts/turns-and-batches/) (never block the
 thread, return promptly once its control is stopped) also keeps the
 interruption prompt, because a stop takes effect at the tool's next yield
 point.

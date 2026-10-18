@@ -1,38 +1,9 @@
 ---
-title: Crates
-description: The six Causa crates and how to select them.
+title: Protocol options
+description: Generation, reasoning, output-limit, tool-change and render options of the built-in gateways.
 ---
 
-`cargo add causa@0.1.0` is the default entry for the 0.1.0 release. Cargo resolves the family dependencies for you; using the layer
-crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
-`MIT OR Apache-2.0`.
-
-## Roles
-
-| crate | role |
-| ----- | ---- |
-| [`causa`](https://docs.rs/causa) | facade over the family |
-| [`causa-kernel`](https://docs.rs/causa-kernel) | editable context material + contracts for models, preparation and tools, no I/O |
-| [`causa-protocol`](https://docs.rs/causa-protocol) | request/response and incremental SSE translation (Anthropic / OpenAI Chat / OpenAI Responses) |
-| [`causa-runtime`](https://docs.rs/causa-runtime) | optional material-returning turn runner, borrowed observations and bound tool execution |
-| [`causa-provider`](https://docs.rs/causa-provider) | reqwest complete-response and streaming adapters for the `ModelGateway` port |
-| [`causa-extension`](https://docs.rs/causa-extension) | extension adapters (`mcp` feature: MCP client) |
-
-## Feature selection
-
-| selection | gets |
-| --------- | ---- |
-| `causa = "0.1.0"` (default) | kernel + runtime + providers |
-| `features = ["full"]` | + extensions (MCP) |
-| `default-features = false` | kernel only (offline audit / minimal embed) |
-| `default-features = false, features = ["runtime"]` | kernel + offline driver |
-
-A provider renders through the protocol crate, so `providers` implies
-`protocol` — you never enable a transport without its translation.
-Extensions stay opt-in because `rmcp` is a heavier dependency that offline
-hosts should not pay for.
-
-The built-in gateways stream over real HTTP SSE; see [Streaming](/streaming/)
+The built-in gateways stream over real HTTP SSE; see [Stream output](/guides/stream-output/)
 for the API and supported scope.
 
 `GenerationOptions::reasoning_effort` is a string
@@ -74,21 +45,3 @@ tools do not match the bound set stops the round with `PrepareFailed`.
 Render options can be loaded from host configuration via serde and set on the
 gateway at once with `with_render_options`; the host decides which servers
 and models receive which options.
-
-Full API docs for every crate: [docs.rs/causa](https://docs.rs/causa)
-(built with `all-features`).
-
-For contributors, CI checks dependency directions with all features enabled,
-rejects `mod.rs` in library sources, and checks public API documentation.
-From the repository root, run `bash .github/scripts/check-dependency-directions.sh`
-and `python3 .github/scripts/check-module-layout.py`; see
-[AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md)
-for the full verification commands.
-
-Public facade consumers are also checked independently of the workspace:
-
-```bash
-cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --locked
-cargo test --manifest-path tests/consumers/material-flow/Cargo.toml --features runtime --locked
-cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
-```

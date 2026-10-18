@@ -76,7 +76,7 @@ cargo run --example conversation_persistence -p causa-runtime
 <LayerDiagram />
 
 The rule is simple: nothing depends upward, and the kernel depends on
-no sibling crate. [Read the concepts →](/concepts/)
+no sibling crate. [Read about the layering →](/concepts/layering/)
 
 ## What's inside
 
@@ -90,7 +90,7 @@ no sibling crate. [Read the concepts →](/concepts/)
 | `causa-extension` | `mcp` feature: MCP client tool sources |
 
 Need everything? `cargo add causa@0.1.0 --features full`. Auditing offline?
-`--no-default-features` is kernel-only. [Full crate guide →](/crates/)
+`--no-default-features` is kernel-only. [Crates and features →](/reference/crates/)
 
 ## Learn by running
 
@@ -107,4 +107,4 @@ Run these commands from the repository root after cloning as shown above.
 > **Status: 0.1.0.** Breaking changes to the API and to stored context come
 > only in minor releases. Context material and execution are separate;
 > applications own sessions and subagent orchestration.
-> [Status & changelog →](/status/)
+> [Versioning and stability →](/reference/versioning/)

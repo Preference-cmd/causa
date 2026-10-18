@@ -1,0 +1,31 @@
+---
+title: Layering
+description: How the six crates depend on each other, and why the edges are adapters.
+---
+
+import LayerDiagram from '../../../components/LayerDiagram.astro';
+
+<LayerDiagram />
+
+## Edge crates are adapters, not opinions
+
+```text
+kernel <- protocol <- provider
+kernel <- runtime
+kernel <- extension
+(*, extension) <- causa (facade; depended on by none)
+```
+
+- `causa-protocol` — pure wire-protocol translation (Anthropic / OpenAI Chat /
+  OpenAI Responses). No transport, no driver.
+- `causa-provider` — reqwest `ModelGateway` adapters (implies protocol).
+- `causa-extension` — `DynamicToolSource` adapters (`mcp` feature via the
+  official `rmcp` SDK, client role only).
+- `causa` — the facade. Kernel always on; defaults add the runtime components + providers,
+  `full` adds extensions.
+
+CI checks the family dependency directions and bans known transport packages
+from the kernel. Keeping policy out of facts also requires API review.
+Reference implementations of ports
+(stores, counters, exporters) live in examples or hosts — never in the publish
+set.

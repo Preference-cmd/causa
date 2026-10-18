@@ -1,0 +1,14 @@
+---
+title: Context and ports
+description: What the kernel holds — material and the contracts third parties implement.
+---
+
+`causa-kernel` has no I/O, no transport, no policy. It holds:
+
+- **Material** (`context`): `Context` owns ordered blocks and atomic edits;
+  `ContextFrame` is an independent selection for a model request. Neither has a
+  turn lifecycle or execution identity. Media uses durable `MediaRef` values;
+  asset bytes live in the host's store.
+- **Contracts** (`ports`): `ModelGateway`, `ContextPreparer`, `Tool`,
+  `DynamicToolSource`, `ToolBatchProcessor`, `CallControl` and `ArtifactStore`.
+  Third parties can implement or call these without adopting the runtime.

@@ -1,0 +1,20 @@
+---
+title: Stream limits
+description: The size limits every built-in gateway applies while streaming, and their defaults.
+---
+
+Use `causa::providers::StreamLimits` with `gateway.with_stream_limits(limits)`
+to choose explicit positive limits:
+
+| Limit | Default |
+| --- | ---: |
+| Line and SSE event | 32 MiB each |
+| Total consumed wire bytes, including comments and unknown events | 64 MiB |
+| Cumulative output/metadata budget, including terminal snapshots | 16 MiB |
+| Output items/tool declarations | 1,024 |
+| Pending deltas from one event | 4,096 |
+
+Limits bound logical buffers, not total process RSS. JSON values, raw events,
+assembled strings and the final snapshot can coexist; a large Responses
+snapshot needs budget in addition to its earlier deltas. Exceeding a limit is
+an `Undecodable` error, not truncated success. Zero limits are rejected before HTTP.

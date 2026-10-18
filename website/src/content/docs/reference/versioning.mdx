@@ -1,6 +1,6 @@
 ---
-title: Status & changelog
-description: Where Causa stands and where it's going.
+title: Versioning and stability
+description: What 0.1 promises about API and stored-context stability, and how to upgrade.
 ---
 
 ## 0.1
@@ -118,3 +118,8 @@ See
 layout, commands (`cargo test --workspace`, clippy, fmt, the layering guard),
 and the [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
 for the release process. Conventional Commits, one logical change per commit.
+
+CI checks dependency directions with all features enabled, rejects `mod.rs`
+in library sources, checks public API documentation, and builds the public
+facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
+every command.

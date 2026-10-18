@@ -116,9 +116,9 @@ decides which servers and models receive which options. One of them,
 `with_max_tokens_field`, sends the Chat output limit as `max_tokens` for a
 server that reads only that name.
 
-See the [streaming guide](https://causa.inceptae.com/streaming/)
+See the [streaming guide](https://causa.inceptae.com/guides/stream-output/)
 for events and limits, and the
-[crate guide](https://causa.inceptae.com/crates/)
+[crate guide](https://causa.inceptae.com/reference/crates/)
 for generation options and reasoning replay.
 
 ### Choose your features
@@ -133,7 +133,7 @@ Choose the dependencies your application needs:
 | `causa = { version = "0.1.0", default-features = false }` | Kernel only |
 | `causa = { version = "0.1.0", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
-See the [crate guide](https://causa.inceptae.com/crates/)
+See the [crate guide](https://causa.inceptae.com/reference/crates/)
 for layer selection.
 
 ## Examples
@@ -172,9 +172,9 @@ provides storage, credentials, tools and the policies it needs.
 | [`causa-extension`](https://docs.rs/causa-extension) | Dynamic tool-source adapters, currently MCP |
 
 All six crates share one release version and can also be used directly.
-Read the [concepts guide](https://causa.inceptae.com/concepts/)
+Read the [concepts guide](https://causa.inceptae.com/concepts/context-and-ports/)
 for layer boundaries, the
-[context editing guide](https://causa.inceptae.com/context-editing/)
+[context editing guide](https://causa.inceptae.com/guides/edit-context/)
 for changing retained blocks, and the
 [runtime policy overview](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/src/lib.rs)
 for defaults and component contracts.
@@ -192,7 +192,7 @@ not upgrade `"0.0.7"` to `0.1.0` on its own.
 Sessions, history, input admission, persistence and subagent orchestration
 belong to your application. An interrupted run returns its uncommitted tool
 batch and the cause, and your code decides what to do with it; the
-[interrupted runs guide](https://causa.inceptae.com/interrupted-runs/)
+[interrupted runs guide](https://causa.inceptae.com/guides/interrupted-runs/)
 shows how to close such a batch. Rebuilding
 context does not make an external tool run exactly once.
 

@@ -34,7 +34,7 @@ latest regular release is always the latest minor version.
    (including dev-dependencies) to the new version; refreshes the workspace
    and consumer lockfiles; and moves the version numbers in the README, the
    facade crate docs and the website installation pages. It commits nothing.
-   Rewrite `website/src/content/docs/status.mdx` for the release by hand.
+   Rewrite `website/src/content/docs/reference/versioning.mdx` for the release by hand.
 3. Keep each crate's two license symlinks pointing to the root license texts.
    Cargo flattens these into ordinary files in the published archives.
 4. Run the checks below and review the complete diff. Preserve any unrelated

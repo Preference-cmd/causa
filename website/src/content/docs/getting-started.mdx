@@ -7,25 +7,16 @@ import Snippet from '../../components/Snippet.astro';
 
 ## Add the dependency
 
-The following dependency selections use the published **0.1.0
-release**. The application example below uses the same registry version.
+Causa **0.1.0** is on crates.io and requires Rust **1.96+**. The default
+features bring the kernel, the turn runner and the Anthropic and OpenAI
+adapters:
 
 ```bash
-# Default: kernel + runtime + providers (Anthropic / OpenAI adapters).
 cargo add causa@0.1.0
-
-# Everything, including MCP extension adapters:
-cargo add causa@0.1.0 --features full
-
-# Kernel only — offline audit / minimal embed, no I/O:
-cargo add causa@0.1.0 --no-default-features
-
-# Kernel + offline driver, no network adapters:
-cargo add causa@0.1.0 --no-default-features --features runtime
 ```
 
-Choose one of the dependency configurations above. Causa requires Rust
-**1.96+**; the async application below also adds Tokio.
+To leave out the network adapters, or to add the MCP adapters, pick other
+features; [Crates and features](/reference/crates/) lists every selection.
 
 ## Run one turn in your application
 
@@ -87,6 +78,6 @@ See [Examples](/examples/) for what each one demonstrates.
 
 ## Next steps
 
-- [Concepts](/concepts/) — the facts / driver / adapter split and the layering rules.
-- [Crates](/crates/) — the six crates and the feature matrix.
-- [docs.rs/causa](https://docs.rs/causa) — full API reference (the site never duplicates signatures).
+- [Concepts](/concepts/context-and-ports/) — the facts / driver / adapter split and the layering rules.
+- [Crates and features](/reference/crates/) — the six crates and the feature matrix.
+- [API Reference](/reference/) — the public types by crate, with links to [docs.rs/causa](https://docs.rs/causa) for every signature.
