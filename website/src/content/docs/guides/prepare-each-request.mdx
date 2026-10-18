@@ -1,0 +1,113 @@
+---
+title: Prepare each request
+description: Choose which blocks of the context the model receives in each round, without changing the context itself.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin prepare_each_request"
+  example="tests/consumers/site-guides/src/bin/prepare_each_request.rs"
+  docs={[
+    'causa-kernel/latest/causa_kernel/trait.ContextPreparer.html',
+    'causa-kernel/latest/causa_kernel/struct.ContextFrame.html',
+    'causa-kernel/latest/causa_kernel/struct.RoundInfo.html',
+    'causa-runtime/latest/causa_runtime/config/struct.TurnRunOptions.html',
+  ]}
+/>
+
+## What it does
+
+Without a preparer, the runner sends the whole context to the model in every
+round. A `ContextPreparer` runs before each round instead and returns a
+`ContextFrame`: the blocks to send, in order. The frame is a copy; the
+context keeps every block, so a block you leave out of one request can be
+sent again in a later one.
+
+The preparer also gets the context itself, mutably, and can edit it, for
+example to replace old turns with a summary. Those edits stay in the
+context.
+
+## When to reach for it
+
+When the conversation grows past what you want to send: a window of recent
+turns, a limit in tokens, old tool output left out. It is also the place to
+add material for one request only, such as retrieved documents.
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Tool changes | Keep every `ToolChange` block in the frame, or blocks that add up to the same tools | The run stops with `PrepareFailed`: the model would be offered other tools than the round can run |
+| Tool calls and their results | Keep or drop them together; cutting at a user message does both | The gateway refuses the request with `InvalidRequest` before sending it |
+| System messages | Keep them, at the start of the frame | The model loses its instructions |
+| Provider prompt caches | Drop blocks in large steps, not one per round | Each change near the start of the request makes the provider read it again |
+| Edits to the context | Edit only what should change for good, such as a summary that replaces old turns | — |
+
+The preparer runs before every round, including the rounds that follow tool
+results within one run. `RoundInfo` tells it which round, which model, which
+generation options and which tools.
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/prepare_each_request.rs" anchor="imports" />
+
+This preparer sends the last turns of the conversation. It starts the frame
+at a user message, so a tool call and its result stay together, and keeps
+every system message and tool change before that point:
+
+<Snippet file="src/bin/prepare_each_request.rs" anchor="preparer" />
+
+Set it in the run options:
+
+<Snippet file="src/bin/prepare_each_request.rs" anchor="run" />
+
+In the program, the context holds three turns, with the tools recorded in
+the first one. A scripted model answers with the blocks it received: the
+system message, the tool change and the last two turns.
+
+## Common questions
+
+**Why must the frame keep tool changes?** The tools the model is offered are
+read from the frame's tool changes. If they did not add up to the tools the
+executor bound for the round, the model could call a tool that cannot run,
+or miss one that can. The runner checks this after the preparer returns.
+
+**Can I add a block that is not in the context?** Yes. The frame is your
+value: add retrieved text or a reminder for this request only. Give each
+block a new id with `new_block_id()`.
+
+**Can the preparer call a model, to summarize?** Yes; it is async and gets
+the run's `CallControl`, so it stops with the run. Commit the summary to the
+context if later requests should use it too.
+
+**How do I count tokens?** Causa has no tokenizer: the token counts depend on
+the model. Use the one your provider publishes, or the `usage` the gateway
+returns with each response.
+
+**What if the preparer fails?** Return a `PrepareError`. The run stops with
+`PrepareFailed`, and the edits the preparer committed before failing stay in
+the context.
+
+**What does cancelling do while the preparer runs?** The runner stops
+waiting for it and returns `Interrupted` with the cause `Cancelled`.
+
+## It's working if
+
+- The program prints the system message, `ToolChange: +lookup`, the last
+  two turns, and `The context holds 8 blocks.`: the model received five
+  blocks, and the context kept all of them.
+- In your application, requests stop growing after the window fills, and
+  runs do not stop with `PrepareFailed`.
+
+## Where it fits
+
+- [Edit context](/guides/edit-context/) — change the context itself,
+  between runs or from a preparer.
+- [Save and restore context](/guides/save-and-restore/) — the full context
+  is what you store, whatever each request sent.
+- [Turns, rounds and tool batches](/concepts/turns-and-batches/) — when a
+  round starts.

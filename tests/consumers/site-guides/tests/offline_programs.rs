@@ -50,3 +50,12 @@ fn save_and_restore_continues_the_saved_conversation() {
         "Message 1 received. (2 blocks saved)\nMessage 2 received. (4 blocks saved)\n"
     );
 }
+
+#[test]
+fn prepare_each_request_sends_the_last_two_turns() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_prepare_each_request")),
+        "System: Answer in one word.\nToolChange: +lookup\nUser: Second?\nAssistant: Two.\nUser: Third?\n\
+         The context holds 8 blocks.\n"
+    );
+}

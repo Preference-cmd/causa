@@ -76,6 +76,7 @@ export default defineConfig({
                     'guides/choose-a-provider',
                     'guides/save-and-restore',
                     'guides/edit-context',
+                    'guides/prepare-each-request',
                     'guides/stream-output',
                     'guides/interrupted-runs',
                   ],
