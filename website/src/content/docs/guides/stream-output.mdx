@@ -1,111 +1,146 @@
 ---
 title: Stream output
-description: Consume provider increments while preserving complete-output ownership.
+description: Show the model's answer as it arrives, through the runner or straight from a gateway, and keep the complete output as the record.
 ---
 
-import Snippet from '../../../components/Snippet.astro';
 import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
 
 <RunIt
-  command="cargo run --example streaming_print -p causa-runtime"
-  example="crates/causa-runtime/examples/streaming_print.rs"
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin stream_output"
+  example="tests/consumers/site-guides/src/bin/stream_output.rs"
   docs={[
     'causa-kernel/latest/causa_kernel/trait.ModelGateway.html',
+    'causa-kernel/latest/causa_kernel/enum.StreamDelta.html',
     'causa-runtime/latest/causa_runtime/driver/struct.TurnRunner.html',
     'causa-runtime/latest/causa_runtime/event/enum.RunEvent.html',
   ]}
 />
 
-## Choose a consumer
+## What it does
 
-All three built-in gateways implement `ModelGateway::stream()`. Call it directly
-when your application owns the model loop. Use `TurnRunner::run_streaming()`
-when you want Causa to drive model rounds and tool execution.
+All three gateways stream. A stream yields deltas, pieces of text,
+reasoning, tool calls and usage, and ends with `Done`, which carries the
+complete output. Deltas are for display; the complete output is what the
+context records.
 
-For the runner, assign an `Arc` callback to `TurnRunOptions::observer`. A
-`RunEvent::ModelDelta` carries the invocation identity and a borrowed text,
-reasoning, tool-call or usage observation. Copy only what your application
-needs and return promptly. The callback is synchronous; your application owns
-any queue, batching, display or persistence.
+There are two ways to read a stream. `TurnRunner::run_streaming` runs the
+turn as `run` does, tools included, and passes each delta to your observer.
+`ModelGateway::stream` gives you the stream itself, for an application that
+runs its own loop.
 
-The runner does not include `Done` or `Error` in `ModelDelta` observations.
-It reports an accepted complete output through `RunEvent::ModelOutput`, then
-converts and commits materials. The returned `TurnOutcome` remains the source
-for the run's final state and any uncommitted tool batch.
+## When to reach for it
 
-Direct consumers inspect every delta themselves. The following helper works
-with a prepared request and control; add `futures-util = "0.3"` to use `StreamExt`:
+When a person watches the answer being written. A batch job or a server
+that returns only the final answer has no use for deltas: call `run`.
+
+## Before you start
+
+Reading a stream directly needs `StreamExt`:
+
+```bash
+cargo add futures-util@0.3
+```
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Runner or direct | `run_streaming` with an observer when Causa runs the tools; `gateway.stream()` when your code runs the loop | — |
+| What to display at the end | Replace the streamed text with the final output | The display can differ from the stored answer: a provider's final snapshot can differ from its deltas |
+| Which tool calls to act on | The ones in `Done`, or committed by the runner | Arguments in a `ToolCallDelta` can be incomplete JSON, and a call cut off by the token limit is in the deltas but not in `Done` |
+| Usage | Keep the last `Usage` delta | Usage deltas are snapshots: summing them counts tokens twice |
+| A slow display | Send the deltas to a channel from the observer | The observer is synchronous: the stream waits for it |
+| Retries | Wrap the gateway in `RetryingGateway` | A failed stream ends the run. Even with retries, a stream is never retried once a delta has arrived |
+| Size limits | `with_stream_limits` on the gateway | The default limits apply; a stream over one fails as `Undecodable`, never as a cut-off success |
+| Your own HTTP client | Disable retries and redirects on it | Its own policies apply; the default client has both off |
+
+What each protocol streams, and when its stream is complete:
+
+| Protocol | Deltas | Complete when |
+|---|---|---|
+| OpenAI Chat Completions | Text and function-call pieces of one choice; usage at the end | A valid finish reason, then `[DONE]` |
+| OpenAI Responses | Text, reasoning summary and function arguments | A complete terminal response; incomplete and failed responses are reported as such |
+| Anthropic Messages | Text, thinking and its signature, function input, cumulative usage | Every content block closed, then a valid `message_stop` |
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/stream_output.rs" anchor="imports" />
+
+Through the runner, the observer receives each delta as a
+`RunEvent::ModelDelta`:
+
+<Snippet file="src/bin/stream_output.rs" anchor="observer" />
+
+<Snippet file="src/bin/stream_output.rs" anchor="run" />
+
+Straight from a gateway, you build the request and read the deltas
+yourself:
+
+<Snippet file="src/bin/stream_output.rs" anchor="direct" />
+
+The loop that reads them:
 
 <Snippet file="src/streaming.rs" anchor="consume" />
 
-## Incremental observations and final material
+In the program, a local server streams a Chat Completions answer in three
+pieces, and the program reads it both ways.
 
-Deltas are provisional observations, not instructions to reconstruct a trusted
-model output. In particular, tool arguments can be incomplete JSON and usage
-updates are snapshots, not amounts to sum. A final provider snapshot can differ
-from text shown during generation. Reconcile your display with `final_output`.
+## Common questions
 
-Only a valid protocol terminal produces `Done`. Truncation, malformed events,
-invalid tool arguments and explicit provider errors cannot become successful
-partial tool declarations. The runner does not execute tools from deltas.
-Earlier successfully committed rounds remain available when a later round stops.
+**What does the runner commit from a stream?** Only the complete output in
+`Done`, after it reports it as `RunEvent::ModelOutput`. The observer never
+sees `Done` or `Error` as deltas, and no tool runs from a delta. If a round
+stops mid-stream, nothing of that round is committed; earlier rounds stay in
+the context.
 
-| Protocol | Incremental scope | Completion boundary |
-| --- | --- | --- |
-| OpenAI Chat Completions | One choice, text and function-tool fragments; trailing usage | Valid finish reason followed by `[DONE]` |
-| OpenAI Responses | Text, reasoning summary and function arguments | Complete terminal response, with explicit incomplete/failed classification |
-| Anthropic Messages | Text, thinking/signature, function input and cumulative usage | Closed content blocks and a valid `message_stop` |
+**What ends a stream with an error?** A cut-off stream, a malformed event,
+invalid tool arguments and an error from the provider. None of them becomes
+a partial success. An Anthropic content-block delta of a type the decoder
+does not know fails the stream as `Undecodable` rather than being dropped,
+since the block would otherwise be stored incomplete. Unknown event types
+are ignored.
 
-The stream uses the same request rendering, media resolution and tool-history
-checks as `invoke()`, plus protocol-specific streaming options. Successful HTTP
-responses must use `Content-Type: text/event-stream`. There is no fallback
-request for endpoints that return a complete JSON body instead; when that
-body is an error envelope, the call fails with the provider's error and its
-code, otherwise it is `Undecodable`.
+**What if the endpoint answers with JSON instead of a stream?** A streaming
+answer must be `text/event-stream`. A JSON error body fails the call with the
+provider's message and code; any other body fails as `Undecodable`. There is
+no fallback request.
 
-A response the token limit stopped inside a tool call
-ends with `MaxTokens` and without that call. Its `ToolCallDelta` values have
-already been delivered, so take the calls to act on from `Done`.
+**Is reasoning streamed?** When the provider sends it in a supported event,
+yes. It is kept whole in the output, as the provider's own sealed format, and
+sent back to the same protocol in later requests. On Anthropic, thinking is
+turned on with a `thinking` object in `GenerationOptions::extra_body`;
+`reasoning_effort` only sets `output_config.effort`.
 
-This does not add audio/image generation streams, provider-hosted tools or
-multi-choice Chat output. Reasoning is exposed when the provider sends a
-supported event, and cross-turn replay works: Anthropic `thinking` and
-`redacted_thinking`, Responses `reasoning` items and Chat
-`reasoning_content` are kept as sealed parts and replayed verbatim by their
-own renderer, so a thinking-enabled tool loop can echo back what it received.
-On Anthropic, the host requests thinking by sending a `thinking` object in
-`GenerationOptions::extra_body`; `reasoning_effort` only sets
-`output_config.effort`. The streaming decoder keeps whole blocks so streaming and
-batch agree on what is replayed. Because of that, an Anthropic content-block
-delta of a type the decoder has no rule for fails the stream as `Undecodable`
-rather than being dropped: a block missing part of its content would otherwise
-be committed and replayed. Unknown SSE event types are still ignored.
+**What does cancelling do?** `CallControl` applies while the stream is
+opened and while it is read, through the runner or not. It is checked between
+reads and between events; parsing one event is not interrupted. Dropping the
+stream frees the connection and the parser. That does not prove the provider
+stopped generating.
 
-## Cancellation and resources
+**Does the gateway read ahead?** No. It reads when you ask for the next
+delta, with no background task and no unbounded buffer. After `Done` it
+stops reading.
 
-`CallControl` applies during stream establishment and consumption, including
-when you call the gateway without a runner. Cancellation and absolute deadlines
-are checked between bounded byte-processing steps and events. Parsing one
-complete JSON event is synchronous, so cancellation does not interrupt that
-individual parse midway.
+**What is not supported?** Audio and image output streams, tools hosted by
+the provider, and more than one choice in Chat Completions.
 
-The implementation reads on demand, with no detached reader task or unlimited
-background queue. Dropping the stream releases local HTTP and parsing state;
-accepting a terminal stops reading without waiting for connection EOF. This
-does not prove that remote model computation has stopped. The runner makes one
-logical gateway call and never retries it: no reconnect or continuation request
-occurs after a partial result or failure, so an application that wants retries
-wraps its gateway in `causa::runtime::RetryingGateway` (or an equivalent of
-its own) — optional, off unless you build it, and never retried once any delta
-has been yielded. The default HTTP client disables protocol retries and
-redirects. If you inject a client with `with_http_client`, its transport
-policies remain yours; disable retries and redirects on that client when you
-require the same single-request behavior.
+## It's working if
 
-Every stream runs under explicit size limits; exceeding one is an
-`Undecodable` error, not a truncated success. See
-[Stream limits](/reference/provider/stream-limits/) for the limits, their
-defaults and how to set them.
+- The program prints `[Hel][lo ][there.]`, then `runner: Hello there.`, then
+  the direct pieces and `direct: Hello there.`.
+- In your application, text appears as it is generated, and the context
+  after the run holds the same answer as the final output.
 
-To decode a provider stream without the HTTP gateways, see
-[Stream decoding](/reference/protocol/stream-decoding/).
+## Where it fits
+
+- [Retries and observation](/guides/retries-and-observation/) — the other
+  run events, and retrying before the first delta.
+- [Stream limits](/reference/provider/stream-limits/) — the limits, their
+  defaults and how to set them.
+- [Stream decoding](/reference/protocol/stream-decoding/) — decoding a
+  provider stream without the HTTP gateways.
+- The [`streaming_print`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/examples/streaming_print.rs)
+  example, with a scripted stream.

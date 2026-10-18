@@ -1,6 +1,7 @@
 //! A local HTTP server that answers like the three provider APIs. The site
 //! never shows this module: it lets a guide's program send real requests
-//! through the gateways without a key or a network.
+//! through the gateways without a key or a network. Streaming requests are
+//! answered for Chat Completions only.
 
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -113,6 +114,7 @@ async fn answer(mut stream: TcpStream, log: Arc<Mutex<Vec<Received>>>) -> std::i
             "usage": { "input_tokens": 5, "output_tokens": 5, "total_tokens": 10 }
         })
     };
+    let streamed = body["stream"] == json!(true);
     if let Ok(mut log) = log.lock() {
         log.push(Received {
             path,
@@ -120,11 +122,44 @@ async fn answer(mut stream: TcpStream, log: Arc<Mutex<Vec<Received>>>) -> std::i
             body,
         });
     }
-    let reply = reply.to_string();
+    let (content_type, reply) = if streamed {
+        ("text/event-stream", chat_events())
+    } else {
+        ("application/json", reply.to_string())
+    };
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+        "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     );
     stream.write_all(response.as_bytes()).await?;
     stream.shutdown().await
+}
+
+/// A streamed Chat Completions answer: three text fragments, the finish
+/// reason, the usage, and the end marker.
+fn chat_events() -> String {
+    let chunk = |delta: Value, finish: Value| {
+        json!({
+            "id": "chat_1", "object": "chat.completion.chunk", "model": "model",
+            "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }]
+        })
+    };
+    let mut events = vec![chunk(
+        json!({ "role": "assistant", "content": "" }),
+        Value::Null,
+    )];
+    for text in ["Hel", "lo ", "there."] {
+        events.push(chunk(json!({ "content": text }), Value::Null));
+    }
+    events.push(chunk(json!({}), json!("stop")));
+    events.push(json!({
+        "id": "chat_1", "object": "chat.completion.chunk", "model": "model", "choices": [],
+        "usage": { "prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8 }
+    }));
+    let mut body: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    body.push_str("data: [DONE]\n\n");
+    body
 }

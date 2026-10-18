@@ -103,3 +103,11 @@ fn retries_and_observation_retries_once_and_reports_each_step() {
          output: EndTurn\ncommitted: 1 blocks\nIt is 09:30.\n"
     );
 }
+
+#[test]
+fn stream_output_reads_the_stream_both_ways() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_stream_output")),
+        "[Hel][lo ][there.]\nrunner: Hello there.\nHello there.\ndirect: Hello there.\n"
+    );
+}
