@@ -8,7 +8,11 @@ publish = false
 [workspace]
 
 [dependencies]
-causa = { path = "../../../crates/causa" }
+async-trait = "0.1"
+causa = { path = "../../../crates/causa", features = ["extension-mcp"] }
 futures-util = "0.3"
+# The in-process MCP server of the "Connect MCP servers" program.
+rmcp = { version = "3.2.0", default-features = false, features = ["server", "transport-async-rw"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "time"] }

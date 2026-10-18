@@ -1,0 +1,141 @@
+---
+title: Connect MCP servers
+description: Add the tools of a local or remote MCP server to the executor, next to your own tools.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin connect_mcp_servers"
+  example="tests/consumers/site-guides/src/bin/connect_mcp_servers.rs"
+  docs={[
+    'causa-extension/latest/causa_extension/mcp/struct.McpToolSource.html',
+    'causa-kernel/latest/causa_kernel/trait.DynamicToolSource.html',
+    'causa-runtime/latest/causa_runtime/executor/struct.ToolExecutor.html',
+  ]}
+/>
+
+## What it does
+
+`McpToolSource` is an MCP client. It connects to one server, lists the
+server's tools, and calls them when the model asks. You register it with the
+executor, and from then on the model sees the server's tools next to the
+tools you wrote, and the runner treats them the same way.
+
+Each tool is renamed `mcp_{server_id}_{tool}`, with the `server_id` you
+choose when you connect, so two servers can both offer a `search` tool.
+
+## When to reach for it
+
+Use it for tools that already exist as an MCP server: a server you start as
+a child process (stdio), or a remote one (Streamable HTTP). For a function
+of your own application, [write a tool](/guides/write-a-tool/) instead: it
+needs no server and no extra process.
+
+## Before you start
+
+The MCP client is not in the default features. Add it with:
+
+```bash
+cargo add causa --features extension-mcp
+cargo add tokio@1 --features macros,rt,process
+```
+
+For the remote case, you need the server's URL and, if it asks for one, a
+static token. OAuth sign-in is not supported.
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| The `server_id` | A short name of letters, digits, `_` and `-`, unique per executor | `register_dynamic` returns `DuplicateSource` for a second source with the same id |
+| A server tool with the name of one of yours | Choose a `server_id` that keeps the names apart | Listing fails with `DuplicateTool` and the run stops before calling the model |
+| Approval | Check calls in a before processor; it sees MCP calls and your own calls alike | The model can call every tool the server offers |
+| A call deadline (`ToolExecutorOptions::call_timeout`) | Set it high enough for the server's slowest tool | A call past it is recorded as an unknown outcome and the run stops: the server may have done the work |
+| Images, audio and files in results | Set `ToolExecutorOptions::artifact_store`; they are saved there and the result refers to them | Each becomes a line of text such as `[image: image/png — no media store available]` |
+| Shutting down | Unregister the source and call `close` | The session ends when the last reference to the source is dropped, without a shutdown handshake |
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="imports" />
+
+A local server runs as a child process; you pass the command that starts it,
+such as `uvx mcp-server-fetch` or `npx -y @modelcontextprotocol/server-everything`:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="stdio" />
+
+A remote server is a URL. The token, when there is one, is sent as a bearer
+token with every request:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="http" />
+
+Register the source with the executor. Your own tools still go to
+`ToolExecutor::new`; MCP sources are added after it, and one executor can
+hold several:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="register" />
+
+From here the executor goes to a `TurnRunner` as in [Write a
+tool](/guides/write-a-tool/). To see the tools without running a turn, bind
+the executor yourself; this is the list the model receives:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="list" />
+
+To shut down, take the source out of the executor and close the session.
+`close` waits at most two seconds for the server:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="close" />
+
+In the program, the server runs in the same process and offers one tool,
+`read_note`; a scripted model calls `mcp_notes_read_note`. Pass a command or
+a URL after `--` to list the tools of a real server instead:
+
+```bash
+cargo run --manifest-path tests/consumers/site-guides/Cargo.toml \
+  --bin connect_mcp_servers -- uvx mcp-server-fetch
+```
+
+## Common questions
+
+**When does the executor ask the server for its tools?** The first time the
+runner binds the executor, and again after the server sends
+`tools/list_changed`. Between those, it reuses the list, across rounds and
+across turns.
+
+**What happens if the server is gone?** If it is gone when the tools are
+listed, the run stops with `ToolCatalogFailed`, before the model is called.
+If it goes away later, each call to it is recorded as `Failed` and the model
+reads the error.
+
+**What does the model see when an MCP tool fails?** A tool that reports an
+error (`isError` in MCP) is recorded as `Failed`, with the server's text as
+the output. The run continues.
+
+**What goes into the result?** The text the server returns, joined into one
+string, or its structured content when the tool returns some.
+
+**Do MCP calls run in parallel with my own tools?** Yes. The calls of one
+batch run concurrently, whichever source they come from.
+
+**Is a server's output safe to give the model?** Treat it as untrusted
+input: it can contain instructions meant to steer the model. Keep approval
+for tools with effects in a before processor.
+
+## It's working if
+
+- The program prints `tool: mcp_notes_read_note`, then the result and the
+  model's answer.
+- With a real server, it prints one `tool: mcp_local_…` line for each tool
+  the server offers.
+
+## Where it fits
+
+- [Process tool calls](/guides/process-tool-calls/) — approval before a
+  call, for MCP tools and your own.
+- [Write a tool](/guides/write-a-tool/) — the statuses a result can have,
+  and what the runner does with each.
+- The [`mcp_tools`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-extension/examples/mcp_tools.rs)
+  example connects over stdio and, with `MCP_HTTP_URL` set, over HTTP too.

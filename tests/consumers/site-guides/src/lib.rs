@@ -2,4 +2,5 @@
 //! in `src/bin`.
 
 pub mod interrupted_runs;
+pub mod scripted;
 pub mod streaming;

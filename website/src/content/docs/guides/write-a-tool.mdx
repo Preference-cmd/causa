@@ -1,0 +1,124 @@
+---
+title: Write a tool
+description: Implement the Tool trait, register it with the executor, and decide what each failure looks like to the model.
+---
+
+import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
+
+<RunIt
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin write_a_tool"
+  example="tests/consumers/site-guides/src/bin/write_a_tool.rs"
+  docs={[
+    'causa-kernel/latest/causa_kernel/trait.Tool.html',
+    'causa-kernel/latest/causa_kernel/struct.ToolResultPayload.html',
+    'causa-kernel/latest/causa_kernel/enum.ToolResultStatus.html',
+    'causa-runtime/latest/causa_runtime/executor/struct.ToolExecutor.html',
+  ]}
+/>
+
+## What it does
+
+A tool is a Rust value that implements `Tool`: a definition the model reads,
+and an `execute` method the executor calls when the model asks for it.
+`execute` returns a `ToolResultPayload`, which the runner records in the
+context; the model sees it in the next round. A tool never returns a Rust
+error: a failure is a result too, with a status and a message the model can
+read.
+
+## When to reach for it
+
+Write a `Tool` for any function of your application the model should be
+able to call. For tools that live in an MCP server, use an MCP tool source
+instead ([Connect MCP servers](/guides/connect-mcp-servers/)). For a set of
+tools that changes while the application runs, implement
+`DynamicToolSource` and register it with the executor.
+
+## Before you start
+
+The default `causa` features include the runner. The trait is async, so add
+`async-trait`; this guide also parses arguments with `serde`:
+
+```bash
+cargo add async-trait
+cargo add serde --features derive
+```
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| Bad arguments or a failed effect | Return `Failed` with an error message | — |
+| A panic | Avoid it; return `Failed` | The executor records `Failed` with `{"error": "tool panicked"}` |
+| Blocking or CPU-heavy work | Run it in `tokio::task::spawn_blocking` and await it | The tool holds every other call of the batch, and stops and timeouts no longer apply to it |
+| The call's deadline | Race the work against `control.deadline()` and return `TimedOut` | The executor records an unknown outcome, commits the batch and stops the run |
+| Cancellation of the run | Nothing, for work the future owns | The executor stops waiting and drops the call at its next `.await` |
+| Work the future does not own (a spawned task, a child process, a remote job) | Stop it when `control.cancellation_token()` fires | It keeps running after the run has stopped |
+| Large output or media | Persist the bytes in the `store` argument (set by `ToolExecutorOptions::artifact_store`) and return a reference | The whole output goes into the context |
+| A limit on concurrent calls | Share a `tokio::sync::Semaphore` across calls | Every call of a batch runs at once |
+
+The executor gives each call a deadline when `ToolExecutorOptions::call_timeout`
+is set or the run has one; `control.deadline()` returns it.
+
+## Code
+
+The imports, for reference:
+
+<Snippet file="src/bin/write_a_tool.rs" anchor="imports" />
+
+The tool reads a note from one directory. Its definition names the tool,
+describes it for the model, and gives the arguments as a JSON Schema, which
+is sent to the provider as written:
+
+<Snippet file="src/bin/write_a_tool.rs" anchor="tool" />
+
+Register the tool when you build the executor, then run a turn. The tools
+passed to `ToolExecutor::new` are fixed for the executor's lifetime:
+
+<Snippet file="src/bin/write_a_tool.rs" anchor="run" />
+
+In the program, the gateway is a scripted model that asks for `todo.txt` and
+then answers with what the tool returned.
+
+## Common questions
+
+**What does the model see when a tool fails?** The result's status and its
+output, in the next round. The run continues, so the model can retry with
+other arguments or answer without the tool.
+
+**What if the model calls a tool that does not exist?** The executor records
+a `Rejected` result with `unknown tool: <name>` before running anything, and
+the run continues.
+
+**Can two tools have the same name?** No. `ToolExecutor::new` returns
+`ToolRegistryError::DuplicateTool`.
+
+**Do the calls of one batch run in parallel?** They run concurrently on the
+caller's task: nothing is spawned, and their number is not bounded. That is
+why a tool must not block the thread.
+
+**Should the tool copy `ctx.result_notes` into its result?** No. Those are
+notes a processor added before the call; the executor puts them in front of
+the notes the tool returns.
+
+**What does cancelling a run leave behind?** The run returns
+`Interrupted` with the cause `Cancelled`. Calls that had started are
+recorded as unknown outcomes in the batch it hands back, and nothing of
+that batch is in the context yet. [Handle interrupted
+runs](/guides/interrupted-runs/) shows what to do with it.
+
+## It's working if
+
+- The program prints `read_note: Succeeded {"text":"Buy milk."}` and then
+  the model's answer.
+- In your application, the context after a run holds a `ToolCall` block for
+  each call and a `ToolResult` block with the status you returned.
+
+## Where it fits
+
+- [Process tool calls](/guides/process-tool-calls/) — approval, rewriting
+  arguments and result order, around the tools you write.
+- [Turns, rounds and tool batches](/concepts/turns-and-batches/) — how the
+  runner groups calls into batches.
+- The [`quickstart`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-provider/examples/quickstart.rs)
+  example uses a tool against a real model.

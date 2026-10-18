@@ -70,7 +70,13 @@ export default defineConfig({
                 },
                 {
                   label: 'Build',
-                  items: ['guides/edit-context', 'guides/stream-output', 'guides/interrupted-runs'],
+                  items: [
+                    'guides/write-a-tool',
+                    'guides/connect-mcp-servers',
+                    'guides/edit-context',
+                    'guides/stream-output',
+                    'guides/interrupted-runs',
+                  ],
                 },
                 'examples',
               ],
