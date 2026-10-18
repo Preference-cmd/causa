@@ -1,14 +1,14 @@
 ---
 title: Handle interrupted runs
-description: What an interrupted run returns and how to close a tool batch it left open.
+description: What an interrupted run returns, and how to close a tool batch it left open so the conversation can go on.
 ---
 
-import Snippet from '../../../components/Snippet.astro';
 import RunIt from '../../../components/RunIt.astro';
+import Snippet from '../../../components/Snippet.astro';
 
 <RunIt
-  command="cargo run --example interrupted_batch -p causa-runtime"
-  example="crates/causa-runtime/examples/interrupted_batch.rs"
+  command="cargo run --manifest-path tests/consumers/site-guides/Cargo.toml --bin interrupted_runs"
+  example="tests/consumers/site-guides/src/bin/interrupted_runs.rs"
   docs={[
     'causa-runtime/latest/causa_runtime/driver/enum.TurnResult.html',
     'causa-runtime/latest/causa_runtime/driver/enum.TurnInterruption.html',
@@ -16,23 +16,37 @@ import RunIt from '../../../components/RunIt.astro';
   ]}
 />
 
+## What it does
+
 A run that does not complete returns `TurnResult::Interrupted` with a typed
 cause. It still returns everything it committed: `TurnOutcome.context` holds
 all material up to the stop. Nothing is rolled back and nothing is hidden.
 
-Most interruptions leave the context ready for another run: a model call that
-failed, the round limit, a refusal, an output cut off at the token limit. One
-case needs work from your code first.
-
-## When a batch comes back
-
 The runner commits the model's tool calls before any tool runs. If the run
 stops between that commit and the commit of the results, the context holds
-calls without results, and `TurnOutcome.uncommitted_tool_batch` is `Some`.
-The protocol renderers refuse a context in that state, so the next request
-cannot be built until every call has a result or is removed.
+calls without results, and `TurnOutcome.uncommitted_tool_batch` hands you
+the batch. You answer what is still open, commit the results, and the
+context is ready for the next run.
 
-The batch tells you how far the run got:
+## When to reach for it
+
+Whenever a run can stop while tools are involved: a stop button, a
+deadline, a tool-call limit, or a processor that fails. Most other
+interruptions, such as a failed model call, the round limit, a refusal or an
+output cut off at the token limit, leave the context ready for another run
+with no work from you.
+
+## The decisions
+
+| Decision | What to do | What happens if you don't |
+|---|---|---|
+| A returned batch | Close it before the next run | The gateways refuse the next request: a call without a result cannot be rendered |
+| Calls that never started | Answer them `Cancelled` or `Rejected` with a short reason | — |
+| Calls that started | Keep the `unknown_outcome` the runner gave them | A failure status tells the model nothing happened, though the tool may have had its effect |
+| Answer or remove | Answer. Remove the calls with a [context edit](/guides/edit-context/) only if you must | Provider-side material produced with a removed call, such as reasoning, is left without its counterpart |
+| Long tool work | Return a handle at once and let the model ask for the status with a second tool | A stop during the work leaves a batch whose outcome is unknown |
+
+How far the run got decides what the batch holds:
 
 | Run stopped at | Cause | Batch |
 |---|---|---|
@@ -43,56 +57,73 @@ The batch tells you how far the run got:
 
 `ToolBatch::results()` are the calls that have a result, `calls()` the ones
 still pending. A stop seen after every tool returned and every after
-processor ran does not appear in this table: those results are committed and
-no batch is returned.
+processor ran is not in this table: those results are committed and no batch
+is returned.
 
-An `UnknownToolOutcome` interruption is also different. The batch was
-committed in full, including the result marked `unknown_outcome`, and the run
-stopped so that your application decides whether to continue.
+## Code
 
-## Closing a batch
+The imports, for reference:
 
-Answer every pending call, then append all results of the batch:
+<Snippet file="src/bin/interrupted_runs.rs" anchor="imports" />
+
+Read the cause and the batch from the outcome, then close the batch:
+
+<Snippet file="src/bin/interrupted_runs.rs" anchor="outcome" />
+
+Closing answers every pending call, then appends all results of the batch.
+This is what the runner does when it commits a batch itself:
 
 <Snippet file="src/interrupted_runs.rs" anchor="close_batch" />
 
-This is what the runner does when it commits a batch itself. The
-`interrupted_batch` example runs it end to end:
+The closed context runs like any other:
 
-```sh
-cargo run --example interrupted_batch -p causa-runtime
-```
+<Snippet file="src/bin/interrupted_runs.rs" anchor="again" />
 
-The status you write is a statement to the model. When nothing started,
-`Cancelled` or `Rejected` with a short reason is accurate, and the model can
-ask again. In a mixed batch the started calls already carry
-`unknown_outcome`: the tool may have had its effect. Keep that status rather
-than replacing it with a failure, and decide in your application whether the
-effect has to be checked before the conversation goes on.
+In the program, the model calls a quick tool and a slow one, and the user
+stops the run while the slow one works. The quick result and the slow
+call's `unknown_outcome` are committed, and the next run's model sees both.
 
-You can instead remove the call blocks with a
-[context edit](/guides/edit-context/). Answering is the safer choice: every
-protocol accepts a call followed by its result, while a history with a call
-taken out may leave provider-side material, such as reasoning produced with
-that call, without its counterpart.
+## Common questions
 
-## Keeping batches short
+**Why does nothing stay pending when I stop running tools?** The executor
+starts every call of a batch at once, so a stop while tools run finds each
+call finished or started. Calls stay pending when the run stops before
+dispatch, at the tool-call limit, or in a before processor. The
+[`interrupted_batch`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/examples/interrupted_batch.rs)
+example closes a batch left by the tool-call limit.
 
-A batch is only mixed when a stop arrives while tools are running, so the
-window is as long as your slowest tool. A tool that starts long work and
-returns a handle at once keeps that window small: the model receives the
-handle as an ordinary result and asks for the status with a second tool when
-it needs it. The runner never polls or waits for background work on its own,
-and your application owns the work behind the handle, including stopping it.
+**What does `unknown_outcome` mean?** The tool started and its result was
+not seen: it may have had its effect. Whether that effect has to be checked
+before the conversation goes on is your application's decision.
 
-A tool that follows the [requirements on tools](/concepts/turns-and-batches/) (never block the
-thread, return promptly once its control is stopped) also keeps the
-interruption prompt, because a stop takes effect at the tool's next yield
-point.
+**What about `UnknownToolOutcome`?** That interruption returns no batch. The
+batch was committed in full, including the result marked `unknown_outcome`,
+and the run stopped so that your application decides whether to continue.
 
-## What stays yours
+**How quickly does a stop take effect?** At the tool's next yield point. A
+tool that follows the [requirements on tools](/concepts/turns-and-batches/),
+never blocking the thread and returning promptly once its control is
+stopped, keeps the interruption prompt.
 
-Causa does not decide what an interrupted call means. Whether to answer or
-remove a call, whether to tell the user, and whether an external effect must
-be verified are application decisions. Closing a batch does not make an
-external tool run exactly once.
+**Does the runner wait for background work?** No. It never polls or waits
+for work a tool started. Your application owns the work behind a handle,
+including stopping it.
+
+**Does closing a batch make a tool run exactly once?** No. Closing records
+what happened; it does not undo or repeat an external effect.
+
+## It's working if
+
+- The program prints `stopped: cancelled`, the two statuses and
+  `not started: 0`, then `Results so far: Succeeded, UnknownOutcome.`
+- In your application, the run after an interrupted one builds its request
+  without `InvalidRequest`.
+
+## Where it fits
+
+- [Turns and batches](/concepts/turns-and-batches/) — how a run commits
+  calls and results.
+- [Process tool calls](/guides/process-tool-calls/) — approve or reject
+  calls before they run.
+- [Edit context](/guides/edit-context/) — remove calls instead of answering
+  them.

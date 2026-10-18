@@ -111,3 +111,12 @@ fn stream_output_reads_the_stream_both_ways() {
         "[Hel][lo ][there.]\nrunner: Hello there.\nHello there.\ndirect: Hello there.\n"
     );
 }
+
+#[test]
+fn interrupted_runs_closes_the_batch_and_runs_again() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_interrupted_runs")),
+        "stopped: cancelled\nquick: Succeeded\nslow: UnknownOutcome\nnot started: 0\n\
+         Results so far: Succeeded, UnknownOutcome.\n"
+    );
+}
