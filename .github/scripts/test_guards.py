@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,73 @@ class GuardTests(unittest.TestCase):
 
     def test_cargo_failure_is_not_a_successful_check(self):
         self.assertNotEqual(self.dependencies(cargo_error=True).returncode, 0)
+
+
+class DocsLinkTests(unittest.TestCase):
+    """Site links to docs.rs must name pages the local rustdoc build has."""
+
+    STUB = (
+        '<meta http-equiv="refresh" '
+        'content="0;URL=../../causa_kernel/struct.Context.html">'
+    )
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.write("target/doc/causa_kernel/index.html", "<main></main>")
+        self.write(
+            "target/doc/causa_kernel/struct.Context.html",
+            '<h2 id="method.edit">edit</h2>',
+        )
+        self.write("target/doc/causa_kernel/context/struct.Context.html", self.STUB)
+
+    def write(self, name, text):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def check(self, page):
+        self.write("website/src/content/docs/guides/page.mdx", page)
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / "check-docs-links.py")],
+            cwd=self.root, capture_output=True, text=True,
+        )
+
+    def test_existing_pages_urls_and_run_it_paths_pass(self):
+        result = self.check(
+            "[kernel](https://docs.rs/causa-kernel) and\n"
+            "[edit](https://docs.rs/causa-kernel/latest/causa_kernel/struct.Context.html#method.edit).\n"
+            "docs={['causa-kernel/latest/causa_kernel/struct.Context.html']}\n"
+            "[rmcp](https://docs.rs/rmcp/latest/rmcp/struct.Missing.html)\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("3 checked", result.stdout)
+
+    def test_missing_item_is_rejected(self):
+        result = self.check("docs={['causa-kernel/latest/causa_kernel/struct.Gone.html']}")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("page.mdx:1", result.stderr)
+
+    def test_unknown_crate_is_rejected(self):
+        self.assertNotEqual(self.check("https://docs.rs/causa-kernal").returncode, 0)
+
+    def test_redirect_stub_names_the_canonical_page(self):
+        result = self.check(
+            "https://docs.rs/causa-kernel/latest/causa_kernel/context/struct.Context.html"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("causa-kernel/latest/causa_kernel/struct.Context.html instead", result.stderr)
+
+    def test_missing_fragment_is_rejected(self):
+        result = self.check(
+            "https://docs.rs/causa-kernel/latest/causa_kernel/struct.Context.html#method.gone"
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_missing_rustdoc_output_is_rejected(self):
+        shutil.rmtree(self.root / "target")
+        self.assertNotEqual(self.check("").returncode, 0)
 
 
 class CommitMessageTests(unittest.TestCase):

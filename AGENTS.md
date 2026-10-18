@@ -81,6 +81,7 @@ cargo +1.96.0 check --manifest-path tests/consumers/site-guides/Cargo.toml --all
 
 bash .github/scripts/check-dependency-directions.sh   # layering guard
 python3 .github/scripts/check-module-layout.py        # library source layout
+python3 .github/scripts/check-docs-links.py           # site docs.rs links; after cargo doc
 python3 -m unittest discover -s .github/scripts -p 'test_guards.py'
 python3 -m unittest discover -s .github/scripts -p 'test_release.py'
 python3 .github/scripts/check-commit-messages.py range origin/main HEAD  # breaking commits update CHANGELOG.md

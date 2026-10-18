@@ -146,3 +146,5 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Site links to docs.rs
+        run: python3 .github/scripts/check-docs-links.py

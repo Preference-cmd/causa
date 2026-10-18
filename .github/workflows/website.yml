@@ -1,7 +1,9 @@
 name: Website
 
 # The pages read their Rust code from tests/consumers/site-guides, so a
-# change there rebuilds the site too.
+# change there rebuilds the site too. Their docs.rs links are checked
+# against a local rustdoc build before the site deploys; ci.yml repeats the
+# check when the crates change.
 on:
   push:
     branches: [main]
@@ -9,18 +11,31 @@ on:
       - 'website/**'
       - 'tests/consumers/site-guides/**'
       - '.github/workflows/website.yml'
+      - '.github/scripts/check-docs-links.py'
   pull_request:
     paths:
       - 'website/**'
       - 'tests/consumers/site-guides/**'
       - '.github/workflows/website.yml'
+      - '.github/scripts/check-docs-links.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  docs-links:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --all-features --no-deps --locked
+      - run: python3 .github/scripts/check-docs-links.py
+
   build:
+    needs: docs-links
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     defaults:

@@ -12,6 +12,8 @@ interface Props {
   /**
    * docs.rs pages for the items the guide uses, as paths after
    * `https://docs.rs/`, e.g. `causa-kernel/latest/causa_kernel/struct.Context.html`.
+   * `.github/scripts/check-docs-links.py` checks each against rustdoc output;
+   * link the canonical page, not a private-module redirect.
    */
   docs?: string[];
 }
