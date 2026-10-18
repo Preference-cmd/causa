@@ -1,0 +1,115 @@
+---
+title: Why Causa
+description: What Causa is, what it leaves to your application, and when it is the wrong choice.
+---
+
+## What it is
+
+Causa is a Rust library for the state of an agent conversation. The
+messages, the tool calls the model made, the results your tools returned and
+the tools the model was offered are kept as typed values in a `Context`. Your
+application holds that value: it can save it as JSON, load it in another
+process, edit it, and pass it to the next run.
+
+Around that core sit optional parts, each behind a Cargo feature:
+
+- a **turn runner** that calls the model, runs the tools it asks for, and
+  repeats until the model is done or a limit is reached;
+- **gateways** for three wire protocols: Anthropic Messages, OpenAI Chat
+  Completions and OpenAI Responses, with streaming. A server that speaks one
+  of them is reached by changing the base URL;
+- **MCP tool sources**, so the tools of an MCP server can be offered to the
+  model.
+
+The core alone (`causa-kernel`) does no I/O. It can be used without the
+runner, for example to store, inspect or edit conversations in a service
+that never calls a model.
+
+## What it is not
+
+Causa is not an agent framework. It has no built-in memory, planner,
+session store, prompt templates or multi-agent orchestration. It does not
+decide what to keep when the conversation grows too long, it does not retry
+a failed model call unless you ask, and it does not save anything on its
+own.
+
+It is also not a client for every model API: it speaks the three protocols
+above. A provider with a different API needs its own `ModelGateway`
+implementation, which your application or another crate can supply.
+
+## What your application owns
+
+The runner's choices are listed in one place, and each default is the
+smallest one:
+
+| Concern | What Causa does by default | Where you change it |
+|---|---|---|
+| History and storage | Nothing is stored; the context comes back to you after every run | Your code |
+| What the model sees each round | The whole context | A `ContextPreparer` |
+| Model retries | None | Wrap the gateway in `RetryingGateway` |
+| Limits | 10 model rounds, 64 tool calls per run | `TurnLimits` |
+| Tool timeouts | None | `ToolExecutorOptions::call_timeout`, or your tool |
+| Approval and other tool policies | None | Before and after processors |
+| Observation and logging | None | An observer callback |
+| Sessions, input queues, budgets | Not provided | Your code |
+
+The full table is the policy overview of `causa-runtime`; the
+[API Reference](/reference/) covers each part.
+
+## The design choices
+
+**Your code owns the loop.** A run is one call: the runner takes a
+context, runs model rounds and tool calls until the model stops, and
+returns. What happens between runs — waiting for the user, summarizing,
+switching models, running another agent — is ordinary code in your
+application. You can also skip the runner and call a gateway directly.
+
+**The context is a value, not a hidden store.** A run consumes the context
+and gives it back in its outcome, also when it is interrupted. Edits are
+explicit and atomic: a replacement either applies whole or not at all. From
+0.1.0 the stored form of `Context` changes only in a minor release, so
+saved conversations keep loading across patch releases.
+
+**Nothing happens that you did not ask for.** No retry, timeout, trimming
+or logging is switched on behind your back. When a run stops — a model
+error, a limit, a cancellation — it returns a typed cause and any tool
+results that were not yet committed, and your code decides what to do
+next.
+
+**Each part is replaceable.** The runner, the gateways and the MCP adapter
+are built on public traits in the core. They depend on the core, never the
+other way round, so you can use the parts you want and write your own for
+the rest. [Layering](/concepts/layering/) shows how the crates fit.
+
+## When it fits
+
+- You are building an agent into a Rust application and want to decide
+  yourself how history, storage and approval work.
+- You need a durable, typed record of what the model saw and did, to save,
+  audit, replay or edit.
+- You want to move one conversation between the three protocols, or between
+  a hosted API and a compatible server. (Reasoning a provider returns in its
+  own format is sent back only to that protocol; the others skip it.)
+- You already have an agent loop and want typed state and tool execution
+  under it without adopting a framework's structure.
+
+## When it does not fit
+
+- You want a framework that brings memory, planning or multi-agent
+  coordination ready-made. Causa gives you the parts to build them, not the
+  policies.
+- Your application is not written in Rust.
+- Your model provider speaks none of the three protocols and you do not
+  want to write a gateway.
+- You need a tool's external effect to happen exactly once even if the
+  process crashes. Causa records what happened; it does not make an
+  external call durable or repeatable.
+- You need an API that will not change for years. Causa is at 0.1: minor
+  releases can still break, with the migration written in the changelog.
+  See [Versioning and stability](/reference/versioning/).
+
+## Next
+
+- [Getting started](/getting-started/) — run an example offline, then one
+  turn against a model.
+- [Context and ports](/concepts/context-and-ports/) — what the core holds.

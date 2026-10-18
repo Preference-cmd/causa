@@ -1,15 +1,18 @@
 ---
 title: Causa
-description: A minimal context kernel for Rust agents — facts in the kernel, behavior in yours.
+description: Causa keeps an AI agent's conversation as typed Rust values your application owns. Your code runs the loop.
 template: splash
 hero:
-  tagline: There is no harness.
+  tagline: Agent conversations as typed Rust values. Your code runs the loop.
   image:
     html: '<div style="font: 700 5rem/1 monospace;">C.</div>'
   actions:
     - text: Get started
       link: /getting-started/
       icon: right-arrow
+    - text: Why Causa
+      link: /why-causa/
+      variant: minimal
     - text: GitHub
       link: https://github.com/Preference-cmd/causa
       icon: external
@@ -20,30 +23,51 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 import LayerDiagram from '../../components/LayerDiagram.astro';
 import CtaBand from '../../components/CtaBand.astro';
 
-[![CI](https://github.com/Preference-cmd/causa/actions/workflows/ci.yml/badge.svg)](https://github.com/Preference-cmd/causa/actions) [![crates.io](https://img.shields.io/crates/v/causa)](https://crates.io/crates/causa) [![docs.rs](https://img.shields.io/docsrs/causa)](https://docs.rs/causa) [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://github.com/Preference-cmd/causa) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](https://github.com/Preference-cmd/causa)
-
-**Causa is a minimal context kernel for Rust agents** — facts in the kernel, behavior in yours.
-The kernel carries facts and contracts and nothing else: no I/O, no transport,
-no policy. Anything the host didn't opt into doesn't happen.
-
-<div class="not-content flex flex-wrap gap-2 font-mono text-sm opacity-80">
-  <span class="rounded-full border px-3 py-1">facts, not magic</span>
-  <span class="rounded-full border px-3 py-1">visible defaults</span>
-  <span class="rounded-full border px-3 py-1">adapters, not opinions</span>
+<div class="not-content flex flex-wrap gap-2">
+  <a href="https://github.com/Preference-cmd/causa/actions"><img src="https://github.com/Preference-cmd/causa/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://crates.io/crates/causa"><img src="https://img.shields.io/crates/v/causa" alt="crates.io" /></a>
+  <a href="https://docs.rs/causa"><img src="https://img.shields.io/docsrs/causa" alt="docs.rs" /></a>
+  <a href="https://github.com/Preference-cmd/causa"><img src="https://img.shields.io/badge/MSRV-1.96-blue" alt="MSRV" /></a>
+  <a href="https://github.com/Preference-cmd/causa"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green" alt="License" /></a>
 </div>
 
-## Get started
+**Causa keeps an agent's conversation — messages, tool calls, tool results —
+as a typed `Context` that your application holds.** Save it as JSON, edit
+it, load it in another process. An optional runner calls the model and runs
+the tools it asks for, then hands the context back. Nothing runs, retries
+or saves unless your code asks: there is no harness.
 
-Add the 0.1.0 facade to your Rust project (Rust 1.96+):
+## What Causa does, and what stays yours
 
-```bash
-# Default entry: kernel + runtime + providers.
-cargo add causa@0.1.0
-```
+<CardGrid>
+  <Card title="In Causa" icon="seti:rust">
+    - The `Context`: ordered and editable, with a stored form that holds
+      across patch releases.
+    - A turn runner with explicit limits, tool processors for approval, and
+      an observer for logging.
+    - Gateways for Anthropic Messages, OpenAI Chat Completions and OpenAI
+      Responses, with streaming. Compatible servers are a base URL away.
+    - MCP servers as tool sources.
+  </Card>
+  <Card title="In your application" icon="laptop">
+    - History and storage: where conversations live and how long.
+    - What the model sees each round, and what to drop when it grows.
+    - Retries, timeouts and budgets.
+    - Sessions, approval decisions and coordination between agents.
+  </Card>
+</CardGrid>
 
-[Build your first application →](/getting-started/)
+## Is it for you?
 
-To try an offline example now, clone the repository and run from its root:
+Causa fits a Rust application that wants to decide for itself how history,
+storage and approval work, and needs a typed record of what the model saw and
+did. It is the wrong choice if you want memory, planning or multi-agent
+coordination ready-made, or need a tool's external effect to happen exactly
+once across crashes. [Why Causa →](/why-causa/)
+
+## Try it
+
+Run a conversation offline, save it and load it again — no API key needed:
 
 ```bash
 git clone https://github.com/Preference-cmd/causa.git
@@ -51,60 +75,36 @@ cd causa
 cargo run --example conversation_persistence -p causa-runtime
 ```
 
-## Why Causa
+Then add it to your project (Rust 1.96+) and run one turn against a model:
 
-<CardGrid>
-  <Card title="Facts, not magic" icon="document">
-    The kernel holds editable material plus the ports third parties implement
-    against (`ModelGateway`, `ContextPreparer`, `Tool`, `ArtifactStore`). Pure,
-    offline, auditable — the layer CI forbids from touching I/O.
-  </Card>
-  <Card title="A driver with visible defaults" icon="setting">
-    Turn execution returns material directly, with optional borrowed observations
-    and invocation-bound tool processing. Applications supply preparation,
-    output retention and storage policies.
-  </Card>
-  <Card title="Adapters, not opinions" icon="puzzle">
-    Providers translate wire protocols; extensions translate tool sources.
-    They never decide. Stores, counters, and exporters live in hosts and
-    examples — never in the publish set.
-  </Card>
-</CardGrid>
+```bash
+cargo add causa@0.1.0
+```
 
-## How it's layered
+[Getting started →](/getting-started/)
+
+## How it's built
 
 <LayerDiagram />
 
-The rule is simple: nothing depends upward, and the kernel depends on
-no sibling crate. [Read about the layering →](/concepts/layering/)
-
-## What's inside
-
-| crate | role |
-| ----- | ---- |
-| `causa` | facade — kernel always on, defaults add runtime + providers |
-| `causa-kernel` | facts + contracts, no I/O |
-| `causa-runtime` | material-returning turn runner, borrowed observations and bound tool execution |
-| `causa-protocol` | pure Anthropic / OpenAI Chat / Responses translation |
-| `causa-provider` | reqwest `ModelGateway` adapters |
-| `causa-extension` | `mcp` feature: MCP client tool sources |
-
-Need everything? `cargo add causa@0.1.0 --features full`. Auditing offline?
-`--no-default-features` is kernel-only. [Crates and features →](/reference/crates/)
+Six crates share one version. The core (`causa-kernel`) does no I/O; the
+runner, the gateways and the MCP adapter depend on it, never the other way
+round, so each can be replaced. Depend on `causa` and choose the parts with
+features. [Layering →](/concepts/layering/) ·
+[Crates and features →](/reference/crates/)
 
 ## Learn by running
 
-Run these commands from the repository root after cloning as shown above.
+From the repository root:
 
-- **Persist a conversation** across restarts — `cargo run --example conversation_persistence -p causa-runtime`
-- **Stream a turn** delta by delta — `cargo run --example streaming_print -p causa-runtime`
-- **Await approval inside a processor** — `cargo run --example approval_processor -p causa-runtime`
+- **Save and reload a conversation** — `cargo run --example conversation_persistence -p causa-runtime`
+- **Stream a turn** as it arrives — `cargo run --example streaming_print -p causa-runtime`
+- **Ask for approval** before a tool runs — `cargo run --example approval_processor -p causa-runtime`
 
 [All examples →](/examples/)
 
 <CtaBand />
 
-> **Status: 0.1.0.** Breaking changes to the API and to stored context come
-> only in minor releases. Context material and execution are separate;
-> applications own sessions and subagent orchestration.
+> **Status: 0.1.0.** A break of the API or of the stored form of `Context`
+> comes only in a minor release, with its migration in the changelog.
 > [Versioning and stability →](/reference/versioning/)

@@ -32,7 +32,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Causa',
-      description: 'A minimal context kernel for Rust agents — facts in the kernel, behavior in yours.',
+      description:
+        "Causa keeps an AI agent's conversation as typed Rust values your application owns. Your code runs the loop.",
       social: [
         {
           icon: 'github',
@@ -58,7 +59,7 @@ export default defineConfig({
               link: '/getting-started/',
               icon: 'open-book',
               items: [
-                { label: 'Start', items: ['getting-started'] },
+                { label: 'Start', items: ['why-causa', 'getting-started'] },
                 {
                   label: 'Concepts',
                   items: [
