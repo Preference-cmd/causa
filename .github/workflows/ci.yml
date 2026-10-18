@@ -1,9 +1,17 @@
 name: CI
 
+# A push or pull request that changes only the website skips this workflow;
+# website.yml builds it instead. GitHub filters on the whole pushed range,
+# so a push that also touches anything else runs every job. The Publish
+# call (workflow_call) is never filtered.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'website/**'
   pull_request:
+    paths-ignore:
+      - 'website/**'
   workflow_call:
 
 permissions:
