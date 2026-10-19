@@ -120,3 +120,11 @@ fn interrupted_runs_closes_the_batch_and_runs_again() {
          Results so far: Succeeded, UnknownOutcome.\n"
     );
 }
+
+#[test]
+fn home_runs_two_turns_on_the_saved_conversation() {
+    assert_eq!(
+        run(env!("CARGO_BIN_EXE_home")),
+        "Blocks sent: 1. (2 blocks saved)\nBlocks sent: 3. (4 blocks saved)\n"
+    );
+}
