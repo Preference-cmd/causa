@@ -3,37 +3,46 @@ title: Crates and features
 description: The six Causa crates and how to select them.
 ---
 
-`cargo add causa@0.1.0` is the default entry for the 0.1.0 release. Cargo resolves the family dependencies for you; using the layer
-crates directly is optional. All six version in lockstep at `0.x`, dual-licensed
-`MIT OR Apache-2.0`.
+Depend on `causa`; it re-exports the other five crates, and its features
+choose which ones you get. All six share one version and are dual-licensed
+`MIT OR Apache-2.0`. Depending on the layer crates directly also works, but
+is rarely needed.
 
 ## Roles
 
-| crate | role |
-| ----- | ---- |
-| [`causa`](https://docs.rs/causa) | facade over the family |
-| [`causa-kernel`](https://docs.rs/causa-kernel) | editable context material + contracts for models, preparation and tools, no I/O |
-| [`causa-protocol`](https://docs.rs/causa-protocol) | request/response and incremental SSE translation (Anthropic / OpenAI Chat / OpenAI Responses) |
-| [`causa-runtime`](https://docs.rs/causa-runtime) | optional material-returning turn runner, borrowed observations and bound tool execution |
-| [`causa-provider`](https://docs.rs/causa-provider) | reqwest complete-response and streaming adapters for the `ModelGateway` port |
-| [`causa-extension`](https://docs.rs/causa-extension) | extension adapters (`mcp` feature: MCP client) |
+| Crate | Role | In `causa` as |
+| --- | --- | --- |
+| [`causa`](https://docs.rs/causa) | One dependency for the whole family, selected by features | — |
+| [`causa-kernel`](https://docs.rs/causa-kernel) | The `Context` and the traits other parts implement; no I/O | `causa::kernel`, always |
+| [`causa-runtime`](https://docs.rs/causa-runtime) | The turn runner, the tool executor and the retry wrapper | `causa::runtime` |
+| [`causa-protocol`](https://docs.rs/causa-protocol) | Request and response translation for the three protocols, streams included; no HTTP | `causa::protocol` |
+| [`causa-provider`](https://docs.rs/causa-provider) | The HTTP gateways for the three protocols, built on `reqwest` | `causa::providers` |
+| [`causa-extension`](https://docs.rs/causa-extension) | Tool sources; the `mcp` feature adds the MCP client | `causa::extension` |
 
-## Feature selection
+## Features
 
-| selection | gets |
-| --------- | ---- |
-| `causa = "0.1.0"` (default) | kernel + runtime + providers |
-| `features = ["full"]` | + extensions (MCP) |
-| `default-features = false` | kernel only (offline audit / minimal embed) |
-| `default-features = false, features = ["runtime"]` | kernel + offline driver |
+| Feature | Adds | Default |
+| --- | --- | --- |
+| `runtime` | `causa::runtime` | yes |
+| `providers` | `causa::providers`, and `protocol` with it | yes |
+| `protocol` | `causa::protocol` alone, for translation without HTTP | with `providers` |
+| `extension-mcp` | `causa::extension` with the MCP client | no |
+| `full` | `runtime`, `providers` and `extension-mcp` | no |
 
-A provider renders through the protocol crate, so `providers` implies
-`protocol` — you never enable a transport without its translation.
-Extensions stay opt-in because `rmcp` is a heavier dependency that offline
-hosts should not pay for.
+The kernel is always included. A gateway renders through the protocol
+crate, so `providers` turns `protocol` on. The MCP client is off by default
+because its `rmcp` dependency is large, and an application without MCP
+should not have to build it.
 
-The protocol and gateway options each crate exposes are listed in
-[Protocol options](/reference/provider/protocol-options/).
+Common selections in `Cargo.toml`:
 
-Full API docs for every crate: [docs.rs/causa](https://docs.rs/causa)
-(built with `all-features`).
+| You need | Dependency |
+| --- | --- |
+| The runner and the gateways | `causa = "0.1"` |
+| The above and MCP servers | `causa = { version = "0.1", features = ["extension-mcp"] }`, or `features = ["full"]` |
+| Only the context, to store or inspect conversations | `causa = { version = "0.1", default-features = false }` |
+| The runner with your own gateway, no HTTP | `causa = { version = "0.1", default-features = false, features = ["runtime"] }` |
+
+The options of each gateway and protocol are listed in
+[Protocol options](/reference/provider/protocol-options/). The API of every
+crate is on [docs.rs/causa](https://docs.rs/causa), built with all features.

@@ -1,20 +1,36 @@
 ---
 title: Stream decoding
-description: Decode provider SSE streams without the HTTP gateways.
+description: Decode a provider's SSE stream with your own HTTP client, without the built-in gateways.
 ---
 
-`causa::protocol::translation::streaming::StreamDecoder` is transport-free.
-Feed borrowed byte slices through `decode`, retaining each unconsumed suffix;
-continue draining returned deltas even when that suffix is empty. `finish()`
-checks EOF without inventing a missing terminal. `SseParser` provides the lower
-level byte framing when you do not need provider-specific assembly.
+The built-in gateways decode streams with `StreamDecoder`, from
+`causa::protocol::translation::streaming`. It does no I/O, so an application
+that sends requests with its own HTTP client can use it to turn the response
+bytes into the same `StreamDelta` values a gateway yields.
 
-The isolated public consumer runs real local HTTP servers and holds back each
-provider's terminal until the consumer observes text:
+## How to drive it
 
-```sh
-cargo test --manifest-path tests/consumers/provider-streaming/Cargo.toml --locked
-```
+1. Create one decoder per response with `StreamDecoder::new(protocol, limits)`,
+   naming the `Protocol` and the [stream limits](/reference/provider/stream-limits/).
+2. For each chunk of bytes, call `decode(&mut chunk)` until it returns
+   `None`. Each call consumes bytes from the front of the slice and returns
+   at most one delta; it can return deltas even when no bytes are left, so
+   keep calling until `None` before you read the next chunk.
+3. The last delta is `Done`, with the complete `ModelOutput`. After it,
+   stop: any bytes that follow are ignored.
+4. If the body ends without `Done`, call `finish()`. It reports a cut-off
+   stream as an error and never invents the missing end.
 
-The path dependency tests the current checkout. A release must separately pass
-the repository's registry-only publication verification.
+An error stops the decoder for good: every later call returns an error too.
+
+For only the SSE framing, the events with their names and data and no
+provider-specific assembly, use `SseParser` from
+`causa::protocol::translation::sse_parser` in the same way.
+
+## Where it fits
+
+- [Stream output](/guides/stream-output/) — streaming through the built-in
+  gateways, and what each protocol streams.
+- [Stream limits](/reference/provider/stream-limits/) — the limits a decoder
+  applies.
+- [`StreamDecoder` on docs.rs](https://docs.rs/causa-protocol/latest/causa_protocol/translation/streaming/struct.StreamDecoder.html).

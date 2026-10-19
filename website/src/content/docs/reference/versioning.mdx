@@ -15,11 +15,29 @@ with a serde default is not a break. Other serializable types, such as model
 output, request options, identifiers and error kinds, carry no promise.
 
 On GitHub, a minor release is a regular release and a patch release between
-minor releases is marked as a pre-release. Session management, history
-policies and subagent orchestration belong to applications built on Causa.
+minor releases is marked as a pre-release.
 
 In the earlier `0.0.x` series any release could break, and Cargo does not
 upgrade `"0.0.7"` to `0.1.0` on its own.
+
+## Changelog
+
+The canonical changelog lives in the repo:
+[CHANGELOG.md](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
+(Keep a Changelog format).
+
+## Contributing
+
+See
+[AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
+layout, commands (`cargo test --workspace`, clippy, fmt, the layering guard),
+and the [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
+for the release process. Conventional Commits, one logical change per commit.
+
+CI checks dependency directions with all features enabled, rejects `mod.rs`
+in library sources, checks public API documentation, and builds the public
+facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
+every command.
 
 ## Upgrading from 0.0.7
 
@@ -101,25 +119,5 @@ Handle `TurnOutcome.result` and retain or dispose of returned context and any
 uncommitted tool batch deliberately. An interrupted external tool may have an
 unknown outcome; recreating context does not guarantee exactly-once execution.
 
-The [getting-started example](/getting-started/) uses the new facade API. The
-[full changelog](https://github.com/Preference-cmd/causa/blob/v0.1.0/CHANGELOG.md)
+The [full changelog](https://github.com/Preference-cmd/causa/blob/v0.1.0/CHANGELOG.md)
 details the context, tool, control, conversion and protocol changes.
-
-## Changelog
-
-The canonical changelog lives in the repo:
-[CHANGELOG.md](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md)
-(Keep a Changelog format).
-
-## Contributing
-
-See
-[AGENTS.md](https://github.com/Preference-cmd/causa/blob/main/AGENTS.md) for
-layout, commands (`cargo test --workspace`, clippy, fmt, the layering guard),
-and the [release guide](https://github.com/Preference-cmd/causa/blob/main/.github/RELEASING.md)
-for the release process. Conventional Commits, one logical change per commit.
-
-CI checks dependency directions with all features enabled, rejects `mod.rs`
-in library sources, checks public API documentation, and builds the public
-facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
-every command.
