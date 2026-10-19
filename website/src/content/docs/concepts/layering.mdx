@@ -1,13 +1,24 @@
 ---
 title: Layering
-description: How the six crates depend on each other, and why the edges are adapters.
+description: How the six crates depend on each other, and why the direction matters.
 ---
 
 import LayerDiagram from '../../../components/LayerDiagram.astro';
 
 <LayerDiagram />
 
-## Edge crates are adapters, not opinions
+## What each crate does
+
+| Crate | What it holds | Depends on |
+|---|---|---|
+| `causa-kernel` | The `Context` and the ports; no I/O | No other Causa crate |
+| `causa-protocol` | Turning a context into the request of each wire protocol, and the answer back into an output; no HTTP | kernel |
+| `causa-provider` | The three HTTP gateways, built on `reqwest` | kernel, protocol |
+| `causa-runtime` | The turn runner, the tool executor and the retry wrapper | kernel |
+| `causa-extension` | Tool sources; the `mcp` feature adds the MCP client, built on the official `rmcp` SDK | kernel |
+| `causa` | One dependency that re-exports the others, chosen by features | the crates its features select |
+
+In short:
 
 ```text
 kernel <- protocol <- provider
@@ -16,16 +27,35 @@ kernel <- extension
 (*, extension) <- causa (facade; depended on by none)
 ```
 
-- `causa-protocol` — pure wire-protocol translation (Anthropic / OpenAI Chat /
-  OpenAI Responses). No transport, no driver.
-- `causa-provider` — reqwest `ModelGateway` adapters (implies protocol).
-- `causa-extension` — `DynamicToolSource` adapters (`mcp` feature via the
-  official `rmcp` SDK, client role only).
-- `causa` — the facade. Kernel always on; defaults add the runtime components + providers,
-  `full` adds extensions.
+## Why the direction matters
 
-CI checks the family dependency directions and bans known transport packages
-from the kernel. Keeping policy out of facts also requires API review.
-Reference implementations of ports
-(stores, counters, exporters) live in examples or hosts — never in the publish
-set.
+Every arrow points at the kernel, and the parts around it do not depend on
+each other: the runner does not know about HTTP, and the gateways do not
+know about the runner. So each one can be used without the others or
+replaced by your own:
+
+- Store and edit conversations with the kernel alone, in a service that
+  never calls a model.
+- Use a gateway without the runner, in a loop of your own.
+- Run the runner with a gateway you wrote for another API, or with a
+  scripted one in tests.
+- Translate requests with `causa-protocol` and send them with your own HTTP
+  stack.
+
+The kernel's direct dependencies are a fixed list of seven small crates
+(`serde`, `serde_json`, `thiserror`, `uuid`, `async-trait`, `futures-core`
+and `tokio-util`), with no network or MCP library, so depending on it pulls
+in nothing heavy.
+
+## What CI checks
+
+CI checks the direction of every dependency between the crates, with all
+features enabled. It also holds the kernel to its list of dependencies, and
+keeps `reqwest`, `rmcp` and `axum` out of the kernel, the protocol crate and
+the runner. Whether a type or a policy sits in the right crate is not
+something a script can tell; that is decided in review. Example
+implementations of ports, such as stores and token counters, live in the
+examples, never in the published crates.
+
+[Crates and features](/reference/crates/) shows how to select the crates
+through the `causa` dependency.

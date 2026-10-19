@@ -1,14 +1,70 @@
 ---
 title: Context and ports
-description: What the kernel holds — material and the contracts third parties implement.
+description: What the core crate holds — the conversation as typed blocks, and the traits the other parts implement.
 ---
 
-`causa-kernel` has no I/O, no transport, no policy. It holds:
+`causa-kernel` is the crate every other part builds on. It does no I/O,
+calls no model and makes no decisions. It holds two things: the
+conversation, as a value called `Context`, and the traits through which
+other code works with it, called ports.
 
-- **Material** (`context`): `Context` owns ordered blocks and atomic edits;
-  `ContextFrame` is an independent selection for a model request. Neither has a
-  turn lifecycle or execution identity. Media uses durable `MediaRef` values;
-  asset bytes live in the host's store.
-- **Contracts** (`ports`): `ModelGateway`, `ContextPreparer`, `Tool`,
-  `DynamicToolSource`, `ToolBatchProcessor`, `CallControl` and `ArtifactStore`.
-  Third parties can implement or call these without adopting the runtime.
+## The context
+
+A `Context` is an ordered list of blocks. Each `ContextBlock` has an id, its
+content and some metadata. The content is one of four kinds:
+
+| Kind | What it records |
+|---|---|
+| `Message` | A system, user or assistant message: text parts, media references, and provider items Causa keeps without reading them |
+| `ToolCall` | A tool the model asked to call, with its arguments |
+| `ToolResult` | What the call returned, with a status such as `Succeeded`, `Failed` or `Rejected` |
+| `ToolChange` | The tools offered to the model from this point on |
+
+That list is the whole state of a conversation. There is no session, task or
+connection behind it, so a context can be saved as JSON, loaded in another
+process, inspected, and edited. Its serialized form is stable across patch
+releases; [Save and restore context](/guides/save-and-restore/) shows it.
+
+A few rules hold for every context:
+
+- **Ids are unique.** A block keeps its id only while its content stays the
+  same; a changed block is a new block with a new id.
+- **Edits are atomic.** An edit applies all its replacements and appends,
+  or none of them. [Edit context](/guides/edit-context/) covers the rules.
+- **Media stays out.** An image or a PDF is a `MediaRef`, a reference your
+  application chose; the bytes stay in your own store.
+  [Media](/guides/media/) shows how a gateway fetches them when it builds a
+  request.
+- **Provider items stay whole.** Reasoning and other items a provider
+  returns in its own format are kept as sealed parts, sent back unchanged to
+  the protocol that produced them, and skipped by the others.
+
+A `ContextFrame` is the list of blocks sent in one request. Without a
+preparer it is the whole context; a `ContextPreparer` can choose a part of it
+instead ([Prepare each request](/guides/prepare-each-request/)). The frame is
+a copy: what one request leaves out stays in the context.
+
+## The ports
+
+A port is a trait in the kernel that other code implements or calls. The
+runner, the gateways and the MCP adapter are implementations of these
+traits, not special cases, so you can replace any of them with your own.
+
+| Port | Who implements it | What it does |
+|---|---|---|
+| `ModelGateway` | The built-in gateways, or you for another API | Sends a request to a model and returns its output, whole or as a stream |
+| `Tool` | You | One function the model can call |
+| `DynamicToolSource` | The MCP adapter, or you | A set of tools that can change while the application runs |
+| `ToolBatchProcessor` | You | Inspects or changes the calls of one round before and after they run, for approval and similar rules |
+| `ContextPreparer` | You | Chooses what one request sends, and may edit the context |
+| `ArtifactStore` | You | Stores the bytes a tool produces and returns a reference |
+
+Gateways, tools, tool sources, processors and preparers each receive a
+`CallControl`: it carries the run's cancellation token and deadline, so they
+stop when the run does.
+
+## Next
+
+- [Turns, rounds and tool batches](/concepts/turns-and-batches/) — what the
+  runner does with these parts in one run.
+- [Layering](/concepts/layering/) — which crate holds which part.

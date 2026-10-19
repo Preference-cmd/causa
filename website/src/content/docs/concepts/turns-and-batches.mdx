@@ -3,38 +3,96 @@ title: Turns, rounds and tool batches
 description: What the optional runner does in one run, and what it leaves to your application.
 ---
 
-`TurnRunner` owns a gateway and `ToolExecutor`. Each call supplies a turn ID,
-context, explicit model, options and control. It returns the editable context
-on completion or controlled interruption, with the complete current tool batch
-when results have not committed. Dropping the future or panicking bypasses that
-return guarantee. Local cancellation cannot undo remote tool effects.
+`TurnRunner` is the optional part of Causa that calls the model and runs
+the tools it asks for. It holds a gateway and a `ToolExecutor`, and nothing
+else: no history, no session, no stored state between runs.
 
-The runner binds the tool catalog before preparation, so the request surface and
-execution targets refer to the same captured tool objects. An optional
-`ContextPreparer` edits retained context and selects a request frame. The
-request's logical invocation ID stays unchanged across gateway-owned retries.
-Only declarations from a fresh model output become executable work; imported
-context is never a resume command.
+## One run
 
-Tool processing applies ordered before processors, concurrent execution and
-ordered after processors to one `ToolBatch`. A processor can await approval.
-The executor collects started calls before returning a controlled interruption;
-the runner commits results atomically only after successful processing and
-validation. An unknown outcome is committed and stops further model rounds.
-A stop first seen after every tool returned and every after processor finished
-does not discard that work: the results are committed, then the run returns
-the cancellation or deadline with no uncommitted batch. [Interrupted
-runs](/guides/interrupted-runs/) covers the batch an earlier stop hands back.
+A run is one call to `TurnRunner::run`, or `run_streaming` to receive the
+answer as it arrives. You pass:
 
-Results are committed in the order they arrived: calls resolved before
-execution (an unbound name, or a before processor's result) first, then the
-rest as they completed, which need not be the order the model declared them
-in. An after processor that sorts
-`ToolBatch::results_mut` by `ProcessorContext::declaration_order` commits
-them in declaration order instead; the `tool_processors` example does this.
+- a turn id, which names the run in its events and errors;
+- the `Context` to continue;
+- `TurnRunOptions`: the model, the generation options, the limits, and
+  optionally a preparer and an observer;
+- a `CallControl` with the cancellation token and deadline of the run.
+
+The run returns a `TurnOutcome`, which always holds the context, with every
+block the run committed. Its `result` is `Completed`, with the model's final
+output, or `Interrupted`, with a typed cause. When the run stopped while
+tools were involved, `uncommitted_tool_batch` holds the calls whose results
+are not in the context yet. The one exception is a run whose future is
+dropped or that panics: then nothing is returned.
+
+## Rounds
+
+A run is a series of rounds, each one model call. In every round the
+runner:
+
+1. **Binds the tools.** The executor fixes the list of tools for the round:
+   the tools it was built with and those of its dynamic sources, such as MCP
+   servers. If the list differs from the tools the context records, the
+   runner appends a `ToolChange` block, so the context shows which tools the
+   model had when.
+2. **Prepares the request.** Without a preparer, the request carries the
+   whole context. A `ContextPreparer` can select a part instead; the tools in
+   what it returns must still match the bound tools, or the run stops with
+   `PrepareFailed`.
+3. **Calls the model.** The request's invocation id, the turn id and the
+   round number, stays the same if a retry wrapper calls the provider again.
+4. **Commits the output.** The assistant's message and tool calls are
+   appended to the context.
+5. **Decides what comes next.** If the model ended its turn, the run is
+   `Completed`. If it asked for tools, the runner runs them as one batch,
+   commits the results and starts the next round. Any other reason to stop,
+   such as the output limit, a refusal or a full context window, interrupts
+   the run with that output left uncommitted.
+
+Two limits in `TurnLimits` bound a run: 10 model rounds and 64 tool calls
+across all rounds, by default. Reaching one interrupts the run with
+`MaxModelRounds` or `MaxToolCalls`.
+
+The runner only runs tool calls the model made in this run. Tool calls
+already in the context, for example in a conversation loaded from a file,
+are never run again.
+
+## Tool batches
+
+The tool calls of one round form a `ToolBatch`, and the batch goes through
+three steps:
+
+1. Your **before** processors run in order. They can approve, refuse,
+   answer or change calls before anything runs.
+2. Every call still open runs, all of them at once.
+3. Your **after** processors run in order. They can change results, for
+   example to shorten output or sort the results.
+
+Then the runner checks the results and appends them all at once. The
+results are in the order they arrived: calls answered before anything ran,
+such as a call to an unknown tool or one a processor refused, first, then
+the rest as they finished. An after processor that sorts
+`ToolBatch::results_mut` by `ProcessorContext::declaration_order` records
+them in the order the model declared them; the `tool_processors` example
+does this.
+
+How a run that stops around a batch ends:
+
+- A stop or a failure before the results are appended hands the batch back
+  in the outcome. [Handle interrupted runs](/guides/interrupted-runs/) shows
+  what to do with it.
+- A stop first seen after every tool returned and every after processor
+  finished does not discard that work: the results are appended, then the
+  run returns `Cancelled` or `DeadlineExceeded` with no batch.
+- When a result has the status `UnknownOutcome`, for example a call cut off
+  by the per-call timeout after it started, the batch is appended as usual
+  and the run then stops with `UnknownToolOutcome`, so that your application
+  decides whether to go on.
+
+## What every tool must do
 
 The calls of one batch run concurrently on the caller's task. Nothing is
-spawned, the calls are not parallel, and their number is not bounded. This
+spawned, the calls are not parallel, and their number is not bounded. That
 puts two requirements on every `Tool`:
 
 - It must not block the thread. Blocking or CPU-heavy work goes through
@@ -42,19 +100,27 @@ puts two requirements on every `Tool`:
 - It must return promptly once its `CallControl` is cancelled or past its
   deadline.
 
-A tool that meets both is stopped at its next yield point. A tool that holds
-the thread also holds its sibling calls and the runtime's own checks, so
-cancellation, the deadline and the per-call timeout are not guaranteed for it.
-A tool that needs a concurrency limit shares a semaphore across its calls.
+A tool that meets both is stopped at its next `.await`. A tool that holds
+the thread also holds the other calls of its batch and the runner's own
+checks, so cancellation, the deadline and the per-call timeout are not
+guaranteed for it. A tool that needs a limit on concurrent calls shares a
+semaphore across them.
 
-Six borrowed `RunEvent` observations expose requests, streaming deltas, complete
-outputs, actual block appends and tool-processing entry/return. Observers choose
-what to save; the runner keeps no implicit trace. Typed interruptions retain
-failed conversion or commit inputs so an observer is not required for recovery.
+## Watching a run
 
-History, session admission, input queues, budgets, model retries, output policies
-and persistence belong to applications. Build preparation or processors from
-those policies; no built-in session owner or budget strategy is imposed.
+An observer set in `TurnRunOptions` is called with a `RunEvent` at six
+points: the request about to be sent (`ModelRequestReady`), each streamed
+piece (`ModelDelta`), the complete output (`ModelOutput`), each append to the
+context (`BlocksCommitted`), and a tool batch before and after it runs
+(`ToolBatchReady`, `ToolBatchReturned`). Events borrow the run's data; the
+runner keeps no log, so the observer copies what it wants to keep. An
+interrupted run returns what it could not commit in its cause, so recovery
+never depends on an observer.
 
-See [context editing](/guides/edit-context/) for atomic replacement and append rules.
+## What stays with your application
 
+History, sessions, queues of user input, budgets, model retries, trimming
+long conversations and saving them are not part of the runner. Build them
+around it: a preparer chooses what each request sends, processors apply
+rules to tool calls, and your own code decides what happens between runs.
+[Why Causa](/why-causa/) lists each default and where to change it.
