@@ -28,8 +28,8 @@ USER_AGENT = "Causa-release (https://github.com/Preference-cmd/causa)"
 # written by hand.
 INSTALL_DOCS = (
     "README.md", "crates/causa/src/lib.rs",
-    "website/src/content/docs/index.mdx", "website/src/content/docs/reference/crates.mdx",
-    "website/src/content/docs/examples.mdx", "website/src/content/docs/getting-started.mdx",
+    "website/src/content/docs/reference/crates.mdx", "website/src/content/docs/examples.mdx",
+    "website/src/content/docs/getting-started.mdx",
 )
 DATED_ENTRY = r"^## \[([0-9.]+)\] - \d{4}-\d{2}-\d{2}$"
 

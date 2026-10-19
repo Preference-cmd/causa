@@ -1,5 +1,5 @@
-// `/<page>.md`: every docs page as Markdown, built with the site. The home
-// page is `/index.md`. PageTitle's copy button fetches these files.
+// `/<page>.md`: every docs page as Markdown, built with the site.
+// PageTitle's copy button fetches these files.
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection, type CollectionEntry } from 'astro:content';
 import { pageMarkdown } from '../lib/page-markdown';

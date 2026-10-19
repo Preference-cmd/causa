@@ -77,9 +77,9 @@ const container = await experimental_AstroContainer.create({
   renderers: [{ name: 'astro:jsx', ssr: mdxServer }],
 });
 
-/** The page's URL path, for example `/guides/edit-context/` or `/`. */
+/** The page's URL path, for example `/guides/edit-context/`. */
 export function pagePath(entry: CollectionEntry<'docs'>): string {
-  return entry.id === 'index' ? '/' : `/${entry.id}/`;
+  return `/${entry.id}/`;
 }
 
 /** Renders one docs page as a Markdown document headed by its title. */

@@ -42,14 +42,15 @@ no network.
 
 ## Guide programs
 
-Each guide's code comes from a complete program in
-`tests/consumers/site-guides`, which depends on Causa only through the
-`causa` crate, as your application would. All but the first run offline,
-against a scripted model or a local stand-in server, and CI checks their
-output.
+The code on the home page and in each guide comes from a complete program
+in `tests/consumers/site-guides`, which depends on Causa only through the
+`causa` crate, as your application would. All but Getting started run
+offline, against a scripted model or a local stand-in server, and CI checks
+their output.
 
-| Guide | Run |
+| Page | Run |
 | --- | --- |
+| [Home page](/) | `--bin home` |
 | [Getting started](/getting-started/) | needs `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`: `--bin getting_started` |
 | [Write a tool](/guides/write-a-tool/) | `--bin write_a_tool` |
 | [Connect MCP servers](/guides/connect-mcp-servers/) | `--bin connect_mcp_servers` |

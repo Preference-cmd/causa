@@ -11,6 +11,6 @@
 @import "tailwindcss/utilities.css";
 
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: var(--c-sans);
+  --font-mono: var(--c-mono);
 }

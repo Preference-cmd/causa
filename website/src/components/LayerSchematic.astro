@@ -1,0 +1,402 @@
+---
+// The home page's exploded view of the layers: your application on top, the
+// optional crates in the middle, the kernel at the base. Each plane is drawn
+// flat, S by S, and mapped onto the isometric view with one matrix; planes
+// are drawn bottom-up with an opaque fill, so upper ones cover lower ones.
+// On narrow screens the drawing is cropped to the planes and the labels
+// move into the list below it.
+
+const CX = 540; // x of each plane's top corner
+const SP = 215; // vertical distance between planes
+const S = 300; // side of a flat plane
+const TOP = 30;
+const BX = 870; // x of the bracket labels
+const y = (i: number) => TOP + i * SP;
+const iso = (i: number) => `matrix(0.866,0.5,-0.866,0.5,${CX},${y(i)})`;
+
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const text = (x: number, ty: number, s: string, cls = 'pt') =>
+  `<text class="${cls}" x="${x}" y="${ty}">${esc(s)}</text>`;
+const plane = (dashed = false) =>
+  `<rect class="pl" width="${S}" height="${S}"${dashed ? ' stroke-dasharray="6 6"' : ''}/>`;
+
+function app(): string[] {
+  const boxes: [number, number, number, string][] = [
+    [30, 40, 110, 'SESSIONS'],
+    [160, 40, 110, 'STORAGE'],
+    [30, 120, 110, 'APPROVAL'],
+    [160, 120, 110, 'BUDGETS'],
+    [30, 200, 240, 'HISTORY · RETRIES · POLICY'],
+  ];
+  return [
+    plane(true),
+    ...boxes.flatMap(([x, by, w, label]) => [
+      `<rect class="ln dash" x="${x}" y="${by}" width="${w}" height="60"/>`,
+      text(x + 10, by + 36, label),
+    ]),
+  ];
+}
+
+function runtime(): string[] {
+  const [cx, cy, r] = [150, 150, 92];
+  const steps = ['BIND', 'PREPARE', 'CALL', 'COMMIT', 'TOOLS'].flatMap((name, k) => {
+    const a = -Math.PI / 2 + (k * 2 * Math.PI) / 5;
+    const [x, ny] = [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    return [
+      `<rect class="node" x="${(x - 34).toFixed(1)}" y="${(ny - 13).toFixed(1)}" width="68" height="26"/>`,
+      `<text class="pt c" x="${x.toFixed(1)}" y="${(ny + 5).toFixed(1)}">${name}</text>`,
+    ];
+  });
+  return [
+    plane(),
+    `<circle class="ln" cx="${cx}" cy="${cy}" r="${r}"/>`,
+    ...steps,
+    text(cx - 40, cy + 5, 'TURN RUNNER', 'pt dim'),
+  ];
+}
+
+function provider(): string[] {
+  return [
+    plane(),
+    ...['ANTHROPIC MESSAGES', 'OPENAI CHAT', 'OPENAI RESPONSES'].flatMap((name, k) => {
+      const ly = 112 + k * 62;
+      const ticks = Array.from({ length: 7 }, (_, j) => {
+        const x = 205 + j * 10;
+        return `<line class="ln thin" x1="${x}" y1="${ly + 9}" x2="${x}" y2="${ly + 31}"/>`;
+      });
+      return [`<rect class="ln" x="70" y="${ly}" width="210" height="40"/>`, text(82, ly + 25, name), ...ticks];
+    }),
+  ];
+}
+
+function extension(): string[] {
+  const [hx, hy] = [165, 170];
+  const servers: [number, number][] = [
+    [95, 100],
+    [245, 85],
+    [70, 235],
+    [250, 240],
+    [175, 60],
+    [160, 268],
+  ];
+  return [
+    plane(),
+    ...servers.flatMap(([x, sy]) => [
+      `<line class="ln thin" x1="${hx}" y1="${hy}" x2="${x}" y2="${sy}"/>`,
+      `<rect class="node" x="${x - 18}" y="${sy - 12}" width="36" height="24"/>`,
+    ]),
+    `<rect class="node" x="${hx - 46}" y="${hy - 16}" width="92" height="32"/>`,
+    `<text class="pt c" x="${hx}" y="${hy + 5}">MCP SERVERS</text>`,
+  ];
+}
+
+function kernel(): string[] {
+  const n = 15;
+  const step = S / n;
+  const grid = Array.from({ length: n - 1 }, (_, k) => {
+    const v = ((k + 1) * step).toFixed(1);
+    return `<line class="ln grid" x1="${v}" y1="0" x2="${v}" y2="${S}"/><line class="ln grid" x1="0" y1="${v}" x2="${S}" y2="${v}"/>`;
+  });
+  // The context: an ordered run of typed blocks.
+  const blocks = ['Δ', 'M', 'M', 'C', 'C', 'R', 'R', 'M', 'M', 'C', 'R', 'M'].flatMap((kind, k) => {
+    const x = 19 * k + 58;
+    const cls = kind === 'C' || kind === 'R' ? 'blk acc' : 'blk';
+    return [
+      `<rect class="${cls}" x="${x}" y="172" width="18" height="20"/>`,
+      `<text class="pt c tiny" x="${x + 9}" y="186">${kind}</text>`,
+    ];
+  });
+  return [
+    plane(),
+    ...grid,
+    ...blocks,
+    text(58, 160, 'CONTEXT — ORDERED, TYPED, YOURS'),
+    text(58, 212, 'M MESSAGE  C CALL  R RESULT  Δ TOOLS'),
+  ];
+}
+
+const layers = [
+  { key: 'app', draw: app, name: 'Your application', desc: 'History, storage, sessions, approval, budgets. Causa ships none of them.' },
+  { key: 'runtime', draw: runtime, name: 'causa-runtime', desc: 'Turn runner, tool executor, retry wrapper.' },
+  { key: 'provider', draw: provider, name: 'causa-provider · protocol', desc: 'Three wire protocols over HTTP, with streaming.' },
+  { key: 'extension', draw: extension, name: 'causa-extension', desc: 'MCP servers as tool sources.' },
+  { key: 'kernel', draw: kernel, name: 'causa-kernel', desc: 'The Context and the traits. No I/O.' },
+];
+
+function wrap(s: string, width = 30): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of s.split(' ')) {
+    if (line && line.length + word.length + 1 > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  return [...lines, line];
+}
+
+// A run takes the context down to the kernel and hands it back.
+const lx = CX - 260;
+const arcs = [
+  `<path class="arc" d="M ${lx + 60} ${y(0) + 170} C ${lx - 170} ${y(0) + 230}, ${lx - 190} ${y(4) + 60}, ${lx + 40} ${y(4) + 165}" stroke="url(#arc-down)"/>`,
+  `<polygon class="head" points="${lx + 66},${y(4) + 178} ${lx + 18},${y(4) + 186} ${lx + 40},${y(4) + 140}"/>`,
+  `<path class="arc2" d="M ${lx + 70} ${y(4) + 120} C ${lx - 60} ${y(4) + 40}, ${lx - 70} ${y(1) + 120}, ${lx + 50} ${y(0) + 215}" stroke="url(#arc-up)"/>`,
+  `<polygon class="head2" points="${lx + 62},${y(0) + 204} ${lx + 32},${y(0) + 214} ${lx + 50},${y(0) + 232}"/>`,
+  `<g class="arc-labels"><text class="lab" x="${lx - 275}" y="${y(1) + 150}">RUN</text><text class="lab dim" x="${lx - 275}" y="${y(1) + 168}">CONTEXT IN ↓</text>`,
+  `<text class="lab" x="${lx - 275}" y="${y(3) + 90}">OUTCOME</text><text class="lab dim" x="${lx - 275}" y="${y(3) + 108}">CONTEXT BACK ↑</text></g>`,
+].join('');
+
+const planes = layers
+  .map((layer, i) => ({ layer, i }))
+  .reverse()
+  .map(({ layer, i }) => `<g class="layer" data-layer="${layer.key}" style="--i:${i}"><g transform="${iso(i)}">${layer.draw().join('')}</g></g>`)
+  .join('');
+
+const labels = layers
+  .map((layer, i) => {
+    const [y0, y1] = [y(i) + 95, y(i) + 205];
+    const desc = wrap(layer.desc)
+      .map((line, k) => `<text class="lab desc" x="${BX + 24}" y="${y0 + 44 + k * 17}">${esc(line)}</text>`)
+      .join('');
+    return `<g class="label" data-layer="${layer.key}"><path class="ln" d="M ${BX + 8} ${y0} H ${BX} V ${y1} H ${BX + 8}"/><text class="lab name" x="${BX + 24}" y="${y0 + 22}">${esc(layer.name.toUpperCase())}</text>${desc}</g>`;
+  })
+  .join('');
+
+const optional = `<g class="optional"><path class="ln dim" d="M ${BX - 22} ${y(1) + 95} H ${BX - 30} V ${y(3) + 205} H ${BX - 22}"/><text class="lab tag" transform="translate(${BX - 40} ${y(3) + 205}) rotate(-90)">OPTIONAL · BY CARGO FEATURE</text></g>`;
+
+const svg = `<defs><linearGradient id="arc-down" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--c-arc-from)"/><stop offset="1" stop-color="var(--c-arc-to)"/></linearGradient><linearGradient id="arc-up" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="var(--c-arc-from)"/><stop offset="1" stop-color="var(--c-arc-to)"/></linearGradient></defs>${arcs}${planes}${labels}${optional}`;
+---
+
+<figure class="schematic">
+  <div class="frame">
+    <svg
+      class="iso"
+      viewBox="0 0 1180 1200"
+      role="img"
+      aria-labelledby="schematic-title"
+      set:html={`<title id="schematic-title">Causa's layers: your application on top; the optional runtime, provider and extension crates; the kernel, holding the context, at the base. A run takes the context in and hands it back.</title>${svg}`}
+    />
+  </div>
+  <ol class="layer-list">
+    {
+      layers.map((layer) => (
+        <li data-layer={layer.key}>
+          <b>{layer.name}</b>
+          <span>{layer.desc}</span>
+        </li>
+      ))
+    }
+  </ol>
+</figure>
+
+<script>
+  // Hovering a plane or its label lifts both and dims the rest.
+  for (const figure of document.querySelectorAll<HTMLElement>('.schematic')) {
+    const svg = figure.querySelector('svg');
+    if (!svg) continue;
+    const parts = figure.querySelectorAll<HTMLElement | SVGElement>('[data-layer]');
+    for (const part of parts) {
+      part.addEventListener('mouseenter', () => {
+        svg.classList.add('focus');
+        for (const other of parts) {
+          other.classList.toggle('on', other.dataset.layer === part.dataset.layer);
+        }
+      });
+      part.addEventListener('mouseleave', () => {
+        svg.classList.remove('focus');
+        for (const other of parts) other.classList.remove('on');
+      });
+    }
+  }
+</script>
+
+<style is:global>
+  .schematic {
+    margin: 0;
+  }
+  .schematic .frame {
+    overflow: hidden;
+  }
+  .iso {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .iso .pl,
+  .iso .node,
+  .iso .blk {
+    fill: var(--c-plane);
+    stroke: var(--c-line);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+  }
+  .iso .pl {
+    stroke-width: 1.3;
+  }
+  .iso .ln {
+    fill: none;
+    stroke: var(--c-line);
+    stroke-width: 1.1;
+    vector-effect: non-scaling-stroke;
+  }
+  .iso .ln.thin {
+    stroke-width: 0.8;
+    opacity: 0.7;
+  }
+  .iso .ln.grid {
+    stroke-width: 0.6;
+    opacity: 0.32;
+  }
+  .iso .ln.dash {
+    stroke-dasharray: 4 4;
+  }
+  .iso .ln.dim {
+    opacity: 0.5;
+  }
+  .iso .blk.acc {
+    fill: var(--c-accent);
+    stroke: var(--c-accent);
+  }
+  .iso .pt {
+    font-family: var(--c-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    fill: var(--c-fg);
+  }
+  .iso .pt.c {
+    text-anchor: middle;
+  }
+  .iso .pt.dim,
+  .iso .lab.dim {
+    fill: var(--c-muted);
+  }
+  .iso .pt.tiny {
+    font-size: 9px;
+  }
+  .iso .lab {
+    font-family: var(--c-mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    fill: var(--c-fg);
+  }
+  .iso .lab.desc {
+    font-family: var(--c-sans);
+    font-size: 14px;
+    letter-spacing: 0;
+    fill: var(--c-muted);
+  }
+  .iso .lab.tag {
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    fill: var(--c-muted);
+  }
+  .iso .arc {
+    fill: none;
+    stroke-width: 22;
+    opacity: 0.9;
+  }
+  .iso .arc2 {
+    fill: none;
+    stroke-width: 6;
+    opacity: 0.55;
+  }
+  .iso .head {
+    fill: var(--c-arc-to);
+  }
+  .iso .head2 {
+    fill: var(--c-arc-to);
+    opacity: 0.6;
+  }
+  .iso .layer {
+    transform-box: view-box;
+    animation: spread 1.1s calc(0.35s + var(--i) * 0.09s) cubic-bezier(0.2, 0.7, 0.1, 1) both;
+    transition: opacity 0.25s;
+  }
+  @keyframes spread {
+    from {
+      transform: translateY(calc((2 - var(--i)) * 170px));
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+  .iso .label {
+    transition: opacity 0.25s;
+  }
+  .iso.focus .layer {
+    opacity: 0.28;
+  }
+  .iso.focus .label {
+    opacity: 0.35;
+  }
+  .iso.focus .layer.on,
+  .iso.focus .label.on {
+    opacity: 1;
+  }
+  .iso .layer.on .pl {
+    stroke: var(--c-accent);
+    stroke-width: 2;
+  }
+  /* Read by screen readers everywhere; shown on narrow screens only. */
+  .layer-list {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  @media (max-width: 900px) {
+    /* Crop to the planes: they span x 280–800 of the 1180-wide drawing. */
+    .iso {
+      width: 227%;
+      margin-left: -54%;
+    }
+    .iso .label,
+    .iso .optional,
+    .iso .arc,
+    .iso .arc2,
+    .iso .head,
+    .iso .head2,
+    .iso .arc-labels {
+      display: none;
+    }
+    .layer-list {
+      position: static;
+      width: auto;
+      height: auto;
+      overflow: visible;
+      clip-path: none;
+      list-style: none;
+      margin: 24px 0 0;
+      padding: 0;
+      border-top: 1px solid var(--c-fg);
+    }
+    .layer-list li {
+      display: grid;
+      gap: 4px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--c-rule);
+    }
+    .layer-list b {
+      font-family: var(--c-mono);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .layer-list span {
+      color: var(--c-muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .iso .layer {
+      animation: none;
+    }
+  }
+</style>

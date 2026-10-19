@@ -34,6 +34,34 @@ export default defineConfig({
       title: 'Causa',
       description:
         "Causa keeps an AI agent's conversation as typed Rust values your application owns. Your code runs the loop.",
+      logo: {
+        light: './src/assets/logo-light.svg',
+        dark: './src/assets/logo-dark.svg',
+        alt: '',
+      },
+      head: [
+        // The share card for links to any docs page; the home page sets its own.
+        { tag: 'meta', attrs: { property: 'og:image', content: 'https://causa.inceptae.com/og.png' } },
+        { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
+      ],
+      expressiveCode: {
+        // Code blocks on the page's paper, with square corners.
+        styleOverrides: {
+          borderRadius: '0',
+          borderColor: 'var(--c-rule)',
+          codeBackground: 'var(--c-code-bg)',
+          codeFontFamily: 'var(--c-mono)',
+          uiFontFamily: 'var(--c-sans)',
+          frames: {
+            editorTabBarBackground: 'var(--c-bg)',
+            editorActiveTabBackground: 'var(--c-code-bg)',
+            editorActiveTabIndicatorTopColor: 'var(--c-accent)',
+            terminalTitlebarBackground: 'var(--c-bg)',
+            terminalBackground: 'var(--c-code-bg)',
+            frameBoxShadowCssValue: 'none',
+          },
+        },
+      },
       social: [
         {
           icon: 'github',
@@ -44,7 +72,7 @@ export default defineConfig({
       editLink: {
         baseUrl: 'https://github.com/Preference-cmd/causa/edit/main/website/',
       },
-      customCss: ['./src/styles/tailwind.css', './src/styles/custom.css'],
+      customCss: ['./src/styles/theme.css', './src/styles/tailwind.css', './src/styles/custom.css'],
       components: {
         // Adds the copy-as-Markdown links under every page title.
         PageTitle: './src/components/PageTitle.astro',
@@ -116,8 +144,6 @@ export default defineConfig({
               ],
             },
           ],
-          // The splash home page has no sidebar and belongs to neither.
-          { exclude: ['/'] },
         ),
         starlightLlmsTxt({
           projectName: 'Causa',

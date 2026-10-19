@@ -1,0 +1,658 @@
+---
+// The home page. It is a page of its own, not a Starlight splash, with its
+// own header and footer; it shares the palette and fonts with the docs
+// (src/styles/theme.css) and the light/dark choice Starlight stores.
+import { Code } from 'astro:components';
+import cargoToml from '../../../Cargo.toml?raw';
+import LayerSchematic from '../components/LayerSchematic.astro';
+import { snippet } from '../lib/snippet';
+import '../styles/theme.css';
+
+// The release and MSRV come from the workspace manifest, so the page never
+// carries a stale copy.
+const workspace = cargoToml.match(/^\[workspace\.package\]$([\s\S]*?)^\[/m)?.[1] ?? '';
+const field = (name: string) => {
+  const value = workspace.match(new RegExp(`^${name}\\s*=\\s*"([^"]+)"`, 'm'))?.[1];
+  if (!value) throw new Error(`home page: no ${name} in [workspace.package]`);
+  return value;
+};
+const version = field('version');
+const msrv = field('rust-version');
+
+const hero = snippet('src/bin/home.rs', 'hero');
+const site = Astro.site ?? new URL('https://causa.inceptae.com');
+const title = 'Causa — a context kernel for Rust agents';
+const description =
+  "Causa keeps an AI agent's conversation as typed Rust values your application owns. Your code runs the loop.";
+const github = 'https://github.com/Preference-cmd/causa';
+
+const fits = [
+  'You want to decide for yourself how history, storage and approval work.',
+  'You need a typed record of what the model saw and did — to save, audit, replay or edit.',
+  'One conversation moves between Anthropic Messages, Chat Completions and Responses, or a compatible server.',
+  'You already have an agent loop and want typed state and tool execution under it.',
+];
+const misfits = [
+  'You want memory, planning or multi-agent coordination ready-made.',
+  'Your provider speaks none of the three protocols, and you do not want to write a gateway.',
+  'A tool’s external effect must happen exactly once, even if the process crashes.',
+  `You need an API that will not change for years. Causa is at ${version}.`,
+];
+const runs = [
+  ['Save and reload a conversation', 'cargo run --example conversation_persistence -p causa-runtime'],
+  ['Stream a turn as it arrives', 'cargo run --example streaming_print -p causa-runtime'],
+  ['Ask for approval before a tool runs', 'cargo run --example approval_processor -p causa-runtime'],
+];
+const n = (i: number) => String(i + 1).padStart(2, '0');
+---
+
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={new URL('/', site)} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={new URL('/', site)} />
+    <meta property="og:image" content={new URL('/og.png', site)} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#f1efe9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)" />
+    <script is:inline>
+      // The same choice Starlight makes, so the docs and this page agree.
+      (() => {
+        const stored = localStorage.getItem('starlight-theme');
+        const light = matchMedia('(prefers-color-scheme: light)').matches;
+        document.documentElement.dataset.theme =
+          stored === 'light' || stored === 'dark' ? stored : light ? 'light' : 'dark';
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <div class="wrap">
+        <a class="brand" href="/" aria-label="Causa home">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M16 4 28 10 16 16 4 10Z"></path>
+            <path d="M4 16 16 22 28 16"></path>
+            <path d="M4 22 16 28 28 22"></path>
+          </svg>
+          Causa
+        </a>
+        <nav aria-label="Main">
+          <a href="/getting-started/">Guides</a>
+          <a href="/reference/">API Reference</a>
+          <a href="/examples/">Examples</a>
+          <a href={github}>GitHub ↗</a>
+        </nav>
+        <span class="ver">v{version}</span>
+        <button class="theme" type="button" aria-label="Switch between light and dark">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="M10 3.5a6.5 6.5 0 0 1 0 13Z"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <div class="wrap hero">
+        <div class="pitch">
+          <div class="kicker"><b>01</b> A context kernel for Rust agents</div>
+          <h1>Causa</h1>
+          <p class="lede">Agent conversations as typed Rust values. <span>Your code runs the loop.</span></p>
+          <p class="sub">
+            Messages, tool calls and results live in a <code>Context</code> your application holds: save it as JSON,
+            edit it, load it in another process. Nothing runs, retries or saves unless your code asks.
+          </p>
+          <div class="cta">
+            <a class="btn" href="/getting-started/">Get started <span aria-hidden="true">→</span></a>
+            <div class="install"><i aria-hidden="true">$</i>cargo add causa</div>
+          </div>
+        </div>
+        <div class="code">
+          <div class="bar"><b>src/main.rs</b><span>One turn · saved as JSON</span></div>
+          <Code code={hero} lang="rust" theme="css-variables" />
+          <a class="foot" href={`${github}/blob/main/tests/consumers/site-guides/src/bin/home.rs`}>
+            Compiled and run in CI · tests/consumers/site-guides/src/bin/home.rs
+          </a>
+        </div>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <div class="sh">
+            <div>
+              <div class="kicker"><b>02</b> How it is built</div>
+              <h2>One kernel at the base. Everything above it is optional — or yours.</h2>
+            </div>
+            <p>
+              The kernel holds the conversation and does no I/O. The runner, the gateways and the MCP adapter are
+              separate crates on top of it, and none of them keeps your history. Each run takes the context in and
+              hands it back. <a href="/concepts/layering/">Layering →</a>
+            </p>
+          </div>
+          <LayerSchematic />
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="sh">
+            <div>
+              <div class="kicker"><b>03</b> Is it for you</div>
+              <h2>Built for applications that decide for themselves.</h2>
+            </div>
+            <p>
+              Causa gives you the parts, not the policies. That is the point, and sometimes the reason to pick
+              something else. <a href="/why-causa/">Why Causa →</a>
+            </p>
+          </div>
+          <div class="cols">
+            <div>
+              <h3>It fits when</h3>
+              <ul>{fits.map((item, i) => <li data-n={n(i)}>{item}</li>)}</ul>
+            </div>
+            <div>
+              <h3>It does not fit when</h3>
+              <ul>{misfits.map((item, i) => <li data-n={n(i)}>{item}</li>)}</ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="sh">
+            <div>
+              <div class="kicker"><b>04</b> Run it</div>
+              <h2>Offline. No API key.</h2>
+            </div>
+            <p>
+              Clone the repository and run a scripted turn in seconds. Every guide comes with a program like these.{' '}
+              <a href="/examples/">All examples →</a>
+            </p>
+          </div>
+          <pre class="clone"><code>git clone {github}.git
+cd causa</code></pre>
+          <ol class="runs">
+            {
+              runs.map(([what, command], i) => (
+                <li>
+                  <span class="n">{n(i)}</span>
+                  <span class="t">{what}</span>
+                  <code>{command}</code>
+                </li>
+              ))
+            }
+          </ol>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <span>
+          Causa {version}. A break of the API or of the saved <code>Context</code> comes only in a minor release.
+          <a href="/reference/versioning/">Versioning →</a>
+        </span>
+        <span class="meta">MIT OR Apache-2.0 · MSRV {msrv}</span>
+      </div>
+    </footer>
+
+    <script>
+      const button = document.querySelector('.theme');
+      button?.addEventListener('click', () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = next;
+        localStorage.setItem('starlight-theme', next);
+      });
+    </script>
+  </body>
+</html>
+
+<style>
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+  html {
+    background: var(--c-bg);
+    color: var(--c-fg);
+    font-family: var(--c-sans);
+    -webkit-font-smoothing: antialiased;
+    color-scheme: light;
+  }
+  html[data-theme='dark'] {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+  }
+  a {
+    color: inherit;
+  }
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+  }
+  code {
+    font-family: var(--c-mono);
+    font-size: 0.92em;
+  }
+  .skip {
+    position: absolute;
+    left: -9999px;
+  }
+  .skip:focus {
+    left: 16px;
+    top: 12px;
+    z-index: 10;
+    padding: 8px 12px;
+    background: var(--c-btn);
+    color: var(--c-btn-fg);
+  }
+  .wrap {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 40px;
+  }
+  .kicker {
+    font-family: var(--c-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-muted);
+  }
+  .kicker b {
+    color: var(--c-fg);
+    font-weight: 500;
+    margin-right: 0.8em;
+  }
+
+  /* header */
+  .top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: color-mix(in srgb, var(--c-bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--c-rule);
+  }
+  .top .wrap {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    height: 60px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+  }
+  .mark {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: var(--c-fg);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+  }
+  .mark path:first-child {
+    fill: var(--c-accent);
+    stroke: var(--c-accent);
+  }
+  .top nav {
+    display: flex;
+    gap: 26px;
+    font-size: 14px;
+    color: var(--c-muted);
+  }
+  .top nav a {
+    text-decoration: none;
+  }
+  .top nav a:hover {
+    color: var(--c-fg);
+  }
+  .ver {
+    margin-left: auto;
+    padding: 3px 8px;
+    border: 1px solid var(--c-rule);
+    font-family: var(--c-mono);
+    font-size: 12px;
+    color: var(--c-muted);
+  }
+  .theme {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    margin-left: -20px;
+    padding: 0;
+    border: 1px solid var(--c-rule);
+    background: none;
+    color: var(--c-fg);
+    cursor: pointer;
+  }
+  .theme svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+  }
+  .theme path {
+    fill: currentColor;
+  }
+
+  /* hero */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: 56px;
+    align-items: center;
+    min-height: min(calc(100svh - 61px), 860px);
+    padding-top: 56px;
+    padding-bottom: 64px;
+  }
+  .hero h1 {
+    margin: 22px 0 26px;
+    font-size: clamp(72px, 9vw, 128px);
+    font-weight: 500;
+    letter-spacing: -0.045em;
+    line-height: 0.9;
+  }
+  .lede {
+    max-width: 15em;
+    margin: 0;
+    font-size: 24px;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+  }
+  .lede span {
+    color: var(--c-muted);
+  }
+  .sub {
+    max-width: 30em;
+    margin: 18px 0 0;
+    color: var(--c-muted);
+    font-size: 15.5px;
+    line-height: 1.6;
+  }
+  .sub code {
+    color: var(--c-fg);
+  }
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 34px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    height: 46px;
+    padding: 0 20px;
+    background: var(--c-btn);
+    color: var(--c-btn-fg);
+    font-size: 15px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: transform 0.2s;
+  }
+  .btn:hover {
+    transform: translateX(3px);
+  }
+  .install {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 46px;
+    padding: 0 16px;
+    border: 1px solid var(--c-rule);
+    font-family: var(--c-mono);
+    font-size: 14px;
+  }
+  .install i {
+    font-style: normal;
+    color: var(--c-muted);
+  }
+  .code {
+    border: 1px solid var(--c-rule);
+    background: var(--c-code-bg);
+    animation: rise 0.8s 0.25s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  .code .bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--c-rule);
+    font-family: var(--c-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    color: var(--c-muted);
+  }
+  .code .bar b {
+    color: var(--c-code-fg);
+    font-weight: 500;
+  }
+  .code .bar span {
+    text-transform: uppercase;
+  }
+  .code :global(pre) {
+    --astro-code-foreground: var(--c-code-fg);
+    --astro-code-background: transparent;
+    --astro-code-token-keyword: var(--c-tok-keyword);
+    --astro-code-token-constant: var(--c-tok-constant);
+    --astro-code-token-string: var(--c-tok-string);
+    --astro-code-token-string-expression: var(--c-tok-string);
+    --astro-code-token-function: var(--c-tok-function);
+    --astro-code-token-parameter: var(--c-code-fg);
+    --astro-code-token-punctuation: var(--c-muted);
+    --astro-code-token-comment: var(--c-muted);
+    --astro-code-token-link: var(--c-tok-keyword);
+    margin: 0;
+    padding: 18px 18px 20px;
+    overflow-x: auto;
+    font-family: var(--c-mono);
+    font-size: 13.2px;
+    line-height: 1.7;
+  }
+  .code :global(pre code) {
+    font-size: inherit;
+  }
+  .code .foot {
+    display: block;
+    padding: 9px 16px;
+    border-top: 1px solid var(--c-rule);
+    font-family: var(--c-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--c-muted);
+    text-decoration: none;
+  }
+  .code .foot:hover {
+    color: var(--c-fg);
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+  }
+
+  /* sections */
+  section {
+    padding: 96px 0;
+    border-top: 1px solid var(--c-rule);
+  }
+  .sh {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: 56px;
+    margin-bottom: 48px;
+  }
+  h2 {
+    margin: 14px 0 0;
+    font-size: clamp(32px, 3.4vw, 46px);
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+  }
+  .sh p {
+    align-self: end;
+    max-width: 34em;
+    margin: 0;
+    color: var(--c-muted);
+    font-size: 17px;
+    line-height: 1.55;
+  }
+  .sh p a {
+    color: var(--c-fg);
+    text-decoration-color: var(--c-accent);
+    text-underline-offset: 3px;
+    white-space: nowrap;
+  }
+  .cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 56px;
+  }
+  .cols h3 {
+    margin: 0;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--c-fg);
+    font-family: var(--c-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .cols ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .cols li {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--c-rule);
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  .cols li::before {
+    content: attr(data-n);
+    padding-top: 4px;
+    font-family: var(--c-mono);
+    font-size: 11px;
+    color: var(--c-muted);
+  }
+  .clone {
+    margin: 0 0 32px;
+    padding: 16px 18px;
+    border: 1px solid var(--c-rule);
+    background: var(--c-code-bg);
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .runs {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--c-fg);
+  }
+  .runs li {
+    display: grid;
+    grid-template-columns: 60px 1.1fr 2fr;
+    gap: 24px;
+    align-items: center;
+    padding: 22px 0;
+    border-bottom: 1px solid var(--c-rule);
+  }
+  .runs .n {
+    font-family: var(--c-mono);
+    font-size: 12px;
+    color: var(--c-muted);
+  }
+  .runs .t {
+    font-size: 19px;
+    letter-spacing: -0.01em;
+  }
+  .runs code {
+    color: var(--c-muted);
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+  }
+  footer {
+    padding: 40px 0 56px;
+    border-top: 1px solid var(--c-rule);
+    color: var(--c-muted);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  footer .wrap {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  footer .meta {
+    font-family: var(--c-mono);
+    font-size: 12.5px;
+  }
+
+  @media (max-width: 900px) {
+    .wrap {
+      padding: 0 20px;
+    }
+    .top nav a:not(:first-child) {
+      display: none;
+    }
+    .top .wrap {
+      gap: 20px;
+    }
+    .hero,
+    .sh,
+    .cols {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .hero {
+      min-height: 0;
+      gap: 40px;
+      padding-top: 40px;
+    }
+    .sh {
+      gap: 20px;
+    }
+    section {
+      padding: 64px 0;
+    }
+    .runs li {
+      grid-template-columns: 40px minmax(0, 1fr);
+      gap: 6px 12px;
+    }
+    .runs code {
+      grid-column: 2;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .code {
+      animation: none;
+    }
+    .btn {
+      transition: none;
+    }
+  }
+</style>

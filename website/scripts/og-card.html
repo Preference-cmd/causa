@@ -1,0 +1,46 @@
+<!doctype html>
+<!--
+  The share card, public/og.png (1200×630). Regenerate after a change:
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+    --hide-scrollbars --window-size=1200,630 \
+    --screenshot=public/og.png scripts/og-card.html
+  (run from website/, after `pnpm install` so the fonts are in node_modules)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@font-face { font-family: Plex; font-weight: 500; src: url(../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2); }
+@font-face { font-family: Plex; font-weight: 400; src: url(../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2); }
+@font-face { font-family: PlexMono; src: url(../node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2); }
+html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: #f1efe9; color: #151617; font-family: Plex, sans-serif; }
+.card { position: relative; height: 100%; box-sizing: border-box; padding: 72px 80px; }
+.kicker { font-family: PlexMono, monospace; font-size: 18px; letter-spacing: .14em; text-transform: uppercase; color: #67655f; }
+.kicker b { color: #151617; font-weight: 400; margin-right: 1em; }
+h1 { margin: 34px 0 28px; font-size: 168px; font-weight: 500; letter-spacing: -.045em; line-height: .9; }
+p { margin: 0; max-width: 15em; font-size: 38px; line-height: 1.25; letter-spacing: -.015em; }
+p span { color: #67655f; }
+.foot { position: absolute; left: 80px; right: 80px; bottom: 56px; display: flex; justify-content: space-between; padding-top: 20px; border-top: 1px solid #d8d4ca; font-family: PlexMono, monospace; font-size: 18px; color: #67655f; }
+svg { position: absolute; right: 70px; top: 62px; width: 420px; }
+svg .pl { fill: #f7f5f0; stroke: #1d1e20; stroke-width: 1.6; }
+svg .dash { stroke-dasharray: 8 8; }
+svg .acc { fill: #c2410c; stroke: #c2410c; }
+svg .grid { stroke: #1d1e20; stroke-width: .7; opacity: .3; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="kicker"><b>01</b>A context kernel for Rust agents</div>
+  <h1>Causa</h1>
+  <p>Agent conversations as typed Rust values. <span>Your code runs the loop.</span></p>
+  <svg viewBox="0 0 420 460" aria-hidden="true">
+    <g transform="matrix(0.866,0.5,-0.866,0.5,210,250)"><rect class="pl" width="200" height="200"/>
+      <path class="grid" d="M25 0V200M50 0V200M75 0V200M100 0V200M125 0V200M150 0V200M175 0V200M0 25H200M0 50H200M0 75H200M0 100H200M0 125H200M0 150H200M0 175H200"/>
+      <rect class="acc" x="40" y="88" width="14" height="16"/><rect class="pl" x="56" y="88" width="14" height="16"/><rect class="acc" x="72" y="88" width="14" height="16"/><rect class="acc" x="88" y="88" width="14" height="16"/><rect class="pl" x="104" y="88" width="14" height="16"/><rect class="pl" x="120" y="88" width="14" height="16"/><rect class="acc" x="136" y="88" width="14" height="16"/></g>
+    <g transform="matrix(0.866,0.5,-0.866,0.5,210,130)"><rect class="pl" width="200" height="200"/><circle cx="100" cy="100" r="58" fill="none" stroke="#1d1e20" stroke-width="1.4"/></g>
+    <g transform="matrix(0.866,0.5,-0.866,0.5,210,10)"><rect class="pl dash" width="200" height="200"/></g>
+  </svg>
+  <div class="foot"><span>causa.inceptae.com</span><span>crates.io/crates/causa</span></div>
+</div>
+</body>
+</html>

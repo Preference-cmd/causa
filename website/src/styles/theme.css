@@ -1,0 +1,60 @@
+/* Causa's palette and fonts, shared by the home page and the docs.
+ *
+ * Drafting paper and ink, with one accent: an oxide orange. Light is the
+ * default; `data-theme="dark"` on <html> switches to ink paper. Both pages
+ * set that attribute the way Starlight does: the stored choice, else the
+ * system preference.
+ */
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/400-italic.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+:root {
+  --c-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --c-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --c-bg: #f1efe9;
+  --c-fg: #151617;
+  --c-muted: #67655f;
+  --c-rule: #d8d4ca;
+  --c-line: #1d1e20;
+  --c-plane: #f7f5f0;
+  --c-accent: #c2410c;
+  --c-accent-soft: #f4dccd;
+  --c-btn: #151617;
+  --c-btn-fg: #f7f5f0;
+  --c-code-bg: #f7f5f0;
+  --c-code-fg: #151617;
+  --c-tok-keyword: #c2410c;
+  --c-tok-type: #151617;
+  --c-tok-string: #4d6b3a;
+  --c-tok-function: #5b5047;
+  --c-tok-constant: #8a4b1f;
+  --c-arc-from: rgba(194, 65, 12, 0.04);
+  --c-arc-to: #c2410c;
+}
+
+:root[data-theme='dark'] {
+  --c-bg: #121211;
+  --c-fg: #ebe8e1;
+  --c-muted: #9e9a91;
+  --c-rule: #2f2e2b;
+  --c-line: #d6d2c8;
+  --c-plane: #181816;
+  --c-accent: #ec6c32;
+  --c-accent-soft: #46200f;
+  --c-btn: #ebe8e1;
+  --c-btn-fg: #121211;
+  --c-code-bg: #181816;
+  --c-code-fg: #e2ded6;
+  --c-tok-keyword: #f08a55;
+  --c-tok-type: #f4f1ea;
+  --c-tok-string: #a3c08a;
+  --c-tok-function: #cdc2b4;
+  --c-tok-constant: #e7a774;
+  --c-arc-from: rgba(236, 108, 50, 0.05);
+  --c-arc-to: #ec6c32;
+}
