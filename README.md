@@ -22,9 +22,9 @@ Its optional runtime adds turn execution, streaming and tool-processing chains, 
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
-> **0.1.0.** Requires Rust **1.96+**. Breaking changes to the API and to
+> **0.1.1.** Requires Rust **1.96+**. Breaking changes to the API and to
 > stored context come only in minor releases; read the
-> [release notes](https://github.com/Preference-cmd/causa/blob/v0.1.0/CHANGELOG.md#010---2026-10-17) when upgrading.
+> [release notes](https://github.com/Preference-cmd/causa/blob/v0.1.1/CHANGELOG.md#011---2026-10-19) when upgrading.
 
 ## Try it offline
 
@@ -36,7 +36,7 @@ cd causa
 cargo run --example conversation_persistence -p causa-runtime
 ```
 
-The default checkout follows development; use `git checkout v0.1.0` to run
+The default checkout follows development; use `git checkout v0.1.1` to run
 the examples for this release.
 
 ## Use in your application
@@ -46,7 +46,7 @@ Depend on **`causa`**; Cargo resolves the underlying crates.
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.1.0
+cargo add causa@0.1.1
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -131,10 +131,10 @@ Choose the dependencies your application needs:
 
 | Configuration | Included |
 |---|---|
-| `causa = "0.1.0"` | Kernel + runtime + providers |
-| `causa = { version = "0.1.0", features = ["full"] }` | Default stack + MCP extensions |
-| `causa = { version = "0.1.0", default-features = false }` | Kernel only |
-| `causa = { version = "0.1.0", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
+| `causa = "0.1.1"` | Kernel + runtime + providers |
+| `causa = { version = "0.1.1", features = ["full"] }` | Default stack + MCP extensions |
+| `causa = { version = "0.1.1", default-features = false }` | Kernel only |
+| `causa = { version = "0.1.1", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
 See the [crate guide](https://causa.inceptae.com/reference/crates/)
 for layer selection.
@@ -184,13 +184,13 @@ for defaults and component contracts.
 
 ## Status and boundaries
 
-**From 0.1.0**, a break of the public Rust API or of the stored form of
+**From 0.1**, a break of the public Rust API or of the stored form of
 `Context` comes only in a minor release (`0.1` to `0.2`), with its
 migration at the top of the
 [changelog](https://github.com/Preference-cmd/causa/blob/main/CHANGELOG.md).
 Patch releases fix or add without breaking, so `causa = "0.1"` picks them
 up. In the earlier `0.0.x` series any release could break, and Cargo does
-not upgrade `"0.0.7"` to `0.1.0` on its own.
+not upgrade a `"0.0.x"` requirement to `0.1` on its own.
 
 Sessions, history, input admission, persistence and subagent orchestration
 belong to your application. An interrupted run returns its uncommitted tool

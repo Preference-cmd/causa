@@ -12,14 +12,18 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-19
+
 ### Fixed
 
 - The README's first program and the `quickstart` example set an output
   limit. The Anthropic Messages gateway refuses a request without
   `max_tokens`, so both stopped with `InvalidRequest` before sending
-  anything. The 0.1.0 README on crates.io still has the old program; add
-  `.with_generation(GenerationOptions::default().with_max_tokens(1024))` to
+  anything. A program copied from the 0.1.0 README needs
+  `.with_generation(GenerationOptions::default().with_max_tokens(1024))` on
   its `TurnRunOptions`.
+
+  Migration: none; `causa = "0.1"` picks up 0.1.1 with `cargo update`.
 
 ## [0.1.0] - 2026-10-17
 

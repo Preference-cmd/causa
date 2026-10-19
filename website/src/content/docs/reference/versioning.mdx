@@ -20,6 +20,10 @@ minor releases is marked as a pre-release.
 In the earlier `0.0.x` series any release could break, and Cargo does not
 upgrade `"0.0.7"` to `0.1.0` on its own.
 
+**0.1.1** is a patch release. It fixes the README's first program and the
+`quickstart` example, which did not set the output limit the Anthropic
+Messages gateway requires; the API and the serialized form are unchanged.
+
 ## Changelog
 
 The canonical changelog lives in the repo:
@@ -38,6 +42,13 @@ CI checks dependency directions with all features enabled, rejects `mod.rs`
 in library sources, checks public API documentation, and builds the public
 facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
 every command.
+
+## Upgrading from 0.1.0
+
+Run `cargo update -p causa`; a `causa = "0.1"` dependency already allows
+0.1.1. No code changes are needed. A program copied from the 0.1.0 README
+needs `.with_generation(GenerationOptions::default().with_max_tokens(1024))`
+on its `TurnRunOptions` before it can call the Anthropic gateway.
 
 ## Upgrading from 0.0.7
 
@@ -119,5 +130,5 @@ Handle `TurnOutcome.result` and retain or dispose of returned context and any
 uncommitted tool batch deliberately. An interrupted external tool may have an
 unknown outcome; recreating context does not guarantee exactly-once execution.
 
-The [full changelog](https://github.com/Preference-cmd/causa/blob/v0.1.0/CHANGELOG.md)
+The [full changelog](https://github.com/Preference-cmd/causa/blob/v0.1.1/CHANGELOG.md)
 details the context, tool, control, conversion and protocol changes.
