@@ -1,43 +1,76 @@
 ---
 title: Examples
-description: In-tree examples — what each one shows and how to run it.
+description: The examples in the repository and the program behind each guide — what each shows and how to run it.
 ---
 
-> The in-tree examples on `main` follow development and may be ahead of the
-> latest release; they are the source of truth for current shapes, not prose. `cargo test --workspace` also
-> compiles the current examples, checking their API usage. Live provider and
-> MCP server behavior still requires the corresponding integration environment.
-
-All commands below run from the repository root:
+Every command below runs from the repository root:
 
 ```bash
 git clone https://github.com/Preference-cmd/causa.git
 cd causa
 ```
 
-The default checkout follows development; run `git checkout v0.1.0` to use
-this release's examples. See [Getting started](/getting-started/)
-for an application that uses the `causa` facade directly.
+The default branch follows development and can be ahead of the release on
+crates.io. Run `git checkout v0.1.0` to use the examples of that release.
+CI compiles every example and guide program on each change, so they match
+the API of the commit you check out.
 
-## Needs a key or a server
+## Crate examples
 
-| example | shows | run |
-| ------- | ----- | --- |
-| `quickstart` (`-p causa-provider`) | one turn + a local tool + a real provider round-trip | `ANTHROPIC_API_KEY=… cargo run --example quickstart -p causa-provider` |
-| `mcp_tools` (`-p causa-extension`) | stdio + Streamable HTTP MCP servers into the executor | needs an MCP server (see the example header) |
+Each one is a single file under `crates/*/examples/`.
 
-## Runs offline
+### Run offline
 
-| example | shows | run |
-| ------- | ----- | --- |
-| `conversation_persistence` | save/import `Context` JSON and explicitly run again | `cargo run --example conversation_persistence -p causa-runtime` |
-| `streaming_print` | streaming deltas through an optional borrowed `RunEvent` observer | `cargo run --example streaming_print -p causa-runtime` |
-| `approval_processor` | approval awaited inside a batch processor | `cargo run --example approval_processor -p causa-runtime` |
-| `interrupted_batch` | close the tool batch an interrupted run hands back, then run again | `cargo run --example interrupted_batch -p causa-runtime` |
-| `tool_processors` | ordered tool processors for deduplication and policy | `cargo run --example tool_processors -p causa-runtime` |
-| `media_feedback` | host media/artifact storage and example-local output budgeting; only `MediaRef` rides the facts | `cargo run --example media_feedback -p causa-runtime` |
+| Example | What it shows | Run |
+| --- | --- | --- |
+| `conversation_persistence` | Save a context as JSON, load it and run the next turn | `cargo run --example conversation_persistence -p causa-runtime` |
+| `streaming_print` | Print each piece of a streamed answer through an observer | `cargo run --example streaming_print -p causa-runtime` |
+| `approval_processor` | A before processor that waits for approval; a refusal becomes the call's result | `cargo run --example approval_processor -p causa-runtime` |
+| `interrupted_batch` | A run stopped at the tool-call limit; answering the open calls and running again | `cargo run --example interrupted_batch -p causa-runtime` |
+| `tool_processors` | Processors that cap an argument with a note, refuse duplicate calls and restore declaration order | `cargo run --example tool_processors -p causa-runtime` |
+| `media_feedback` | A tool that produces an image kept in the host's store, so the context holds only a reference; an after processor that shortens long output | `cargo run --example media_feedback -p causa-runtime` |
 
-Browse them on GitHub:
-[causa-runtime/examples](https://github.com/Preference-cmd/causa/tree/main/crates/causa-runtime/examples),
-[provider](https://github.com/Preference-cmd/causa/tree/main/crates/causa-provider/examples),
-[extension](https://github.com/Preference-cmd/causa/tree/main/crates/causa-extension/examples).
+These use a scripted model in place of a provider, so they need no key and
+no network.
+
+### Need a key or a server
+
+| Example | What it shows | Needs |
+| --- | --- | --- |
+| `quickstart` | One turn against the Anthropic API with a local tool | `ANTHROPIC_API_KEY`; run `cargo run --example quickstart -p causa-provider` |
+| `mcp_tools` | An MCP server's tools in the executor, over stdio and, optionally, Streamable HTTP | `uvx` for the default server, or another launch command after `--`; `MCP_HTTP_URL` for HTTP. See the [file header](https://github.com/Preference-cmd/causa/blob/main/crates/causa-extension/examples/mcp_tools.rs) |
+
+## Guide programs
+
+Each guide's code comes from a complete program in
+`tests/consumers/site-guides`, which depends on Causa only through the
+`causa` crate, as your application would. All but the first run offline,
+against a scripted model or a local stand-in server, and CI checks their
+output.
+
+| Guide | Run |
+| --- | --- |
+| [Getting started](/getting-started/) | needs `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`: `--bin getting_started` |
+| [Write a tool](/guides/write-a-tool/) | `--bin write_a_tool` |
+| [Connect MCP servers](/guides/connect-mcp-servers/) | `--bin connect_mcp_servers` |
+| [Choose a protocol and provider](/guides/choose-a-provider/) | `--bin choose_a_provider` |
+| [Save and restore context](/guides/save-and-restore/) | `--bin save_and_restore` |
+| [Edit context](/guides/edit-context/) | `--bin context_editing` |
+| [Prepare each request](/guides/prepare-each-request/) | `--bin prepare_each_request` |
+| [Process tool calls](/guides/process-tool-calls/) | `--bin process_tool_calls` |
+| [Stream output](/guides/stream-output/) | `--bin stream_output` |
+| [Handle interrupted runs](/guides/interrupted-runs/) | `--bin interrupted_runs` |
+| [Media](/guides/media/) | `--bin media` |
+| [Retries and observation](/guides/retries-and-observation/) | `--bin retries_and_observation` |
+
+Put the `--bin` argument after:
+
+```bash
+cargo run --manifest-path tests/consumers/site-guides/Cargo.toml
+```
+
+Browse the sources on GitHub:
+[causa-runtime examples](https://github.com/Preference-cmd/causa/tree/main/crates/causa-runtime/examples),
+[causa-provider examples](https://github.com/Preference-cmd/causa/tree/main/crates/causa-provider/examples),
+[causa-extension examples](https://github.com/Preference-cmd/causa/tree/main/crates/causa-extension/examples),
+[guide programs](https://github.com/Preference-cmd/causa/tree/main/tests/consumers/site-guides/src/bin).
