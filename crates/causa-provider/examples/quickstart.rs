@@ -18,8 +18,8 @@
 
 use async_trait::async_trait;
 use causa_kernel::{
-    CallControl, CancellationToken, Context, ContextBlock, ModelRef, Role, Tool, ToolCallContext,
-    ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    CallControl, CancellationToken, Context, ContextBlock, GenerationOptions, ModelRef, Role, Tool,
+    ToolCallContext, ToolDefinition, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_provider::AnthropicMessagesGateway;
 use causa_runtime::{
@@ -95,7 +95,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Role::User,
         "How many words are in \"the quick brown fox jumps over the lazy dog\"? Use the word_count tool, then answer with just the number.",
     )])?;
-    let options = TurnRunOptions::new(ModelRef::new("claude-sonnet-4-5"));
+    // Anthropic requires an output limit; the gateway sends no default.
+    let options = TurnRunOptions::new(ModelRef::new("claude-sonnet-4-5"))
+        .with_generation(GenerationOptions::default().with_max_tokens(1024));
 
     let outcome = runner
         .run(

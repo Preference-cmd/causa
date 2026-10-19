@@ -4,7 +4,10 @@
 
 // ANCHOR: program
 use causa::{
-    kernel::{CallControl, CancellationToken, Context, ContextBlock, ModelRef, Role, TurnId},
+    kernel::{
+        CallControl, CancellationToken, Context, ContextBlock, GenerationOptions, ModelRef, Role,
+        TurnId,
+    },
     providers::AnthropicMessagesGateway,
     runtime::{
         ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
@@ -27,7 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Role::User,
         "Say hello in one sentence.",
     )])?;
-    let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?));
+    // Anthropic requires an output limit; the gateway sends no default.
+    let options = TurnRunOptions::new(ModelRef::new(std::env::var("ANTHROPIC_MODEL")?))
+        .with_generation(GenerationOptions::default().with_max_tokens(1024));
     let outcome = runner
         .run(
             TurnId::new("hello"),

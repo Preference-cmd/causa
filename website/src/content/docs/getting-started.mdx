@@ -49,7 +49,9 @@ Replace `src/main.rs` with:
 
 The program builds a gateway for the Anthropic Messages API, a tool executor
 with no tools, and a runner that uses both. It starts a `Context` with one
-user message and runs one turn. The runner calls the model, and because the
+user message and runs one turn with an output limit of 1,024 tokens: the
+Anthropic API requires one, and Causa sends no default, so a request without
+it fails before it is sent. The runner calls the model, and because the
 model asks for no tools, the turn completes after one round; the program
 prints the reply.
 
