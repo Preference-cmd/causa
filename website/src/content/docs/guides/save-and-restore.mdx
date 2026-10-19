@@ -50,7 +50,7 @@ cargo add serde_json
 | The format | JSON. Tool arguments and outputs are arbitrary JSON values, `null` included, which some formats such as TOML cannot hold | — |
 | When to save | After every run, whatever its result; `outcome.context` holds every block the run committed | The blocks since the last save are lost |
 | Two runs of one conversation at once | Let one run at a time load and save a conversation | Both start from the same saved context, and the one that saves last overwrites the other |
-| An interrupted run | Save the context, then handle the batch the run hands back | The calls of that batch are in neither the context nor the file |
+| An interrupted run | Save the context, then close the batch the run hands back and save again | The context holds the batch's calls but not their results, and cannot be sent to a model until each call has one |
 | Images and files | Keep the bytes in your own store, under the reference in each `MediaRef` | The file holds only the reference |
 | A conversation that keeps growing | Drop or summarize old blocks before a run | The runner sends the whole context every round, unless a preparer selects a part |
 

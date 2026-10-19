@@ -117,8 +117,8 @@ the output. The run continues.
 **What goes into the result?** The text the server returns, joined into one
 string, or its structured content when the tool returns some.
 
-**Do MCP calls run in parallel with my own tools?** Yes. The calls of one
-batch run concurrently, whichever source they come from.
+**Do MCP calls run alongside my own tools?** Yes. The calls of one batch
+run concurrently on the caller's task, whichever source they come from.
 
 **Is a server's output safe to give the model?** Treat it as untrusted
 input: it can contain instructions meant to steer the model. Keep approval
