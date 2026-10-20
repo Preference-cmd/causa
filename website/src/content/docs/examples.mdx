@@ -25,7 +25,7 @@ Each one is a single file under `crates/*/examples/`.
 | --- | --- | --- |
 | `conversation_persistence` | Save a context as JSON, load it and run the next turn | `cargo run --example conversation_persistence -p causa-runtime` |
 | `streaming_print` | Print each piece of a streamed answer through an observer | `cargo run --example streaming_print -p causa-runtime` |
-| `approval_processor` | A before processor that waits for approval; a refusal becomes the call's result | `cargo run --example approval_processor -p causa-runtime` |
+| `approval_processor` | A before processor that asks about tools not declared read-only, following a mode the host can switch mid-batch; a refusal becomes the call's result | `cargo run --example approval_processor -p causa-runtime` |
 | `interrupted_batch` | A run stopped at the tool-call limit; answering the open calls and running again | `cargo run --example interrupted_batch -p causa-runtime` |
 | `tool_processors` | Processors that cap an argument with a note, refuse duplicate calls and restore declaration order | `cargo run --example tool_processors -p causa-runtime` |
 | `media_feedback` | A tool that produces an image kept in the host's store, so the context holds only a reference; an after processor that shortens long output | `cargo run --example media_feedback -p causa-runtime` |

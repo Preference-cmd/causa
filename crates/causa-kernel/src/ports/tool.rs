@@ -43,6 +43,91 @@ impl ToolSurface {
     }
 }
 
+/// What a tool declares about its own effects, for the host's tool
+/// processors.
+///
+/// Each field is the tool's own claim and is not verified. `None` means the
+/// tool did not declare it: Causa fills in no default and never acts on a
+/// value, so a host decides how far to trust each one — for example by
+/// asking about every call of a tool that is not declared read-only. MCP
+/// servers declare the same four hints as tool annotations, and the MCP
+/// adapter in `causa-extension` carries them over one to one.
+///
+/// Hints sit beside the [`ToolDefinition`], not in it. They never reach the
+/// model or the context: a change in hints alone records no
+/// [`crate::ToolChange`] and leaves the rendered request as it was.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ToolHints {
+    /// The tool does not modify its environment.
+    pub read_only: Option<bool>,
+    /// The tool may overwrite or delete what exists, rather than only add
+    /// to it. Meaningful for a tool that is not read-only.
+    pub destructive: Option<bool>,
+    /// Repeating a call with the same arguments has no further effect.
+    /// Meaningful for a tool that is not read-only.
+    pub idempotent: Option<bool>,
+    /// The tool reaches entities outside a closed domain, such as the web.
+    pub open_world: Option<bool>,
+}
+
+impl ToolHints {
+    /// Declares whether the tool leaves its environment unchanged.
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = Some(read_only);
+        self
+    }
+
+    /// Declares whether the tool may overwrite or delete what exists.
+    pub fn with_destructive(mut self, destructive: bool) -> Self {
+        self.destructive = Some(destructive);
+        self
+    }
+
+    /// Declares whether repeating a call has no further effect.
+    pub fn with_idempotent(mut self, idempotent: bool) -> Self {
+        self.idempotent = Some(idempotent);
+        self
+    }
+
+    /// Declares whether the tool reaches beyond a closed domain.
+    pub fn with_open_world(mut self, open_world: bool) -> Self {
+        self.open_world = Some(open_world);
+        self
+    }
+}
+
+/// One tool as its catalog describes it: the model-facing definition and
+/// the tool's declared [`ToolHints`].
+///
+/// A [`crate::DynamicToolSource`] lists these from
+/// [`crate::DynamicToolSource::describe`], and tool processors see the bound
+/// set through [`crate::ProcessorContext::tools`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ToolDescription {
+    /// The model-facing definition.
+    pub definition: ToolDefinition,
+    /// What the tool declares about its effects.
+    pub hints: ToolHints,
+}
+
+impl ToolDescription {
+    /// A description that declares no hints.
+    pub fn new(definition: ToolDefinition) -> Self {
+        Self {
+            definition,
+            hints: ToolHints::default(),
+        }
+    }
+
+    /// Replaces the declared hints.
+    pub fn with_hints(mut self, hints: ToolHints) -> Self {
+        self.hints = hints;
+        self
+    }
+}
+
 /// Identity of one tool dispatch, handed to [`Tool::execute`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -157,6 +242,12 @@ pub trait ArtifactStore: Send + Sync {
 pub trait Tool: Send + Sync {
     /// The model-facing [`ToolDefinition`] for this tool.
     fn definition(&self) -> ToolDefinition;
+    /// What this tool declares about its effects. An executor reads it when
+    /// it binds the tool, next to [`Tool::definition`], and shows it to tool
+    /// processors. The default declares nothing.
+    fn hints(&self) -> ToolHints {
+        ToolHints::default()
+    }
     /// Runs one call under the call's [`CallControl`], returning the
     /// recorded result. `store` is the host's [`ArtifactStore`] when one is
     /// configured: a tool that produces media or oversized output persists

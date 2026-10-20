@@ -5,9 +5,11 @@ use crate::context::ids::BlockId;
 use crate::context::ids::{RoundId, TurnId};
 use crate::context::tool_data::{ToolOutput, ToolResultPayload};
 use crate::ports::control::CallControl;
-use crate::ports::tool::ToolCallContext;
+use crate::ports::tool::{ToolCallContext, ToolDescription, ToolHints};
 use async_trait::async_trait;
+use std::any::Any;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// A declaration plus its optional completed result.
 #[derive(Debug)]
@@ -262,9 +264,18 @@ pub struct ProcessorContext<'a> {
     pub declaration_order: &'a [BlockId],
     /// Cooperative cancellation and deadline control.
     pub control: &'a CallControl,
+    /// The tools bound for this batch, in offer order, with their declared
+    /// hints. The reference executor fixes them when it binds, so they stay
+    /// the same for every processor of the batch. Empty unless set with
+    /// [`ProcessorContext::with_tools`].
+    pub tools: &'a [ToolDescription],
+    /// The host's data for this run, passed through unchanged. `None` unless
+    /// set with [`ProcessorContext::with_data`].
+    pub data: Option<&'a ProcessorData>,
 }
 impl<'a> ProcessorContext<'a> {
-    /// The context one processor run sees.
+    /// The context one processor run sees, with no bound tools and no host
+    /// data.
     pub fn new(
         turn_id: &'a TurnId,
         round_id: RoundId,
@@ -276,7 +287,70 @@ impl<'a> ProcessorContext<'a> {
             round_id,
             declaration_order,
             control,
+            tools: &[],
+            data: None,
         }
+    }
+
+    /// Sets the bound tools and their hints.
+    pub fn with_tools(mut self, tools: &'a [ToolDescription]) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Sets the host's data for this run.
+    pub fn with_data(mut self, data: &'a ProcessorData) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    /// The declared hints of the bound tool named `name`, or `None` when no
+    /// bound tool has that name. The reference executor rejects calls to
+    /// unbound names before the first processor runs, so every pending call
+    /// it hands to a processor resolves here.
+    pub fn hints(&self, name: &str) -> Option<&'a ToolHints> {
+        self.tools
+            .iter()
+            .find(|tool| tool.definition.name == name)
+            .map(|tool| &tool.hints)
+    }
+
+    /// The host's data when it is a `T`: `None` when no data is set or it
+    /// holds another type.
+    pub fn data<T: Any>(&self) -> Option<&'a T> {
+        self.data.and_then(ProcessorData::get)
+    }
+}
+
+/// Host data for one run, handed to every tool processor through
+/// [`ProcessorContext::data`].
+///
+/// Processors belong to an executor that serves many runs, so state that
+/// differs from run to run — a permission mode, the acting user — travels
+/// here rather than in the processor. The host chooses the type; a host with
+/// several values passes one struct of its own. Causa passes the value
+/// through and never inspects or copies it, so a host whose state changes
+/// during a run stores a shared handle (an `Arc` around a lock or an atomic)
+/// and a processor reads the current value when it decides each call.
+#[derive(Clone)]
+pub struct ProcessorData(Arc<dyn Any + Send + Sync>);
+
+impl ProcessorData {
+    /// Wraps the host's value.
+    pub fn new<T: Any + Send + Sync>(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    /// The value when it is exactly a `T`, the type given to
+    /// [`ProcessorData::new`]; `None` otherwise.
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl std::fmt::Debug for ProcessorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessorData").finish_non_exhaustive()
     }
 }
 

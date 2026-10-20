@@ -26,6 +26,8 @@
 //! | Tool changes | Appended to the context after each bind that changes the bound tools; a prepared frame that drops them fails the round |
 //! | Observation | None; an optional synchronous borrowed callback |
 //! | Tool processing | Executor-owned ordered before/after processors |
+//! | Tool hints | Carried from each tool or source to processors at bind time, never interpreted, rendered or stored in the context |
+//! | Processor data | None; optional host value in [`TurnRunOptions::processor_data`], passed to every processor unchanged and never inspected |
 //! | Tool dispatch | Every pending call of a batch at once on the caller's task: concurrent, not parallel, unbounded, nothing spawned; panic becomes failed result |
 //! | Tool result order | The order results arrived in (calls resolved before dispatch first, then completion order); an after-processor sorting [`ToolBatch::results_mut`](causa_kernel::ToolBatch::results_mut) by [`ProcessorContext::declaration_order`](causa_kernel::ProcessorContext::declaration_order) commits them in declaration order |
 //! | Tool timeout | None; local timeout becomes unknown outcome |

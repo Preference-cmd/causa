@@ -12,6 +12,32 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Added
+
+- Tool hints. `ToolHints` holds what a tool declares about its effects:
+  `read_only`, `destructive`, `idempotent` and `open_world`, each unset
+  unless declared. A tool declares them with `Tool::hints`, a dynamic
+  source with `DynamicToolSource::describe`, which lists each
+  `ToolDefinition` with its hints. Causa carries hints to processors and
+  never interprets them. They stay out of
+  `ToolDefinition`, so they never reach the model or the stored context: a
+  change in hints alone records no `ToolChange`.
+- Processor data. `TurnRunOptions::with_processor_data` (or
+  `BoundTools::with_processor_data` without the runner) hands a host value,
+  wrapped in `ProcessorData`, to every tool processor of the run. Causa
+  passes it through without copying it, so a shared handle in it is read
+  live.
+- `ProcessorContext` gains `tools`, the bound tools with their hints, and
+  `data`, with the lookups `hints(name)` and `data::<T>()`.
+  `ProcessorContext::new` sets neither; `with_tools` and `with_data` do.
+- `ToolBridge::with_hints` sets the hints a bridged tool declares.
+- The `approval_processor` example asks only about tools not declared
+  read-only and follows a permission mode the host switches mid-batch.
+
+  Migration: none. Every addition is a provided trait method, a new type or
+  a new field on a `#[non_exhaustive]` struct; the stable serialized set is
+  unchanged.
+
 ## [0.1.1] - 2026-10-19
 
 ### Fixed

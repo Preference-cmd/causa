@@ -39,7 +39,10 @@ impl TurnRunner {
                 .bind(invocation_id.clone(), control.clone())
                 .await
             {
-                Ok(bound) => bound,
+                Ok(bound) => match &options.processor_data {
+                    Some(data) => bound.with_processor_data(data.clone()),
+                    None => bound,
+                },
                 Err(ToolCatalogError::Control(error)) => {
                     return interrupted(control_cause(error, Some(invocation_id)), None);
                 }

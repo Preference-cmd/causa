@@ -52,7 +52,7 @@ pub use context::tools::{ToolChange, ToolDefinition, current_tools};
 
 // --- ports: behavior seams for external implementors ------------------------
 pub use ports::batch::{
-    BatchError, ProcessorContext, ProcessorError, RejectedToolResult, ToolBatch,
+    BatchError, ProcessorContext, ProcessorData, ProcessorError, RejectedToolResult, ToolBatch,
     ToolBatchProcessor, ToolCallEntry,
 };
 pub use ports::control::{CallControl, ControlError};
@@ -64,7 +64,8 @@ pub use ports::gateway::{
 pub use ports::prepare::{ContextPreparer, PrepareError, RoundInfo};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
-    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolSurface,
+    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDescription, ToolHints,
+    ToolSurface,
 };
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.

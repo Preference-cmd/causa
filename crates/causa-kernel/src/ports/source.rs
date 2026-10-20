@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::context::tool_data::ToolResultPayload;
 use crate::context::tools::ToolDefinition;
 use crate::ports::control::CallControl;
-use crate::ports::tool::ToolCallContext;
+use crate::ports::tool::{ToolCallContext, ToolDescription};
 
 /// One external tool catalog. Implementors own their connection, their
 /// naming (see the `mcp_{server_id}_{tool}` namespace convention in
@@ -24,7 +24,8 @@ pub trait DynamicToolSource: Send + Sync {
     fn id(&self) -> &str;
 
     /// Change signal for executor-side caching: bump whenever the tool
-    /// listing may have changed (e.g. MCP `tools/list_changed`). Consumers
+    /// listing may have changed (e.g. MCP `tools/list_changed`), including a
+    /// change in the tools' declared hints alone. Consumers
     /// may reuse a listing while the observed version remains unchanged.
     /// This signal does not make version/list reads an atomic snapshot or
     /// replace an invocation binding to concrete targets.
@@ -33,10 +34,27 @@ pub trait DynamicToolSource: Send + Sync {
     }
 
     /// The current tool listing. Failure means acquisition failed, not an
-    /// empty catalog. The reference executor propagates refresh errors and
-    /// does not substitute an old listing or skip the source. Existing
-    /// successful bindings retain the targets they already acquired.
+    /// empty catalog.
     async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError>;
+
+    /// The current tool listing with each tool's declared hints. The
+    /// reference executor binds from this method, so a tool's definition and
+    /// hints come from the same listing. The default calls
+    /// [`DynamicToolSource::list`] and declares no hints; a source whose
+    /// catalog carries hints, such as MCP tool annotations, overrides it.
+    ///
+    /// Failure means acquisition failed, not an empty catalog. The reference
+    /// executor propagates refresh errors and does not substitute an old
+    /// listing or skip the source. Existing successful bindings retain the
+    /// targets and hints they already acquired.
+    async fn describe(&self) -> Result<Vec<ToolDescription>, SourceError> {
+        Ok(self
+            .list()
+            .await?
+            .into_iter()
+            .map(ToolDescription::new)
+            .collect())
+    }
 
     /// Execute one call against the catalog. `call.input.tool_name` arrives in
     /// the source's namespace; implementors de-namespace it (and reject

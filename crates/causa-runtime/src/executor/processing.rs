@@ -26,12 +26,16 @@ impl BoundTools<'_> {
         }
         let declaration_order = batch.declaration_ids();
         self.control.check().map_err(ToolProcessingError::Control)?;
-        let context = ProcessorContext::new(
+        let mut context = ProcessorContext::new(
             &self.invocation_id.turn_id,
             self.invocation_id.round_id,
             &declaration_order,
             &self.control,
-        );
+        )
+        .with_tools(&self.tools);
+        if let Some(data) = &self.data {
+            context = context.with_data(data);
+        }
         self.reject_unbound(batch)?;
         process_phase(
             &self.executor.options.before,

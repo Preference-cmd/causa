@@ -3,7 +3,7 @@
 use super::ToolCatalogError;
 use crate::control::wait_for_stop;
 
-use causa_kernel::{CallControl, DynamicToolSource, ToolDefinition};
+use causa_kernel::{CallControl, DynamicToolSource, ToolDescription};
 use std::sync::{Arc, Mutex};
 
 /// Cache ownership follows this exact registration, including re-registering
@@ -16,7 +16,7 @@ pub(super) struct DynamicEntry {
 
 #[derive(Default)]
 struct Cache {
-    listing: Option<(u64, Vec<ToolDefinition>)>,
+    listing: Option<(u64, Vec<ToolDescription>)>,
     latest_refresh: Option<Arc<()>>,
 }
 
@@ -29,18 +29,18 @@ impl DynamicEntry {
         }
     }
 
-    pub(super) async fn list(
+    pub(super) async fn describe(
         &self,
         control: &CallControl,
-    ) -> Result<Vec<ToolDefinition>, ToolCatalogError> {
+    ) -> Result<Vec<ToolDescription>, ToolCatalogError> {
         let observed = self.source.version();
         let refresh = Arc::new(());
         {
             let mut cache = self.cache.lock().expect("source cache lock");
-            if let Some((version, definitions)) = &cache.listing
+            if let Some((version, descriptions)) = &cache.listing
                 && *version == observed
             {
-                return Ok(definitions.clone());
+                return Ok(descriptions.clone());
             }
             // A refresh failure must never expose the previous good listing.
             cache.listing = None;
@@ -49,12 +49,12 @@ impl DynamicEntry {
         let listing = tokio::select! {
             biased;
             cause = wait_for_stop(control) => return Err(ToolCatalogError::Control(cause)),
-            result = self.source.list() => result,
+            result = self.source.describe() => result,
         };
         // The source may synchronously cancel the parent during its final
         // poll. Apply stage control before selecting a listing error.
         control.check().map_err(ToolCatalogError::Control)?;
-        let definitions = listing.map_err(|error| ToolCatalogError::Source {
+        let descriptions = listing.map_err(|error| ToolCatalogError::Source {
             source_id: self.id.clone(),
             error,
         })?;
@@ -66,10 +66,10 @@ impl DynamicEntry {
                 .as_ref()
                 .is_some_and(|latest| Arc::ptr_eq(latest, &refresh))
         {
-            cache.listing = Some((observed, definitions.clone()));
+            cache.listing = Some((observed, descriptions.clone()));
         }
         // A moving version still gives this invocation a concrete listing;
         // it is never mislabeled as a reusable current-version cache entry.
-        Ok(definitions)
+        Ok(descriptions)
     }
 }

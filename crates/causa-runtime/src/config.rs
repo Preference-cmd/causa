@@ -1,7 +1,7 @@
 //! Per-run choices for the minimal runner.
 
 use crate::RunObserver;
-use causa_kernel::{CacheDirective, ContextPreparer, GenerationOptions, ModelRef};
+use causa_kernel::{CacheDirective, ContextPreparer, GenerationOptions, ModelRef, ProcessorData};
 use std::sync::Arc;
 
 /// Numeric limits for one execution.
@@ -47,9 +47,14 @@ pub struct TurnRunOptions {
     pub preparer: Option<Arc<dyn ContextPreparer>>,
     /// Optional synchronous borrowed observation callback.
     pub observer: Option<Arc<RunObserver>>,
+    /// Optional host data handed to every tool processor of the run, through
+    /// [`causa_kernel::ProcessorContext::data`]. Passed through unchanged:
+    /// state that changes during the run belongs in a shared handle.
+    pub processor_data: Option<ProcessorData>,
 }
 impl TurnRunOptions {
-    /// Select a model with default generation, limits and no preparation or observer.
+    /// Select a model with default generation, limits and no preparation,
+    /// observer or processor data.
     pub fn new(model: ModelRef) -> Self {
         Self {
             model,
@@ -58,6 +63,7 @@ impl TurnRunOptions {
             limits: TurnLimits::default(),
             preparer: None,
             observer: None,
+            processor_data: None,
         }
     }
 
@@ -88,6 +94,12 @@ impl TurnRunOptions {
     /// Sets the synchronous borrowed observation callback.
     pub fn with_observer(mut self, observer: Arc<RunObserver>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Sets the host data handed to every tool processor of the run.
+    pub fn with_processor_data(mut self, processor_data: ProcessorData) -> Self {
+        self.processor_data = Some(processor_data);
         self
     }
 }

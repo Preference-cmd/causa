@@ -148,7 +148,7 @@ Run these from the repository root using
 |---|---|---|---|
 | `conversation_persistence` | `causa-runtime` | Save and reload caller-owned context | Offline |
 | `streaming_print` | `causa-runtime` | Observe deltas as a turn runs | Offline |
-| `approval_processor` | `causa-runtime` | Await approval inside a tool processor | Offline |
+| `approval_processor` | `causa-runtime` | Await approval for tools not declared read-only | Offline |
 | `interrupted_batch` | `causa-runtime` | Close the tool batch an interrupted run hands back | Offline |
 | `tool_processors` | `causa-runtime` | Compose tool processors | Offline |
 | `media_feedback` | `causa-runtime` | Carry tool-produced media references into the next round | Offline |

@@ -5,14 +5,15 @@
 //! adapter (an invocation binding wraps a dynamic definition in a
 //! bridge so it runs the same path as a local tool) and the
 //! canonical home of the `ToolExecutionError` → status mapping. Hosts that
-//! prefer snapshot semantics (list once, register as static tools) reuse
-//! the same bridge directly; for live catalogs prefer
+//! prefer snapshot semantics (describe once, register as static tools) reuse
+//! the same bridge directly, passing each tool's hints to
+//! [`ToolBridge::with_hints`]; for live catalogs prefer
 //! `ToolExecutor::register_dynamic`.
 
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactStore, CallControl, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
-    ToolExecutionError, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ToolExecutionError, ToolHints, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 
 /// A single dynamic-source tool exposed through the plain [`Tool`]
@@ -27,18 +28,31 @@ use causa_kernel::{
 /// caller's responsibility (the runner commits the complete batch and
 /// stops; a standalone bridge consumer chooses how to use its result).
 ///
-/// Snapshot semantics: the [`ToolDefinition`] is fixed at construction —
-/// listing changes after bridging are not picked up. For live catalogs
-/// prefer `ToolExecutor::register_dynamic`.
+/// Snapshot semantics: the [`ToolDefinition`] and [`ToolHints`] are fixed
+/// at construction — listing changes after bridging are not picked up. For
+/// live catalogs prefer `ToolExecutor::register_dynamic`.
 pub struct ToolBridge {
     source: std::sync::Arc<dyn DynamicToolSource>,
     definition: ToolDefinition,
+    hints: ToolHints,
 }
 
 impl ToolBridge {
-    /// Bridge one tool definition of `source` into a static `Tool`.
+    /// Bridge one tool definition of `source` into a static `Tool` that
+    /// declares no hints.
     pub fn new(source: std::sync::Arc<dyn DynamicToolSource>, definition: ToolDefinition) -> Self {
-        Self { source, definition }
+        Self {
+            source,
+            definition,
+            hints: ToolHints::default(),
+        }
+    }
+
+    /// Sets the hints the bridged tool declares, usually the ones its
+    /// source listed with the definition.
+    pub fn with_hints(mut self, hints: ToolHints) -> Self {
+        self.hints = hints;
+        self
     }
 }
 
@@ -46,6 +60,10 @@ impl ToolBridge {
 impl Tool for ToolBridge {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
+    }
+
+    fn hints(&self) -> ToolHints {
+        self.hints.clone()
     }
 
     async fn execute(
