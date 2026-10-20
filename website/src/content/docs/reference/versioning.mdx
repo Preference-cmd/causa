@@ -24,6 +24,13 @@ upgrade `"0.0.7"` to `0.1.0` on its own.
 `quickstart` example, which did not set the output limit the Anthropic
 Messages gateway requires; the API and the serialized form are unchanged.
 
+**0.1.2** is a patch release that adds to the API. Tool processors can read
+what each bound tool declares about its effects (`ToolHints`, which the MCP
+client fills from a server's tool annotations) and a value the host passes
+for the run (`ProcessorData`); see [Process tool
+calls](/guides/process-tool-calls/#ask-only-when-it-matters). Existing code
+compiles unchanged, and the serialized form is unchanged.
+
 ## Changelog
 
 The canonical changelog lives in the repo:
@@ -43,10 +50,17 @@ in library sources, checks public API documentation, and builds the public
 facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
 every command.
 
+## Upgrading from 0.1.1
+
+Run `cargo update -p causa`; a `causa = "0.1"` dependency already allows
+0.1.2. No code changes are needed. The new trait methods, `Tool::hints` and
+`DynamicToolSource::describe`, have defaults that declare no hints, so
+implementations written for 0.1.1 keep working.
+
 ## Upgrading from 0.1.0
 
 Run `cargo update -p causa`; a `causa = "0.1"` dependency already allows
-0.1.1. No code changes are needed. A program copied from the 0.1.0 README
+0.1.2. No code changes are needed. A program copied from the 0.1.0 README
 needs `.with_generation(GenerationOptions::default().with_max_tokens(1024))`
 on its `TurnRunOptions` before it can call the Anthropic gateway.
 

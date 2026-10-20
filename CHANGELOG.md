@@ -12,6 +12,8 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-20
+
 ### Added
 
 - Tool hints. `ToolHints` holds what a tool declares about its effects:
