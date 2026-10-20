@@ -9,7 +9,7 @@ use causa_kernel::{
     CancellationToken, Context, ContextBlock, DynamicToolSource, InvocationId, MediaRef,
     ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
     ModelStopReason, Role, RoundId, SourceError, StoreError, TextPayload, ToolBatch,
-    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
+    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolHints, ToolOutput,
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
@@ -20,7 +20,7 @@ use causa_runtime::{
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ResourceContents, ServerInfo, Tool,
+    PaginatedRequestParams, ResourceContents, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer, ServiceExt};
 use serde_json::json;
@@ -67,7 +67,7 @@ impl ServerHandler for FixtureServer {
             .unwrap()
             .iter()
             .map(|name| {
-                Tool::new(
+                let tool = Tool::new(
                     name.clone(),
                     "fixture tool",
                     Arc::new(
@@ -76,7 +76,14 @@ impl ServerHandler for FixtureServer {
                             .unwrap()
                             .clone(),
                     ),
-                )
+                );
+                // `lookup` annotates itself as a read; every other fixture
+                // tool declares nothing.
+                if name == "lookup" {
+                    tool.with_annotations(ToolAnnotations::new().read_only(true).destructive(false))
+                } else {
+                    tool
+                }
             })
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
@@ -208,6 +215,53 @@ async fn lists_tools_under_the_server_namespace() {
     assert_eq!(defs[0].parameters, serde_json::json!({"type": "object"}));
     assert_eq!(source.id(), "srv");
     server.cancel().await.expect("server stop");
+}
+
+#[tokio::test]
+async fn annotations_arrive_as_tool_hints() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = FixtureServer {
+        tools: Arc::new(std::sync::Mutex::new(vec![
+            "echo".to_string(),
+            "lookup".to_string(),
+        ])),
+        fail_calls: false,
+        hang_calls: false,
+    };
+    let server_task = tokio::spawn(async move { server.serve(server_io).await });
+    let source = McpToolSource::connect_io("srv", client_io)
+        .await
+        .expect("client connect");
+    let running = server_task
+        .await
+        .expect("server task")
+        .expect("server serve");
+
+    let described = source.describe().await.expect("describe");
+    let hints = |name: &str| {
+        described
+            .iter()
+            .find(|description| description.definition.name == name)
+            .map(|description| description.hints.clone())
+            .expect("listed")
+    };
+    let lookup = hints("mcp_srv_lookup");
+    assert_eq!(lookup.read_only, Some(true));
+    assert_eq!(lookup.destructive, Some(false));
+    // Undeclared hints stay undeclared: no MCP defaults are filled in.
+    assert_eq!(lookup.idempotent, None);
+    assert_eq!(lookup.open_world, None);
+    assert_eq!(hints("mcp_srv_echo"), ToolHints::default());
+    // `list` returns the same definitions without the hints.
+    let listed = source.list().await.expect("list");
+    assert_eq!(
+        listed,
+        described
+            .iter()
+            .map(|description| description.definition.clone())
+            .collect::<Vec<_>>()
+    );
+    running.cancel().await.expect("server stop");
 }
 
 #[tokio::test]

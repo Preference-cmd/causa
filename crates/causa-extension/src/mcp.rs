@@ -63,8 +63,8 @@
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactStore, CallControl, DynamicToolSource, MediaRef,
-    SourceError, ToolCallContext, ToolDefinition, ToolExecutionError, ToolOutput,
-    ToolResultPayload, ToolResultStatus,
+    SourceError, ToolCallContext, ToolDefinition, ToolDescription, ToolExecutionError, ToolHints,
+    ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::ContentBlock;
@@ -100,8 +100,8 @@ impl ClientHandler for McpClientHandler {
 /// protocol violations are `Protocol` (permanent).
 ///
 /// Listing caches live executor-side (in `causa-runtime`, keyed on
-/// [`DynamicToolSource::version`]); this source re-lists on every `list()`
-/// call and stays a thin transport adapter.
+/// [`DynamicToolSource::version`]); this source re-lists on every
+/// `describe()` or `list()` call and stays a thin transport adapter.
 pub struct McpToolSource {
     server_id: String,
     namespace: String,
@@ -273,6 +273,20 @@ impl DynamicToolSource for McpToolSource {
     }
 
     async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError> {
+        Ok(self
+            .describe()
+            .await?
+            .into_iter()
+            .map(|description| description.definition)
+            .collect())
+    }
+
+    /// Lists the tools with the hints their annotations declare:
+    /// `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+    /// `openWorldHint` map one to one. A hint the server leaves out stays
+    /// undeclared; the MCP specification's defaults are not filled in, and
+    /// the annotation `title` is not carried.
+    async fn describe(&self) -> Result<Vec<ToolDescription>, SourceError> {
         let listed = self
             .service
             .list_tools(None)
@@ -282,11 +296,17 @@ impl DynamicToolSource for McpToolSource {
             .tools
             .into_iter()
             .map(|tool| {
-                ToolDefinition::new(
+                let hints = tool
+                    .annotations
+                    .as_ref()
+                    .map(annotation_hints)
+                    .unwrap_or_default();
+                ToolDescription::new(ToolDefinition::new(
                     self.namespaced(tool.name.as_ref()),
                     tool.description.map(|d| d.to_string()).unwrap_or_default(),
                     serde_json::Value::Object((*tool.input_schema).clone()),
-                )
+                ))
+                .with_hints(hints)
             })
             .collect())
     }
@@ -299,6 +319,16 @@ impl DynamicToolSource for McpToolSource {
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Self::invoke_inner(self, call, control, store).await
     }
+}
+
+/// The kernel hints an MCP tool's annotations declare.
+fn annotation_hints(annotations: &rmcp::model::ToolAnnotations) -> ToolHints {
+    let mut hints = ToolHints::default();
+    hints.read_only = annotations.read_only_hint;
+    hints.destructive = annotations.destructive_hint;
+    hints.idempotent = annotations.idempotent_hint;
+    hints.open_world = annotations.open_world_hint;
+    hints
 }
 
 impl McpToolSource {

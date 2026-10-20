@@ -18,8 +18,9 @@ format without a compatibility adapter or data converter. In the earlier
   `read_only`, `destructive`, `idempotent` and `open_world`, each unset
   unless declared. A tool declares them with `Tool::hints`, a dynamic
   source with `DynamicToolSource::describe`, which lists each
-  `ToolDefinition` with its hints. Causa carries hints to processors and
-  never interprets them. They stay out of
+  `ToolDefinition` with its hints. `McpToolSource` maps an MCP tool's
+  annotations to hints one to one and fills in no defaults. Causa carries
+  hints to processors and never interprets them. They stay out of
   `ToolDefinition`, so they never reach the model or the stored context: a
   change in hints alone records no `ToolChange`.
 - Processor data. `TurnRunOptions::with_processor_data` (or
