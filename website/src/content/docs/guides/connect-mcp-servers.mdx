@@ -51,7 +51,7 @@ static token. OAuth sign-in is not supported.
 |---|---|---|
 | The `server_id` | A short name of letters, digits, `_` and `-`, unique per executor | `register_dynamic` returns `DuplicateSource` for a second source with the same id |
 | A server tool with the name of one of yours | Choose a `server_id` that keeps the names apart | Listing fails with `DuplicateTool` and the run stops before calling the model |
-| Approval | Check calls in a before processor; it sees MCP calls and your own calls alike | The model can call every tool the server offers |
+| Approval | Check calls in a before processor; it sees MCP calls and your own calls alike, with the hints each tool declares | The model can call every tool the server offers |
 | A call deadline (`ToolExecutorOptions::call_timeout`) | Set it high enough for the server's slowest tool | A call past it is recorded as an unknown outcome and the run stops: the server may have done the work |
 | Images, audio and files in results | Set `ToolExecutorOptions::artifact_store`; they are saved there and the result refers to them | Each becomes a line of text such as `[image: image/png — no media store available]` |
 | Shutting down | Unregister the source and call `close` | The session ends when the last reference to the source is dropped, without a shutdown handshake |
@@ -119,6 +119,15 @@ string, or its structured content when the tool returns some.
 
 **Do MCP calls run alongside my own tools?** Yes. The calls of one batch
 run concurrently on the caller's task, whichever source they come from.
+
+**Can a processor tell an MCP read from a write?** If the server says so. The
+annotations `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+`openWorldHint` reach processors as the tool's hints, through
+`ctx.hints(name)`. A hint the server leaves out stays unset: the defaults the
+MCP specification gives are not filled in. They are the server's claim, so
+trust them only as far as you trust the server; [Process tool
+calls](/guides/process-tool-calls/#ask-only-when-it-matters) shows a
+processor that uses them.
 
 **Is a server's output safe to give the model?** Treat it as untrusted
 input: it can contain instructions meant to steer the model. Keep approval

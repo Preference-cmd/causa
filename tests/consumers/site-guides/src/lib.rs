@@ -3,5 +3,6 @@
 
 pub mod fake_provider;
 pub mod interrupted_runs;
+pub mod permissions;
 pub mod scripted;
 pub mod streaming;

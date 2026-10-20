@@ -56,6 +56,7 @@ cargo add serde --features derive
 | Work the future does not own (a spawned task, a child process, a remote job) | Stop it when `control.cancellation_token()` fires | It keeps running after the run has stopped |
 | Large output or media | Persist the bytes in the `store` argument (set by `ToolExecutorOptions::artifact_store`) and return a reference | The whole output goes into the context |
 | A limit on concurrent calls | Share a `tokio::sync::Semaphore` across calls | Every call of a batch runs at once |
+| What the tool does to its surroundings | Override `hints`, for example `ToolHints::default().with_read_only(true)` | Processors see every hint unset and cannot tell it from a tool that writes |
 
 The executor gives each call a deadline when `ToolExecutorOptions::call_timeout`
 is set or the run has one; `control.deadline()` returns it.
