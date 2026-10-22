@@ -22,9 +22,9 @@ Its optional runtime adds turn execution, streaming and tool-processing chains, 
 Your application owns the tools, storage and execution policy — facts in the
 kernel, behavior in yours.
 
-> **0.1.3.** Requires Rust **1.96+**. Breaking changes to the API and to
+> **0.1.4.** Requires Rust **1.96+**. Breaking changes to the API and to
 > stored context come only in minor releases; read the
-> [release notes](https://github.com/Preference-cmd/causa/blob/v0.1.3/CHANGELOG.md#013---2026-10-21) when upgrading.
+> [release notes](https://github.com/Preference-cmd/causa/blob/v0.1.4/CHANGELOG.md#014---2026-10-22) when upgrading.
 
 ## Try it offline
 
@@ -36,7 +36,7 @@ cd causa
 cargo run --example conversation_persistence -p causa-runtime
 ```
 
-The default checkout follows development; use `git checkout v0.1.3` to run
+The default checkout follows development; use `git checkout v0.1.4` to run
 the examples for this release.
 
 ## Use in your application
@@ -46,7 +46,7 @@ Depend on **`causa`**; Cargo resolves the underlying crates.
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.1.3
+cargo add causa@0.1.4
 cargo add tokio@1 --features macros,rt
 ```
 
@@ -131,10 +131,10 @@ Choose the dependencies your application needs:
 
 | Configuration | Included |
 |---|---|
-| `causa = "0.1.3"` | Kernel + runtime + providers |
-| `causa = { version = "0.1.3", features = ["full"] }` | Default stack + MCP extensions |
-| `causa = { version = "0.1.3", default-features = false }` | Kernel only |
-| `causa = { version = "0.1.3", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
+| `causa = "0.1.4"` | Kernel + runtime + providers |
+| `causa = { version = "0.1.4", features = ["full"] }` | Default stack + MCP extensions |
+| `causa = { version = "0.1.4", default-features = false }` | Kernel only |
+| `causa = { version = "0.1.4", default-features = false, features = ["runtime"] }` | Kernel + runtime, no network adapters |
 
 See the [crate guide](https://causa.inceptae.com/reference/crates/)
 for layer selection.

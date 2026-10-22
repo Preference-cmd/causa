@@ -12,6 +12,8 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-22
+
 ### Added
 
 - `McpToolSource::connect_http_with_headers` sends the headers the host
