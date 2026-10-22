@@ -12,6 +12,8 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-21
+
 ### Added
 
 - `McpToolSource::connect_stdio_with_stderr` sends a stdio server's stderr

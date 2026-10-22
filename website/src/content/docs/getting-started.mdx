@@ -22,19 +22,19 @@ beyond cloning; the second needs an Anthropic API key.
 
 The command above runs a turn against a scripted model, saves the context
 as JSON, and loads it for the next run. The repository's default branch follows
-development; run `git checkout v0.1.2` first to use the examples of the
+development; run `git checkout v0.1.3` first to use the examples of the
 release on crates.io. [Examples](/examples/) lists the others; most run
 offline too.
 
 ## Add Causa to a project
 
-Causa **0.1.2** is on crates.io. The default features include the turn
+Causa **0.1.3** is on crates.io. The default features include the turn
 runner and the Anthropic and OpenAI gateways:
 
 ```bash
 cargo new causa-hello
 cd causa-hello
-cargo add causa@0.1.2
+cargo add causa@0.1.3
 cargo add tokio@1 --features macros,rt
 ```
 
