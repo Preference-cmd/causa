@@ -666,36 +666,30 @@ async fn kernel_turn_completes_through_the_mcp_source() {
 
 // ---- Streamable HTTP transport --------------------------------------------------
 
+/// One request the HTTP fixture received: its method and headers.
+type SeenRequests = Arc<std::sync::Mutex<Vec<(String, axum::http::HeaderMap)>>>;
+
 /// Serve the fixture behind a real axum server (rmcp `StreamableHttpService`)
-/// on an ephemeral loopback port. Returns the client source and every
-/// `Authorization` header the server observed (for the static-token-injection
-/// assertion).
-async fn served_http(
-    auth_token: Option<String>,
-) -> (McpToolSource, Arc<std::sync::Mutex<Vec<Option<String>>>>) {
+/// on an ephemeral loopback port. Returns the server's URL and every request
+/// it received, with its method and headers.
+async fn serve_http_fixture() -> (String, SeenRequests) {
     use axum::extract::State;
-    use axum::http::header::AUTHORIZATION;
     use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService,
     };
 
     init_tracing();
-    let seen_auth: Arc<std::sync::Mutex<Vec<Option<String>>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen: SeenRequests = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    async fn capture_auth(
-        State(seen): State<Arc<std::sync::Mutex<Vec<Option<String>>>>>,
+    async fn capture(
+        State(seen): State<SeenRequests>,
         request: axum::extract::Request,
         next: axum::middleware::Next,
     ) -> axum::response::Response {
-        seen.lock().unwrap().push(
-            request
-                .headers()
-                .get(AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned),
-        );
+        seen.lock()
+            .unwrap()
+            .push((request.method().to_string(), request.headers().clone()));
         next.run(request).await
     }
 
@@ -706,25 +700,31 @@ async fn served_http(
     );
     let app = axum::Router::new()
         .nest_service("/mcp", http_service)
-        .layer(axum::middleware::from_fn_with_state(
-            seen_auth.clone(),
-            capture_auth,
-        ));
+        .layer(axum::middleware::from_fn_with_state(seen.clone(), capture));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move { axum::serve(listener, app).await });
+    (format!("http://{addr}/mcp"), seen)
+}
 
-    let source = McpToolSource::connect_http("http", format!("http://{addr}/mcp"), auth_token)
+/// The fixture connected with `connect_http`.
+async fn served_http(auth_token: Option<String>) -> (McpToolSource, SeenRequests) {
+    let (url, seen) = serve_http_fixture().await;
+    let source = McpToolSource::connect_http("http", url, auth_token)
         .await
         .expect("http connect");
-    (source, seen_auth)
+    (source, seen)
+}
+
+fn header<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
 }
 
 #[tokio::test]
 async fn http_transport_lists_and_invokes() {
-    let (source, _seen_auth) = served_http(None).await;
+    let (source, _seen) = served_http(None).await;
     let defs = source.list().await.expect("list over http");
     assert_eq!(defs.len(), 1);
     assert_eq!(defs[0].name, "mcp_http_echo");
@@ -747,19 +747,97 @@ async fn http_transport_lists_and_invokes() {
 
 #[tokio::test]
 async fn http_transport_injects_the_static_bearer_token() {
-    let (source, seen_auth) = served_http(Some("secret-token".into())).await;
+    let (source, seen) = served_http(Some("secret-token".into())).await;
     source.list().await.expect("list over http");
-    let seen = seen_auth.lock().unwrap().clone();
+    let seen = seen.lock().unwrap().clone();
     assert!(
         seen.iter()
-            .any(|h| h.as_deref() == Some("Bearer secret-token")),
+            .any(|(_, headers)| header(headers, "authorization") == Some("Bearer secret-token")),
         "every request must carry the injected bearer token, saw: {seen:?}"
     );
-    drop(seen);
     tokio::time::timeout(std::time::Duration::from_secs(5), source.close())
         .await
         .expect("close must not hang")
         .expect("close");
+}
+
+#[tokio::test]
+async fn http_transport_sends_the_host_headers_on_every_request() {
+    let (url, seen) = serve_http_fixture().await;
+    let source = McpToolSource::connect_http_with_headers(
+        "http",
+        url,
+        [("X-API-Key", "key-123"), ("Authorization", "Token abc")],
+    )
+    .await
+    .expect("http connect with headers");
+
+    let defs = source.list().await.expect("list over http");
+    assert_eq!(defs[0].name, "mcp_http_echo");
+    let call = call_context("mcp_http_echo", serde_json::json!({"via": "headers"}));
+    let outcome = source
+        .invoke(&call, &ctrl(), None)
+        .await
+        .expect("invoke over http");
+    assert_eq!(outcome.status, ToolResultStatus::Succeeded);
+    tokio::time::timeout(std::time::Duration::from_secs(5), source.close())
+        .await
+        .expect("close must not hang")
+        .expect("close");
+
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|(method, _)| method == "DELETE"),
+        "close must end the session with a DELETE, saw: {:?}",
+        seen.iter().map(|(method, _)| method).collect::<Vec<_>>()
+    );
+    for (method, headers) in &seen {
+        assert_eq!(header(headers, "x-api-key"), Some("key-123"), "{method}");
+        assert_eq!(
+            header(headers, "authorization"),
+            Some("Token abc"),
+            "{method}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn http_headers_that_cannot_be_sent_are_rejected_before_connecting() {
+    let (url, seen) = serve_http_fixture().await;
+    let secret = "do-not-print-this";
+    let cases: Vec<(&str, Vec<(&str, String)>)> = vec![
+        ("bad name", vec![("X Key", secret.into())]),
+        (
+            "bad value",
+            vec![("X-Key", format!("{secret}\nInjected: 1"))],
+        ),
+        (
+            "duplicate",
+            vec![("X-Key", secret.into()), ("x-key", secret.into())],
+        ),
+        ("accept", vec![("Accept", secret.into())]),
+        ("content type", vec![("Content-Type", secret.into())]),
+        ("last event id", vec![("Last-Event-Id", secret.into())]),
+        ("session id", vec![("Mcp-Session-Id", secret.into())]),
+        (
+            "protocol version",
+            vec![("MCP-Protocol-Version", secret.into())],
+        ),
+        ("mcp param", vec![("Mcp-Param-x", secret.into())]),
+    ];
+    for (case, headers) in cases {
+        let error = McpToolSource::connect_http_with_headers("http", url.clone(), headers)
+            .await
+            .expect_err(case);
+        let SourceError::Protocol(message) = &error else {
+            panic!("{case}: expected Protocol, got {error:?}");
+        };
+        assert!(!message.contains(secret), "{case}: {message}");
+    }
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "no request may reach the server"
+    );
 }
 
 // ---- media ingest ---------------------------------------------------------------

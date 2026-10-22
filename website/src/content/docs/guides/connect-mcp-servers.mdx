@@ -43,7 +43,7 @@ cargo add tokio@1 --features macros,rt,process
 ```
 
 For the remote case, you need the server's URL and, if it asks for one, a
-static token. OAuth sign-in is not supported.
+static token or the headers it expects. OAuth sign-in is not supported.
 
 ## The decisions
 
@@ -55,6 +55,7 @@ static token. OAuth sign-in is not supported.
 | A call deadline (`ToolExecutorOptions::call_timeout`) | Set it high enough for the server's slowest tool | A call past it is recorded as an unknown outcome and the run stops: the server may have done the work |
 | Images, audio and files in results | Set `ToolExecutorOptions::artifact_store`; they are saved there and the result refers to them | Each becomes a line of text such as `[image: image/png — no media store available]` |
 | A local server's stderr | Connect with `connect_stdio_with_stderr` and pass `Stdio::null()`, a log file, or the writing end of `std::io::pipe()` | `connect_stdio` lets the server write to your process's stderr: into your terminal, or over the screen of a terminal UI |
+| Headers for a remote server | Pass them to `connect_http_with_headers`; a name or value that is not a valid header, a name given twice, or a header the transport sets itself (`Accept`, `Content-Type`, `Last-Event-Id`, any `Mcp-*`) returns `SourceError::Protocol` before connecting | `connect_http` sends only `Authorization: Bearer` with the token you give it |
 | Shutting down | Unregister the source and call `close` | The session ends when the last reference to the source is dropped, without a shutdown handshake |
 
 ## Code
@@ -72,6 +73,11 @@ A remote server is a URL. The token, when there is one, is sent as a bearer
 token with every request:
 
 <Snippet file="src/bin/connect_mcp_servers.rs" anchor="http" />
+
+A server that asks for something else, such as an API key header or another
+`Authorization` scheme, gets the headers you pass with every request:
+
+<Snippet file="src/bin/connect_mcp_servers.rs" anchor="http_headers" />
 
 Register the source with the executor. Your own tools still go to
 `ToolExecutor::new`; MCP sources are added after it, and one executor can

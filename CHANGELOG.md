@@ -12,6 +12,19 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Added
+
+- `McpToolSource::connect_http_with_headers` sends the headers the host
+  gives with every request to a remote MCP server: an API key header,
+  another `Authorization` scheme, a tenant header. `connect_http` could only
+  send `Authorization: Bearer`. The headers are checked before connecting:
+  an invalid name or value, a name given twice, or a header the transport
+  sets itself (`Accept`, `Content-Type`, `Last-Event-Id`, any `Mcp-*`)
+  returns `SourceError::Protocol` without opening a connection, and the
+  message never contains a value.
+
+  Migration: none; a new method.
+
 ## [0.1.3] - 2026-10-21
 
 ### Added

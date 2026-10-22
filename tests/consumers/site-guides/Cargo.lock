@@ -114,6 +114,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "causa-kernel",
+ "http",
  "rmcp",
  "serde_json",
  "tokio",

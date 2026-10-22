@@ -5,6 +5,7 @@
 // To list the tools of a real server instead, pass its launch command or URL:
 //   cargo run --bin connect_mcp_servers -- uvx mcp-server-fetch
 //   MCP_TOKEN=... cargo run --bin connect_mcp_servers -- https://mcp.example.com/mcp
+//   MCP_API_KEY=... cargo run --bin connect_mcp_servers -- https://mcp.example.com/mcp
 
 // ANCHOR: imports
 use causa::{
@@ -42,12 +43,23 @@ async fn connect_http(url: String) -> Result<McpToolSource, SourceError> {
 }
 // ANCHOR_END: http
 
+// ANCHOR: http_headers
+/// Connects to a remote server that asks for an API key header instead of
+/// a bearer token. The headers go with every request.
+async fn connect_http_with_key(url: String, key: String) -> Result<McpToolSource, SourceError> {
+    McpToolSource::connect_http_with_headers("remote", url, [("X-API-Key", key)]).await
+}
+// ANCHOR_END: http_headers
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let (server_id, source) = match args.next() {
         None => ("notes", notes_server::connect("notes").await?),
-        Some(url) if url.starts_with("http") => ("remote", connect_http(url).await?),
+        Some(url) if url.starts_with("http") => match std::env::var("MCP_API_KEY") {
+            Ok(key) => ("remote", connect_http_with_key(url, key).await?),
+            Err(_) => ("remote", connect_http(url).await?),
+        },
         Some(program) => ("local", connect_stdio(program, args.collect()).await?),
     };
 

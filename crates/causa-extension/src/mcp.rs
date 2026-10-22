@@ -53,6 +53,17 @@
 //! executor.register_dynamic(std::sync::Arc::new(source))?;
 //! ```
 //!
+//! A server that asks for other headers, such as an API key header, gets
+//! them on every request:
+//!
+//! ```ignore
+//! let source = McpToolSource::connect_http_with_headers(
+//!     "remote",
+//!     "https://mcp.example.com/mcp",
+//!     [("X-API-Key", std::env::var("MCP_API_KEY")?)],
+//! ).await?;
+//! ```
+//!
 //! # Namespacing
 //!
 //! Every tool is exposed as `mcp_{server_id}_{tool}`, so identically-named
@@ -75,12 +86,14 @@ use causa_kernel::{
     SourceError, ToolCallContext, ToolDefinition, ToolDescription, ToolExecutionError, ToolHints,
     ToolOutput, ToolResultPayload, ToolResultStatus,
 };
+use http::{HeaderName, HeaderValue};
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::ContentBlock;
 use rmcp::service::{NotificationContext, RoleClient, RunningService, ServiceExt};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -201,17 +214,59 @@ impl McpToolSource {
     /// (v1 static authorization) is sent as a Bearer header on every
     /// request when present; OAuth flows stay out of scope until the
     /// rmcp `auth` feature is adopted here.
+    ///
+    /// A server that asks for another header (an API key header, another
+    /// `Authorization` scheme, a tenant header) is reached with
+    /// [`connect_http_with_headers`](Self::connect_http_with_headers).
     pub async fn connect_http(
         server_id: impl Into<String>,
         uri: impl Into<String>,
         auth_token: Option<String>,
     ) -> Result<Self, SourceError> {
-        let server_id = server_id.into();
-        let list_version = Arc::new(AtomicU64::new(0));
         let mut config = StreamableHttpClientTransportConfig::with_uri(uri.into());
         if let Some(token) = auth_token {
             config = config.auth_header(token);
         }
+        Self::serve_http(server_id.into(), config).await
+    }
+
+    /// Connect to a remote MCP server over Streamable HTTP, sending
+    /// `headers` with every request of the session: each POST, the event
+    /// stream GET and the session DELETE sent on [`close`](Self::close).
+    /// A bearer token is one of them, as `("Authorization", "Bearer …")`.
+    ///
+    /// The headers are checked before connecting. Each of these returns
+    /// [`SourceError::Protocol`] and opens no connection:
+    ///
+    /// - a name or value that is not a valid HTTP header;
+    /// - a name given twice, compared without case;
+    /// - a name the transport writes itself: `Accept`, `Content-Type`,
+    ///   `Last-Event-Id`, and every name starting with `Mcp-`
+    ///   (`Mcp-Session-Id`, `MCP-Protocol-Version`, …).
+    ///
+    /// The error names the header and never contains its value. Every
+    /// value is marked sensitive, so it is hidden from `Debug` output.
+    pub async fn connect_http_with_headers<I, K, V>(
+        server_id: impl Into<String>,
+        uri: impl Into<String>,
+        headers: I,
+    ) -> Result<Self, SourceError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        let custom_headers = parse_headers(headers)?;
+        let config = StreamableHttpClientTransportConfig::with_uri(uri.into())
+            .custom_headers(custom_headers);
+        Self::serve_http(server_id.into(), config).await
+    }
+
+    async fn serve_http(
+        server_id: String,
+        config: StreamableHttpClientTransportConfig,
+    ) -> Result<Self, SourceError> {
+        let list_version = Arc::new(AtomicU64::new(0));
         let transport = StreamableHttpClientTransport::from_config(config);
         let handler = McpClientHandler {
             list_version: list_version.clone(),
@@ -356,6 +411,41 @@ impl DynamicToolSource for McpToolSource {
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         Self::invoke_inner(self, call, control, store).await
     }
+}
+
+/// Headers the Streamable HTTP transport writes itself; a host value would
+/// clash with the transport's own. Every `Mcp-` name is the protocol's.
+const TRANSPORT_HEADERS: [&str; 3] = ["accept", "content-type", "last-event-id"];
+
+/// Turn host headers into rmcp's map, rejecting what rmcp would reject
+/// only on the first request, or would let through and break the session.
+/// Messages name the header and never quote a value.
+fn parse_headers<I, K, V>(headers: I) -> Result<HashMap<HeaderName, HeaderValue>, SourceError>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let mut parsed = HashMap::new();
+    for (name, value) in headers {
+        let name = name.as_ref();
+        let header = HeaderName::try_from(name)
+            .map_err(|_| SourceError::Protocol(format!("invalid header name {name:?}")))?;
+        if TRANSPORT_HEADERS.contains(&header.as_str()) || header.as_str().starts_with("mcp-") {
+            return Err(SourceError::Protocol(format!(
+                "header {name} is set by the MCP transport"
+            )));
+        }
+        let mut value = HeaderValue::try_from(value.as_ref())
+            .map_err(|_| SourceError::Protocol(format!("invalid value for header {name}")))?;
+        value.set_sensitive(true);
+        if parsed.insert(header, value).is_some() {
+            return Err(SourceError::Protocol(format!(
+                "header {name} is given more than once"
+            )));
+        }
+    }
+    Ok(parsed)
 }
 
 /// The kernel hints an MCP tool's annotations declare.

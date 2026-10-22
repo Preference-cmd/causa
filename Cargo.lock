@@ -197,6 +197,7 @@ dependencies = [
  "base64 0.22.1",
  "causa-kernel",
  "causa-runtime",
+ "http",
  "rmcp",
  "serde_json",
  "tokio",
