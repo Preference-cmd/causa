@@ -12,6 +12,17 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Added
+
+- `McpToolSource::connect_stdio_with_stderr` sends a stdio server's stderr
+  where the host says: `Stdio::null()`, a log file, or the writing end of
+  `std::io::pipe()` whose reading end the host reads, also after a failed
+  connect. `connect_stdio` still lets the child inherit the host's stderr,
+  which writes the server's log into a terminal the host may be drawing;
+  its docs now say so.
+
+  Migration: none; a new method.
+
 ## [0.1.2] - 2026-10-20
 
 ### Added

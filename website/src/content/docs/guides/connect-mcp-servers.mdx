@@ -54,6 +54,7 @@ static token. OAuth sign-in is not supported.
 | Approval | Check calls in a before processor; it sees MCP calls and your own calls alike, with the hints each tool declares | The model can call every tool the server offers |
 | A call deadline (`ToolExecutorOptions::call_timeout`) | Set it high enough for the server's slowest tool | A call past it is recorded as an unknown outcome and the run stops: the server may have done the work |
 | Images, audio and files in results | Set `ToolExecutorOptions::artifact_store`; they are saved there and the result refers to them | Each becomes a line of text such as `[image: image/png — no media store available]` |
+| A local server's stderr | Connect with `connect_stdio_with_stderr` and pass `Stdio::null()`, a log file, or the writing end of `std::io::pipe()` | `connect_stdio` lets the server write to your process's stderr: into your terminal, or over the screen of a terminal UI |
 | Shutting down | Unregister the source and call `close` | The session ends when the last reference to the source is dropped, without a shutdown handshake |
 
 ## Code
@@ -104,6 +105,11 @@ cargo run --manifest-path tests/consumers/site-guides/Cargo.toml \
 runner binds the executor, and again after the server sends
 `tools/list_changed`. Between those, it reuses the list, across rounds and
 across turns.
+
+**Why did a local server fail to start?** Its own message is on its stderr.
+Connect with `connect_stdio_with_stderr` and the writing end of
+`std::io::pipe()`, and read the other end: the message is there even when
+the connect returns an error.
 
 **What happens if the server is gone?** If it is gone when the tools are
 listed, the run stops with `ToolCatalogFailed`, before the model is called.

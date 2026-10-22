@@ -33,6 +33,15 @@
 //! executor.register_dynamic(std::sync::Arc::new(source))?;
 //! ```
 //!
+//! The child inherits the host's stderr. To keep a server's log out of a
+//! terminal the host draws, or to read it, choose where it goes:
+//!
+//! ```ignore
+//! let (reader, writer) = std::io::pipe()?;
+//! let source = McpToolSource::connect_stdio_with_stderr("fetch", command, writer).await;
+//! // Read `reader` (a blocking reader) whether or not the connect succeeded.
+//! ```
+//!
 //! Remote MCP server (Streamable HTTP) with a static bearer token:
 //!
 //! ```ignore
@@ -142,13 +151,41 @@ impl McpToolSource {
     /// Connect to a local MCP server spawned as a child process (stdio
     /// transport). `command` is the server launch command; stdio frames
     /// the JSON-RPC session.
+    ///
+    /// The child inherits the host's stderr, so whatever the server logs
+    /// is written to the host's terminal. A host that draws the terminal
+    /// itself, or wants the server's output (for example the reason a
+    /// server failed to start), uses
+    /// [`connect_stdio_with_stderr`](Self::connect_stdio_with_stderr).
     pub async fn connect_stdio(
         server_id: impl Into<String>,
         command: tokio::process::Command,
     ) -> Result<Self, SourceError> {
+        Self::connect_stdio_with_stderr(server_id, command, std::process::Stdio::inherit()).await
+    }
+
+    /// Like [`connect_stdio`](Self::connect_stdio), with the child's stderr
+    /// sent to `stderr` instead of the host's. A `stderr` setting on
+    /// `command` itself is not used.
+    ///
+    /// Pass [`Stdio::null()`](std::process::Stdio::null) to drop it, a
+    /// [`File`](std::fs::File) to log it, or the writing end of
+    /// [`std::io::pipe`] to read it: the reading end stays with the host,
+    /// so the server's last words are readable even when the connect
+    /// fails. The host's copy of the writing end is closed once the child
+    /// is spawned, so the reading end reaches end of file when the server
+    /// exits. `Stdio::piped()` gives the host nothing to read; its reading
+    /// end is dropped here.
+    pub async fn connect_stdio_with_stderr(
+        server_id: impl Into<String>,
+        command: tokio::process::Command,
+        stderr: impl Into<std::process::Stdio>,
+    ) -> Result<Self, SourceError> {
         let server_id = server_id.into();
         let list_version = Arc::new(AtomicU64::new(0));
-        let transport = rmcp::transport::TokioChildProcess::new(command)
+        let (transport, _) = rmcp::transport::TokioChildProcess::builder(command)
+            .stderr(stderr)
+            .spawn()
             .map_err(|e| SourceError::Unavailable(e.to_string()))?;
         let handler = McpClientHandler {
             list_version: list_version.clone(),

@@ -33,11 +33,17 @@ required-features = ["mcp"]
 name = "integration"
 required-features = ["mcp"]
 
+# Starts copies of itself as the stdio MCP server, so it has its own main.
+[[test]]
+name = "stdio_stderr"
+harness = false
+required-features = ["mcp"]
+
 [dev-dependencies]
 causa-runtime = { path = "../causa-runtime", version = "0.1.2" }
 uuid.workspace = true
 axum = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "rt-multi-thread", "macros", "time"] }
 tracing-subscriber = { workspace = true }
 rmcp = { workspace = true, features = [
     "server",
