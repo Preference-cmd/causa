@@ -12,6 +12,17 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Security
+
+- The repository's `Cargo.lock` moves `tokio` from 1.53.1 to 1.54.1,
+  clearing RUSTSEC-2026-0386 (unsound: the `AsyncFd` constructors violate
+  I/O safety; fixed in 1.53.3) for this workspace's builds, tests and
+  examples. Causa's `tokio` requirement stays `1`, and a dependent crate
+  resolves `tokio` in its own lockfile, so a host on an affected version
+  runs `cargo update -p tokio` itself. No Causa code, public API or stable
+  serialized type changes. The lockfile also re-resolves the `windows-sys`
+  edges of crates that accept either locked version.
+
 ## [0.1.4] - 2026-10-22
 
 ### Added
