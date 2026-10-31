@@ -12,6 +12,8 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-31
+
 ### Added
 
 - A synthesized `UnknownOutcome` names its cause in `meta.extra.reason`,
