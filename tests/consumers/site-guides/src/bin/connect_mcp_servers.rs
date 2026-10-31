@@ -30,6 +30,8 @@ use serde_json::json;
 async fn connect_stdio(program: String, args: Vec<String>) -> Result<McpToolSource, SourceError> {
     let mut command = tokio::process::Command::new(program);
     command.args(args);
+    // Kills the child if the host's runtime ends before `close` finishes.
+    command.kill_on_drop(true);
     McpToolSource::connect_stdio("local", command).await
 }
 // ANCHOR_END: stdio

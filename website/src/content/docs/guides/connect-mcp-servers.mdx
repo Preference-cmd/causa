@@ -56,7 +56,7 @@ static token or the headers it expects. OAuth sign-in is not supported.
 | Images, audio and files in results | Set `ToolExecutorOptions::artifact_store`; they are saved there and the result refers to them | Each becomes a line of text such as `[image: image/png — no media store available]` |
 | A local server's stderr | Connect with `connect_stdio_with_stderr` and pass `Stdio::null()`, a log file, or the writing end of `std::io::pipe()` | `connect_stdio` lets the server write to your process's stderr: into your terminal, or over the screen of a terminal UI |
 | Headers for a remote server | Pass them to `connect_http_with_headers`; a name or value that is not a valid header, a name given twice, or a header the transport sets itself (`Accept`, `Content-Type`, `Last-Event-Id`, any `Mcp-*`) returns `SourceError::Protocol` before connecting | `connect_http` sends only `Authorization: Bearer` with the token you give it |
-| Shutting down | Unregister the source and call `close` | The session ends when the last reference to the source is dropped, without a shutdown handshake |
+| Shutting down | Unregister the source and call `close`; for `connect_stdio` and `connect_stdio_with_stderr`, set `kill_on_drop(true)` on the command | Dropping ends the session without a shutdown handshake; a `close` that returns early does not prove the server exited |
 
 ## Code
 
@@ -91,8 +91,13 @@ the executor yourself; this is the list the model receives:
 
 <Snippet file="src/bin/connect_mcp_servers.rs" anchor="list" />
 
-To shut down, take the source out of the executor and close the session.
-`close` waits at most two seconds for the server:
+To shut down, take the source out of the executor and close the session;
+`close` waits at most two seconds. That is a cap on the wait, not a kill:
+rmcp finishes the shutdown in the background and kills a stdio server a few
+seconds later, so an early `Ok` does not prove the server exited. A host that
+may end its runtime before that cleanup finishes should set
+`kill_on_drop(true)` on the command it passes to `connect_stdio` or
+`connect_stdio_with_stderr`.
 
 <Snippet file="src/bin/connect_mcp_servers.rs" anchor="close" />
 

@@ -165,6 +165,10 @@ impl McpToolSource {
     /// transport). `command` is the server launch command; stdio frames
     /// the JSON-RPC session.
     ///
+    /// rmcp owns the child and kills it during shutdown. A host that may
+    /// end its runtime before [`close`](Self::close) finishes should set
+    /// `kill_on_drop(true)` on `command` as a backstop.
+    ///
     /// The child inherits the host's stderr, so whatever the server logs
     /// is written to the host's terminal. A host that draws the terminal
     /// itself, or wants the server's output (for example the reason a
@@ -180,6 +184,11 @@ impl McpToolSource {
     /// Like [`connect_stdio`](Self::connect_stdio), with the child's stderr
     /// sent to `stderr` instead of the host's. A `stderr` setting on
     /// `command` itself is not used.
+    ///
+    /// rmcp owns the child and kills it during shutdown, as with
+    /// [`connect_stdio`](Self::connect_stdio); set `kill_on_drop(true)` on
+    /// `command` when the host may end its runtime before
+    /// [`close`](Self::close) finishes.
     ///
     /// Pass [`Stdio::null()`](std::process::Stdio::null) to drop it, a
     /// [`File`](std::fs::File) to log it, or the writing end of
@@ -298,23 +307,45 @@ impl McpToolSource {
         Ok(Self::build(server_id, service, list_version))
     }
 
-    /// Shut the underlying session down. Best-effort: the rmcp
-    /// `RunningService::cancel` handshake can hang if the transport's
-    /// session-cleanup DELETE races with the service being torn down
-    /// (notably the axum `StreamableHttpService` test fixture wrapped in
-    /// a `capture_auth` middleware — see `tests/integration.rs`). Bound
-    /// the wait so callers never hang — the service is dropped on
-    /// timeout and the transport closes with it.
+    /// Shut the underlying session down. Best-effort: this call signals
+    /// cancellation before it starts waiting, then waits up to two seconds
+    /// for rmcp's `RunningService::cancel` to finish — the session-cleanup
+    /// DELETE of a Streamable HTTP transport can hang when it races with
+    /// the service being torn down (notably the axum `StreamableHttpService`
+    /// test fixture wrapped in a `capture_auth` middleware — see
+    /// `tests/integration.rs`), so the wait is bounded.
+    ///
+    /// The bound limits the wait, not the shutdown. Cancellation is already
+    /// signalled, so rmcp drains in-flight responses for up to two seconds
+    /// while this call waits, then closes the transport. A timeout only
+    /// detaches the join handle; cleanup continues in a background task.
+    /// For stdio, closing the transport shuts the child's stdin and rmcp
+    /// kills the child if it is still running three seconds later, so the
+    /// worst case from this call to the kill is about five seconds. An `Ok`
+    /// return means the wait ended, not that the server exited.
+    ///
+    /// A host that may end its runtime before that background cleanup
+    /// finishes should set `kill_on_drop(true)` on the
+    /// `tokio::process::Command` passed to
+    /// [`connect_stdio`](Self::connect_stdio) or
+    /// [`connect_stdio_with_stderr`](Self::connect_stdio_with_stderr):
+    /// rmcp runs that kill in a task of its own, which may never run once
+    /// the runtime stops, while `kill_on_drop` kills the child when its
+    /// handle is dropped.
     pub async fn close(self) -> Result<(), SourceError> {
-        // Move the service so a timeout still drops it (closing the
-        // transport) instead of keeping it alive in the caller's stack.
+        // Move the service into the timed future so a timeout leaves the
+        // shutdown to rmcp: dropping it signals cancellation and the
+        // background task finishes the cleanup.
         let server_id = self.server_id.clone();
         let service = self.service;
         match tokio::time::timeout(std::time::Duration::from_secs(2), service.cancel()).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(SourceError::Unavailable(e.to_string())),
             Err(_) => {
-                tracing::warn!(server_id = %server_id, "MCP close timed out; dropping service without session cleanup");
+                tracing::warn!(
+                    server_id = %server_id,
+                    "MCP close wait timed out; rmcp continues session cleanup in the background"
+                );
                 Ok(())
             }
         }

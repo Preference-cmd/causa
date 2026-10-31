@@ -12,6 +12,20 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Changed
+
+- `McpToolSource::close` docs and its timeout warning now describe what the
+  two-second bound does. It bounds the wait, not the shutdown: cancellation
+  is signalled before the wait, rmcp keeps draining and closes the transport
+  in a background task after the call returns, and for stdio it kills the
+  child about three seconds after the transport closes, so a cancelled
+  shutdown reaches the kill in about five seconds. An `Ok` return means the
+  wait ended, not that the server exited. The two `connect_stdio` functions
+  and the MCP guide tell a host that may end its runtime before that cleanup
+  finishes to set `kill_on_drop(true)` on the command, since rmcp runs its
+  kill in a task that may never run once the runtime stops. Behavior is
+  unchanged.
+
 ### Security
 
 - The repository's `Cargo.lock` moves `tokio` from 1.53.1 to 1.54.1,
