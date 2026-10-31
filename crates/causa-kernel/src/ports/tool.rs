@@ -228,10 +228,33 @@ pub trait ArtifactStore: Send + Sync {
 /// - must not block the thread. Blocking or CPU-heavy work runs on a
 ///   blocking thread (for example `tokio::task::spawn_blocking`) and the
 ///   tool awaits it;
-/// - must return promptly once its [`CallControl`] is cancelled or past its
-///   deadline.
+/// - must watch its [`CallControl`] itself. A turn stop — cancellation or
+///   the turn deadline — drops the call future: the executor stops polling,
+///   a started call settles as
+///   [`ToolResultStatus::UnknownOutcome`](crate::context::tool_data::ToolResultStatus::UnknownOutcome).
+///   Once the executor observes the stop it polls the call no further, so a
+///   value returned after that is not recorded. Returning promptly on
+///   cancellation releases the resources the future still owns; it does not
+///   make the result observed;
+/// - must return, cleanup included, by its effective call deadline to
+///   report
+///   [`ToolResultStatus::TimedOut`](crate::context::tool_data::ToolResultStatus::TimedOut)
+///   or
+///   [`ToolResultStatus::Cancelled`](crate::context::tool_data::ToolResultStatus::Cancelled).
+///   The executor enforces a call deadline with `timeout_at`, which polls the
+///   call before its own timer and drops the future once the deadline has
+///   expired. A tool that races the same deadline and returns without
+///   awaiting anything further is therefore recorded. A tool that awaits
+///   cleanup after it stops has to stop early enough for that cleanup to
+///   finish before the deadline; otherwise the future is dropped mid-cleanup
+///   and the call settles as `UnknownOutcome`.
 ///
-/// For a tool that meets both, a stop takes effect at its next yield point.
+/// Dropping the future runs on the executor's task, so [`Drop`] must not
+/// block and must be idempotent. A future that starts external work — a
+/// spawned task, a child process, a remote operation — cleans it up in
+/// [`Drop`].
+///
+/// For a tool that meets these, a stop takes effect at its next yield point.
 /// A tool that holds the thread also holds its sibling calls and the
 /// executor's own stop and timeout checks, so nothing is guaranteed for it:
 /// not cancellation, not the deadline, not a per-call timeout.

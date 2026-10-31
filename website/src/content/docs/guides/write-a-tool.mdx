@@ -51,9 +51,9 @@ cargo add serde --features derive
 | Bad arguments or a failed effect | Return `Failed` with an error message | — |
 | A panic | Avoid it; return `Failed` | The executor records `Failed` with `{"error": "tool panicked"}` |
 | Blocking or CPU-heavy work | Run it in `tokio::task::spawn_blocking` and await it | The tool holds every other call of the batch, and stops and timeouts no longer apply to it |
-| The call's deadline | Race the work against `control.deadline()` and return `TimedOut` | The executor records an unknown outcome, commits the batch and stops the run |
-| Cancellation of the run | Nothing, for work the future owns | The executor stops waiting and drops the call at its next `.await` |
-| Work the future does not own (a spawned task, a child process, a remote job) | Stop it when `control.cancellation_token()` fires | It keeps running after the run has stopped |
+| The call's deadline | Race the work against `control.deadline()` and return `TimedOut` with any partial output; a tool that awaits cleanup after it stops has to stop early enough for the cleanup to finish by the deadline | The executor drops the call at the deadline and records an unknown outcome; the runner commits the batch and stops the run |
+| Cancellation of the run | Nothing, for work the future owns | Once the executor observes the stop it polls the call no further and records an unknown outcome; a value returned after that is not recorded |
+| Work the future does not own (a spawned task, a child process, a remote job) | Stop it when `control.cancellation_token()` fires, and clean it up in a non-blocking, idempotent `Drop` | It keeps running after the run has stopped |
 | Large output or media | Persist the bytes in the `store` argument (set by `ToolExecutorOptions::artifact_store`) and return a reference | The whole output goes into the context |
 | A limit on concurrent calls | Share a `tokio::sync::Semaphore` across calls | Every call of a batch runs at once |
 | What the tool does to its surroundings | Override `hints`, for example `ToolHints::default().with_read_only(true)` | Processors see every hint unset and cannot tell it from a tool that writes |
@@ -102,10 +102,23 @@ why a tool must not block the thread.
 notes a processor added before the call; the executor puts them in front of
 the notes the tool returns.
 
+**What happens when a tool reaches its deadline?** A tool that returns
+`TimedOut` by the call's deadline produces an ordinary result:
+it may carry partial output, and the run continues. If the tool does not
+return, the executor drops it and records an `unknown_outcome`; the runner
+commits the batch and stops the run. Either way, the timeout does not prove
+that the tool had no effect.
+
+**What if a tool reports `Cancelled` itself?** It is an ordinary result: the
+batch is committed and the run continues; it may carry partial output. Only
+an `UnknownOutcome` — a call whose result was not observed — makes the
+runner commit the batch and then stop.
+
 **What does cancelling a run leave behind?** The run returns
-`Interrupted` with the cause `Cancelled`. Calls that had started are
-recorded as unknown outcomes in the batch it hands back, and nothing of
-that batch is in the context yet. [Handle interrupted
+`Interrupted` with the cause `Cancelled`. Calls that started and did not
+return are recorded as unknown outcomes in the batch it hands back, and a
+value a tool returns after the stop is not recorded; nothing of that batch
+is in the context yet. [Handle interrupted
 runs](/guides/interrupted-runs/) shows what to do with it.
 
 ## It's working if

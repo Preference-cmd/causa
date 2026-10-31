@@ -41,10 +41,13 @@ with no work from you.
 | Decision | What to do | What happens if you don't |
 |---|---|---|
 | A returned batch | Close it before the next run | The gateways refuse the next request: a call without a result cannot be rendered |
-| Calls that never started | Answer them `Cancelled` or `Rejected` with a short reason | — |
-| Calls that started | Keep the `unknown_outcome` the runner gave them | A failure status tells the model nothing happened, though the tool may have had its effect |
+| Calls that never started | Answer them `Rejected` with a short reason | — |
+| Calls that started and did not return | Keep the `unknown_outcome` the runner gave them | Whatever status you put there claims something the executor did not observe |
 | Answer or remove | Answer. Remove the calls with a [context edit](/guides/edit-context/) only if you must | Provider-side material produced with a removed call, such as reasoning, is left without its counterpart |
 | Long tool work | Return a handle at once and let the model ask for the status with a second tool | A stop during the work leaves a batch whose outcome is unknown |
+
+`Rejected` says the call never ran, so no tool reported a result for it;
+`Cancelled` is a result a tool reports about a call that did run.
 
 How far the run got decides what the batch holds:
 
@@ -92,9 +95,13 @@ dispatch, at the tool-call limit, or in a before processor. The
 [`interrupted_batch`](https://github.com/Preference-cmd/causa/blob/main/crates/causa-runtime/examples/interrupted_batch.rs)
 example closes a batch left by the tool-call limit.
 
-**What does `unknown_outcome` mean?** The tool started and its result was
-not seen: it may have had its effect. Whether that effect has to be checked
-before the conversation goes on is your application's decision.
+**What does `unknown_outcome` mean?** No result was observed for a started
+call, so the executor or a tool-source bridge recorded a placeholder: the
+tool may have had its effect. A result the tool reports is kept as it is,
+whatever its status — `TimedOut` and `Cancelled` are reports, may carry
+partial output, and do not prove that nothing happened. Whether an
+unobserved effect has to be checked before the conversation goes on is your
+application's decision.
 
 **What about `UnknownToolOutcome`?** That interruption returns no batch. The
 batch was committed in full, including the result marked `unknown_outcome`,

@@ -12,8 +12,55 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Added
+
+- A synthesized `UnknownOutcome` names its cause in `meta.extra.reason`,
+  beside the existing `call_control_stopped` and `call_deadline_backstop`:
+  `batch_stopped` when a batch stop settles a started call that did not
+  return, and `source_timed_out` or `source_cancelled` when `ToolBridge` maps
+  a tool source's unobserved timeout or cancellation. A host can tell a turn
+  stop from a source-level failure without parsing the message, and the
+  bridge adds no reason to a result the source reported itself. A control
+  check that fails before a call's first poll now names the actual cause:
+  cancellation records `call_control_stopped`, an expired call deadline
+  records `call_deadline_backstop`; both previously recorded
+  `call_control_stopped`. The result status is still `UnknownOutcome` and
+  the commit-and-stop policy is unchanged.
+
+  Migration: none. This is a patch release: no public API changes and no
+  change to the stable serialized set — the reason is a new key inside the
+  existing output metadata, so stored contexts and their fixture keep their
+  shape.
+
 ### Changed
 
+- Tool-result status now separates a result the tool reported from a result
+  nobody observed. `ToolResultStatus::TimedOut` and `Cancelled` are the
+  tool's own report of a terminal state: they may carry partial output and
+  do not prove that nothing happened. `Rejected` means one thing only — the
+  call never ran, so no tool reported a result — and `UnknownOutcome` is the
+  placeholder the executor or a tool-source bridge records when no result
+  was observed. The `interrupted_batch` example, the interrupted-runs guide
+  program and the guide answer an unstarted call with `Rejected` instead of
+  `Cancelled` or a choice of the two, and the runtime policy table, the
+  `ToolResultStatus` and `ToolExecutionError` docs and the write-a-tool guide
+  state the boundary. A source that can report a timeout or cancellation
+  returns `Ok` with that status; the error variants mean no result was
+  observed. No status was added or removed.
+- `Tool` now states the drop contract a host has to plan for. A turn stop —
+  cancellation or the turn deadline — drops the call future, and once the
+  executor observes the stop it polls the call no further, so a value
+  returned after that is not recorded and a started call settles as
+  `UnknownOutcome`. Returning promptly on cancellation releases what the
+  future owns; it does not make the result observed. A tool that must report
+  `TimedOut` or `Cancelled` returns, cleanup included, by its effective call
+  deadline: the executor enforces that deadline with `timeout_at`, which polls
+  the call before its timer and drops the future once the deadline has
+  expired, so a tool that awaits cleanup after it stops has to stop early
+  enough for that cleanup to finish. `Drop` runs on the executor's
+  task, so it must not block and must be idempotent, and it cleans up the
+  external work — a spawned task, a child process, a remote operation — that
+  the future started.
 - `McpToolSource::close` docs and its timeout warning now describe what the
   two-second bound does. It bounds the wait, not the shutdown: cancellation
   is signalled before the wait, rmcp keeps draining and closes the transport

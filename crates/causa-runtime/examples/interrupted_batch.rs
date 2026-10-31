@@ -4,8 +4,8 @@
 //! The model declares two calls while the run allows one, so the run stops at
 //! the tool-call limit before any tool starts. The declarations are already
 //! in the context; their results are not, and a context in that state cannot
-//! be sent to a model. The host answers each pending call with a result that
-//! says it did not run, commits the batch, and runs again.
+//! be sent to a model. The host answers each pending call with a `Rejected`
+//! result — the call never ran — commits the batch, and runs again.
 
 use async_trait::async_trait;
 use causa_kernel::{
@@ -68,15 +68,18 @@ impl Tool for ReadFile {
     }
 }
 
-/// Answers every call that has no result yet, then appends all results of the
-/// batch to the context. Calls that already have a result keep it.
+/// Answers every call that has no result yet as `Rejected`, then appends all
+/// results of the batch to the context and returns the statuses it closed.
+/// Calls that already have a result keep it.
 fn close_batch(
     context: &mut Context,
     mut batch: ToolBatch,
     reason: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<ToolResultStatus>, Box<dyn std::error::Error>> {
     // Pending calls sit after the completed ones; resolving the first pending
-    // entry moves it into the completed prefix.
+    // entry moves it into the completed prefix. A pending call never started,
+    // so it has no result to report: `Rejected` is the whole answer.
+    let mut closed = Vec::new();
     while let Some(entry) = batch.calls().first() {
         let call_block_id = entry.call().call_block_id;
         batch
@@ -85,11 +88,12 @@ fn close_batch(
                 new_block_id(),
                 ToolResultPayload::new(
                     call_block_id,
-                    ToolResultStatus::Cancelled,
+                    ToolResultStatus::Rejected,
                     ToolOutput::new(json!({"error": reason})),
                 ),
             )
             .map_err(|rejected| rejected.error)?;
+        closed.push(ToolResultStatus::Rejected);
     }
     let results = batch.into_results().map_err(|(error, _batch)| error)?;
     // The same check the runner makes before it commits a batch.
@@ -101,7 +105,7 @@ fn close_batch(
         })
         .collect();
     context.apply(Vec::new(), blocks)?;
-    Ok(())
+    Ok(closed)
 }
 
 #[tokio::main]
@@ -167,11 +171,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch.completed_len(),
         batch.calls().len()
     );
-    close_batch(
+    let closed = close_batch(
         &mut context,
         batch,
         "not run: the tool-call limit was reached",
     )?;
+    println!(
+        "closed: {}",
+        closed
+            .iter()
+            .map(|status| format!("{status:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     // Second run on the closed context.
     let outcome = runner

@@ -64,9 +64,10 @@ impl Tool for ReadNote {
             );
         }
 
-        // Past the call's deadline, report a timeout the model can read.
+        // At the call's deadline, report a timeout the model can read.
         // Without this, the executor records an unknown outcome and the run
-        // stops.
+        // stops. Racing the deadline itself works because nothing is left to
+        // await after it fires; a tool with cleanup to await stops earlier.
         let deadline = async {
             match control.deadline() {
                 Some(at) => tokio::time::sleep_until(at.into()).await,

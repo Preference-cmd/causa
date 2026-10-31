@@ -30,9 +30,10 @@
 //! | Processor data | None; optional host value in [`TurnRunOptions::processor_data`], passed to every processor unchanged and never inspected |
 //! | Tool dispatch | Every pending call of a batch at once on the caller's task: concurrent, not parallel, unbounded, nothing spawned; panic becomes failed result |
 //! | Tool result order | The order results arrived in (calls resolved before dispatch first, then completion order); an after-processor sorting [`ToolBatch::results_mut`](causa_kernel::ToolBatch::results_mut) by [`ProcessorContext::declaration_order`](causa_kernel::ProcessorContext::declaration_order) commits them in declaration order |
-//! | Tool timeout | None; local timeout becomes unknown outcome |
-//! | Stopping a tool | At the tool's next yield point; a tool that blocks the thread is not stopped or timed out (see [`Tool`](causa_kernel::Tool)) |
-//! | Unknown outcomes | Commit the successful batch, then stop |
+//! | Tool result status | Committed exactly as the tool reported it; a tool-reported `Cancelled` or `TimedOut` may carry partial output and does not prove that no side effect happened, while a call whose result was not observed becomes `UnknownOutcome` |
+//! | Tool timeout | None by default; a call deadline records an unknown outcome only if the tool does not return, while a tool-reported `TimedOut` is an ordinary result the batch commits |
+//! | Stopping a tool | At the tool's next yield point; a started call left without a result settles as an unknown outcome, once the executor observes the stop it polls no further so a value returned after that is not recorded, and a tool that blocks the thread is not stopped or timed out (see [`Tool`](causa_kernel::Tool)) |
+//! | Unknown outcomes | Commit the successful batch, then stop; a synthesized result names its cause in `meta.extra.reason`: a control check that fails before the first poll records `call_control_stopped` for cancellation and `call_deadline_backstop` for an expired deadline, the deadline backstop records `call_deadline_backstop`, batch settlement records `batch_stopped`, and a tool-source bridge records `source_timed_out` or `source_cancelled`. When a turn stop and a call deadline arrive together, whichever path is observed first decides between `batch_stopped` and `call_deadline_backstop` |
 //! | Stop after a batch finished processing | Commit its results, then report the stop |
 //! | Output retention and persistence | Caller-owned policies and storage |
 //!

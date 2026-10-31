@@ -419,6 +419,15 @@ async fn zero_local_timeout_does_not_poll_an_immediately_ready_uncooperative_too
         .unwrap();
     assert_eq!(tool.count.load(Ordering::SeqCst), 0);
     assert_eq!(statuses(&batch), vec![ToolResultStatus::UnknownOutcome]);
+    let settled = batch.results()[0].result().unwrap().1;
+    assert_eq!(
+        settled
+            .output
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.extra.as_ref()),
+        Some(&json!({"reason": "call_deadline_backstop"}))
+    );
     assert!(!parent.is_cancelled());
 }
 

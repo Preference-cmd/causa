@@ -1,12 +1,14 @@
 //! Concurrent batch dispatch and settlement of accepted or unknown results.
 
-use super::{ToolProcessingError, catalog::BoundTools, dispatch::execute};
+use super::{
+    ToolProcessingError,
+    catalog::BoundTools,
+    dispatch::{execute, unknown},
+};
 use crate::control::wait_for_stop;
 use crate::new_block_id;
 
-use causa_kernel::{
-    BatchError, BlockId, ToolBatch, ToolOutput, ToolResultPayload, ToolResultStatus,
-};
+use causa_kernel::{BatchError, BlockId, ToolBatch, ToolResultPayload};
 use futures_util::StreamExt;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -73,9 +75,16 @@ impl BoundTools<'_> {
                 {
                     // The batch was valid before dispatch and is modified only
                     // by checked completion, so settlement cannot fail.
-                    resolve(batch, call_block_id, ToolResultPayload::new(call_block_id, ToolResultStatus::UnknownOutcome, ToolOutput::new(serde_json::json!({
-                            "error": "tool was started but no acceptable result was observed before the batch stopped"
-                        })))).expect("valid pending declaration during settlement");
+                    resolve(
+                        batch,
+                        call_block_id,
+                        unknown(
+                            call_block_id,
+                            "tool was started but no acceptable result was observed before the batch stopped",
+                            "batch_stopped",
+                        ),
+                    )
+                    .expect("valid pending declaration during settlement");
                 }
             }
         }

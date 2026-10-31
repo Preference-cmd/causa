@@ -16,7 +16,8 @@ pub fn close_batch(
     reason: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Pending calls sit after the completed ones; resolving the first pending
-    // entry moves it into the completed prefix.
+    // entry moves it into the completed prefix. A pending call never started,
+    // so it has no result to report: `Rejected` is the whole answer.
     while let Some(entry) = batch.calls().first() {
         let call_block_id = entry.call().call_block_id;
         batch
@@ -25,7 +26,7 @@ pub fn close_batch(
                 new_block_id(),
                 ToolResultPayload::new(
                     call_block_id,
-                    ToolResultStatus::Cancelled,
+                    ToolResultStatus::Rejected,
                     ToolOutput::new(json!({"error": reason})),
                 ),
             )

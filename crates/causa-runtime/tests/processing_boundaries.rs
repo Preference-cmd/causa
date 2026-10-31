@@ -241,6 +241,94 @@ async fn external_cancel_settles_every_started_future_without_waiting_for_tool_c
         Err(ToolProcessingError::Control(ControlError::Cancelled))
     ));
     assert_eq!(statuses(&batch), vec![ToolResultStatus::UnknownOutcome; 2]);
+    for entry in batch.results() {
+        let settled = entry.result().unwrap().1;
+        assert_eq!(
+            settled
+                .output
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.extra.as_ref()),
+            Some(&json!({"reason": "batch_stopped"}))
+        );
+    }
+}
+/// A tool that observes the stop itself and would return a report of its
+/// own: `Cancelled`, with partial output.
+struct ReportsCancel {
+    entered: Arc<Notify>,
+}
+#[async_trait]
+impl Tool for ReportsCancel {
+    fn definition(&self) -> ToolDefinition {
+        definition("reports-cancel")
+    }
+    async fn execute(
+        &self,
+        call: &ToolCallContext,
+        control: &CallControl,
+        _store: Option<&dyn causa_kernel::ArtifactStore>,
+    ) -> ToolResultPayload {
+        self.entered.notify_one();
+        control.cancellation_token().cancelled().await;
+        result(
+            call,
+            ToolResultStatus::Cancelled,
+            json!({"partial": "the tool observed the stop"}),
+        )
+    }
+}
+/// Deterministic on the default current-thread runtime: once the cancel wakes
+/// the executor, the `biased` select polls the stop branch before the call
+/// futures, so the executor observes the stop first and polls the call no
+/// further. The tool awaited the cancellation and would report `Cancelled`,
+/// but that report is never observed.
+#[tokio::test]
+async fn tool_cancel_report_is_not_observed_once_the_stop_is_seen() {
+    let entered = Arc::new(Notify::new());
+    let parent = control();
+    let caller = parent.clone();
+    let executor = Arc::new(executor(
+        vec![Arc::new(ReportsCancel {
+            entered: entered.clone(),
+        })],
+        ToolExecutorOptions::default(),
+    ));
+    let task = tokio::spawn(async move {
+        let mut batch = batch(&["reports-cancel"]);
+        let result = executor
+            .bind(invocation(), parent)
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await;
+        (result, batch)
+    });
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    caller.cancellation_token().cancel();
+    let (result, batch) = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        result,
+        Err(ToolProcessingError::Control(ControlError::Cancelled))
+    ));
+    // The stopped batch settles the started call as unknown without polling
+    // the tool again: the tool would have reported `Cancelled`, but the
+    // executor observes the stop first, so the report is never observed.
+    assert_eq!(statuses(&batch), vec![ToolResultStatus::UnknownOutcome]);
+    let settled = batch.results()[0].result().unwrap().1;
+    assert_eq!(
+        settled
+            .output
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.extra.as_ref()),
+        Some(&json!({"reason": "batch_stopped"}))
+    );
 }
 struct WaitingProcessor {
     entered: Arc<Notify>,

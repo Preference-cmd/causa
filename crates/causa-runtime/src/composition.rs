@@ -15,15 +15,18 @@ use causa_kernel::{
     ArtifactStore, CallControl, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
     ToolExecutionError, ToolHints, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
+use serde_json::json;
 
 /// A single dynamic-source tool exposed through the plain [`Tool`]
 /// interface. The bridge routes `execute` to
 /// [`DynamicToolSource::invoke`] (the source de-namespaces the
 /// call; the host's artifact store is forwarded for media ingest) and
 /// maps invoke errors onto structured results: a timeout or cancellation
-/// is `UnknownOutcome` (the call may have run server-side), an
+/// is `UnknownOutcome` (the call may have run server-side), tagged with
+/// `meta.extra.reason` = `"source_timed_out"` or `"source_cancelled"`; an
 /// out-of-catalog name is `Rejected`, unavailability and protocol
-/// failures are `Failed` with a model-readable message. The bridge returns
+/// failures are `Failed` with a model-readable message, and those mappings
+/// carry no reason. The bridge returns
 /// the recorded result only — what an `UnknownOutcome` result does next is
 /// caller's responsibility (the runner commits the complete batch and
 /// stops; a standalone bridge consumer chooses how to use its result).
@@ -74,19 +77,27 @@ impl Tool for ToolBridge {
     ) -> ToolResultPayload {
         match self.source.invoke(ctx, control, store).await {
             Ok(result) => result,
-            Err(e) => ToolResultPayload::new(
-                ctx.call_block_id,
-                match &e {
-                    ToolExecutionError::TimedOut | ToolExecutionError::Cancelled => {
-                        ToolResultStatus::UnknownOutcome
+            Err(error) => {
+                // The source observed no result. A timeout or cancellation
+                // records why, aligning with the executor's reasons.
+                let (status, reason) = match &error {
+                    ToolExecutionError::TimedOut => {
+                        (ToolResultStatus::UnknownOutcome, Some("source_timed_out"))
                     }
-                    ToolExecutionError::UnknownTool(_) => ToolResultStatus::Rejected,
+                    ToolExecutionError::Cancelled => {
+                        (ToolResultStatus::UnknownOutcome, Some("source_cancelled"))
+                    }
+                    ToolExecutionError::UnknownTool(_) => (ToolResultStatus::Rejected, None),
                     ToolExecutionError::Unavailable(_) | ToolExecutionError::Protocol(_) => {
-                        ToolResultStatus::Failed
+                        (ToolResultStatus::Failed, None)
                     }
-                },
-                ToolOutput::new(serde_json::json!({ "error": e.to_string() })),
-            ),
+                };
+                let mut output = ToolOutput::new(json!({ "error": error.to_string() }));
+                if let Some(reason) = reason {
+                    output.meta.get_or_insert_default().extra = Some(json!({ "reason": reason }));
+                }
+                ToolResultPayload::new(ctx.call_block_id, status, output)
+            }
         }
     }
 }
@@ -96,9 +107,15 @@ mod tests {
     use super::*;
     use causa_kernel::{CancellationToken, ToolCallPayload};
 
-    /// Source stub: `None` succeeds with the call's arguments as output;
-    /// `Some` yields the (clonable) error.
-    struct StubSource(Option<ToolExecutionError>);
+    /// What the source stub reports: an echoed success, a (clonable) error,
+    /// or a terminal status and output of its own.
+    enum StubReply {
+        Echo,
+        Error(ToolExecutionError),
+        Reported(ToolResultStatus, ToolOutput),
+    }
+
+    struct StubSource(StubReply);
 
     #[async_trait]
     impl DynamicToolSource for StubSource {
@@ -119,19 +136,24 @@ mod tests {
             _store: Option<&dyn causa_kernel::ArtifactStore>,
         ) -> Result<ToolResultPayload, ToolExecutionError> {
             match &self.0 {
-                Some(e) => Err(e.clone()),
-                None => Ok(ToolResultPayload::new(
+                StubReply::Echo => Ok(ToolResultPayload::new(
                     call.call_block_id,
                     ToolResultStatus::Succeeded,
                     ToolOutput::new(call.input.arguments.clone()),
+                )),
+                StubReply::Error(e) => Err(e.clone()),
+                StubReply::Reported(status, output) => Ok(ToolResultPayload::new(
+                    call.call_block_id,
+                    status.clone(),
+                    output.clone(),
                 )),
             }
         }
     }
 
-    fn bridge(error: Option<ToolExecutionError>) -> ToolBridge {
+    fn bridge(reply: StubReply) -> ToolBridge {
         ToolBridge::new(
-            std::sync::Arc::new(StubSource(error)),
+            std::sync::Arc::new(StubSource(reply)),
             ToolDefinition::new(
                 "mcp_stub_echo",
                 "stub",
@@ -149,9 +171,30 @@ mod tests {
 
     #[tokio::test]
     async fn success_passes_through() {
-        let result = bridge(None).execute(&call(), &ctrl(), None).await;
+        let result = bridge(StubReply::Echo)
+            .execute(&call(), &ctrl(), None)
+            .await;
         assert_eq!(result.status, ToolResultStatus::Succeeded);
         assert_eq!(result.output.content, serde_json::json!({"k": "v"}));
+    }
+
+    #[tokio::test]
+    async fn reported_status_and_output_pass_through() {
+        let output = ToolOutput::new(serde_json::json!({ "partial": "first half" }));
+        let call = call();
+        let result = bridge(StubReply::Reported(
+            ToolResultStatus::TimedOut,
+            output.clone(),
+        ))
+        .execute(&call, &ctrl(), None)
+        .await;
+        assert_eq!(result.call_block_id, call.call_block_id);
+        assert_eq!(result.status, ToolResultStatus::TimedOut);
+        assert_eq!(result.output, output);
+        assert!(
+            result.output.meta.is_none(),
+            "a source-reported result carries no bridge reason"
+        );
     }
 
     #[tokio::test]
@@ -159,7 +202,7 @@ mod tests {
         let first = call();
         let second = call();
         assert_ne!(first.call_block_id, second.call_block_id);
-        let bridge = bridge(None);
+        let bridge = bridge(StubReply::Echo);
         let control = ctrl();
         let (a, b) = tokio::join!(
             bridge.execute(&first, &control, None),
@@ -172,33 +215,46 @@ mod tests {
 
     #[tokio::test]
     async fn error_mapping_is_canonical() {
-        let cases: Vec<(ToolExecutionError, ToolResultStatus)> = vec![
+        let cases: Vec<(ToolExecutionError, ToolResultStatus, Option<&str>)> = vec![
             (
                 ToolExecutionError::TimedOut,
                 ToolResultStatus::UnknownOutcome,
+                Some("source_timed_out"),
             ),
             (
                 ToolExecutionError::Cancelled,
                 ToolResultStatus::UnknownOutcome,
+                Some("source_cancelled"),
             ),
             (
                 ToolExecutionError::UnknownTool("mcp_stub_nothere".into()),
                 ToolResultStatus::Rejected,
+                None,
             ),
             (
                 ToolExecutionError::Unavailable("down".into()),
                 ToolResultStatus::Failed,
+                None,
             ),
             (
                 ToolExecutionError::Protocol("bad frame".into()),
                 ToolResultStatus::Failed,
+                None,
             ),
         ];
-        for (error, expected) in cases {
-            let result = bridge(Some(error.clone()))
+        for (error, expected, expected_reason) in cases {
+            let result = bridge(StubReply::Error(error.clone()))
                 .execute(&call(), &ctrl(), None)
                 .await;
             assert_eq!(result.status, expected, "mapping for {error}");
+            let reason = result
+                .output
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.extra.as_ref())
+                .and_then(|extra| extra.get("reason"))
+                .and_then(|reason| reason.as_str());
+            assert_eq!(reason, expected_reason, "reason for {error}");
             assert!(
                 result
                     .output

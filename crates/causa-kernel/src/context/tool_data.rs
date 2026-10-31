@@ -31,24 +31,45 @@ impl<'a> ToolCallId<'a> {
 /// Terminal status of one tool invocation, recorded verbatim as a fact;
 /// mapping from execution errors is the driver's job, not the kernel's.
 ///
+/// The boundary between these statuses is whether a result was reported or
+/// observed, not whether the call could have had an effect:
+///
+/// - [`Succeeded`](Self::Succeeded), [`Failed`](Self::Failed),
+///   [`Cancelled`](Self::Cancelled) and [`TimedOut`](Self::TimedOut) are
+///   results for the call. `Cancelled` and `TimedOut` are the tool's own
+///   report of a terminal state; they may carry partial output and do not
+///   prove that nothing happened.
+/// - [`Rejected`](Self::Rejected) records a call that never ran: an unknown
+///   tool, a denying processor or another refusal stopped it before
+///   execution, so no tool reported a result.
+/// - [`UnknownOutcome`](Self::UnknownOutcome) is a placeholder synthesized by
+///   the executor or a tool-source bridge when no result was observed — for
+///   example, a call stopped before its first poll or one that did not
+///   return.
+///
 /// Exhaustive on purpose: renderers and the runtime decide by status, so a new one is a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolResultStatus {
-    /// The tool returned an outcome.
+    /// The tool returned a successful result.
     Succeeded,
-    /// The tool ran but reported failure (including panic isolation).
+    /// The tool ran and reported failure (including panic isolation).
     Failed,
     /// The call never ran — unknown tool, denied by a processor, or otherwise
     /// refused before execution.
     Rejected,
-    /// The invocation was cancelled before producing an outcome.
+    /// The tool reported that the invocation was cancelled before completing.
+    /// The result may carry partial output, and it does not prove that no
+    /// side effect happened.
     Cancelled,
-    /// The invocation exceeded its time budget before producing an outcome.
+    /// The tool reported that the invocation exceeded its time budget. The
+    /// result may carry partial output, and it does not prove that no side
+    /// effect happened.
     TimedOut,
-    /// No outcome was observed (e.g. the call-deadline backstop fired);
-    /// whether the turn continues is the harness's unknown-outcome
-    /// configuration, not tool vocabulary.
+    /// No result was observed: the executor recorded it for a call stopped
+    /// before the first poll or one that did not return, or a tool-source
+    /// bridge recorded it for a source that reported an unobserved timeout or
+    /// cancellation. It does not mean the tool failed or had no effect.
     UnknownOutcome,
 }
 

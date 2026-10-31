@@ -58,9 +58,13 @@ pub trait DynamicToolSource: Send + Sync {
 
     /// Execute one call against the catalog. `call.input.tool_name` arrives in
     /// the source's namespace; implementors de-namespace it (and reject
-    /// names outside their namespace). Sources return the recorded result
-    /// only — handling `UnknownOutcome` belongs to the execution consumer,
-    /// not source vocabulary.
+    /// names outside their namespace). A source that can report the terminal
+    /// status returns `Ok` with it, including `TimedOut` or `Cancelled`
+    /// carrying any partial output; the timeout and cancellation errors below
+    /// mean no result was observed, and the bridge records `UnknownOutcome`
+    /// for them. A source must not synthesize `UnknownOutcome` itself: the
+    /// bridge passes an `Ok` result through unchanged, so a source without a
+    /// result returns an error and lets the bridge map it.
     ///
     /// `store` is the host's artifact store when one is configured. A source
     /// whose tools produce images persists the bytes there and attaches
@@ -90,14 +94,28 @@ pub enum SourceError {
 /// (`ToolBridge` in `causa_runtime`) turns every variant into a structured
 /// tool result the model reads; the status mapping lives there, not here.
 ///
+/// A source that can report what happened returns `Ok` with the matching
+/// [`ToolResultStatus`](crate::context::tool_data::ToolResultStatus),
+/// including `TimedOut` or `Cancelled` with any partial output. The timeout
+/// and cancellation variants below mean the source observed no result at
+/// all: the bridge records
+/// [`UnknownOutcome`](crate::context::tool_data::ToolResultStatus::UnknownOutcome).
+///
 /// Exhaustive on purpose: the runtime maps every variant to a result status, so a new one is a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolExecutionError {
-    /// The call may or may not have run server-side — the outcome is
-    /// unknown, not failed (the executor marks it accordingly).
+    /// No result was observed before the call's time budget ran out. A source
+    /// that can report a timeout returns `Ok` with a
+    /// [`TimedOut`](crate::context::tool_data::ToolResultStatus::TimedOut)
+    /// result carrying any partial output instead; this error maps to
+    /// `UnknownOutcome`.
     #[error("tool call timed out")]
     TimedOut,
-    /// Cancelled before completion; the outcome is unknown.
+    /// No result was observed because the call was cancelled. A source whose
+    /// tool reports its own cancellation returns `Ok` with a
+    /// [`Cancelled`](crate::context::tool_data::ToolResultStatus::Cancelled)
+    /// result carrying any partial output instead; this error maps to
+    /// `UnknownOutcome`.
     #[error("tool call cancelled")]
     Cancelled,
     /// The name is not in this source's namespace.
