@@ -1,7 +1,35 @@
 ---
 title: Versioning and stability
-description: What 0.1 promises about API and stored-context stability, and how to upgrade.
+description: What Causa promises about API and stored-context stability, and how to upgrade.
 ---
+
+## 0.2
+
+**0.2.0** is a minor release with one break, in token usage. The promise of
+0.1 carries over: a break of the public Rust API or of the stable serialized
+set comes only in a minor release, now `0.2` to `0.3`, and patch releases
+fix or add without breaking, so `causa = "0.2"` picks them up. Cargo does not
+move a `"0.1"` requirement to `0.2` on its own.
+
+`ModelUsage` reports four counts that do not overlap and mean the same on
+every protocol: `input_tokens` (input that neither hit nor was written to
+the prompt cache), `cache_read_tokens`, `cache_write_tokens` and
+`output_tokens`. A cache count is `None` when the endpoint does not report
+it. `reasoning_tokens` is part of `output_tokens`; do not add it to a total.
+Causa adds no totals: a host that wants the prompt size adds `input_tokens`
+and the two cache counts. On OpenAI Chat Completions and Responses,
+`input_tokens` used to include cached tokens; on Anthropic Messages it
+already meant uncached input.
+
+Also in 0.2.0: Chat and Responses fill `cache_write_tokens` when the endpoint
+reports it, Chat reads a top-level `prompt_cache_hit_tokens`, Anthropic fills
+`reasoning_tokens` from `output_tokens_details.thinking_tokens`, and the
+`agent.round` span records `usage.input`, `usage.cache_read`,
+`usage.cache_write` and `usage.output`. With `CacheDirective::StablePrefix`,
+the Anthropic conversation cache breakpoint now lands on the final message
+even when it carries this round's tool results, so a fresh tool result is
+written to the cache on the request that adds it. The serialized form of
+`Context` is unchanged.
 
 ## 0.1
 
@@ -74,6 +102,21 @@ CI checks dependency directions with all features enabled, rejects `mod.rs`
 in library sources, checks public API documentation, and builds the public
 facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
 every command.
+
+## Upgrading from 0.1
+
+Change the dependency to `causa = "0.2"`; from an earlier 0.1 release, the
+sections below need no code changes. Stored contexts load unchanged. Then
+check code that reads `ModelUsage::input_tokens`:
+
+| 0.1 usage | 0.2.0 replacement |
+| --- | --- |
+| `input_tokens` as the prompt size on Chat Completions or Responses | `input_tokens + cache_read_tokens.unwrap_or(0) + cache_write_tokens.unwrap_or(0)` |
+| `input_tokens - cache_read_tokens` to get uncached input on those protocols | `input_tokens` |
+| `cache_write_tokens` assumed `None` on Chat Completions or Responses | It is `Some` when the endpoint reports cache writes |
+| `reasoning_tokens` assumed `None` on Anthropic Messages | It is `Some` when the endpoint reports thinking tokens; it is already counted in `output_tokens` |
+
+Anthropic Messages code that reads `input_tokens` needs no change.
 
 ## Upgrading from 0.1.4
 

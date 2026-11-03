@@ -12,6 +12,8 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Breaking
 
 - `ModelUsage::input_tokens` now means uncached input on every protocol:
