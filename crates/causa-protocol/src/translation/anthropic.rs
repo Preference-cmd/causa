@@ -53,10 +53,10 @@
 //!   breakpoints: the last tool definition, the `system` parameter
 //!   (rendered as a block array so the anchor can attach — Anthropic
 //!   cannot hang the marker off a string parameter), and the latest
-//!   stable conversation message (the previous message when the final
-//!   one carries this round's dispatched `tool_result` blocks, the
-//!   final message otherwise). [`CacheDirective::None`] renders
-//!   byte-identically to a body without any cache key.
+//!   stable conversation message (including when the final message
+//!   carries this round's dispatched `tool_result` blocks).
+//!   [`CacheDirective::None`] renders byte-identically to a body without any
+//!   cache key.
 //! - Wire fidelity. Each `text` and `tool_use` block parses to one item
 //!   whose `wire.fields` is the block minus the keys its content holds
 //!   (`text`; `id`, `name`, `input`); the renderer starts from those fields
@@ -366,14 +366,14 @@ pub fn render_anthropic_messages(
 }
 
 /// The content block the stable-prefix cache anchor lands on: the last block
-/// of the anchor message that did not come from a sealed item, searching
-/// backward through earlier messages when the anchor holds only sealed items.
-/// A sealed item is written verbatim and must never be modified, so it cannot
-/// carry the marker; `sealed` holds the `(message, block)` positions of those
-/// blocks. The anchor message is the previous one when the final message
-/// carries this round's dispatched `tool_result` blocks, the final message
-/// otherwise: anchoring before the fresh dispatch keeps the cached prefix
-/// clear of content the current round just appended.
+/// of the final stable message that did not come from a sealed item (and not a
+/// tool-change block), searching backward through earlier messages when the
+/// candidate message holds only sealed or tool-change items. A sealed item is
+/// written verbatim and must never be modified, so it cannot carry the
+/// marker; `sealed` holds the `(message, block)` positions of those blocks.
+/// Search always starts at the final stable message (`end`), including when it
+/// carries this round's dispatched `tool_result` blocks, so a fresh tool
+/// result is written to cache on the request that introduces it.
 fn anchor_block<'a>(
     messages: &'a mut [(&'static str, Vec<Value>)],
     sealed: &[(usize, usize)],
@@ -387,13 +387,7 @@ fn anchor_block<'a>(
         .rposition(|(message_index, message)| {
             (0..message.1.len()).any(|block| !changes.contains(&(message_index, block)))
         })?;
-    let last = &messages[end];
-    let dispatching = last
-        .1
-        .iter()
-        .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"));
-    let start = if dispatching && end > 0 { end - 1 } else { end };
-    for (message_index, message) in messages[..=start].iter_mut().enumerate().rev() {
+    for (message_index, message) in messages[..=end].iter_mut().enumerate().rev() {
         let found = message
             .1
             .iter_mut()
@@ -660,7 +654,9 @@ fn append_sealed(messages: &mut Vec<(&'static str, Vec<Value>)>, block: Value) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use causa_kernel::{ContentPart, MediaRef, ModelStopReason, ModelUsage, ToolDefinition};
+    use causa_kernel::{
+        ContentPart, MediaRef, ModelStopReason, ModelUsage, SealedPart, ToolDefinition,
+    };
 
     use crate::translation::media::{MediaPayload, MediaSet};
     use crate::translation::test_support::{
@@ -983,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_prefix_marks_tools_system_and_previous_message() {
+    fn stable_prefix_marks_tools_system_and_final_tool_result_message() {
         let f = frame(vec![
             text(0, "be terse", Role::System),
             text(1, "hi", Role::User),
@@ -1013,17 +1009,64 @@ mod tests {
                 "cache_control": {"type": "ephemeral"},
             }])
         );
-        // the final message carries this round's dispatched tool results,
-        // so the anchor lands on the last block of the assistant message
+        // the final message carries this round's dispatched tool results;
+        // the anchor lands on the last non-sealed block of that final message
+        // (the tool_result block), and the previous (assistant) message carries
+        // no marker.
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
-        assert!(msgs[1]["content"][0].get("cache_control").is_some());
+        assert!(msgs[1]["content"][0].get("cache_control").is_none());
+        assert_eq!(
+            msgs[2]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
         // the last tool definition carries the anchor
         assert_eq!(v["tools"][0]["cache_control"], json!({"type": "ephemeral"}));
+
+        // exactly 3 cache_control markers in total
+        fn markers(value: &Value) -> usize {
+            match value {
+                Value::Object(map) => {
+                    usize::from(map.contains_key("cache_control"))
+                        + map.values().map(markers).sum::<usize>()
+                }
+                Value::Array(items) => items.iter().map(markers).sum(),
+                _ => 0,
+            }
+        }
+        assert_eq!(markers(&v), 3);
     }
 
     #[test]
-    fn stable_prefix_without_dispatch_anchors_the_final_message() {
+    fn stable_prefix_marks_last_tool_result_of_multiple() {
+        let f = frame(vec![
+            text(0, "hi", Role::User),
+            call(1, "kc1", Some("toolu_a"), "read", json!({"path": "a"})),
+            call(2, "kc2", Some("toolu_b"), "read", json!({"path": "b"})),
+            result(3, "kc1", ToolResultStatus::Succeeded, json!("file-a")),
+            result(4, "kc2", ToolResultStatus::Succeeded, json!("file-b")),
+        ]);
+        let v = render_anthropic_messages(
+            &f,
+            &MediaSet::new(),
+            &test_generation(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::StablePrefix,
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[2]["content"].as_array().unwrap().len(), 2);
+        assert!(msgs[2]["content"][0].get("cache_control").is_none());
+        assert_eq!(
+            msgs[2]["content"][1]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn stable_prefix_anchors_final_user_text_message() {
         let f = frame(vec![text(0, "hi", Role::User)]);
         let v = render_anthropic_messages(
             &f,
@@ -1397,7 +1440,7 @@ mod tests {
             msgs[0]["content"][1],
             json!({"type": "text", "text": "see"})
         );
-        // the final message carries no tool_result, so it anchors itself
+        // the final message anchors on its last block
         assert!(
             msgs[0]["content"]
                 .as_array()
@@ -1407,6 +1450,34 @@ mod tests {
                 .get("cache_control")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn stable_prefix_anchor_skips_a_sealed_item_and_moves_backward() {
+        let f = frame(vec![
+            text(0, "look", Role::User),
+            parts(
+                1,
+                vec![ContentPart::Sealed(SealedPart::new(
+                    "anthropic_messages",
+                    json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
+                ))],
+                Role::Assistant,
+            ),
+        ]);
+        let v = render_anthropic_messages(
+            &f,
+            &MediaSet::new(),
+            &test_generation(),
+            &ModelRef::new("claude-test"),
+            CacheDirective::StablePrefix,
+            &AnthropicRenderOptions::default(),
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[1]["content"][0].get("cache_control").is_none());
+        assert!(msgs[0]["content"][0].get("cache_control").is_some());
     }
 
     // --- parsing -----------------------------------------------------------

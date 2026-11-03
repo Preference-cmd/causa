@@ -38,6 +38,13 @@ format without a compatibility adapter or data converter. In the earlier
 - Streaming usage decoders keep `prompt_cache_hit_tokens`,
   `cache_write_tokens`, and `thinking_tokens` across incremental chunks.
 
+### Changed
+
+- With `CacheDirective::StablePrefix`, the Anthropic conversation cache
+  breakpoint now always lands on the final stable message, including when it
+  carries this round's tool results, so a fresh tool result is written to the
+  cache on the request that adds it instead of one request later.
+
 ## [0.1.5] - 2026-10-31
 
 ### Added
