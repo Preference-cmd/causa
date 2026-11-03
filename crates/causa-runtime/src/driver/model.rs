@@ -33,7 +33,19 @@ pub(super) fn stopped(
 }
 
 // TurnInterruption intentionally owns failed inputs for caller recovery.
-#[tracing::instrument(name = "agent.round", skip_all, fields(turn_id = %request.invocation_id.turn_id.0, round_id = request.invocation_id.round_id.0, model = %request.model.0))]
+#[tracing::instrument(
+    name = "agent.round",
+    skip_all,
+    fields(
+        turn_id = %request.invocation_id.turn_id.0,
+        round_id = request.invocation_id.round_id.0,
+        model = %request.model.0,
+        usage.input = tracing::field::Empty,
+        usage.cache_read = tracing::field::Empty,
+        usage.cache_write = tracing::field::Empty,
+        usage.output = tracing::field::Empty,
+    )
+)]
 pub(super) async fn invoke(
     gateway: &dyn ModelGateway,
     request: &ModelRequest,
@@ -83,10 +95,26 @@ pub(super) async fn invoke(
     if let Some(cause) = stopped(control, Some(&request.invocation_id)) {
         return Err(cause);
     }
-    output.map_err(|error| TurnInterruption::ModelCallFailed {
+    let output = output.map_err(|error| TurnInterruption::ModelCallFailed {
         invocation_id: request.invocation_id.clone(),
         error,
-    })
+    })?;
+    record_round_usage(&output);
+    Ok(output)
+}
+
+fn record_round_usage(output: &ModelOutput) {
+    if let Some(usage) = &output.usage {
+        let span = tracing::Span::current();
+        span.record("usage.input", usage.input_tokens);
+        span.record("usage.output", usage.output_tokens);
+        if let Some(cache_read) = usage.cache_read_tokens {
+            span.record("usage.cache_read", cache_read);
+        }
+        if let Some(cache_write) = usage.cache_write_tokens {
+            span.record("usage.cache_write", cache_write);
+        }
+    }
 }
 
 fn stream_control_error(error: ControlError) -> ModelInvokeError {

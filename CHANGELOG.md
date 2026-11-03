@@ -24,6 +24,9 @@ format without a compatibility adapter or data converter. In the earlier
 
 ### Added
 
+- The `agent.round` span now records `usage.input`, `usage.cache_read`,
+  `usage.cache_write` and `usage.output`, with the cache fields recorded only
+  when the endpoint reports them.
 - OpenAI Chat Completions and Responses wire translation now fills
   `ModelUsage::cache_write_tokens` when the endpoint reports it
   (`prompt_tokens_details.cache_write_tokens` and
