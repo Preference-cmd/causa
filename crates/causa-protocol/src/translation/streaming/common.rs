@@ -131,6 +131,7 @@ pub(super) fn merge_usage(
         "completion_tokens",
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
+        "prompt_cache_hit_tokens",
         "reasoning_tokens",
     ];
     const DETAILS: &[&str] = &[
@@ -159,7 +160,12 @@ pub(super) fn merge_usage(
                 .or_insert_with(|| serde_json::json!({}))
                 .as_object_mut()
                 .expect("usage detail object");
-            for count in ["cached_tokens", "reasoning_tokens"] {
+            for count in [
+                "cached_tokens",
+                "cache_write_tokens",
+                "reasoning_tokens",
+                "thinking_tokens",
+            ] {
                 if let Some(value) = values.get(count).filter(|v| !v.is_null()) {
                     let n = value.as_u64().ok_or_else(|| {
                         undecodable("stream usage count must be an unsigned integer")

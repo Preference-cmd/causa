@@ -1102,7 +1102,7 @@ mod tests {
         let reasoning = out.reasoning.unwrap();
         assert_eq!(reasoning.text, "hmm");
         let u: ModelUsage = out.usage.unwrap();
-        assert_eq!((u.input_tokens, u.output_tokens), (100, 20));
+        assert_eq!((u.input_tokens, u.output_tokens), (89, 20));
         assert_eq!(u.cache_read_tokens, Some(11));
         assert_eq!(u.cache_write_tokens, None);
         assert_eq!(u.reasoning_tokens, Some(5));

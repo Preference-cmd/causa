@@ -12,6 +12,29 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Breaking
+
+- `ModelUsage::input_tokens` now means uncached input on every protocol:
+  input tokens that neither hit nor were written to the prompt cache. On OpenAI
+  Chat Completions and Responses, cache read and cache write counts are
+  subtracted from the raw prompt total using saturating arithmetic.
+
+  Migration: hosts that need the previous prompt total add `input_tokens`,
+  `cache_read_tokens` and `cache_write_tokens` themselves.
+
+### Added
+
+- OpenAI Chat Completions and Responses wire translation now fills
+  `ModelUsage::cache_write_tokens` when the endpoint reports it
+  (`prompt_tokens_details.cache_write_tokens` and
+  `input_tokens_details.cache_write_tokens`).
+- OpenAI Chat Completions wire translation reads top-level
+  `prompt_cache_hit_tokens` as a fallback for `cache_read_tokens`.
+- Anthropic Messages wire translation fills `ModelUsage::reasoning_tokens`
+  from `output_tokens_details.thinking_tokens`.
+- Streaming usage decoders keep `prompt_cache_hit_tokens`,
+  `cache_write_tokens`, and `thinking_tokens` across incremental chunks.
+
 ## [0.1.5] - 2026-10-31
 
 ### Added

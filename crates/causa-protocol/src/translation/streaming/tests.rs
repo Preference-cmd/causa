@@ -638,7 +638,7 @@ fn usage_partial_nested_snapshots_preserve_counts_and_ignore_extensions() {
             usage.output_tokens,
             usage.cache_read_tokens
         ),
-        (10, 5, Some(4))
+        (6, 5, Some(4))
     );
 }
 
@@ -1297,4 +1297,196 @@ fn a_null_error_field_is_not_an_error() {
     .unwrap_err();
     assert_eq!(error.kind, ModelInvokeErrorKind::Transient);
     assert_eq!(error.message, "provider error (server_error): down");
+}
+
+#[test]
+fn pt2_anthropic_stream() {
+    let events = [
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "m1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "stop_reason": null,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 11,
+                    "cache_creation_input_tokens": 3
+                }
+            }
+        }),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {
+                "output_tokens": 20,
+                "output_tokens_details": {"thinking_tokens": 8}
+            }
+        }),
+        json!({"type": "message_stop"}),
+    ];
+    let expected = parse_anthropic_response(&json!({
+        "content": [{"type": "text", "text": "hello"}],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 11,
+            "cache_creation_input_tokens": 3,
+            "output_tokens_details": {"thinking_tokens": 8}
+        }
+    }))
+    .unwrap();
+    let deltas = paired(Protocol::AnthropicMessages, &wire(&events), &expected);
+    let u = output(&deltas).usage.as_ref().unwrap();
+    assert_eq!(u.input_tokens, 100);
+    assert_eq!(u.output_tokens, 20);
+    assert_eq!(u.cache_read_tokens, Some(11));
+    assert_eq!(u.cache_write_tokens, Some(3));
+    assert_eq!(u.reasoning_tokens, Some(8));
+}
+
+#[test]
+fn pt6_chat_and_responses_streaming_match_non_stream() {
+    // PT3 Chat streaming
+    {
+        let chat_pt3_usage = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 11}
+        });
+        let mut bytes = wire(&[
+            json!({"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage": chat_pt3_usage}),
+        ]);
+        bytes.extend_from_slice(b"data: [DONE]\n\n");
+        let expected = parse_openai_chat_response(&json!({
+            "choices":[{"message":{"content":"hi","role":"assistant"},"finish_reason":"stop"}],
+            "usage": chat_pt3_usage,
+        }))
+        .unwrap();
+        let deltas = paired(Protocol::OpenAiChatCompletions, &bytes, &expected);
+        let u = output(&deltas).usage.as_ref().unwrap();
+        assert_eq!(u.input_tokens, 89);
+        assert_eq!(u.cache_read_tokens, Some(11));
+        assert_eq!(u.cache_write_tokens, None);
+        assert_eq!(u.output_tokens, 20);
+    }
+
+    // PT4 Chat streaming with cache_write_tokens
+    {
+        let chat_pt4_usage = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 5}
+        });
+        let mut bytes = wire(&[
+            json!({"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage": chat_pt4_usage}),
+        ]);
+        bytes.extend_from_slice(b"data: [DONE]\n\n");
+        let expected = parse_openai_chat_response(&json!({
+            "choices":[{"message":{"content":"hi","role":"assistant"},"finish_reason":"stop"}],
+            "usage": chat_pt4_usage,
+        }))
+        .unwrap();
+        let deltas = paired(Protocol::OpenAiChatCompletions, &bytes, &expected);
+        let u = output(&deltas).usage.as_ref().unwrap();
+        assert_eq!(u.input_tokens, 84);
+        assert_eq!(u.cache_read_tokens, Some(11));
+        assert_eq!(u.cache_write_tokens, Some(5));
+        assert_eq!(u.output_tokens, 20);
+    }
+
+    // PT4 compat Chat streaming with top-level prompt_cache_hit_tokens
+    {
+        let chat_compat_usage = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 11
+        });
+        let mut bytes = wire(&[
+            json!({"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage": chat_compat_usage}),
+        ]);
+        bytes.extend_from_slice(b"data: [DONE]\n\n");
+        let expected = parse_openai_chat_response(&json!({
+            "choices":[{"message":{"content":"hi","role":"assistant"},"finish_reason":"stop"}],
+            "usage": chat_compat_usage,
+        }))
+        .unwrap();
+        let deltas = paired(Protocol::OpenAiChatCompletions, &bytes, &expected);
+        let u = output(&deltas).usage.as_ref().unwrap();
+        assert_eq!(u.input_tokens, 89);
+        assert_eq!(u.cache_read_tokens, Some(11));
+        assert_eq!(u.cache_write_tokens, None);
+        assert_eq!(u.output_tokens, 20);
+    }
+
+    // PT5 Responses streaming (cached_tokens)
+    {
+        let responses_pt5_usage = json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "input_tokens_details": {"cached_tokens": 11}
+        });
+        let response = json!({
+            "id": "r1",
+            "status": "completed",
+            "output": [{"type": "message", "id": "m0", "content": [{"type": "output_text", "text": "resp"}]}],
+            "usage": responses_pt5_usage
+        });
+        let events = [
+            json!({"type": "response.created", "response": {"id": "r1", "status": "in_progress"}}),
+            json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "m0", "content": []}}),
+            json!({"type": "response.content_part.added", "output_index": 0, "item_id": "m0", "content_index": 0, "part": {"type": "output_text", "text": "resp"}}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": response["output"][0]}),
+            json!({"type": "response.completed", "response": response}),
+        ];
+        let expected = parse_openai_responses_output(&response).unwrap();
+        let deltas = paired(Protocol::OpenAiResponses, &wire(&events), &expected);
+        let u = output(&deltas).usage.as_ref().unwrap();
+        assert_eq!(u.input_tokens, 89);
+        assert_eq!(u.cache_read_tokens, Some(11));
+        assert_eq!(u.cache_write_tokens, None);
+        assert_eq!(u.output_tokens, 20);
+    }
+
+    // PT5 Responses streaming with cache_write_tokens
+    {
+        let responses_write_usage = json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "input_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 5}
+        });
+        let response = json!({
+            "id": "r2",
+            "status": "completed",
+            "output": [{"type": "message", "id": "m0", "content": [{"type": "output_text", "text": "resp"}]}],
+            "usage": responses_write_usage
+        });
+        let events = [
+            json!({"type": "response.created", "response": {"id": "r2", "status": "in_progress"}}),
+            json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "m0", "content": []}}),
+            json!({"type": "response.content_part.added", "output_index": 0, "item_id": "m0", "content_index": 0, "part": {"type": "output_text", "text": "resp"}}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": response["output"][0]}),
+            json!({"type": "response.completed", "response": response}),
+        ];
+        let expected = parse_openai_responses_output(&response).unwrap();
+        let deltas = paired(Protocol::OpenAiResponses, &wire(&events), &expected);
+        let u = output(&deltas).usage.as_ref().unwrap();
+        assert_eq!(u.input_tokens, 84);
+        assert_eq!(u.cache_read_tokens, Some(11));
+        assert_eq!(u.cache_write_tokens, Some(5));
+        assert_eq!(u.output_tokens, 20);
+    }
 }
