@@ -12,7 +12,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-causa-kernel = { path = "../causa-kernel", version = "0.2.0" }
+causa-kernel = { path = "../causa-kernel", version = "0.3.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

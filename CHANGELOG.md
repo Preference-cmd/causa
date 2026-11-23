@@ -12,6 +12,8 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-23
+
 ### Breaking
 
 - Removed `ToolHints` from `causa-kernel` (and the `causa` facade) in favor of

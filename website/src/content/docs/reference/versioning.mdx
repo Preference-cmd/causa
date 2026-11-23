@@ -3,6 +3,35 @@ title: Versioning and stability
 description: What Causa promises about API and stored-context stability, and how to upgrade.
 ---
 
+## 0.3
+
+**0.3.0** is a minor release with one break: `ToolHints` is removed from
+`causa-kernel` in favor of opaque, policy-free `ToolMetadata`, and MCP tool
+annotations move to `causa-extension::mcp::McpToolAnnotations`. The promise of
+0.1 carries over: a break of the public Rust API or of the stable serialized
+set comes only in a minor release, now `0.3` to `0.4`, and patch releases fix
+or add without breaking, so `causa = "0.3"` picks them up. Cargo does not move
+a `"0.2"` requirement to `0.3` on its own.
+
+`ToolMetadata` carries arbitrary bind-time typed values beside
+`ToolDefinition` (via `Tool::metadata()`, `DynamicToolSource::describe()`,
+`ToolDescription::metadata`, `BoundTools::tools()`, and
+`ProcessorContext::tool()` / `tool_metadata::<T>()`) without entering
+`Context`, `ToolChange`, or model wire requests. `McpToolSource::describe()`
+attaches `McpToolAnnotations` (`title`, `read_only`, `destructive`,
+`idempotent`, `open_world`) only when the server supplies `annotations`, with
+no fabricated MCP defaults.
+
+Also in 0.3.0: `CallAttachments` provides a non-persisted, call-scoped typed
+channel from before-processors (`ToolCallEntry::attachments_mut` / `attach`)
+to `Tool::execute` and `DynamicToolSource::invoke`
+(`ToolCallContext::attachment` / `attachments` / `with_attachment`), cleared
+atomically by `ToolBatch::resolve_at`. `causa-extension` raises `rmcp` to
+`3.11.0` (clearing RUSTSEC-2026-0462) and gates `base64` behind the `mcp`
+feature, and repository lockfiles update `url` to `2.5.9` (clearing
+RUSTSEC-2026-0592). `ProcessorData` and the serialized form of `Context` are
+unchanged.
+
 ## 0.2
 
 **0.2.0** is a minor release with one break, in token usage. The promise of
@@ -102,6 +131,20 @@ CI checks dependency directions with all features enabled, rejects `mod.rs`
 in library sources, checks public API documentation, and builds the public
 facade consumers under `tests/consumers` on their own; `AGENTS.md` lists
 every command.
+
+## Upgrading from 0.2
+
+Change the dependency to `causa = "0.3"`. Stored contexts load unchanged. Then
+replace `ToolHints` usage with host-defined metadata (or `McpToolAnnotations`
+for MCP tools):
+
+| 0.2 usage | 0.3.0 replacement |
+| --- | --- |
+| `Tool::hints()` returning `ToolHints` | `Tool::metadata()` returning `ToolMetadata::new().with(your_meta)` |
+| `ToolDescription::hints` / `with_hints` | `ToolDescription::metadata` / `with_metadata` / `with_meta` (no `PartialEq`) |
+| `ProcessorContext::hints(name)` | `ProcessorContext::tool_metadata::<YourType>(name)` or `ProcessorContext::tool(name)` |
+| Reading MCP annotations via `ToolHints` | `ctx.tool_metadata::<causa::extension::McpToolAnnotations>(name)` (`None` when the server sent no annotations) |
+| `ToolBridge::with_hints` | `ToolBridge::with_metadata` or `ToolBridge::with_meta` |
 
 ## Upgrading from 0.1
 
