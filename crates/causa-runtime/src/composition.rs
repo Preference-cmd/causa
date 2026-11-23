@@ -6,14 +6,14 @@
 //! bridge so it runs the same path as a local tool) and the
 //! canonical home of the `ToolExecutionError` → status mapping. Hosts that
 //! prefer snapshot semantics (describe once, register as static tools) reuse
-//! the same bridge directly, passing each tool's hints to
-//! [`ToolBridge::with_hints`]; for live catalogs prefer
+//! the same bridge directly, passing each tool's metadata to
+//! [`ToolBridge::with_metadata`]; for live catalogs prefer
 //! `ToolExecutor::register_dynamic`.
 
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactStore, CallControl, DynamicToolSource, Tool, ToolCallContext, ToolDefinition,
-    ToolExecutionError, ToolHints, ToolOutput, ToolResultPayload, ToolResultStatus,
+    ToolExecutionError, ToolMetadata, ToolOutput, ToolResultPayload, ToolResultStatus,
 };
 use serde_json::json;
 
@@ -31,30 +31,30 @@ use serde_json::json;
 /// caller's responsibility (the runner commits the complete batch and
 /// stops; a standalone bridge consumer chooses how to use its result).
 ///
-/// Snapshot semantics: the [`ToolDefinition`] and [`ToolHints`] are fixed
+/// Snapshot semantics: the [`ToolDefinition`] and [`ToolMetadata`] are fixed
 /// at construction — listing changes after bridging are not picked up. For
 /// live catalogs prefer `ToolExecutor::register_dynamic`.
 pub struct ToolBridge {
     source: std::sync::Arc<dyn DynamicToolSource>,
     definition: ToolDefinition,
-    hints: ToolHints,
+    metadata: ToolMetadata,
 }
 
 impl ToolBridge {
-    /// Bridge one tool definition of `source` into a static `Tool` that
-    /// declares no hints.
+    /// Bridge one tool definition of `source` into a static `Tool` with
+    /// empty metadata.
     pub fn new(source: std::sync::Arc<dyn DynamicToolSource>, definition: ToolDefinition) -> Self {
         Self {
             source,
             definition,
-            hints: ToolHints::default(),
+            metadata: ToolMetadata::default(),
         }
     }
 
-    /// Sets the hints the bridged tool declares, usually the ones its
+    /// Sets the metadata the bridged tool carries, usually the metadata its
     /// source listed with the definition.
-    pub fn with_hints(mut self, hints: ToolHints) -> Self {
-        self.hints = hints;
+    pub fn with_metadata(mut self, metadata: ToolMetadata) -> Self {
+        self.metadata = metadata;
         self
     }
 }
@@ -65,8 +65,8 @@ impl Tool for ToolBridge {
         self.definition.clone()
     }
 
-    fn hints(&self) -> ToolHints {
-        self.hints.clone()
+    fn metadata(&self) -> ToolMetadata {
+        self.metadata.clone()
     }
 
     async fn execute(

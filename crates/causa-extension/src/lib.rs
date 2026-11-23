@@ -18,4 +18,4 @@
 pub mod mcp;
 
 #[cfg(feature = "mcp")]
-pub use mcp::McpToolSource;
+pub use mcp::{McpToolAnnotations, McpToolSource};

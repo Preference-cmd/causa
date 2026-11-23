@@ -1,32 +1,55 @@
-//! Tool processors read the bound tools' declared hints and the host's run
-//! data from their context. The binding fixes the hints; the data passes
-//! through as given, so a shared handle in it is read live.
+//! Tool processors read the bound tools' declared metadata, attach
+//! ephemeral per-call state for execution, and read the host's run data. The
+//! binding fixes the metadata; the data passes through as given, so a shared
+//! handle in it is read live.
 mod common;
 mod tool_fixtures;
 
 use async_trait::async_trait;
 use causa_kernel::*;
-use causa_runtime::{ToolExecutorOptions, TurnResult, TurnRunner, new_block_id};
+use causa_runtime::{
+    ToolExecutorOptions, ToolProcessingError, TurnResult, TurnRunner, new_block_id,
+};
 use serde_json::json;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use tokio::sync::{mpsc, oneshot};
+use std::time::Duration;
+use tokio::sync::{Notify, mpsc, oneshot};
 
-/// A static tool that declares hints.
-struct HintedTool {
+/// Host-defined tool classification carried via `ToolMetadata`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Effect {
+    ReadOnly,
+    Destructive,
+}
+
+/// Call-scoped attachment handed from a before-processor to tool execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApprovedPlan(&'static str);
+
+struct DropSentinel(Arc<AtomicUsize>);
+
+impl Drop for DropSentinel {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A static tool that carries host-defined metadata.
+struct MetadataTool {
     name: &'static str,
-    hints: ToolHints,
+    effect: Effect,
 }
 
 #[async_trait]
-impl Tool for HintedTool {
+impl Tool for MetadataTool {
     fn definition(&self) -> ToolDefinition {
         tool_fixtures::definition(self.name)
     }
-    fn hints(&self) -> ToolHints {
-        self.hints.clone()
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::new().with(self.effect)
     }
     async fn execute(
         &self,
@@ -38,34 +61,34 @@ impl Tool for HintedTool {
     }
 }
 
-/// A dynamic source whose one tool declares hints that can change. A call
-/// flips the tool to destructive, as a server that re-annotates would, and
-/// bumps the version, as the listing contract asks.
-struct HintedSource {
-    hints: Mutex<ToolHints>,
+/// A dynamic source whose one tool declares metadata that can change. A call
+/// flips the tool to destructive and bumps the version, as the listing
+/// contract asks.
+struct MetadataSource {
+    effect: Mutex<Effect>,
     version: AtomicU64,
     describes: AtomicUsize,
     flip_on_call: bool,
 }
 
-impl HintedSource {
-    fn new(hints: ToolHints, flip_on_call: bool) -> Arc<Self> {
+impl MetadataSource {
+    fn new(effect: Effect, flip_on_call: bool) -> Arc<Self> {
         Arc::new(Self {
-            hints: Mutex::new(hints),
+            effect: Mutex::new(effect),
             version: AtomicU64::new(0),
             describes: AtomicUsize::new(0),
             flip_on_call,
         })
     }
 
-    fn set_hints(&self, hints: ToolHints) {
-        *self.hints.lock().unwrap() = hints;
+    fn set_effect(&self, effect: Effect) {
+        *self.effect.lock().unwrap() = effect;
         self.version.fetch_add(1, Ordering::SeqCst);
     }
 }
 
 #[async_trait]
-impl DynamicToolSource for HintedSource {
+impl DynamicToolSource for MetadataSource {
     fn id(&self) -> &str {
         "remote"
     }
@@ -77,9 +100,9 @@ impl DynamicToolSource for HintedSource {
     }
     async fn describe(&self) -> Result<Vec<ToolDescription>, SourceError> {
         self.describes.fetch_add(1, Ordering::SeqCst);
+        let effect = *self.effect.lock().unwrap();
         Ok(vec![
-            ToolDescription::new(tool_fixtures::definition("remote_lookup"))
-                .with_hints(self.hints.lock().unwrap().clone()),
+            ToolDescription::new(tool_fixtures::definition("remote_lookup")).with_meta(effect),
         ])
     }
     async fn invoke(
@@ -89,11 +112,7 @@ impl DynamicToolSource for HintedSource {
         _store: Option<&dyn ArtifactStore>,
     ) -> Result<ToolResultPayload, ToolExecutionError> {
         if self.flip_on_call {
-            self.set_hints(
-                ToolHints::default()
-                    .with_read_only(false)
-                    .with_destructive(true),
-            );
+            self.set_effect(Effect::Destructive);
         }
         Ok(tool_fixtures::result(
             call,
@@ -112,7 +131,9 @@ struct Seen {
     phase: &'static str,
     round: u32,
     tool: String,
-    hints: Option<ToolHints>,
+    has_description: bool,
+    effect: Option<Effect>,
+    wrong_metadata_type: bool,
     tag: Option<&'static str>,
     other_type: bool,
 }
@@ -149,7 +170,9 @@ impl ToolBatchProcessor for Recorder {
             seen.push(Seen {
                 phase: self.phase,
                 round: ctx.round_id.0,
-                hints: ctx.hints(&tool).cloned(),
+                has_description: ctx.tool(&tool).is_some(),
+                effect: ctx.tool_metadata::<Effect>(&tool).copied(),
+                wrong_metadata_type: ctx.tool_metadata::<u64>(&tool).is_some(),
                 tool,
                 tag: ctx.data::<Tag>().map(|tag| tag.0),
                 other_type: ctx.data::<String>().is_some(),
@@ -159,20 +182,8 @@ impl ToolBatchProcessor for Recorder {
     }
 }
 
-fn read_only() -> ToolHints {
-    ToolHints::default()
-        .with_read_only(true)
-        .with_open_world(false)
-}
-
-fn destructive() -> ToolHints {
-    ToolHints::default()
-        .with_read_only(false)
-        .with_destructive(true)
-}
-
 #[tokio::test]
-async fn tools_and_sources_that_declare_nothing_bind_with_default_hints() {
+async fn tools_and_sources_that_declare_nothing_bind_with_empty_metadata() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let executor = tool_fixtures::executor(
         vec![tool_fixtures::NamedTool::new("local")],
@@ -192,23 +203,25 @@ async fn tools_and_sources_that_declare_nothing_bind_with_default_hints() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 4);
     for entry in seen.iter() {
-        assert_eq!(entry.hints, Some(ToolHints::default()), "{entry:?}");
+        assert!(entry.has_description, "{entry:?}");
+        assert_eq!(entry.effect, None, "{entry:?}");
+        assert!(!entry.wrong_metadata_type, "{entry:?}");
         assert_eq!(entry.tag, None);
     }
 }
 
 #[tokio::test]
-async fn before_and_after_processors_see_static_and_dynamic_hints() {
+async fn before_and_after_processors_see_static_and_dynamic_metadata() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let executor = tool_fixtures::executor(
-        vec![Arc::new(HintedTool {
+        vec![Arc::new(MetadataTool {
             name: "read_file",
-            hints: read_only(),
+            effect: Effect::ReadOnly,
         })],
         Recorder::pair(&seen),
     );
     executor
-        .register_dynamic(HintedSource::new(destructive(), false))
+        .register_dynamic(MetadataSource::new(Effect::Destructive, false))
         .unwrap();
     let bound = executor
         .bind(tool_fixtures::invocation(), tool_fixtures::control())
@@ -216,27 +229,37 @@ async fn before_and_after_processors_see_static_and_dynamic_hints() {
         .unwrap();
     let mut batch = tool_fixtures::batch(&["read_file", "remote_lookup"]);
     bound.process(&mut batch).await.unwrap();
-    let hints_in = |phase: &str, tool: &str| {
+    let effect_in = |phase: &str, tool: &str| {
         seen.lock()
             .unwrap()
             .iter()
             .find(|entry| entry.phase == phase && entry.tool == tool)
-            .and_then(|entry| entry.hints.clone())
+            .and_then(|entry| entry.effect)
     };
     for phase in ["before", "after"] {
-        assert_eq!(hints_in(phase, "read_file"), Some(read_only()), "{phase}");
         assert_eq!(
-            hints_in(phase, "remote_lookup"),
-            Some(destructive()),
+            effect_in(phase, "read_file"),
+            Some(Effect::ReadOnly),
+            "{phase}"
+        );
+        assert_eq!(
+            effect_in(phase, "remote_lookup"),
+            Some(Effect::Destructive),
             "{phase}"
         );
     }
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|entry| !entry.wrong_metadata_type && entry.has_description)
+    );
 }
 
 #[tokio::test]
-async fn a_binding_keeps_the_hints_it_bound() {
+async fn a_binding_keeps_the_metadata_it_bound() {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let source = HintedSource::new(read_only(), false);
+    let source = MetadataSource::new(Effect::ReadOnly, false);
     let executor = tool_fixtures::executor(vec![], Recorder::pair(&seen));
     executor.register_dynamic(source.clone()).unwrap();
 
@@ -244,14 +267,14 @@ async fn a_binding_keeps_the_hints_it_bound() {
         .bind(tool_fixtures::invocation(), tool_fixtures::control())
         .await
         .unwrap();
-    source.set_hints(destructive());
+    source.set_effect(Effect::Destructive);
     let mut batch = tool_fixtures::batch(&["remote_lookup"]);
     bound.process(&mut batch).await.unwrap();
     assert!(
         seen.lock()
             .unwrap()
             .iter()
-            .all(|entry| entry.hints == Some(read_only()))
+            .all(|entry| entry.effect == Some(Effect::ReadOnly))
     );
 
     seen.lock().unwrap().clear();
@@ -267,15 +290,15 @@ async fn a_binding_keeps_the_hints_it_bound() {
         seen.lock()
             .unwrap()
             .iter()
-            .all(|entry| entry.hints == Some(destructive()))
+            .all(|entry| entry.effect == Some(Effect::Destructive))
     );
     assert_eq!(source.describes.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
-async fn a_change_in_hints_alone_records_no_tool_change() {
+async fn a_change_in_metadata_alone_records_no_tool_change() {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let source = HintedSource::new(read_only(), true);
+    let source = MetadataSource::new(Effect::ReadOnly, true);
     let executor = tool_fixtures::executor(vec![], Recorder::pair(&seen));
     executor.register_dynamic(source.clone()).unwrap();
     let gateway = common::RecordingGateway::scripted(vec![
@@ -286,7 +309,7 @@ async fn a_change_in_hints_alone_records_no_tool_change() {
     let runner = TurnRunner::new(gateway.clone(), Arc::new(executor));
     let outcome = runner
         .run(
-            TurnId::new("hints"),
+            TurnId::new("metadata"),
             common::input("look it up"),
             common::options(),
             common::ctrl(),
@@ -294,17 +317,17 @@ async fn a_change_in_hints_alone_records_no_tool_change() {
         .await;
     assert!(matches!(outcome.result, TurnResult::Completed { .. }));
 
-    // The second round bound the new hints ...
+    // The second round bound the new metadata ...
     let before: Vec<_> = seen
         .lock()
         .unwrap()
         .iter()
         .filter(|entry| entry.phase == "before")
-        .map(|entry| (entry.round, entry.hints.clone()))
+        .map(|entry| (entry.round, entry.effect))
         .collect();
     assert_eq!(
         before,
-        vec![(0, Some(read_only())), (1, Some(destructive()))]
+        vec![(0, Some(Effect::ReadOnly)), (1, Some(Effect::Destructive))]
     );
     assert!(source.describes.load(Ordering::SeqCst) >= 2);
 
@@ -327,6 +350,450 @@ async fn a_change_in_hints_alone_records_no_tool_change() {
     // earlier round is unchanged in the next.
     for pair in requests.windows(2) {
         assert!(pair[1].frame.blocks.starts_with(&pair[0].frame.blocks));
+    }
+}
+
+#[tokio::test]
+async fn call_attachments_round_trip_through_static_and_dynamic_tools() {
+    struct AttachmentEchoTool(&'static str);
+
+    #[async_trait]
+    impl Tool for AttachmentEchoTool {
+        fn definition(&self) -> ToolDefinition {
+            tool_fixtures::definition(self.0)
+        }
+        async fn execute(
+            &self,
+            ctx: &ToolCallContext,
+            _control: &CallControl,
+            _store: Option<&dyn ArtifactStore>,
+        ) -> ToolResultPayload {
+            tool_fixtures::result(
+                ctx,
+                ToolResultStatus::Succeeded,
+                json!({
+                    "plan": ctx.attachment::<ApprovedPlan>().map(|p| p.0),
+                    "wrong_type": ctx.attachment::<u64>().is_some(),
+                }),
+            )
+        }
+    }
+
+    struct AttachmentEchoSource;
+
+    #[async_trait]
+    impl DynamicToolSource for AttachmentEchoSource {
+        fn id(&self) -> &str {
+            "dynamic_attach"
+        }
+        async fn list(&self) -> Result<Vec<ToolDefinition>, SourceError> {
+            Ok(vec![tool_fixtures::definition("dyn_attached")])
+        }
+        async fn invoke(
+            &self,
+            call: &ToolCallContext,
+            _control: &CallControl,
+            _store: Option<&dyn ArtifactStore>,
+        ) -> Result<ToolResultPayload, ToolExecutionError> {
+            Ok(tool_fixtures::result(
+                call,
+                ToolResultStatus::Succeeded,
+                json!({
+                    "plan": call.attachment::<ApprovedPlan>().map(|p| p.0),
+                    "wrong_type": call.attachment::<u64>().is_some(),
+                }),
+            ))
+        }
+    }
+
+    struct AttachPlans;
+
+    #[async_trait]
+    impl ToolBatchProcessor for AttachPlans {
+        async fn process(
+            &self,
+            batch: &mut ToolBatch,
+            _ctx: &ProcessorContext<'_>,
+        ) -> Result<(), ProcessorError> {
+            for entry in batch.calls_mut() {
+                match entry.call().input.tool_name.as_str() {
+                    "static_attached" => {
+                        assert!(entry.attach(ApprovedPlan("static-plan")));
+                    }
+                    "dyn_attached" => {
+                        assert!(entry.attach(ApprovedPlan("dynamic-plan")));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct VerifyResolvedCleared(Arc<AtomicBool>);
+
+    #[async_trait]
+    impl ToolBatchProcessor for VerifyResolvedCleared {
+        async fn process(
+            &self,
+            batch: &mut ToolBatch,
+            _ctx: &ProcessorContext<'_>,
+        ) -> Result<(), ProcessorError> {
+            for entry in batch.results_mut() {
+                assert!(entry.attachments_mut().is_none());
+                assert!(entry.call().attachments().is_empty());
+            }
+            self.0.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let after_ran = Arc::new(AtomicBool::new(false));
+    let executor = tool_fixtures::executor(
+        vec![
+            Arc::new(AttachmentEchoTool("static_attached")),
+            Arc::new(AttachmentEchoTool("unattached")),
+        ],
+        ToolExecutorOptions::default()
+            .with_before(vec![Arc::new(AttachPlans)])
+            .with_after(vec![Arc::new(VerifyResolvedCleared(after_ran.clone()))]),
+    );
+    executor
+        .register_dynamic(Arc::new(AttachmentEchoSource))
+        .unwrap();
+
+    let mut batch = tool_fixtures::batch(&["static_attached", "dyn_attached", "unattached"]);
+    executor
+        .bind(tool_fixtures::invocation(), tool_fixtures::control())
+        .await
+        .unwrap()
+        .process(&mut batch)
+        .await
+        .unwrap();
+
+    assert!(after_ran.load(Ordering::SeqCst));
+    let content_for = |name: &str| {
+        batch
+            .results()
+            .iter()
+            .find(|entry| entry.call().input.tool_name == name)
+            .and_then(|entry| entry.result())
+            .map(|(_, result)| result.output.content.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        content_for("static_attached"),
+        json!({ "plan": "static-plan", "wrong_type": false })
+    );
+    assert_eq!(
+        content_for("dyn_attached"),
+        json!({ "plan": "dynamic-plan", "wrong_type": false })
+    );
+    assert_eq!(
+        content_for("unattached"),
+        json!({ "plan": null, "wrong_type": false })
+    );
+}
+
+#[tokio::test]
+async fn attachments_drop_deterministically_across_rejection_completion_cancellation_and_early_drop()
+ {
+    // (a) Rejected in before-processor: dropped immediately upon `resolve_at`.
+    {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let dispatched = Arc::new(AtomicUsize::new(0));
+
+        struct RejectAfterAttach {
+            drops: Arc<AtomicUsize>,
+            observed_drops_before_return: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ToolBatchProcessor for RejectAfterAttach {
+            async fn process(
+                &self,
+                batch: &mut ToolBatch,
+                _ctx: &ProcessorContext<'_>,
+            ) -> Result<(), ProcessorError> {
+                assert!(batch.calls_mut()[0].attach(DropSentinel(self.drops.clone())));
+                assert_eq!(self.drops.load(Ordering::SeqCst), 0);
+                let id = batch.calls()[0].call().call_block_id;
+                batch
+                    .resolve_at(
+                        batch.completed_len(),
+                        new_block_id(),
+                        ToolResultPayload::new(
+                            id,
+                            ToolResultStatus::Rejected,
+                            ToolOutput::new(json!({"error": "rejected"})),
+                        ),
+                    )
+                    .unwrap();
+                self.observed_drops_before_return
+                    .store(self.drops.load(Ordering::SeqCst), Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        struct CountingTool(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl Tool for CountingTool {
+            fn definition(&self) -> ToolDefinition {
+                tool_fixtures::definition("work")
+            }
+            async fn execute(
+                &self,
+                call: &ToolCallContext,
+                _control: &CallControl,
+                _store: Option<&dyn ArtifactStore>,
+            ) -> ToolResultPayload {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                tool_fixtures::result(call, ToolResultStatus::Succeeded, json!(null))
+            }
+        }
+
+        let observed_before_return = Arc::new(AtomicUsize::new(0));
+        let executor = tool_fixtures::executor(
+            vec![Arc::new(CountingTool(dispatched.clone()))],
+            ToolExecutorOptions::default().with_before(vec![Arc::new(RejectAfterAttach {
+                drops: drops.clone(),
+                observed_drops_before_return: observed_before_return.clone(),
+            })]),
+        );
+        let mut batch = tool_fixtures::batch(&["work"]);
+        executor
+            .bind(tool_fixtures::invocation(), tool_fixtures::control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap();
+        assert_eq!(observed_before_return.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(dispatched.load(Ordering::SeqCst), 0);
+    }
+
+    // (b) Normal completion in dispatch: dropped before after-processor runs.
+    {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let observed_in_after = Arc::new(AtomicUsize::new(0));
+
+        struct AttachOnly(Arc<AtomicUsize>);
+        #[async_trait]
+        impl ToolBatchProcessor for AttachOnly {
+            async fn process(
+                &self,
+                batch: &mut ToolBatch,
+                _ctx: &ProcessorContext<'_>,
+            ) -> Result<(), ProcessorError> {
+                assert!(batch.calls_mut()[0].attach(DropSentinel(self.0.clone())));
+                Ok(())
+            }
+        }
+
+        struct CheckDroppedInAfter {
+            drops: Arc<AtomicUsize>,
+            observed: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl ToolBatchProcessor for CheckDroppedInAfter {
+            async fn process(
+                &self,
+                _batch: &mut ToolBatch,
+                _ctx: &ProcessorContext<'_>,
+            ) -> Result<(), ProcessorError> {
+                self.observed
+                    .store(self.drops.load(Ordering::SeqCst), Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let executor = tool_fixtures::executor(
+            vec![tool_fixtures::NamedTool::new("work")],
+            ToolExecutorOptions::default()
+                .with_before(vec![Arc::new(AttachOnly(drops.clone()))])
+                .with_after(vec![Arc::new(CheckDroppedInAfter {
+                    drops: drops.clone(),
+                    observed: observed_in_after.clone(),
+                })]),
+        );
+        let mut batch = tool_fixtures::batch(&["work"]);
+        executor
+            .bind(tool_fixtures::invocation(), tool_fixtures::control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap();
+        assert_eq!(observed_in_after.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    // (c) Cancelled dispatch settling as `UnknownOutcome`: dropped on settlement.
+    {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+
+        struct AttachSentinel(Arc<AtomicUsize>);
+        #[async_trait]
+        impl ToolBatchProcessor for AttachSentinel {
+            async fn process(
+                &self,
+                batch: &mut ToolBatch,
+                _ctx: &ProcessorContext<'_>,
+            ) -> Result<(), ProcessorError> {
+                assert!(batch.calls_mut()[0].attach(DropSentinel(self.0.clone())));
+                Ok(())
+            }
+        }
+
+        struct HangingTool(Arc<Notify>);
+        #[async_trait]
+        impl Tool for HangingTool {
+            fn definition(&self) -> ToolDefinition {
+                tool_fixtures::definition("hang")
+            }
+            async fn execute(
+                &self,
+                ctx: &ToolCallContext,
+                _control: &CallControl,
+                _store: Option<&dyn ArtifactStore>,
+            ) -> ToolResultPayload {
+                assert!(ctx.attachment::<DropSentinel>().is_some());
+                self.0.notify_one();
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+
+        let executor = Arc::new(tool_fixtures::executor(
+            vec![Arc::new(HangingTool(started.clone()))],
+            ToolExecutorOptions::default()
+                .with_before(vec![Arc::new(AttachSentinel(drops.clone()))]),
+        ));
+        let token = CancellationToken::new();
+        let control = CallControl::new(token.clone(), None);
+        let mut batch = tool_fixtures::batch(&["hang"]);
+        let handle = tokio::spawn({
+            let executor = executor.clone();
+            let control = control.clone();
+            async move {
+                let err = executor
+                    .bind(tool_fixtures::invocation(), control)
+                    .await
+                    .unwrap()
+                    .process(&mut batch)
+                    .await
+                    .unwrap_err();
+                (err, batch)
+            }
+        });
+        started.notified().await;
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        token.cancel();
+        let (err, batch) = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("cancelled dispatch finishes")
+            .unwrap();
+        assert!(matches!(err, ToolProcessingError::Control(_)));
+        assert_eq!(
+            tool_fixtures::statuses(&batch),
+            vec![ToolResultStatus::UnknownOutcome]
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    // (c2) Timed-out dispatch settling as `UnknownOutcome`: dropped on settlement.
+    {
+        let drops = Arc::new(AtomicUsize::new(0));
+
+        struct AttachSentinel(Arc<AtomicUsize>);
+        #[async_trait]
+        impl ToolBatchProcessor for AttachSentinel {
+            async fn process(
+                &self,
+                batch: &mut ToolBatch,
+                _ctx: &ProcessorContext<'_>,
+            ) -> Result<(), ProcessorError> {
+                assert!(batch.calls_mut()[0].attach(DropSentinel(self.0.clone())));
+                Ok(())
+            }
+        }
+
+        struct SleepingTool;
+        #[async_trait]
+        impl Tool for SleepingTool {
+            fn definition(&self) -> ToolDefinition {
+                tool_fixtures::definition("sleep")
+            }
+            async fn execute(
+                &self,
+                ctx: &ToolCallContext,
+                _control: &CallControl,
+                _store: Option<&dyn ArtifactStore>,
+            ) -> ToolResultPayload {
+                assert!(ctx.attachment::<DropSentinel>().is_some());
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+
+        let executor = tool_fixtures::executor(
+            vec![Arc::new(SleepingTool)],
+            ToolExecutorOptions::default()
+                .with_call_timeout(Duration::from_millis(20))
+                .with_before(vec![Arc::new(AttachSentinel(drops.clone()))]),
+        );
+        let mut batch = tool_fixtures::batch(&["sleep"]);
+        executor
+            .bind(tool_fixtures::invocation(), tool_fixtures::control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap();
+        assert_eq!(
+            tool_fixtures::statuses(&batch),
+            vec![ToolResultStatus::UnknownOutcome]
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    // (d) `ToolBatch` dropped before completion: dropped immediately.
+    {
+        let drops = Arc::new(AtomicUsize::new(0));
+
+        struct AttachThenFail(Arc<AtomicUsize>);
+        #[async_trait]
+        impl ToolBatchProcessor for AttachThenFail {
+            async fn process(
+                &self,
+                batch: &mut ToolBatch,
+                _ctx: &ProcessorContext<'_>,
+            ) -> Result<(), ProcessorError> {
+                assert!(batch.calls_mut()[0].attach(DropSentinel(self.0.clone())));
+                Err(ProcessorError::Failed("abort".into()))
+            }
+        }
+
+        let executor = tool_fixtures::executor(
+            vec![tool_fixtures::NamedTool::new("work")],
+            ToolExecutorOptions::default()
+                .with_before(vec![Arc::new(AttachThenFail(drops.clone()))]),
+        );
+        let mut batch = tool_fixtures::batch(&["work"]);
+        let err = executor
+            .bind(tool_fixtures::invocation(), tool_fixtures::control())
+            .await
+            .unwrap()
+            .process(&mut batch)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolProcessingError::Processor { .. }));
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(batch);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }
 

@@ -1,12 +1,13 @@
 //! Await approval inside a tool batch processor. Runnable offline:
 //! `cargo run -p causa-runtime --example approval_processor`
 //!
-//! The processor asks only about tools that do not declare themselves
-//! read-only, and reads the host's permission mode from the run's processor
-//! data each time it decides a call. A host task receives each approval
-//! request and replies through a channel; when it declines a write it also
-//! switches the run to read-only, and the remaining writes of the same batch
-//! are refused without asking. The processor exclusively borrows the batch
+//! The host defines its own tool metadata (`Effect::ReadOnly` vs `Effect::Write`),
+//! attaches an ephemeral `ApprovalGrant` to approved write calls in the
+//! before-processor, and reads the host's permission mode from the run's
+//! processor data each time it decides a call. A host task receives each
+//! approval request and replies through a channel; when it declines a write it
+//! also switches the run to read-only, and the remaining writes of the same
+//! batch are refused without asking. The processor exclusively borrows the batch
 //! while waiting, so the entire batch stays in this stage until all decisions
 //! are available. Rejection writes a normal result; it is not a processor
 //! failure or a paused-turn protocol.
@@ -15,8 +16,8 @@ use async_trait::async_trait;
 use causa_kernel::{
     CallControl, ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRequest,
     ModelResponse, ModelStopReason, ProcessorContext, ProcessorData, ProcessorError, TextPayload,
-    Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition, ToolHints,
-    ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
+    Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolCallDraft, ToolDefinition,
+    ToolMetadata, ToolOutput, ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
     ToolExecutor, ToolExecutorOptions, TurnResult, TurnRunOptions, TurnRunner, new_block_id,
@@ -24,6 +25,19 @@ use causa_runtime::{
 
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+/// Host-defined classification carried in `ToolMetadata`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Effect {
+    ReadOnly,
+    Write,
+}
+
+/// Ephemeral call-scoped proof attached by `ApprovalProcessor` for `WriteFile`.
+#[derive(Debug, Clone)]
+struct ApprovalGrant {
+    approved_path: String,
+}
 
 /// Scripted stub gateway: one tool-use round, then the closing round.
 struct ScriptedGateway(Mutex<Vec<ModelOutput>>);
@@ -60,7 +74,7 @@ fn path_schema() -> serde_json::Value {
     })
 }
 
-/// A local tool that declares itself read-only, so it runs without asking.
+/// A local tool that tags itself read-only via host metadata, so it runs without asking.
 struct ReadFile;
 
 #[async_trait]
@@ -69,8 +83,8 @@ impl Tool for ReadFile {
         ToolDefinition::new("read_file", "Read a file.", path_schema())
     }
 
-    fn hints(&self) -> ToolHints {
-        ToolHints::default().with_read_only(true)
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::new().with(Effect::ReadOnly)
     }
 
     async fn execute(
@@ -88,7 +102,7 @@ impl Tool for ReadFile {
 }
 
 /// A deliberately sensitive local tool — the kind a host gates behind
-/// approval. It declares that it changes what exists.
+/// approval and equips with a call-scoped grant once approved.
 struct WriteFile;
 
 #[async_trait]
@@ -97,10 +111,8 @@ impl Tool for WriteFile {
         ToolDefinition::new("write_file", "Replace a file's contents.", path_schema())
     }
 
-    fn hints(&self) -> ToolHints {
-        ToolHints::default()
-            .with_read_only(false)
-            .with_destructive(true)
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::new().with(Effect::Write)
     }
 
     async fn execute(
@@ -109,10 +121,20 @@ impl Tool for WriteFile {
         _control: &causa_kernel::CallControl,
         _store: Option<&dyn causa_kernel::ArtifactStore>,
     ) -> ToolResultPayload {
+        let Some(grant) = ctx.attachment::<ApprovalGrant>() else {
+            return ToolResultPayload::new(
+                ctx.call_block_id,
+                ToolResultStatus::Failed,
+                ToolOutput::new(serde_json::json!({ "error": "missing approval grant" })),
+            );
+        };
         ToolResultPayload::new(
             ctx.call_block_id,
             ToolResultStatus::Succeeded,
-            ToolOutput::new(serde_json::json!({ "written": true })),
+            ToolOutput::new(serde_json::json!({
+                "written": true,
+                "approved_path": grant.approved_path,
+            })),
         )
     }
 }
@@ -121,9 +143,9 @@ impl Tool for WriteFile {
 /// passes the handle to the processors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// Ask before any call that is not declared read-only.
+    /// Ask before any call that is not classified as read-only.
     Ask,
-    /// Refuse every call that is not declared read-only.
+    /// Refuse every call that is not classified as read-only.
     ReadOnly,
 }
 
@@ -153,24 +175,27 @@ impl ToolBatchProcessor for ApprovalProcessor {
             let call = batch.calls()[offset].call();
             let id = call.call_block_id;
             let tool = call.input.tool_name.clone();
-            // Hints are the tool's own claim; this host trusts its local tools.
-            if ctx.hints(&tool).and_then(|hints| hints.read_only) == Some(true) {
+            if ctx.tool_metadata::<Effect>(&tool) == Some(&Effect::ReadOnly) {
                 offset += 1;
                 continue;
             }
+            let path = call.input.arguments["path"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
             // Read the mode now, not once per batch: the host may have
             // switched it while an earlier call was being decided.
             let mode = *modes.lock().expect("mode lock");
             let refusal = match mode {
                 Mode::ReadOnly => Some("the session is read-only"),
                 Mode::Ask => {
-                    let path = call.input.arguments["path"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_owned();
                     let (reply, decision) = oneshot::channel();
                     self.0
-                        .send(ApprovalRequest { tool, path, reply })
+                        .send(ApprovalRequest {
+                            tool,
+                            path: path.clone(),
+                            reply,
+                        })
                         .await
                         .map_err(|error| ProcessorError::Failed(error.to_string()))?;
                     let approved = decision
@@ -181,8 +206,11 @@ impl ToolBatchProcessor for ApprovalProcessor {
             };
             match refusal {
                 None => {
-                    batch.calls_mut()[offset]
-                        .push_note(TextPayload::new("Approved by the host policy."));
+                    let entry = &mut batch.calls_mut()[offset];
+                    entry.attach(ApprovalGrant {
+                        approved_path: path,
+                    });
+                    entry.push_note(TextPayload::new("Approved by the host policy."));
                     offset += 1;
                 }
                 Some(reason) => {

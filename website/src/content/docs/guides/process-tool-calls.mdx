@@ -13,7 +13,8 @@ import Snippet from '../../../components/Snippet.astro';
     'causa-kernel/latest/causa_kernel/trait.ToolBatchProcessor.html',
     'causa-kernel/latest/causa_kernel/struct.ToolBatch.html',
     'causa-kernel/latest/causa_kernel/struct.ProcessorContext.html',
-    'causa-kernel/latest/causa_kernel/struct.ToolHints.html',
+    'causa-kernel/latest/causa_kernel/struct.ToolMetadata.html',
+    'causa-kernel/latest/causa_kernel/struct.CallAttachments.html',
     'causa-kernel/latest/causa_kernel/struct.ProcessorData.html',
     'causa-runtime/latest/causa_runtime/executor/struct.ToolExecutorOptions.html',
   ]}
@@ -57,7 +58,8 @@ cargo add tokio@1 --features macros,rt,sync
 | A call that must not run | In a before processor, resolve it with a `Rejected` result | The tool runs |
 | Arguments that need changing | In a before processor, edit `input_mut()` and explain with `push_note` | The tool gets the model's arguments |
 | Waiting for a person | Await the answer in the before processor; the whole batch waits | — |
-| Which calls to ask about | Read `ctx.hints(name)`: what the tool declares about itself, such as `read_only` | The processor cannot tell a read from a write |
+| Which calls to ask about | Read `ctx.tool_metadata::<T>(name)`: your own metadata type on bound tools (or `McpToolAnnotations` for MCP tools) | The processor cannot tell a read from a write |
+| Prepared state for `execute` | Attach a value with `entry.attach(value)` in a before processor and read it with `ctx.attachment::<T>()` in `Tool::execute` | The tool has to re-parse or duplicate preflight work |
 | State that differs between runs, such as a permission mode | Pass it with `TurnRunOptions::with_processor_data` and read it with `ctx.data::<T>()` | The processor has only what it was built with, shared by every run of the executor |
 | The approver goes away | Treat a missing answer as a no | — |
 | Large or sensitive output | In an after processor, edit `output_mut()` | The whole output enters the context |
@@ -68,6 +70,7 @@ What each phase may change is checked after every processor:
 | | Before | After |
 |---|---|---|
 | Edit the arguments of a pending call | yes | no |
+| Attach ephemeral call state (`attach` / `attachments_mut`) | yes | no |
 | Resolve a call with a result | yes | no |
 | Edit outputs and media | yes, of the calls it resolved | yes |
 | Add notes | yes | yes |
@@ -110,17 +113,19 @@ place.
 
 ## Ask only when it matters
 
-A processor can also read what each bound tool declares about itself, and a
+A processor can also read typed metadata carried beside each bound tool, and a
 value your application passes for the run. Together they let one processor
 follow a permission mode the user picks, such as read-only or full access.
 
-A tool declares its effects in `hints`. A tool that declares nothing has
-every hint unset:
+Define your own classification type and attach it in `Tool::metadata`. A tool
+that does not override `metadata` carries an empty `ToolMetadata` bag:
 
-<Snippet file="src/permissions.rs" anchor="hints" />
+<Snippet file="src/permissions.rs" anchor="metadata" />
 
-MCP tools get the hints their server's annotations declare; see [Connect MCP
-servers](/guides/connect-mcp-servers/).
+<Snippet file="src/permissions.rs" anchor="tool_metadata" />
+
+MCP tools carry any annotations their server supplied as `McpToolAnnotations`;
+see [Connect MCP servers](/guides/connect-mcp-servers/).
 
 The modes are your own type; Causa has none. Put a shared handle to the
 current mode in the run's options. Causa hands the same value to every
@@ -131,14 +136,14 @@ the run is seen by the next decision:
 
 <Snippet file="src/permissions.rs" anchor="options" />
 
-The processor looks up each call's hints with `ctx.hints` and the mode with
-`ctx.data`:
+The processor looks up each call's metadata with `ctx.tool_metadata` and the
+mode with `ctx.data`:
 
 <Snippet file="src/permissions.rs" anchor="processor" />
 
-Hints are the tool's own claim, and nothing checks them. Trust them as far
-as you trust the tool: your own tools, fully; an MCP server's, only as far
-as you trust the server.
+Metadata is carried unchanged and never checked by Causa. Trust it as far as
+you trust the source: your own tools, fully; an MCP server's
+`McpToolAnnotations`, only as far as you trust the server.
 
 ## Common questions
 
@@ -156,12 +161,12 @@ the outcome.
 
 **Can a processor see earlier rounds?** It gets the batch and a
 `ProcessorContext`: the turn, the round, the declaration order, the run's
-`CallControl`, the bound tools with their hints, and the run's data if you
+`CallControl`, the bound tools with their metadata, and the run's data if you
 set any. Anything else it needs, such as a session's earlier approvals, it
 keeps itself or reads from that data.
 
-**Does a change in hints change what the model sees?** No. Hints never reach
-the model or the context. A server that changes only its annotations
+**Does a change in metadata change what the model sees?** No. Metadata never
+reaches the model or the context. A server that changes only its annotations
 records no tool change, and the provider's prompt cache still matches.
 
 **Should approval live in the tool instead?** Keep it in a processor. Then

@@ -64,8 +64,8 @@ pub use ports::gateway::{
 pub use ports::prepare::{ContextPreparer, PrepareError, RoundInfo};
 pub use ports::source::{DynamicToolSource, SourceError, ToolExecutionError};
 pub use ports::tool::{
-    ArtifactHint, ArtifactStore, StoreError, Tool, ToolCallContext, ToolDescription, ToolHints,
-    ToolSurface,
+    ArtifactHint, ArtifactStore, CallAttachments, StoreError, Tool, ToolCallContext,
+    ToolDescription, ToolMetadata, ToolSurface,
 };
 /// The cancellation primitive behind the control planes, re-exported so the
 /// port is self-contained for external drivers.

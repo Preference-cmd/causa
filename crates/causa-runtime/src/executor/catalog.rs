@@ -22,9 +22,9 @@ pub struct BoundTools<'a> {
 }
 
 impl ToolExecutor {
-    /// Fixes an ordered catalog, the tools' declared hints and their concrete
-    /// dispatch targets for one invocation. Static tools give
-    /// [`Tool::definition`] and [`Tool::hints`]; dynamic sources give
+    /// Fixes an ordered catalog, the tools' declared metadata and their
+    /// concrete dispatch targets for one invocation. Static tools give
+    /// [`Tool::definition`] and [`Tool::metadata`]; dynamic sources give
     /// [`causa_kernel::DynamicToolSource::describe`]. Listing failures abort
     /// acquisition rather than using stale definitions or silently omitting a
     /// source.
@@ -47,7 +47,7 @@ impl ToolExecutor {
                 });
             }
             targets.insert(entry.name.clone(), entry.tool.clone());
-            tools.push(ToolDescription::new(definition).with_hints(entry.tool.hints()));
+            tools.push(ToolDescription::new(definition).with_metadata(entry.tool.metadata()));
         }
         for entry in registrations {
             control.check().map_err(ToolCatalogError::Control)?;
@@ -57,7 +57,7 @@ impl ToolExecutor {
                     return Err(ToolCatalogError::DuplicateTool { name });
                 }
                 let bridge = ToolBridge::new(entry.source.clone(), description.definition.clone())
-                    .with_hints(description.hints.clone());
+                    .with_metadata(description.metadata.clone());
                 targets.insert(name, Arc::new(bridge) as Arc<dyn Tool>);
                 tools.push(description);
             }

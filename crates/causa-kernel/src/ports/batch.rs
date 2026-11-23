@@ -5,7 +5,7 @@ use crate::context::ids::BlockId;
 use crate::context::ids::{RoundId, TurnId};
 use crate::context::tool_data::{ToolOutput, ToolResultPayload};
 use crate::ports::control::CallControl;
-use crate::ports::tool::{ToolCallContext, ToolDescription, ToolHints};
+use crate::ports::tool::{CallAttachments, ToolCallContext, ToolDescription};
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashSet;
@@ -27,6 +27,24 @@ impl ToolCallEntry {
     /// Mutably borrows the input while this call is still pending.
     pub fn input_mut(&mut self) -> Option<&mut ToolCallPayload> {
         self.result.is_none().then_some(&mut self.call.input)
+    }
+
+    /// Mutably borrows the call-scoped attachments while this call is still
+    /// pending. Returns `None` once the entry has been resolved.
+    pub fn attachments_mut(&mut self) -> Option<&mut CallAttachments> {
+        self.result.is_none().then_some(&mut self.call.attachments)
+    }
+
+    /// Attaches a typed value to this call while it is still pending, replacing
+    /// any previous attachment of the same type. Returns `true` when attached,
+    /// or `false` (dropping `value`) if the entry is already resolved.
+    pub fn attach<T: Any + Send + Sync>(&mut self, value: T) -> bool {
+        if let Some(attachments) = self.attachments_mut() {
+            attachments.insert(value);
+            true
+        } else {
+            false
+        }
     }
 
     /// Borrows the result block ID and result payload when completed.
@@ -168,9 +186,11 @@ impl ToolBatch {
         Ok(())
     }
 
-    /// Installs a result at an absolute entry index and advances the prefix.
-    /// A refused result leaves the batch unchanged and is handed back with
-    /// the reason, so a caller can retry or report it without a copy.
+    /// Installs a result at an absolute entry index and advances the prefix,
+    /// prepending any pending `result_notes` and clearing the entry's
+    /// [`CallAttachments`]. A refused result leaves the batch unchanged
+    /// (including its attachments) and is handed back with the reason, so a
+    /// caller can retry or report it without a copy.
     pub fn resolve_at(
         &mut self,
         index: usize,
@@ -183,6 +203,7 @@ impl ToolBatch {
         let mut notes = std::mem::take(&mut self.entries[index].call.result_notes);
         notes.append(&mut result.notes);
         result.notes = notes;
+        self.entries[index].call.attachments.clear();
         self.entries[index].result = Some((result_block_id, result));
         self.entries.swap(index, self.completed);
         self.completed += 1;
@@ -265,7 +286,7 @@ pub struct ProcessorContext<'a> {
     /// Cooperative cancellation and deadline control.
     pub control: &'a CallControl,
     /// The tools bound for this batch, in offer order, with their declared
-    /// hints. The reference executor fixes them when it binds, so they stay
+    /// metadata. The reference executor fixes them when it binds, so they stay
     /// the same for every processor of the batch. Empty unless set with
     /// [`ProcessorContext::with_tools`].
     pub tools: &'a [ToolDescription],
@@ -292,7 +313,7 @@ impl<'a> ProcessorContext<'a> {
         }
     }
 
-    /// Sets the bound tools and their hints.
+    /// Sets the bound tools and their metadata.
     pub fn with_tools(mut self, tools: &'a [ToolDescription]) -> Self {
         self.tools = tools;
         self
@@ -304,15 +325,18 @@ impl<'a> ProcessorContext<'a> {
         self
     }
 
-    /// The declared hints of the bound tool named `name`, or `None` when no
+    /// Borrows the bound [`ToolDescription`] named `name`, or `None` when no
     /// bound tool has that name. The reference executor rejects calls to
     /// unbound names before the first processor runs, so every pending call
     /// it hands to a processor resolves here.
-    pub fn hints(&self, name: &str) -> Option<&'a ToolHints> {
-        self.tools
-            .iter()
-            .find(|tool| tool.definition.name == name)
-            .map(|tool| &tool.hints)
+    pub fn tool(&self, name: &str) -> Option<&'a ToolDescription> {
+        self.tools.iter().find(|tool| tool.definition.name == name)
+    }
+
+    /// Borrows metadata of exact type `T` for the bound tool named `name`, or
+    /// `None` when no bound tool has that name or its metadata carries no `T`.
+    pub fn tool_metadata<T: Any>(&self, name: &str) -> Option<&'a T> {
+        self.tool(name).and_then(|tool| tool.metadata.get::<T>())
     }
 
     /// The host's data when it is a `T`: `None` when no data is set or it

@@ -8,6 +8,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 
 use crate::context::block::{TextPayload, ToolCallPayload};
 use crate::context::ids::BlockId;
@@ -43,88 +47,168 @@ impl ToolSurface {
     }
 }
 
-/// What a tool declares about its own effects, for the host's tool
-/// processors.
+/// Non-persisted, bind-time typed metadata carried beside [`ToolDefinition`].
 ///
-/// Each field is the tool's own claim and is not verified. `None` means the
-/// tool did not declare it: Causa fills in no default and never acts on a
-/// value, so a host decides how far to trust each one — for example by
-/// asking about every call of a tool that is not declared read-only. MCP
-/// servers declare the same four hints as tool annotations, and the MCP
-/// adapter in `causa-extension` carries them over one to one.
+/// Hosts and tool sources store arbitrary typed values keyed by [`TypeId`].
+/// Causa carries metadata from tool binding to [`crate::ProcessorContext`] and
+/// never inspects, interprets, or serializes it: metadata never enters
+/// [`crate::Context`], [`crate::ToolChange`], or model wire requests, and a
+/// change in metadata alone records no [`crate::ToolChange`].
 ///
-/// Hints sit beside the [`ToolDefinition`], not in it. They never reach the
-/// model or the context: a change in hints alone records no
-/// [`crate::ToolChange`] and leaves the rendered request as it was.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ToolHints {
-    /// The tool does not modify its environment.
-    pub read_only: Option<bool>,
-    /// The tool may overwrite or delete what exists, rather than only add
-    /// to it. Meaningful for a tool that is not read-only.
-    pub destructive: Option<bool>,
-    /// Repeating a call with the same arguments has no further effect.
-    /// Meaningful for a tool that is not read-only.
-    pub idempotent: Option<bool>,
-    /// The tool reaches entities outside a closed domain, such as the web.
-    pub open_world: Option<bool>,
+/// Cloning is O(1) per entry because each value is reference-counted. An empty
+/// `ToolMetadata` allocates nothing.
+#[derive(Clone, Default)]
+pub struct ToolMetadata {
+    entries: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
-impl ToolHints {
-    /// Declares whether the tool leaves its environment unchanged.
-    pub fn with_read_only(mut self, read_only: bool) -> Self {
-        self.read_only = Some(read_only);
+impl ToolMetadata {
+    /// An empty metadata bag.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts `value` and returns `self` for chained construction. Replaces
+    /// any previous value of type `T`.
+    pub fn with<T: Any + Send + Sync>(mut self, value: T) -> Self {
+        self.insert(value);
         self
     }
 
-    /// Declares whether the tool may overwrite or delete what exists.
-    pub fn with_destructive(mut self, destructive: bool) -> Self {
-        self.destructive = Some(destructive);
-        self
+    /// Inserts `value` under `TypeId::of::<T>()`, returning any previous value
+    /// of type `T`.
+    pub fn insert<T: Any + Send + Sync>(&mut self, value: T) -> Option<Arc<T>> {
+        self.entries
+            .insert(TypeId::of::<T>(), Arc::new(value))
+            .and_then(|prev| prev.downcast::<T>().ok())
     }
 
-    /// Declares whether repeating a call has no further effect.
-    pub fn with_idempotent(mut self, idempotent: bool) -> Self {
-        self.idempotent = Some(idempotent);
-        self
+    /// Borrows the value stored for type `T`, or `None` if no value of that
+    /// exact type is present.
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        self.entries
+            .get(&TypeId::of::<T>())
+            .and_then(|arc| (&**arc as &dyn Any).downcast_ref::<T>())
     }
 
-    /// Declares whether the tool reaches beyond a closed domain.
-    pub fn with_open_world(mut self, open_world: bool) -> Self {
-        self.open_world = Some(open_world);
-        self
+    /// Returns `true` when no metadata entries are stored.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl fmt::Debug for ToolMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolMetadata")
+            .field("len", &self.entries.len())
+            .finish_non_exhaustive()
     }
 }
 
 /// One tool as its catalog describes it: the model-facing definition and
-/// the tool's declared [`ToolHints`].
+/// non-persisted [`ToolMetadata`].
 ///
 /// A [`crate::DynamicToolSource`] lists these from
 /// [`crate::DynamicToolSource::describe`], and tool processors see the bound
 /// set through [`crate::ProcessorContext::tools`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ToolDescription {
     /// The model-facing definition.
     pub definition: ToolDefinition,
-    /// What the tool declares about its effects.
-    pub hints: ToolHints,
+    /// Non-persisted metadata declared beside the definition.
+    pub metadata: ToolMetadata,
 }
 
 impl ToolDescription {
-    /// A description that declares no hints.
+    /// A description with empty metadata.
     pub fn new(definition: ToolDefinition) -> Self {
         Self {
             definition,
-            hints: ToolHints::default(),
+            metadata: ToolMetadata::default(),
         }
     }
 
-    /// Replaces the declared hints.
-    pub fn with_hints(mut self, hints: ToolHints) -> Self {
-        self.hints = hints;
+    /// Replaces the tool metadata.
+    pub fn with_metadata(mut self, metadata: ToolMetadata) -> Self {
+        self.metadata = metadata;
         self
+    }
+
+    /// Inserts a single metadata value of type `T`, replacing any prior value
+    /// of the same type.
+    pub fn with_meta<T: Any + Send + Sync>(mut self, value: T) -> Self {
+        self.metadata.insert(value);
+        self
+    }
+}
+
+/// Non-persisted, call-scoped typed attachments handed from before-processors
+/// to tool execution.
+///
+/// Each entry is stored behind an [`Arc`] keyed by [`TypeId`], keeping
+/// [`ToolCallContext::clone`] O(1) per entry during executor dispatch. An
+/// empty `CallAttachments` allocates nothing. Attachments are never persisted
+/// in [`crate::Context`], never included in [`ToolResultPayload`], and never
+/// sent to model protocols; [`crate::ToolBatch::resolve_at`] clears an entry's
+/// attachments as soon as the call resolves.
+#[derive(Clone, Default)]
+pub struct CallAttachments {
+    entries: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+}
+
+impl CallAttachments {
+    /// An empty attachment bag.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts `value` and returns `self` for chained construction. Replaces
+    /// any previous attachment of type `T`.
+    pub fn with<T: Any + Send + Sync>(mut self, value: T) -> Self {
+        self.insert(value);
+        self
+    }
+
+    /// Inserts `value` under `TypeId::of::<T>()`, returning any previous
+    /// attachment of type `T`.
+    pub fn insert<T: Any + Send + Sync>(&mut self, value: T) -> Option<Arc<T>> {
+        self.entries
+            .insert(TypeId::of::<T>(), Arc::new(value))
+            .and_then(|prev| prev.downcast::<T>().ok())
+    }
+
+    /// Borrows the attachment stored for type `T`, or `None` if no attachment
+    /// of that exact type is present.
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        self.entries
+            .get(&TypeId::of::<T>())
+            .and_then(|arc| (&**arc as &dyn Any).downcast_ref::<T>())
+    }
+
+    /// Removes and returns the attachment stored for type `T`, if present.
+    pub fn remove<T: Any + Send + Sync>(&mut self) -> Option<Arc<T>> {
+        self.entries
+            .remove(&TypeId::of::<T>())
+            .and_then(|prev| prev.downcast::<T>().ok())
+    }
+
+    /// Drops all stored attachments.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Returns `true` when no attachments are stored.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl fmt::Debug for CallAttachments {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CallAttachments")
+            .field("len", &self.entries.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -140,26 +224,45 @@ pub struct ToolCallContext {
     /// to the returned result's notes; tool implementations should return
     /// only notes they add and must not copy this field into the result.
     pub result_notes: Vec<TextPayload>,
+    pub(crate) attachments: CallAttachments,
 }
 impl ToolCallContext {
-    /// A call context with no result notes.
+    /// A call context with no result notes and no attachments.
     pub fn new(call_block_id: BlockId, input: ToolCallPayload) -> Self {
         Self {
             call_block_id,
             input,
             result_notes: Vec::new(),
+            attachments: CallAttachments::default(),
         }
     }
-}
 
-impl ToolCallContext {
     /// Builds execution material from a committed declaration.
     pub fn from_declaration(call_block_id: BlockId, declaration: &ToolCallPayload) -> Self {
         Self {
             call_block_id,
             input: declaration.clone(),
             result_notes: Vec::new(),
+            attachments: CallAttachments::default(),
         }
+    }
+
+    /// Borrows the call-scoped attachment of exact type `T`, if present.
+    pub fn attachment<T: Any>(&self) -> Option<&T> {
+        self.attachments.get::<T>()
+    }
+
+    /// Borrows the full call-scoped attachment bag.
+    pub fn attachments(&self) -> &CallAttachments {
+        &self.attachments
+    }
+
+    /// Attaches a value of type `T`, replacing any prior attachment of the same
+    /// type. Useful for unit-testing [`Tool::execute`] directly without a
+    /// [`crate::ToolBatch`].
+    pub fn with_attachment<T: Any + Send + Sync>(mut self, value: T) -> Self {
+        self.attachments.insert(value);
+        self
     }
 }
 
@@ -265,11 +368,12 @@ pub trait ArtifactStore: Send + Sync {
 pub trait Tool: Send + Sync {
     /// The model-facing [`ToolDefinition`] for this tool.
     fn definition(&self) -> ToolDefinition;
-    /// What this tool declares about its effects. An executor reads it when
-    /// it binds the tool, next to [`Tool::definition`], and shows it to tool
-    /// processors. The default declares nothing.
-    fn hints(&self) -> ToolHints {
-        ToolHints::default()
+    /// Non-persisted metadata carried beside [`Tool::definition`]. An executor
+    /// reads it once when binding the tool and exposes it to tool processors
+    /// through [`crate::ProcessorContext::tool`] and
+    /// [`crate::ProcessorContext::tool_metadata`]. The default is empty.
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::default()
     }
     /// Runs one call under the call's [`CallControl`], returning the
     /// recorded result. `store` is the host's [`ArtifactStore`] when one is

@@ -12,6 +12,48 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Breaking
+
+- Removed `ToolHints` from `causa-kernel` (and the `causa` facade) in favor of
+  opaque, policy-free `ToolMetadata`, and moved MCP tool annotation mapping into
+  `causa-extension::mcp::McpToolAnnotations`:
+  - `Tool::hints()` is replaced by `Tool::metadata(&self) -> ToolMetadata`
+    (defaulting to empty `ToolMetadata`).
+  - `ToolDescription::hints` and `ToolDescription::with_hints` are replaced by
+    `ToolDescription::metadata: ToolMetadata`, `ToolDescription::with_metadata`,
+    and `ToolDescription::with_meta`; `ToolDescription` no longer implements
+    `PartialEq` because `ToolMetadata` holds arbitrary `dyn Any` values.
+  - `ProcessorContext::hints(name)` is replaced by
+    `ProcessorContext::tool(name)` and
+    `ProcessorContext::tool_metadata::<T>(name)`.
+  - `ToolBridge::with_hints` is replaced by `ToolBridge::with_metadata`.
+
+  Migration: move tool classification types into the host, return them from
+  `Tool::metadata()` via `ToolMetadata::new().with(...)`, read them in
+  before-processors via `ctx.tool_metadata::<YourType>(name)`, and for MCP
+  tools read `ctx.tool_metadata::<causa_extension::McpToolAnnotations>(name)`
+  (with `title`, `read_only`, `destructive`, `idempotent`, and `open_world`
+  present only when the server supplied `annotations`).
+
+### Added
+
+- `ToolMetadata` in `causa-kernel` (`Clone`, `Default`, `Debug`): non-persisted,
+  bind-time typed metadata bag (`new`, `with`, `insert`, `get`, `is_empty`)
+  carried beside `ToolDefinition` without entering `Context`, `ToolChange`, or
+  model wire requests.
+- `CallAttachments` in `causa-kernel` (`Clone`, `Default`, `Debug`):
+  non-persisted, call-scoped typed attachment bag (`new`, `with`, `insert`,
+  `get`, `remove`, `clear`, `is_empty`) for passing prepared state from
+  before-processors (`ToolCallEntry::attachments_mut` / `attach`) to
+  `Tool::execute` / `DynamicToolSource::invoke`
+  (`ToolCallContext::attachment` / `attachments` / `with_attachment`).
+  `ToolBatch::resolve_at` clears an entry's attachments atomically on
+  resolution.
+- `McpToolAnnotations` in `causa-extension::mcp` (re-exported by
+  `causa-extension` and `causa::extension` under `mcp`): carries `title` and
+  the four MCP annotation hints 1:1 inside `ToolDescription::metadata` when
+  the server supplies `annotations`.
+
 ### Security
 
 - Raised the `rmcp` requirement in `causa-extension` (and the repository

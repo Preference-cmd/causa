@@ -83,8 +83,8 @@
 use async_trait::async_trait;
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactStore, CallControl, DynamicToolSource, MediaRef,
-    SourceError, ToolCallContext, ToolDefinition, ToolDescription, ToolExecutionError, ToolHints,
-    ToolOutput, ToolResultPayload, ToolResultStatus,
+    SourceError, ToolCallContext, ToolDefinition, ToolDescription, ToolExecutionError, ToolOutput,
+    ToolResultPayload, ToolResultStatus,
 };
 use http::{HeaderName, HeaderValue};
 use rmcp::handler::client::ClientHandler;
@@ -96,6 +96,35 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Self-declared tool annotations carried from an MCP server's `tools/list`
+/// response inside [`ToolDescription::metadata`].
+///
+/// Every field is an unverified claim from the server: `None` means the server
+/// did not declare that property, and `causa-extension` fills in no MCP
+/// specification defaults and makes no trust decisions.
+///
+/// [`McpToolSource::describe`](DynamicToolSource::describe) attaches
+/// `McpToolAnnotations` to [`ToolDescription::metadata`] only when the server
+/// supplied `annotations` (`Some(...)`), so
+/// `metadata.get::<McpToolAnnotations>()` returning `None` unambiguously means
+/// the server sent no annotations.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct McpToolAnnotations {
+    /// Human-readable title for the tool, when supplied by the server.
+    pub title: Option<String>,
+    /// Whether the server claims the tool does not modify its environment.
+    pub read_only: Option<bool>,
+    /// Whether the server claims the tool may overwrite or delete what exists.
+    pub destructive: Option<bool>,
+    /// Whether the server claims repeating a call with the same arguments has
+    /// no further effect.
+    pub idempotent: Option<bool>,
+    /// Whether the server claims the tool interacts with entities outside a
+    /// closed domain.
+    pub open_world: Option<bool>,
+}
 
 /// Client handler that counts `tools/list_changed` notifications — the
 /// change signal the executor-side cache keys on.
@@ -404,11 +433,12 @@ impl DynamicToolSource for McpToolSource {
             .collect())
     }
 
-    /// Lists the tools with the hints their annotations declare:
-    /// `readOnlyHint`, `destructiveHint`, `idempotentHint` and
-    /// `openWorldHint` map one to one. A hint the server leaves out stays
-    /// undeclared; the MCP specification's defaults are not filled in, and
-    /// the annotation `title` is not carried.
+    /// Lists the tools with any [`McpToolAnnotations`] the server supplied:
+    /// `title`, `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+    /// `openWorldHint` map one to one into [`ToolDescription::metadata`] when
+    /// the tool's `annotations` field is `Some(...)`. Any field the server
+    /// leaves out stays `None` (no MCP specification defaults are filled in),
+    /// and a tool without `annotations` carries no `McpToolAnnotations` entry.
     async fn describe(&self) -> Result<Vec<ToolDescription>, SourceError> {
         let listed = self
             .service
@@ -419,17 +449,15 @@ impl DynamicToolSource for McpToolSource {
             .tools
             .into_iter()
             .map(|tool| {
-                let hints = tool
-                    .annotations
-                    .as_ref()
-                    .map(annotation_hints)
-                    .unwrap_or_default();
-                ToolDescription::new(ToolDefinition::new(
+                let mut description = ToolDescription::new(ToolDefinition::new(
                     self.namespaced(tool.name.as_ref()),
                     tool.description.map(|d| d.to_string()).unwrap_or_default(),
                     serde_json::Value::Object((*tool.input_schema).clone()),
-                ))
-                .with_hints(hints)
+                ));
+                if let Some(annotations) = tool.annotations.as_ref() {
+                    description = description.with_meta(mcp_annotations(annotations));
+                }
+                description
             })
             .collect())
     }
@@ -479,14 +507,15 @@ where
     Ok(parsed)
 }
 
-/// The kernel hints an MCP tool's annotations declare.
-fn annotation_hints(annotations: &rmcp::model::ToolAnnotations) -> ToolHints {
-    let mut hints = ToolHints::default();
-    hints.read_only = annotations.read_only_hint;
-    hints.destructive = annotations.destructive_hint;
-    hints.idempotent = annotations.idempotent_hint;
-    hints.open_world = annotations.open_world_hint;
-    hints
+/// Maps an MCP tool's annotations one-to-one with no fabricated defaults.
+fn mcp_annotations(annotations: &rmcp::model::ToolAnnotations) -> McpToolAnnotations {
+    McpToolAnnotations {
+        title: annotations.title.clone(),
+        read_only: annotations.read_only_hint,
+        destructive: annotations.destructive_hint,
+        idempotent: annotations.idempotent_hint,
+        open_world: annotations.open_world_hint,
+    }
 }
 
 impl McpToolSource {

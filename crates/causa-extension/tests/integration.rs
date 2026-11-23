@@ -3,13 +3,13 @@
 //! registry, and a full kernel turn (`TurnRunner` untouched).
 
 use async_trait::async_trait;
-use causa_extension::McpToolSource;
+use causa_extension::{McpToolAnnotations, McpToolSource};
 use causa_kernel::{
     ArtifactHint, ArtifactKind, ArtifactRef, ArtifactStore, BlockContent, BlockId, CallControl,
     CancellationToken, Context, ContextBlock, DynamicToolSource, InvocationId, MediaRef,
     ModelGateway, ModelInvokeError, ModelItem, ModelOutput, ModelRef, ModelRequest, ModelResponse,
     ModelStopReason, Role, RoundId, SourceError, StoreError, TextPayload, ToolBatch,
-    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolHints, ToolOutput,
+    ToolCallContext, ToolCallPayload, ToolDefinition, ToolExecutionError, ToolOutput,
     ToolResultPayload, ToolResultStatus, TurnId,
 };
 use causa_runtime::{
@@ -77,10 +77,22 @@ impl ServerHandler for FixtureServer {
                             .clone(),
                     ),
                 );
-                // `lookup` annotates itself as a read; every other fixture
+                // `lookup` and `sync` annotate themselves; every other fixture
                 // tool declares nothing.
                 if name == "lookup" {
-                    tool.with_annotations(ToolAnnotations::new().read_only(true).destructive(false))
+                    tool.with_annotations(
+                        ToolAnnotations::with_title("Lookup")
+                            .read_only(true)
+                            .destructive(false),
+                    )
+                } else if name == "sync" {
+                    tool.with_annotations(
+                        ToolAnnotations::with_title("Sync")
+                            .read_only(false)
+                            .destructive(true)
+                            .idempotent(true)
+                            .open_world(true),
+                    )
                 } else {
                     tool
                 }
@@ -218,12 +230,13 @@ async fn lists_tools_under_the_server_namespace() {
 }
 
 #[tokio::test]
-async fn annotations_arrive_as_tool_hints() {
+async fn annotations_arrive_as_mcp_tool_annotations_metadata() {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let server = FixtureServer {
         tools: Arc::new(std::sync::Mutex::new(vec![
             "echo".to_string(),
             "lookup".to_string(),
+            "sync".to_string(),
         ])),
         fail_calls: false,
         hang_calls: false,
@@ -238,21 +251,33 @@ async fn annotations_arrive_as_tool_hints() {
         .expect("server serve");
 
     let described = source.describe().await.expect("describe");
-    let hints = |name: &str| {
+    let annotations = |name: &str| {
         described
             .iter()
             .find(|description| description.definition.name == name)
-            .map(|description| description.hints.clone())
+            .map(|description| description.metadata.get::<McpToolAnnotations>().cloned())
             .expect("listed")
     };
-    let lookup = hints("mcp_srv_lookup");
+
+    let lookup = annotations("mcp_srv_lookup").expect("lookup has annotations");
+    assert_eq!(lookup.title.as_deref(), Some("Lookup"));
     assert_eq!(lookup.read_only, Some(true));
     assert_eq!(lookup.destructive, Some(false));
     // Undeclared hints stay undeclared: no MCP defaults are filled in.
     assert_eq!(lookup.idempotent, None);
     assert_eq!(lookup.open_world, None);
-    assert_eq!(hints("mcp_srv_echo"), ToolHints::default());
-    // `list` returns the same definitions without the hints.
+
+    let sync = annotations("mcp_srv_sync").expect("sync has annotations");
+    assert_eq!(sync.title.as_deref(), Some("Sync"));
+    assert_eq!(sync.read_only, Some(false));
+    assert_eq!(sync.destructive, Some(true));
+    assert_eq!(sync.idempotent, Some(true));
+    assert_eq!(sync.open_world, Some(true));
+
+    // An unannotated tool carries no `McpToolAnnotations` entry.
+    assert_eq!(annotations("mcp_srv_echo"), None);
+
+    // `list` returns the same definitions without the metadata.
     let listed = source.list().await.expect("list");
     assert_eq!(
         listed,

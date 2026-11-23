@@ -11,6 +11,7 @@ import Snippet from '../../../components/Snippet.astro';
   example="tests/consumers/site-guides/src/bin/connect_mcp_servers.rs"
   docs={[
     'causa-extension/latest/causa_extension/mcp/struct.McpToolSource.html',
+    'causa-extension/latest/causa_extension/mcp/struct.McpToolAnnotations.html',
     'causa-kernel/latest/causa_kernel/trait.DynamicToolSource.html',
     'causa-runtime/latest/causa_runtime/executor/struct.ToolExecutor.html',
   ]}
@@ -51,7 +52,7 @@ static token or the headers it expects. OAuth sign-in is not supported.
 |---|---|---|
 | The `server_id` | A short name of letters, digits, `_` and `-`, unique per executor | `register_dynamic` returns `DuplicateSource` for a second source with the same id |
 | A server tool with the name of one of yours | Choose a `server_id` that keeps the names apart | Listing fails with `DuplicateTool` and the run stops before calling the model |
-| Approval | Check calls in a before processor; it sees MCP calls and your own calls alike, with the hints each tool declares | The model can call every tool the server offers |
+| Approval | Check calls in a before processor; it sees MCP calls and your own calls alike, with each tool's `ToolMetadata` (`McpToolAnnotations` when supplied by the server) | The model can call every tool the server offers |
 | A call deadline (`ToolExecutorOptions::call_timeout`) | Set it high enough for the server's slowest tool | A call past it is recorded as an unknown outcome and the run stops: the server may have done the work |
 | Images, audio and files in results | Set `ToolExecutorOptions::artifact_store`; they are saved there and the result refers to them | Each becomes a line of text such as `[image: image/png — no media store available]` |
 | A local server's stderr | Connect with `connect_stdio_with_stderr` and pass `Stdio::null()`, a log file, or the writing end of `std::io::pipe()` | `connect_stdio` lets the server write to your process's stderr: into your terminal, or over the screen of a terminal UI |
@@ -137,14 +138,16 @@ string, or its structured content when the tool returns some.
 **Do MCP calls run alongside my own tools?** Yes. The calls of one batch
 run concurrently on the caller's task, whichever source they come from.
 
-**Can a processor tell an MCP read from a write?** If the server says so. The
-annotations `readOnlyHint`, `destructiveHint`, `idempotentHint` and
-`openWorldHint` reach processors as the tool's hints, through
-`ctx.hints(name)`. A hint the server leaves out stays unset: the defaults the
-MCP specification gives are not filled in. They are the server's claim, so
-trust them only as far as you trust the server; [Process tool
-calls](/guides/process-tool-calls/#ask-only-when-it-matters) shows a
-processor that uses them.
+**Can a processor tell an MCP read from a write?** If the server says so. When
+the server supplies `annotations`, `McpToolSource` attaches
+`McpToolAnnotations` (`title`, `read_only`, `destructive`, `idempotent`,
+`open_world`) into the tool's `ToolMetadata`, readable through
+`ctx.tool_metadata::<McpToolAnnotations>(name)`. Any field the server leaves
+out stays `None`: the defaults the MCP specification gives are not filled in,
+and an unannotated tool carries no `McpToolAnnotations` entry. They are the
+server's claim, so trust them only as far as you trust the server; [Process
+tool calls](/guides/process-tool-calls/#ask-only-when-it-matters) shows a
+processor that reads tool metadata.
 
 **Is a server's output safe to give the model?** Treat it as untrusted
 input: it can contain instructions meant to steer the model. Keep approval

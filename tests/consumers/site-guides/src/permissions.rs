@@ -1,17 +1,27 @@
-//! Deciding calls by what each tool declares and by the run's mode, from the
+//! Deciding calls by host-defined tool metadata and the run's mode, from the
 //! "Process tool calls" page.
 
 use async_trait::async_trait;
 use causa::{
     kernel::{
         ArtifactStore, CallControl, ModelRef, ProcessorContext, ProcessorData, ProcessorError,
-        Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolDefinition, ToolHints,
+        Tool, ToolBatch, ToolBatchProcessor, ToolCallContext, ToolDefinition, ToolMetadata,
         ToolOutput, ToolResultPayload, ToolResultStatus,
     },
     runtime::{TurnRunOptions, new_block_id},
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
+
+// ANCHOR: metadata
+/// Your application's own tool classification. Causa carries it without
+/// inspecting or persisting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEffect {
+    /// Reads only; safe in read-only mode.
+    ReadOnly,
+}
+// ANCHOR_END: metadata
 
 // ANCHOR: mode
 /// Your application's permission modes. Causa has none of its own: it only
@@ -55,10 +65,8 @@ impl ToolBatchProcessor for ByMode {
         let mut offset = 0;
         while offset < batch.calls().len() {
             let call = batch.calls()[offset].call();
-            let declares_read_only = ctx
-                .hints(&call.input.tool_name)
-                .and_then(|hints| hints.read_only)
-                == Some(true);
+            let declares_read_only = ctx.tool_metadata::<ToolEffect>(&call.input.tool_name)
+                == Some(&ToolEffect::ReadOnly);
             // Read the mode for each call: it may have changed since the last.
             if declares_read_only || *mode.lock().unwrap() == Mode::FullAccess {
                 offset += 1;
@@ -87,11 +95,11 @@ impl Tool for ListNotes {
         ToolDefinition::new("list_notes", "List the notes.", json!({ "type": "object" }))
     }
 
-    // ANCHOR: hints
-    fn hints(&self) -> ToolHints {
-        ToolHints::default().with_read_only(true)
+    // ANCHOR: tool_metadata
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::new().with(ToolEffect::ReadOnly)
     }
-    // ANCHOR_END: hints
+    // ANCHOR_END: tool_metadata
 
     async fn execute(
         &self,
@@ -107,7 +115,7 @@ impl Tool for ListNotes {
     }
 }
 
-/// A tool that changes what exists, and declares nothing.
+/// A tool that changes what exists, and carries no metadata.
 pub struct DeleteNote;
 
 #[async_trait]
