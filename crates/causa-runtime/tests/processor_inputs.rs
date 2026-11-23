@@ -227,6 +227,17 @@ async fn before_and_after_processors_see_static_and_dynamic_metadata() {
         .bind(tool_fixtures::invocation(), tool_fixtures::control())
         .await
         .unwrap();
+    assert_eq!(bound.tools().len(), 2);
+    assert_eq!(bound.tools()[0].definition.name, "read_file");
+    assert_eq!(
+        bound.tools()[0].metadata.get::<Effect>(),
+        Some(&Effect::ReadOnly)
+    );
+    assert_eq!(bound.tools()[1].definition.name, "remote_lookup");
+    assert_eq!(
+        bound.tools()[1].metadata.get::<Effect>(),
+        Some(&Effect::Destructive)
+    );
     let mut batch = tool_fixtures::batch(&["read_file", "remote_lookup"]);
     bound.process(&mut batch).await.unwrap();
     let effect_in = |phase: &str, tool: &str| {

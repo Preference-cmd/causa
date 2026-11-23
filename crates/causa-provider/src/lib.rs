@@ -59,7 +59,8 @@
 //! [`KernelHttpGateway::with_encrypted_reasoning`],
 //! [`KernelHttpGateway::with_store`] and
 //! [`KernelHttpGateway::with_additional_tools`] for Responses, and
-//! [`KernelHttpGateway::with_reasoning_content_replay`] for Chat. They can
+//! [`KernelHttpGateway::with_reasoning_content_replay`] and
+//! [`KernelHttpGateway::with_max_tokens_field`] for Chat. They can
 //! also be replaced at once with [`KernelHttpGateway::with_render_options`].
 //! They apply to the gateway value, not to one request; the defaults are
 //! documented on each option type.

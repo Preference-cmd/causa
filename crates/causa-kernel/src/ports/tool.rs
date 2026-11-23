@@ -91,6 +91,16 @@ impl ToolMetadata {
             .and_then(|arc| (&**arc as &dyn Any).downcast_ref::<T>())
     }
 
+    /// Returns `true` when a value of exact type `T` is stored.
+    pub fn contains<T: Any>(&self) -> bool {
+        self.entries.contains_key(&TypeId::of::<T>())
+    }
+
+    /// Returns the number of stored metadata entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Returns `true` when no metadata entries are stored.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -186,6 +196,11 @@ impl CallAttachments {
             .and_then(|arc| (&**arc as &dyn Any).downcast_ref::<T>())
     }
 
+    /// Returns `true` when an attachment of exact type `T` is stored.
+    pub fn contains<T: Any>(&self) -> bool {
+        self.entries.contains_key(&TypeId::of::<T>())
+    }
+
     /// Removes and returns the attachment stored for type `T`, if present.
     pub fn remove<T: Any + Send + Sync>(&mut self) -> Option<Arc<T>> {
         self.entries
@@ -196,6 +211,11 @@ impl CallAttachments {
     /// Drops all stored attachments.
     pub fn clear(&mut self) {
         self.entries.clear();
+    }
+
+    /// Returns the number of stored attachments.
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 
     /// Returns `true` when no attachments are stored.

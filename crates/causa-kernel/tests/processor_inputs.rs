@@ -82,20 +82,29 @@ impl DynamicToolSource for Plain {
 fn tool_metadata_supports_typed_insert_replace_get_and_debug() {
     let mut meta = ToolMetadata::new();
     assert!(meta.is_empty());
+    assert_eq!(meta.len(), 0);
+    assert!(!meta.contains::<HostCap>());
     assert!(ToolMetadata::default().is_empty());
 
     assert!(meta.insert(HostCap("read")).is_none());
     assert!(!meta.is_empty());
+    assert_eq!(meta.len(), 1);
+    assert!(meta.contains::<HostCap>());
+    assert!(!meta.contains::<OtherTag>());
     assert_eq!(meta.get::<HostCap>(), Some(&HostCap("read")));
     assert_eq!(meta.get::<OtherTag>(), None);
 
     let previous = meta.insert(HostCap("write"));
     assert_eq!(previous.as_deref(), Some(&HostCap("read")));
+    assert_eq!(meta.len(), 1);
     assert_eq!(meta.get::<HostCap>(), Some(&HostCap("write")));
 
     let chained = ToolMetadata::new()
         .with(HostCap("chained"))
         .with(OtherTag(7));
+    assert_eq!(chained.len(), 2);
+    assert!(chained.contains::<HostCap>());
+    assert!(chained.contains::<OtherTag>());
     assert_eq!(chained.get::<HostCap>(), Some(&HostCap("chained")));
     assert_eq!(chained.get::<OtherTag>(), Some(&OtherTag(7)));
     assert_eq!(format!("{chained:?}"), "ToolMetadata { len: 2, .. }");
@@ -180,22 +189,33 @@ fn tool_metadata_resolves_by_name_and_type_and_data_by_exact_type() {
 fn call_attachments_support_crud_and_tool_call_context_access() {
     let mut attachments = CallAttachments::new();
     assert!(attachments.is_empty());
+    assert_eq!(attachments.len(), 0);
+    assert!(!attachments.contains::<HostCap>());
     assert!(CallAttachments::default().is_empty());
 
     assert!(attachments.insert(HostCap("plan-a")).is_none());
     assert!(!attachments.is_empty());
+    assert_eq!(attachments.len(), 1);
+    assert!(attachments.contains::<HostCap>());
+    assert!(!attachments.contains::<OtherTag>());
     assert_eq!(attachments.get::<HostCap>(), Some(&HostCap("plan-a")));
     assert_eq!(attachments.get::<OtherTag>(), None);
 
     let prev = attachments.insert(HostCap("plan-b"));
     assert_eq!(prev.as_deref(), Some(&HostCap("plan-a")));
+    assert_eq!(attachments.len(), 1);
     assert_eq!(attachments.get::<HostCap>(), Some(&HostCap("plan-b")));
 
     let removed = attachments.remove::<HostCap>();
     assert_eq!(removed.as_deref(), Some(&HostCap("plan-b")));
     assert!(attachments.is_empty());
+    assert_eq!(attachments.len(), 0);
+    assert!(!attachments.contains::<HostCap>());
 
     let chained = CallAttachments::new().with(HostCap("x")).with(OtherTag(9));
+    assert_eq!(chained.len(), 2);
+    assert!(chained.contains::<HostCap>());
+    assert!(chained.contains::<OtherTag>());
     assert_eq!(format!("{chained:?}"), "CallAttachments { len: 2, .. }");
 
     let mut cleared = chained.clone();

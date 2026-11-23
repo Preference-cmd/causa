@@ -84,6 +84,12 @@ impl BoundTools<'_> {
         &self.surface
     }
 
+    /// Borrows the ordered, immutable bound tool descriptions (definitions and
+    /// metadata) fixed by this bind.
+    pub fn tools(&self) -> &[ToolDescription] {
+        &self.tools
+    }
+
     /// Hands `data` to every processor of this binding's batch through
     /// [`causa_kernel::ProcessorContext::data`]. The runner sets it from
     /// [`crate::TurnRunOptions::processor_data`]; a caller that binds and

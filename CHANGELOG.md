@@ -38,21 +38,30 @@ format without a compatibility adapter or data converter. In the earlier
 ### Added
 
 - `ToolMetadata` in `causa-kernel` (`Clone`, `Default`, `Debug`): non-persisted,
-  bind-time typed metadata bag (`new`, `with`, `insert`, `get`, `is_empty`)
-  carried beside `ToolDefinition` without entering `Context`, `ToolChange`, or
-  model wire requests.
+  bind-time typed metadata bag (`new`, `with`, `insert`, `get`, `contains`,
+  `len`, `is_empty`) carried beside `ToolDefinition` without entering
+  `Context`, `ToolChange`, or model wire requests.
 - `CallAttachments` in `causa-kernel` (`Clone`, `Default`, `Debug`):
   non-persisted, call-scoped typed attachment bag (`new`, `with`, `insert`,
-  `get`, `remove`, `clear`, `is_empty`) for passing prepared state from
-  before-processors (`ToolCallEntry::attachments_mut` / `attach`) to
+  `get`, `contains`, `remove`, `clear`, `len`, `is_empty`) for passing prepared
+  state from before-processors (`ToolCallEntry::attachments_mut` / `attach`) to
   `Tool::execute` / `DynamicToolSource::invoke`
   (`ToolCallContext::attachment` / `attachments` / `with_attachment`).
   `ToolBatch::resolve_at` clears an entry's attachments atomically on
   resolution.
+- `BoundTools::tools` in `causa-runtime` exposes the bound
+  `&[ToolDescription]` snapshot (definitions and metadata) directly on a
+  binding, and `ToolBridge::with_meta` inserts a single typed metadata entry
+  for snapshot-bridged tools.
 - `McpToolAnnotations` in `causa-extension::mcp` (re-exported by
   `causa-extension` and `causa::extension` under `mcp`): carries `title` and
   the four MCP annotation hints 1:1 inside `ToolDescription::metadata` when
   the server supplies `annotations`.
+
+### Changed
+
+- `causa-extension` now gates `base64` behind the `mcp` feature (`dep:base64`),
+  so `--no-default-features` no longer pulls `base64`.
 
 ### Security
 

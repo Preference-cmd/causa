@@ -57,6 +57,13 @@ impl ToolBridge {
         self.metadata = metadata;
         self
     }
+
+    /// Inserts a single metadata value of type `T` on the bridged tool,
+    /// replacing any prior value of the same type.
+    pub fn with_meta<T: std::any::Any + Send + Sync>(mut self, value: T) -> Self {
+        self.metadata.insert(value);
+        self
+    }
 }
 
 #[async_trait]
@@ -176,6 +183,16 @@ mod tests {
             .await;
         assert_eq!(result.status, ToolResultStatus::Succeeded);
         assert_eq!(result.output.content, serde_json::json!({"k": "v"}));
+    }
+
+    #[test]
+    fn with_meta_attaches_typed_metadata() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct Tag(&'static str);
+
+        let bridged = bridge(StubReply::Echo).with_meta(Tag("snapshot"));
+        assert_eq!(bridged.metadata().get::<Tag>(), Some(&Tag("snapshot")));
+        assert_eq!(bridged.metadata().len(), 1);
     }
 
     #[tokio::test]
