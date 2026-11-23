@@ -8,7 +8,12 @@ all-features = true
 [advisories]
 # Every advisory fails the check, unmaintained and unsound included; an
 # accepted one goes in `ignore` with the reason beside it.
-ignore = []
+ignore = [
+    # chrono is unmaintained (no safe upgrade available); pulled in
+    # transitively by rmcp 3.11.0 and schemars 1.2.2, not used directly by
+    # Causa. Remove once rmcp migrates off chrono.
+    "RUSTSEC-2026-0543",
+]
 
 [licenses]
 # Measured against the dependency graph: each entry is needed by at least

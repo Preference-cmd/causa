@@ -20,7 +20,7 @@ use causa_runtime::{
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ResourceContents, ServerInfo, Tool, ToolAnnotations,
+    PaginatedRequestParams, ResourceContents, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer, ServiceExt};
 use serde_json::json;
@@ -126,8 +126,8 @@ impl ServerHandler for FixtureServer {
         Ok(result.into())
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::default()
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::default()
     }
 }
 
@@ -897,8 +897,8 @@ impl ServerHandler for MediaServer {
         Ok(CallToolResult::success(vec![block]).into())
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::default()
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::default()
     }
 }
 

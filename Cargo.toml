@@ -47,7 +47,7 @@ httpdate = "1"
 # rmcp — official Model Context Protocol Rust SDK (client role only;
 # server features are used by causa-extension's dev-dependencies for the
 # in-process test fixture)
-rmcp = { version = "3.2.0", default-features = false, features = [
+rmcp = { version = "3.11.0", default-features = false, features = [
     "client",
     "reqwest",
     "schemars",

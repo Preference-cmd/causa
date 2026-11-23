@@ -9,7 +9,7 @@
 use causa_extension::McpToolSource;
 use causa_kernel::{DynamicToolSource, SourceError};
 use rmcp::handler::server::ServerHandler;
-use rmcp::model::{ListToolsResult, PaginatedRequestParams, ServerInfo, Tool};
+use rmcp::model::{ListToolsResult, PaginatedRequestParams, ServerConfig, Tool};
 use rmcp::service::{RequestContext, RoleServer, ServiceExt};
 use std::io::Read;
 use std::sync::Arc;
@@ -58,8 +58,8 @@ impl ServerHandler for PingServer {
         )]))
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::default()
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::default()
     }
 }
 

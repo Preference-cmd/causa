@@ -12,6 +12,18 @@ format without a compatibility adapter or data converter. In the earlier
 
 ## [Unreleased]
 
+### Security
+
+- Raised the `rmcp` requirement in `causa-extension` (and the repository
+  lockfiles) from `3.2.0` to `3.11.0`, clearing RUSTSEC-2026-0462 (unbounded
+  non-streaming response body buffering in Streamable HTTP clients; fixed in
+  `3.9.0`).
+- Updated `url` from `2.5.8` to `2.5.9` (with `form_urlencoded` `1.2.3`) in the
+  repository and consumer lockfiles, clearing RUSTSEC-2026-0592 (stack overflow
+  in `Url::origin()` on nested `blob:` URLs). Dependent crates resolve `url` in
+  their own lockfiles and should run `cargo update -p url --precise 2.5.9` if
+  locked on `2.5.8` or earlier.
+
 ## [0.2.0] - 2026-11-03
 
 ### Breaking
